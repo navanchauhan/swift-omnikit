@@ -243,6 +243,73 @@ public struct Group<Content: View>: View, _PrimitiveView {
     }
 }
 
+public struct Section<Parent: View, Content: View, Footer: View>: View, _PrimitiveView {
+    public typealias Body = Never
+
+    let header: Parent
+    let content: Content
+    let footer: Footer
+
+    public init(@ViewBuilder content: () -> Content) where Parent == EmptyView, Footer == EmptyView {
+        self.header = EmptyView()
+        self.content = content()
+        self.footer = EmptyView()
+    }
+
+    public init(header: Parent, @ViewBuilder content: () -> Content) where Footer == EmptyView {
+        self.header = header
+        self.content = content()
+        self.footer = EmptyView()
+    }
+
+    public init(header: Parent, footer: Footer, @ViewBuilder content: () -> Content) {
+        self.header = header
+        self.content = content()
+        self.footer = footer
+    }
+
+    func _makeNode(_ ctx: inout _BuildContext) -> _VNode {
+        ctx.buildChild(
+            VStack(spacing: 0) {
+                header
+                content
+                footer
+            }
+        )
+    }
+}
+
+public struct Table<Data: RandomAccessCollection, ID: Hashable, RowContent: View>: View, _PrimitiveView {
+    public typealias Body = Never
+
+    let data: Data
+    let id: KeyPath<Data.Element, ID>
+    let rowContent: (Data.Element) -> RowContent
+
+    public init(_ data: Data, id: KeyPath<Data.Element, ID>, @ViewBuilder rowContent: @escaping (Data.Element) -> RowContent) {
+        self.data = data
+        self.id = id
+        self.rowContent = rowContent
+    }
+
+    public init(_ data: Data, @ViewBuilder rowContent: @escaping (Data.Element) -> RowContent) where Data.Element: Identifiable, ID == Data.Element.ID {
+        self.data = data
+        self.id = \.id
+        self.rowContent = rowContent
+    }
+
+    func _makeNode(_ ctx: inout _BuildContext) -> _VNode {
+        // Placeholder: render as a List-style scrollable set of rows.
+        ctx.buildChild(
+            ScrollView {
+                VStack(spacing: 0) {
+                    ForEach(data, id: id, content: rowContent)
+                }
+            }
+        )
+    }
+}
+
 public struct VStack<Content: View>: View, _PrimitiveView {
     public typealias Body = Never
     public let spacing: Int

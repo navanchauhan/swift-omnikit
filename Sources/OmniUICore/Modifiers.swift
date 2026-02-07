@@ -8,6 +8,12 @@ public extension View {
     func shadow(color: Color, radius: CGFloat) -> some View { _Passthrough(self) }
     func opacity(_ value: CGFloat) -> some View { _Passthrough(self) }
     func ignoresSafeArea() -> some View { _Passthrough(self) }
+    func clipShape<S: Shape>(_ shape: S, style: FillStyle = FillStyle()) -> some View { _Passthrough(self) }
+    func contentShape<S: Shape>(_ shape: S, eoFill: Bool = false) -> some View { _Passthrough(self) }
+    func mask<M: View>(_ mask: M) -> some View { _Passthrough(self) }
+
+    func background<B: View>(_ background: B) -> some View { _Passthrough(self) }
+    func overlay<O: View>(_ overlay: O) -> some View { _Passthrough(self) }
 
     func frame(
         width: CGFloat? = nil,
@@ -67,4 +73,3 @@ public struct _OnAppear: View, _PrimitiveView {
         return ctx.buildChild(content)
     }
 }
-

@@ -1,7 +1,11 @@
 import OmniUI
 import OmniUICore
 import OmniUINotcursesRenderer
-import Foundation
+#if os(Linux)
+import Glibc
+#else
+import Darwin
+#endif
 
 struct KitchenSinkRoot: View {
     var body: some View {
@@ -11,12 +15,23 @@ struct KitchenSinkRoot: View {
     }
 }
 
+final class DemoModel: ObservableObject {
+    var name: String = ""
+    var count: Int = 0
+}
+
+final class AppEnvironment: ObservableObject {
+    var banner: String = "Hello from EnvironmentObject"
+}
+
 struct KitchenSinkHome: View {
     @State private var count: Int = 0
     @State private var crtMode: Bool = false
     @State private var name: String = ""
     @State private var flavor: Flavor = .vanilla
     @State private var pickedRow: Int = 0
+    @StateObject private var model = DemoModel()
+    @StateObject private var appEnv = AppEnvironment()
 
     enum Flavor: String, Hashable {
         case vanilla = "Vanilla"
@@ -25,63 +40,135 @@ struct KitchenSinkHome: View {
     }
 
     var body: some View {
-        VStack(spacing: 1) {
-            Label("OmniUI KitchenSink", systemImage: "sparkles")
+        ScrollView {
+            VStack(spacing: 1) {
+                Label("OmniUI KitchenSink", systemImage: "sparkles")
 
-            HStack(spacing: 1) {
-                Text("Count: \(count)")
-                Spacer()
-                Button("+") { count += 1 }
-                Button("-") { count -= 1 }
-            }
+                Section(header: Text("State / Binding")) {
+                    HStack(spacing: 1) {
+                        Text("Count: \(count)")
+                        Spacer()
+                        Button("+") { count += 1 }
+                        Button("-") { count -= 1 }
+                    }
 
-            HStack(spacing: 1) {
-                Toggle("CRT", isOn: $crtMode)
-                Spacer()
-                Text(crtMode ? "ON" : "OFF")
-            }
+                    HStack(spacing: 1) {
+                        Toggle("CRT", isOn: $crtMode)
+                        Spacer()
+                        Text(crtMode ? "ON" : "OFF")
+                    }
 
-            TextField("Type your name", text: $name)
-            Picker(
-                "Flavor",
-                selection: $flavor,
-                options: [
-                    (.vanilla, "Vanilla"),
-                    (.chocolate, "Chocolate"),
-                    (.strawberry, "Strawberry"),
-                ]
-            )
-
-            Text("ZStack:")
-            ZStack {
-                Text("Background text")
-                Text("Overlay (shifted)")
-                    .padding(1)
-            }
-
-            Text("List (picked: \(pickedRow))")
-            List(0..<2, id: \.self) { i in
-                HStack(spacing: 1) {
-                    Text("Row \(i)")
-                    Spacer()
-                    Button("Pick") { pickedRow = i }
+                    TextField("Type your name", text: $name)
+                    Text("Hello, \(name.isEmpty ? "anonymous" : name)")
                 }
-            }
 
-            NavigationLink("Open details") { KitchenSinkDetail() }
+                Section(header: Text("Picker")) {
+                    Picker(
+                        "Flavor",
+                        selection: $flavor,
+                        options: [
+                            (.vanilla, "Vanilla"),
+                            (.chocolate, "Chocolate"),
+                            (.strawberry, "Strawberry"),
+                        ]
+                    )
+                }
 
-            Text("ScrollView (wheel over it):")
-            ScrollView {
-                VStack(spacing: 0) {
-                    ForEach(0..<20, id: \.self) { i in
-                        Text("Item \(i)")
+                Section(header: Text("Shapes")) {
+                    HStack(spacing: 1) {
+                        Rectangle()
+                        RoundedRectangle(cornerRadius: 3)
+                        Circle()
+                        Ellipse()
+                        Capsule()
+                    }
+                    Text("Clipped")
+                        .clipShape(RoundedRectangle(cornerRadius: 2))
+                }
+
+                Section(header: Text("ZStack")) {
+                    ZStack {
+                        Text("Background text")
+                        Text("Overlay (shifted)")
+                            .padding(1)
                     }
                 }
-            }
 
-            Text("Tip: `--notcurses` for the notcurses renderer.")
+                Section(header: Text("List / ForEach (picked: \(pickedRow))")) {
+                    List(0..<2, id: \.self) { i in
+                        HStack(spacing: 1) {
+                            Text("Row \(i)")
+                            Spacer()
+                            Button("Pick") { pickedRow = i }
+                        }
+                    }
+                }
+
+                Section(header: Text("Table")) {
+                    Table(0..<3, id: \.self) { i in
+                        HStack(spacing: 1) {
+                            Text("Cell \(i)")
+                            Spacer()
+                            Text("Value \(i * 10)")
+                        }
+                    }
+                }
+
+                Section(header: Text("StateObject / ObservedObject")) {
+                    Text("Model.count: \(model.count)")
+                    HStack(spacing: 1) {
+                        Button("Model +1") { model.count += 1 }
+                        Button("Model -1") { model.count -= 1 }
+                    }
+                    TextField("Model name", text: $model.name)
+                    ObservedModelView(model: model)
+                }
+
+                Section(header: Text("EnvironmentObject")) {
+                    EnvironmentBannerView()
+                        .environmentObject(appEnv)
+                }
+
+                Section(header: Text("Navigation")) {
+                    NavigationLink("Open details") { KitchenSinkDetail() }
+                }
+
+                Section(header: Text("ScrollView (wheel over it)")) {
+                    ScrollView {
+                        VStack(spacing: 0) {
+                            ForEach(0..<20, id: \.self) { i in
+                                Text("Item \(i)")
+                            }
+                        }
+                    }
+                }
+
+                Text("Tip: `--notcurses` for the notcurses renderer.")
+            }
+            .padding(1)
         }
-        .padding(1)
+    }
+}
+
+struct ObservedModelView: View {
+    @ObservedObject var model: DemoModel
+
+    var body: some View {
+        VStack(spacing: 1) {
+            Text("Observed: \(model.count)")
+            Button("Observed +1") { model.count += 1 }
+        }
+    }
+}
+
+struct EnvironmentBannerView: View {
+    @EnvironmentObject var env: AppEnvironment
+
+    var body: some View {
+        VStack(spacing: 1) {
+            Text(env.banner)
+            TextField("Banner", text: $env.banner)
+        }
     }
 }
 
@@ -114,7 +201,7 @@ enum KitchenSinkMain {
                 return
             } catch {
                 // Don't crash the whole demo if the terminal doesn't support notcurses/terminfo.
-                FileHandle.standardError.write(Data("Notcurses renderer failed: \(error)\nFalling back to debug renderer.\n".utf8))
+                fputs("Notcurses renderer failed: \(error)\nFalling back to debug renderer.\n", stderr)
             }
         }
 

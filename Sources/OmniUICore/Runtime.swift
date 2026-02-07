@@ -5,6 +5,9 @@ public final class _UIRuntime: @unchecked Sendable {
     /// A traversal path to disambiguate state keys for repeated view instances.
     @TaskLocal static var _currentPath: [Int]?
 
+    /// Build-time ambient environment values.
+    @TaskLocal static var _currentEnvironment: EnvironmentValues?
+
     private var nextActionID: Int = 1
     private var actions: [_ActionID: (path: [Int], action: () -> Void)] = [:]
 
@@ -20,6 +23,9 @@ public final class _UIRuntime: @unchecked Sendable {
 
     private var navStacks: [String: [AnyView]] = [:]
     private var navStackRoots: Set<[Int]> = []
+
+    // Base environment at the root render call.
+    var _baseEnvironment: EnvironmentValues = EnvironmentValues()
 
     public init() {}
 
@@ -350,8 +356,11 @@ struct _BuildContext {
     var nextChildIndex: Int
 
     static func withRuntime<T>(_ runtime: _UIRuntime, path: [Int], _ body: () -> T) -> T {
-        _UIRuntime.$_current.withValue(runtime, operation: {
-            _UIRuntime.$_currentPath.withValue(path, operation: body)
+        let env = _UIRuntime._currentEnvironment ?? runtime._baseEnvironment
+        return _UIRuntime.$_current.withValue(runtime, operation: {
+            _UIRuntime.$_currentPath.withValue(path, operation: {
+                _UIRuntime.$_currentEnvironment.withValue(env, operation: body)
+            })
         })
     }
 
