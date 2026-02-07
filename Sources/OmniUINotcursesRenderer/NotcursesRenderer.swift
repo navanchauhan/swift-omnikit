@@ -36,9 +36,14 @@ public struct NotcursesApp<V: View> {
             omni_restore_terminal()
             throw OmniUINotcursesRendererError.notcursesUnavailable
         }
+        var userRequestedExit = false
+        var exitNote: String? = nil
         defer {
             _ = notcurses_stop(nc)
             omni_restore_terminal()
+            if !userRequestedExit, let exitNote {
+                fputs("OmniUI notcurses renderer exited: \(exitNote)\n", stderr)
+            }
         }
 
         _ = notcurses_mice_enable(nc, omni_ncmice_all_events())
@@ -66,7 +71,9 @@ public struct NotcursesApp<V: View> {
         let scrollDown: UInt32 = omni_nckey_scroll_down()
 
         while !Task.isCancelled {
-            if omni_signal_received() != 0 {
+            let sig = omni_signal_received()
+            if sig != 0 {
+                exitNote = "signal \(sig)"
                 return
             }
             guard let stdplane = notcurses_stdplane(nc) else { break }
@@ -241,7 +248,11 @@ public struct NotcursesApp<V: View> {
 
             prev = curr
 
-            _ = notcurses_render(nc)
+            let rr = notcurses_render(nc)
+            if rr != 0 {
+                exitNote = "notcurses_render() failed (\(rr))"
+                return
+            }
 
             // Drain any queued inputs.
             var ni = ncinput()
@@ -252,6 +263,7 @@ public struct NotcursesApp<V: View> {
                 }
 
                 if id == q {
+                    userRequestedExit = true
                     return
                 }
                 if id == esc {
@@ -259,6 +271,7 @@ public struct NotcursesApp<V: View> {
                         runtime.collapseExpandedPicker()
                         continue
                     }
+                    userRequestedExit = true
                     return
                 }
 
@@ -327,6 +340,11 @@ public struct NotcursesApp<V: View> {
             }
 
             try await Task.sleep(nanoseconds: 16_000_000) // ~60Hz
+        }
+        if Task.isCancelled {
+            exitNote = "task cancelled"
+        } else {
+            exitNote = "loop ended"
         }
         #else
         throw OmniUINotcursesRendererError.notSupportedOnThisPlatform
