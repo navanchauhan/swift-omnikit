@@ -17,7 +17,7 @@ enum _DebugLayout {
         var shapeRegions: [(_Rect, _ShapeNode)]
     }
 
-    static func layout(node: _VNode, in rect: _Rect) -> Result {
+    static func layout(node: _VNode, in rect: _Rect, renderShapeGlyphs: Bool = true) -> Result {
         var canvas = Array(repeating: Array(repeating: " ", count: rect.size.width), count: rect.size.height)
         var hits: [(_Rect, _ActionID)] = []
         var scrolls: [_ScrollRegion] = []
@@ -31,6 +31,7 @@ enum _DebugLayout {
             hitRegions: &hits,
             scrollRegions: &scrolls,
             shapeRegions: &shapes,
+            renderShapeGlyphs: renderShapeGlyphs,
             overlays: &overlays
         )
 
@@ -73,6 +74,7 @@ enum _DebugLayout {
         hitRegions: inout [(_Rect, _ActionID)],
         scrollRegions: inout [_ScrollRegion],
         shapeRegions: inout [(_Rect, _ShapeNode)],
+        renderShapeGlyphs: Bool,
         overlays: inout [Overlay]
     ) -> _Size {
         guard maxSize.width > 0, maxSize.height > 0 else { return _Size(width: 0, height: 0) }
@@ -93,6 +95,7 @@ enum _DebugLayout {
                     hitRegions: &hitRegions,
                     scrollRegions: &scrollRegions,
                     shapeRegions: &shapeRegions,
+                    renderShapeGlyphs: renderShapeGlyphs,
                     overlays: &overlays
                 )
                 used.width = max(used.width, s.width)
@@ -111,6 +114,7 @@ enum _DebugLayout {
                     hitRegions: &hitRegions,
                     scrollRegions: &scrollRegions,
                     shapeRegions: &shapeRegions,
+                    renderShapeGlyphs: renderShapeGlyphs,
                     overlays: &overlays
                 )
                 used.width = max(used.width, s.width)
@@ -157,6 +161,10 @@ enum _DebugLayout {
             // This allows the notcurses renderer to use sprixels (or braille) rather than
             // relying on the placeholder glyph art below.
             shapeRegions.append((_Rect(origin: origin, size: _Size(width: w, height: h)), shape))
+
+            if !renderShapeGlyphs {
+                return _Size(width: w, height: h)
+            }
 
             switch shape.kind {
             case .rectangle:
@@ -254,6 +262,7 @@ enum _DebugLayout {
                 hitRegions: &hitRegions,
                 scrollRegions: &scrollRegions,
                 shapeRegions: &shapeRegions,
+                renderShapeGlyphs: renderShapeGlyphs,
                 overlays: &overlays
             )
             return _Size(width: min(maxSize.width, s.width + amount * 2), height: min(maxSize.height, s.height + amount * 2))
@@ -404,6 +413,7 @@ enum _DebugLayout {
                         hitRegions: &hitRegions,
                         scrollRegions: &scrollRegions,
                         shapeRegions: &shapeRegions,
+                        renderShapeGlyphs: renderShapeGlyphs,
                         overlays: &overlays
                     )
                 }
@@ -442,6 +452,7 @@ enum _DebugLayout {
                 hitRegions: &hitRegions,
                 scrollRegions: &scrollRegions,
                 shapeRegions: &shapeRegions,
+                renderShapeGlyphs: renderShapeGlyphs,
                 overlays: &overlays
             )
             put("]", at: _Point(x: x0 + 1 + labelSize.width + 2, y: origin.y), canvas: &canvas)
@@ -470,6 +481,7 @@ enum _DebugLayout {
                 hitRegions: &hitRegions,
                 scrollRegions: &scrollRegions,
                 shapeRegions: &shapeRegions,
+                renderShapeGlyphs: renderShapeGlyphs,
                 overlays: &overlays
             )
             let width = min(maxSize.width, (isFocused ? 1 : 0) + box.count + labelSize.width)
@@ -634,6 +646,7 @@ enum _DebugLayout {
                 hitRegions: &subHits,
                 scrollRegions: &subScrolls,
                 shapeRegions: &subShapes,
+                renderShapeGlyphs: renderShapeGlyphs,
                 overlays: &subOverlays
             )
 

@@ -36,7 +36,7 @@ public struct TerminalApp<V: View> {
 
         while !Task.isCancelled {
             let size = _terminalSize()
-            let snapshot = runtime.debugRender(root(), size: size)
+            let snapshot = runtime.debugRender(root(), size: size, renderShapeGlyphs: false)
 
             let baseFG = _RGB(r: 0xD8, g: 0xDB, b: 0xE2)
             let baseBG = _RGB(r: 0x0B, g: 0x10, b: 0x20)

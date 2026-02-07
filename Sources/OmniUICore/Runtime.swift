@@ -246,7 +246,7 @@ public final class _UIRuntime: @unchecked Sendable {
         return "\(seed.fileID):\(seed.line):\(p)"
     }
 
-    public func debugRender<V: View>(_ root: V, size: _Size) -> DebugSnapshot {
+    public func debugRender<V: View>(_ root: V, size: _Size, renderShapeGlyphs: Bool = true) -> DebugSnapshot {
         let runtime = self
         // Rebuild-only registries (actions/editors) should not accumulate across frames.
         runtime.nextActionID = 1
@@ -268,7 +268,11 @@ public final class _UIRuntime: @unchecked Sendable {
             runtime._setFocus(path: first)
         }
 
-        let laidOut = _DebugLayout.layout(node: node, in: _Rect(origin: _Point(x: 0, y: 0), size: size))
+        let laidOut = _DebugLayout.layout(
+            node: node,
+            in: _Rect(origin: _Point(x: 0, y: 0), size: size),
+            renderShapeGlyphs: renderShapeGlyphs
+        )
         let focusedRect: _Rect? = {
             guard let raw = focusedActionRawID() else { return nil }
             return laidOut.hitRegions.last(where: { $0.1.raw == raw })?.0
