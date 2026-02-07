@@ -14,9 +14,9 @@ Drop in SwiftUI replacement bringing my SwiftUI apps to other platforms.
 
 1:1 SwiftUI APIs reimplemented
 
-### OmniUINcursesRenderer
+### OmniUInotcursesRenderer
 
-TUI renderer built on top of Ncurses. 
+TUI renderer built on top of not curses. 
 * Scrolling
 * Mouse Clicks
 * Image support (on supported terminals)
