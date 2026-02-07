@@ -165,6 +165,11 @@ public final class _UIRuntime: @unchecked Sendable {
         editor.handle(codepoint)
     }
 
+    public func isTextEditingFocused() -> Bool {
+        guard let p = focusedPath else { return false }
+        return textEditors[p] != nil
+    }
+
     public func focusNext() {
         guard !focusOrder.isEmpty else { return }
         expandedPickerPath = nil

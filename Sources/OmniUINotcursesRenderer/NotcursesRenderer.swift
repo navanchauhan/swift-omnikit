@@ -137,8 +137,14 @@ public struct NotcursesApp<V: View> {
                         } else {
                             runtime.focusNext()
                         }
-                    } else if id == enter || id == 10 || id == 13 || id == 32 { // Enter/Return/Space
+                    } else if id == enter || id == 10 || id == 13 { // Enter/Return
                         runtime.activateFocused()
+                    } else if id == 32 { // Space
+                        if runtime.isTextEditingFocused() {
+                            runtime._handleKeyPress(32)
+                        } else {
+                            runtime.activateFocused()
+                        }
                     } else if id == backspace {
                         runtime._handleKeyPress(8)
                     } else if id < 0x110000 {

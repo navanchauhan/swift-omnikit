@@ -47,7 +47,8 @@ struct KitchenSinkRoot: View {
             Text("ZStack:")
             ZStack {
                 Text("Background text")
-                Text("Foreground text")
+                Text("Overlay (shifted)")
+                    .padding(1)
             }
 
             Text("List (picked: \(pickedRow))")
@@ -81,13 +82,20 @@ struct KitchenSinkRoot: View {
 }
 
 struct KitchenSinkDetail: View {
+    let level: Int
     @State private var localCount: Int = 0
+
+    init(level: Int = 1) {
+        self.level = level
+    }
 
     var body: some View {
         VStack(spacing: 1) {
-            Text("Detail screen")
+            Text("Detail screen (level \(level))")
             Text("Local: \(localCount)")
             Button("Local +1") { localCount += 1 }
+            NavigationLink("Push next") { KitchenSinkDetail(level: level + 1) }
+            Text("Use Back to pop.")
         }
         .padding(1)
     }

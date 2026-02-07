@@ -169,3 +169,61 @@ struct ListRenderView: View {
     let s0 = runtime.debugRender(Sink(), size: _Size(width: 80, height: 24))
     #expect(s0.text.contains("Row 0"))
 }
+
+@Test func debugSnapshot_list_row_button_updates_parent_state() async throws {
+    struct V: View {
+        @State var pickedRow: Int = 0
+        var body: some View {
+            VStack(spacing: 1) {
+                Text("picked: \(pickedRow)")
+                List(0..<2, id: \.self) { i in
+                    HStack(spacing: 1) {
+                        Text("Row \(i)")
+                        Spacer()
+                        Button("Pick") { pickedRow = i }
+                    }
+                }
+            }
+            .padding(1)
+        }
+    }
+
+    func findPickButton(_ snap: DebugSnapshot, occurrence: Int) -> (x: Int, y: Int)? {
+        var seen = 0
+        for (y, line) in snap.lines.enumerated() {
+            let hay = Array(line)
+            let needle = Array("[ Pick ]")
+            if hay.count >= needle.count {
+                for x0 in 0...(hay.count - needle.count) {
+                    var ok = true
+                    for i in 0..<needle.count {
+                        if hay[x0 + i] != needle[i] { ok = false; break }
+                    }
+                    if ok {
+                        if seen == occurrence {
+                            // Click inside the button.
+                            return (x: x0 + 2, y: y)
+                        }
+                        seen += 1
+                        break
+                    }
+                }
+            }
+        }
+        return nil
+    }
+
+    let runtime = _UIRuntime()
+    let s0 = runtime.debugRender(V(), size: _Size(width: 50, height: 12))
+    #expect(s0.text.contains("picked: 0"))
+
+    // Click the second row's Pick button (occurrence 1) so the value actually changes.
+    guard let p = findPickButton(s0, occurrence: 1) else {
+        #expect(Bool(false), "Could not find Pick button in snapshot")
+        return
+    }
+    s0.click(x: p.x, y: p.y)
+
+    let s1 = runtime.debugRender(V(), size: _Size(width: 50, height: 12))
+    #expect(s1.text.contains("picked: 1"))
+}
