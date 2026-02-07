@@ -158,36 +158,32 @@ public struct NotcursesApp<V: View> {
             }
 
             var curr = Array(repeating: _NCCell(ch: " ", fg: baseFG, bg: baseBG), count: width * height)
-            let lineChars: [[Character]] = snapshot.lines.map { Array($0) }
-            for y in 0..<height {
-                guard y < lineChars.count else { break }
-                let chars = lineChars[y]
-                for x in 0..<min(width, chars.count) {
-                    let c = chars[x]
-                    let left = x > 0 ? chars[x - 1] : nil
-                    let right = x + 1 < chars.count ? chars[x + 1] : nil
-                    let up: Character? = (y > 0 && y - 1 < lineChars.count) ? lineChars[y - 1][safe: x] : nil
-                    let down: Character? = (y + 1 < lineChars.count) ? lineChars[y + 1][safe: x] : nil
-                    let mapped = _boxify(c, left: left, right: right, up: up, down: down)
+            let inCells = snapshot.cells
+            if inCells.count == width * height {
+                for y in 0..<height {
+                    for x in 0..<width {
+                        let s = inCells[y * width + x]
+                        let mapped = s.first ?? " "
 
-                    var fg = baseFG
-                    var bg = baseBG
+                        var fg = baseFG
+                        var bg = baseBG
 
-                    if let fr = focusRect, fr.contains(_Point(x: x, y: y)) {
-                        fg = focusFG
-                        bg = focusBG
-                    } else if mapped == "*" {
-                        fg = accentFG
-                    } else if mapped == "·" {
-                        // Shape fill token: render as a space with filled background.
-                        fg = baseFG
-                        bg = shapeFillBG
-                    } else if _isBorderGlyph(mapped) {
-                        fg = borderFG
+                        if let fr = focusRect, fr.contains(_Point(x: x, y: y)) {
+                            fg = focusFG
+                            bg = focusBG
+                        } else if mapped == "*" {
+                            fg = accentFG
+                        } else if mapped == "·" {
+                            // Shape fill token: render as a space with filled background.
+                            fg = baseFG
+                            bg = shapeFillBG
+                        } else if _isBorderGlyph(mapped) {
+                            fg = borderFG
+                        }
+
+                        let ch: String = (mapped == "·") ? " " : s
+                        curr[y * width + x] = _NCCell(ch: ch, fg: fg, bg: bg)
                     }
-
-                    let ch: String = (mapped == "·") ? " " : String(mapped)
-                    curr[y * width + x] = _NCCell(ch: ch, fg: fg, bg: bg)
                 }
             }
 

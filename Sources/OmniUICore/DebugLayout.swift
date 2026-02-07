@@ -11,6 +11,7 @@ enum _DebugLayout {
 
     struct Result {
         var lines: [String]
+        var cells: [String]
         var hitRegions: [(_Rect, _ActionID)]
         var scrollRegions: [_ScrollRegion]
         var shapeRegions: [(_Rect, _ShapeNode)]
@@ -39,7 +40,8 @@ enum _DebugLayout {
         }
 
         let lines = canvas.map { $0.joined() }
-        return Result(lines: lines, hitRegions: hits, scrollRegions: scrolls, shapeRegions: shapes)
+        let cells = canvas.flatMap { $0 }
+        return Result(lines: lines, cells: cells, hitRegions: hits, scrollRegions: scrolls, shapeRegions: shapes)
     }
 
     private static func imageString(_ name: String) -> String {
@@ -778,6 +780,16 @@ enum _DebugLayout {
     private static func put(_ s: String, at p: _Point, canvas: inout [[String]]) {
         guard p.y >= 0, p.y < canvas.count else { return }
         guard p.x >= 0, p.x < canvas[p.y].count else { return }
-        canvas[p.y][p.x] = s
+        canvas[p.y][p.x] = _sanitizeCell(s)
+    }
+
+    private static func _sanitizeCell(_ s: String) -> String {
+        // Prevent embedding terminal control sequences (ESC, C0 controls).
+        // Layout expects a single printable grapheme; anything else is replaced.
+        guard s.count == 1, let scalar = s.unicodeScalars.first else { return "?" }
+        let v = scalar.value
+        if v == 0x1B { return "?" } // ESC
+        if v < 0x20 || v == 0x7F { return "?" }
+        return s
     }
 }

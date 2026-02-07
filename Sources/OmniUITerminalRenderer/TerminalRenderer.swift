@@ -49,17 +49,12 @@ public struct TerminalApp<V: View> {
             let focusRect = snapshot.focusedRect
 
             var curr = Array(repeating: _Cell(ch: " ", fg: baseFG, bg: baseBG), count: size.width * size.height)
-            let lineChars: [[Character]] = snapshot.lines.map { Array($0) }
-            for y in 0..<size.height {
-                guard y < lineChars.count else { break }
-                let chars = lineChars[y]
-                for x in 0..<min(size.width, chars.count) {
-                    let c = chars[x]
-                    let left = x > 0 ? chars[x - 1] : nil
-                    let right = x + 1 < chars.count ? chars[x + 1] : nil
-                    let up: Character? = (y > 0 && y - 1 < lineChars.count) ? lineChars[y - 1][safe: x] : nil
-                    let down: Character? = (y + 1 < lineChars.count) ? lineChars[y + 1][safe: x] : nil
-                    let mapped = _boxify(c, left: left, right: right, up: up, down: down)
+            let inCells = snapshot.cells
+            if inCells.count == size.width * size.height {
+                for y in 0..<size.height {
+                    for x in 0..<size.width {
+                        let s = inCells[y * size.width + x]
+                        let mapped = s.first ?? " "
 
                     var fg = baseFG
                     var bg = baseBG
@@ -76,8 +71,9 @@ public struct TerminalApp<V: View> {
                         fg = borderFG
                     }
 
-                    let ch: String = (mapped == "·") ? " " : String(mapped)
-                    curr[y * size.width + x] = _Cell(ch: ch, fg: fg, bg: bg)
+                        let ch: String = (mapped == "·") ? " " : s
+                        curr[y * size.width + x] = _Cell(ch: ch, fg: fg, bg: bg)
+                    }
                 }
             }
 
