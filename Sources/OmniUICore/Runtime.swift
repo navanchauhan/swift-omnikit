@@ -196,7 +196,8 @@ public struct DebugSnapshot: Sendable {
     /// Emulate a mouse click at a coordinate in the last rendered snapshot.
     public func click(x: Int, y: Int) {
         let p = _Point(x: x, y: y)
-        guard let (_, id) = hitRegions.first(where: { $0.0.contains(p) }) else { return }
+        // Prefer the last-added region (topmost) so overlays like Picker dropdowns win hit-testing.
+        guard let (_, id) = hitRegions.last(where: { $0.0.contains(p) }) else { return }
         runtime._invokeAction(id)
     }
 

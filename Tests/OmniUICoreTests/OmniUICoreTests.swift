@@ -92,3 +92,38 @@ struct SimplePickerView: View {
     let s2 = runtime.debugRender(SimplePickerView(), size: size)
     #expect(s2.text.contains("Choice: C"))
 }
+
+struct PickerOverlayView: View {
+    enum Choice: String, Hashable {
+        case a = "A"
+        case b = "B"
+        case c = "C"
+    }
+
+    @State private var choice: Choice = .a
+
+    var body: some View {
+        VStack(spacing: 0) {
+            Picker("Choice", selection: $choice, options: [(.a, "A"), (.b, "B"), (.c, "C")])
+            Text("Tip: this should stay in-place")
+        }
+    }
+}
+
+@Test func debugSnapshot_picker_dropdown_is_overlay_not_layout() async throws {
+    let runtime = _UIRuntime()
+    let size = _Size(width: 40, height: 6)
+
+    let s0 = runtime.debugRender(PickerOverlayView(), size: size)
+    #expect(s0.text.contains("Tip: this should stay in-place"))
+
+    // Expand dropdown. It should draw over the Tip line, not push it down.
+    s0.click(x: 1, y: 0)
+    let s1 = runtime.debugRender(PickerOverlayView(), size: size)
+    #expect(!s1.text.contains("Tip: this should stay in-place"))
+
+    // Collapse dropdown. Tip should become visible again.
+    s1.click(x: 1, y: 0)
+    let s2 = runtime.debugRender(PickerOverlayView(), size: size)
+    #expect(s2.text.contains("Tip: this should stay in-place"))
+}
