@@ -448,29 +448,63 @@ public struct TextField: View, _PrimitiveView {
         let runtime = ctx.runtime
         let controlPath = ctx.path
         let isFocused = runtime._isFocused(path: controlPath)
+        var cursor = runtime._getTextCursor(path: controlPath)
 
-        // Focus action (no-op if already focused).
-        let id = runtime._registerAction({ runtime._setFocus(path: controlPath) }, path: actionScopePath)
+        // Focus action (place cursor at end if this field hasn't been edited yet).
+        let id = runtime._registerAction({
+            runtime._ensureTextCursorAtEndIfUnset(path: controlPath, text: text.wrappedValue)
+            runtime._setFocus(path: controlPath)
+        }, path: actionScopePath)
         runtime._registerFocusable(path: controlPath, activate: id)
 
         // Keyboard handler. Keep it intentionally small for now.
-        runtime._registerTextEditor(path: controlPath, _TextEditor(handle: { codepoint in
-            // Backspace (ASCII 8, also synthesized NCKEY_BACKSPACE maps there via notcurses).
-            if codepoint == 8 {
-                if !text.wrappedValue.isEmpty { text.wrappedValue.removeLast() }
-                return
+        runtime._registerTextEditor(path: controlPath, _TextEditor(handle: { ev in
+            // Cursor in scalar space (works for ASCII and most simple scalars; not grapheme-perfect).
+            var scalars = Array(text.wrappedValue.unicodeScalars)
+            cursor = min(max(0, cursor), scalars.count)
+
+            func save() {
+                text.wrappedValue = String(String.UnicodeScalarView(scalars))
+                runtime._setTextCursor(path: controlPath, cursor)
             }
-            // Basic printable range.
-            guard let scalar = UnicodeScalar(codepoint), scalar.isASCII else { return }
-            let v = scalar.value
-            guard v >= 32 && v != 127 else { return }
-            text.wrappedValue.append(Character(scalar))
+
+            switch ev {
+            case .left:
+                cursor = max(0, cursor - 1)
+                runtime._setTextCursor(path: controlPath, cursor)
+            case .right:
+                cursor = min(scalars.count, cursor + 1)
+                runtime._setTextCursor(path: controlPath, cursor)
+            case .home:
+                cursor = 0
+                runtime._setTextCursor(path: controlPath, cursor)
+            case .end:
+                cursor = scalars.count
+                runtime._setTextCursor(path: controlPath, cursor)
+            case .backspace:
+                guard cursor > 0, !scalars.isEmpty else { return }
+                scalars.remove(at: cursor - 1)
+                cursor -= 1
+                save()
+            case .delete:
+                guard cursor < scalars.count else { return }
+                scalars.remove(at: cursor)
+                save()
+            case .char(let codepoint):
+                guard let scalar = UnicodeScalar(codepoint) else { return }
+                let v = scalar.value
+                guard v >= 32 && v != 127 else { return }
+                scalars.insert(scalar, at: cursor)
+                cursor += 1
+                save()
+            }
         }))
 
         return .textField(
             id: id,
             placeholder: placeholder,
             text: text.wrappedValue,
+            cursor: runtime._getTextCursor(path: controlPath),
             isFocused: isFocused
         )
     }

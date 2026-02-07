@@ -15,6 +15,11 @@ uint32_t omni_nckey_backspace(void) { return (uint32_t)NCKEY_BACKSPACE; }
 uint32_t omni_nckey_enter(void) { return (uint32_t)NCKEY_ENTER; }
 uint32_t omni_nckey_up(void) { return (uint32_t)NCKEY_UP; }
 uint32_t omni_nckey_down(void) { return (uint32_t)NCKEY_DOWN; }
+uint32_t omni_nckey_left(void) { return (uint32_t)NCKEY_LEFT; }
+uint32_t omni_nckey_right(void) { return (uint32_t)NCKEY_RIGHT; }
+uint32_t omni_nckey_home(void) { return (uint32_t)NCKEY_HOME; }
+uint32_t omni_nckey_end(void) { return (uint32_t)NCKEY_END; }
+uint32_t omni_nckey_delete(void) { return (uint32_t)NCKEY_DEL; }
 
 unsigned omni_ncmice_all_events(void) { return (unsigned)NCMICE_ALL_EVENTS; }
 

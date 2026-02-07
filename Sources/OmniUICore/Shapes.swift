@@ -28,6 +28,8 @@ public struct Path: Hashable, Sendable, Shape, _PrimitiveView {
     public enum Element: Hashable, Sendable {
         case move(to: CGPoint)
         case line(to: CGPoint)
+        case quadCurve(to: CGPoint, control: CGPoint)
+        case curve(to: CGPoint, control1: CGPoint, control2: CGPoint)
         case rect(CGRect)
         case ellipse(CGRect)
         case closeSubpath
@@ -43,6 +45,8 @@ public struct Path: Hashable, Sendable, Shape, _PrimitiveView {
 
     public mutating func move(to p: CGPoint) { elements.append(.move(to: p)) }
     public mutating func addLine(to p: CGPoint) { elements.append(.line(to: p)) }
+    public mutating func addQuadCurve(to p: CGPoint, control: CGPoint) { elements.append(.quadCurve(to: p, control: control)) }
+    public mutating func addCurve(to p: CGPoint, control1: CGPoint, control2: CGPoint) { elements.append(.curve(to: p, control1: control1, control2: control2)) }
     public mutating func addRect(_ rect: CGRect) { elements.append(.rect(rect)) }
     public mutating func addEllipse(in rect: CGRect) { elements.append(.ellipse(rect)) }
     public mutating func closeSubpath() { elements.append(.closeSubpath) }

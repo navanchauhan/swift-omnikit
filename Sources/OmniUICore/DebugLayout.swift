@@ -332,7 +332,7 @@ enum _DebugLayout {
                     let labelMax = _Size(width: max(0, maxSize.width - boxCount - xPad), height: 1)
                     let l = measure(label, labelMax)
                     return _Size(width: min(maxSize.width, xPad + boxCount + l.width), height: 1)
-                case .textField(_, let placeholder, let text, _):
+                case .textField(_, let placeholder, let text, _, _):
                     let display = text.isEmpty ? placeholder : text
                     let prefixCount = 2
                     let s = prefixCount + 2 + display.count
@@ -477,11 +477,17 @@ enum _DebugLayout {
             hitRegions.append((rect, id))
             return _Size(width: width, height: 1)
 
-        case .textField(let id, let placeholder, let text, let isFocused):
+        case .textField(let id, let placeholder, let text, let cursor, let isFocused):
             let display = text.isEmpty ? placeholder : text
             let prefix = isFocused ? "> " : "  "
-            let cursor = isFocused ? "|" : ""
-            let s = prefix + "[" + display + cursor + "]"
+            let cpos = max(0, min(cursor, display.unicodeScalars.count))
+            let withCursor: String = {
+                guard isFocused else { return display }
+                var scalars = Array(display.unicodeScalars)
+                scalars.insert("|", at: cpos)
+                return String(String.UnicodeScalarView(scalars))
+            }()
+            let s = prefix + "[" + withCursor + "]"
             let clipped = String(s.prefix(maxSize.width))
             for (i, ch) in clipped.enumerated() {
                 put(String(ch), at: _Point(x: origin.x + i, y: origin.y), canvas: &canvas)
@@ -565,7 +571,7 @@ enum _DebugLayout {
                         let labelMax = _Size(width: max(0, maxSize.width - boxCount - xPad), height: 1)
                         let l = m(label, labelMax)
                         return _Size(width: min(maxSize.width, xPad + boxCount + l.width), height: 1)
-                    case .textField(_, let placeholder, let text, _):
+                    case .textField(_, let placeholder, let text, _, _):
                         let display = text.isEmpty ? placeholder : text
                         let prefixCount = 2
                         let s = prefixCount + 2 + display.count

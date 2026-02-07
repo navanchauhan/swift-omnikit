@@ -140,13 +140,25 @@ public struct TerminalApp<V: View> {
                     runtime.activateFocused()
                 case .backspace:
                     if runtime.isTextEditingFocused() {
-                        runtime._handleKeyPress(8)
+                        runtime._handleKey(.backspace)
                     } else if runtime.canPopNavigation() {
                         runtime.popNavigation()
                     }
+                case .delete:
+                    if runtime.isTextEditingFocused() {
+                        runtime._handleKey(.delete)
+                    }
+                case .left:
+                    if runtime.isTextEditingFocused() { runtime._handleKey(.left) }
+                case .right:
+                    if runtime.isTextEditingFocused() { runtime._handleKey(.right) }
+                case .home:
+                    if runtime.isTextEditingFocused() { runtime._handleKey(.home) }
+                case .end:
+                    if runtime.isTextEditingFocused() { runtime._handleKey(.end) }
                 case .char(let u):
                     if runtime.isTextEditingFocused() || u != 32 {
-                        runtime._handleKeyPress(u)
+                        runtime._handleKey(.char(u))
                     } else {
                         runtime.activateFocused()
                     }
@@ -242,8 +254,13 @@ private enum _Event {
     case tab(shift: Bool)
     case up
     case down
+    case left
+    case right
+    case home
+    case end
     case enter
     case backspace
+    case delete
     case char(UInt32)
     case mouse(x: Int, y: Int, kind: _MouseKind)
 }
@@ -286,6 +303,31 @@ private struct _InputParser {
                 if let b = bytes.first, b == UInt8(ascii: "B") {
                     bytes.removeFirst()
                     return .down
+                }
+                if let c = bytes.first, c == UInt8(ascii: "C") {
+                    bytes.removeFirst()
+                    return .right
+                }
+                if let d = bytes.first, d == UInt8(ascii: "D") {
+                    bytes.removeFirst()
+                    return .left
+                }
+                if let h = bytes.first, h == UInt8(ascii: "H") {
+                    bytes.removeFirst()
+                    return .home
+                }
+                if let f = bytes.first, f == UInt8(ascii: "F") {
+                    bytes.removeFirst()
+                    return .end
+                }
+
+                // Delete: ESC [ 3 ~
+                if let three = bytes.first, three == UInt8(ascii: "3") {
+                    if bytes.count >= 2, bytes[1] == UInt8(ascii: "~") {
+                        bytes.removeFirst()
+                        bytes.removeFirst()
+                        return .delete
+                    }
                 }
 
                 // SGR mouse: ESC [ < b ; x ; y M/m

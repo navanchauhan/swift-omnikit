@@ -54,6 +54,7 @@ public struct NotcursesApp<V: View> {
         var prev: [_NCCell]? = nil
         var sprixelPlane: OpaquePointer? = nil
         var sprixelPlaneSize: (w: Int, h: Int) = (0, 0)
+        var lastSprixelSig: Int? = nil
 
         defer {
             if let p = sprixelPlane {
@@ -67,6 +68,11 @@ public struct NotcursesApp<V: View> {
         let enter: UInt32 = omni_nckey_enter()
         let up: UInt32 = omni_nckey_up()
         let down: UInt32 = omni_nckey_down()
+        let left: UInt32 = omni_nckey_left()
+        let right: UInt32 = omni_nckey_right()
+        let home: UInt32 = omni_nckey_home()
+        let end: UInt32 = omni_nckey_end()
+        let del: UInt32 = omni_nckey_delete()
         let button1: UInt32 = omni_nckey_button1()
         let scrollUp: UInt32 = omni_nckey_scroll_up()
         let scrollDown: UInt32 = omni_nckey_scroll_down()
@@ -107,6 +113,19 @@ public struct NotcursesApp<V: View> {
             }()
 
             if canSprixel, let cellpix {
+                var hasher = Hasher()
+                hasher.combine(width)
+                hasher.combine(height)
+                hasher.combine(cellpix.cdimx)
+                hasher.combine(cellpix.cdimy)
+                hasher.combine(snapshot.shapeRegions.count)
+                for (r, s) in snapshot.shapeRegions {
+                    hasher.combine(r)
+                    hasher.combine(s.kind)
+                    if let e = s.pathElements { hasher.combine(e.count) ; for el in e { hasher.combine(el) } }
+                }
+                let sig = hasher.finalize()
+
                 if sprixelPlane == nil || sprixelPlaneSize.w != width || sprixelPlaneSize.h != height {
                     if let p = sprixelPlane {
                         ncplane_destroy(p)
@@ -132,20 +151,25 @@ public struct NotcursesApp<V: View> {
                 }
 
                 if let p = sprixelPlane {
-                    ncplane_erase(p)
-                    let ok = _renderSprixels(
-                        nc: nc,
-                        plane: p,
-                        termSize: _Size(width: width, height: height),
-                        cellpix: cellpix,
-                        shapes: snapshot.shapeRegions,
-                        fill: shapeFillBG,
-                        stroke: borderFG
-                    )
-                    if !ok {
-                        ncplane_destroy(p)
-                        sprixelPlane = nil
-                        sprixelPlaneSize = (0, 0)
+                    if lastSprixelSig != sig {
+                        ncplane_erase(p)
+                        let ok = _renderSprixels(
+                            nc: nc,
+                            plane: p,
+                            termSize: _Size(width: width, height: height),
+                            cellpix: cellpix,
+                            shapes: snapshot.shapeRegions,
+                            fill: shapeFillBG,
+                            stroke: borderFG
+                        )
+                        if !ok {
+                            ncplane_destroy(p)
+                            sprixelPlane = nil
+                            sprixelPlaneSize = (0, 0)
+                            lastSprixelSig = nil
+                        } else {
+                            lastSprixelSig = sig
+                        }
                     }
                 }
             } else {
@@ -155,6 +179,7 @@ public struct NotcursesApp<V: View> {
                     sprixelPlane = nil
                 }
                 sprixelPlaneSize = (0, 0)
+                lastSprixelSig = nil
             }
 
             var curr = Array(repeating: _NCCell(ch: " ", fg: baseFG, bg: baseBG), count: width * height)
@@ -326,18 +351,30 @@ public struct NotcursesApp<V: View> {
                         runtime.activateFocused()
                     } else if id == 32 { // Space
                         if runtime.isTextEditingFocused() {
-                            runtime._handleKeyPress(32)
+                            runtime._handleKey(.char(32))
                         } else {
                             runtime.activateFocused()
                         }
                     } else if id == backspace || id == 127 { // Backspace/Delete (ASCII DEL on macOS)
                         if runtime.isTextEditingFocused() {
-                            runtime._handleKeyPress(8)
+                            runtime._handleKey(.backspace)
                         } else if runtime.canPopNavigation() {
                             runtime.popNavigation()
                         }
+                    } else if id == del {
+                        if runtime.isTextEditingFocused() {
+                            runtime._handleKey(.delete)
+                        }
+                    } else if id == left {
+                        if runtime.isTextEditingFocused() { runtime._handleKey(.left) }
+                    } else if id == right {
+                        if runtime.isTextEditingFocused() { runtime._handleKey(.right) }
+                    } else if id == home {
+                        if runtime.isTextEditingFocused() { runtime._handleKey(.home) }
+                    } else if id == end {
+                        if runtime.isTextEditingFocused() { runtime._handleKey(.end) }
                     } else if id < 0x110000 {
-                        runtime._handleKeyPress(id)
+                        runtime._handleKey(.char(id))
                     }
                 }
             }
@@ -647,6 +684,13 @@ private func _strokePath(
         switch e {
         case .move(let p), .line(let p):
             consider(p)
+        case .quadCurve(let p, let c):
+            consider(p)
+            consider(c)
+        case .curve(let p, let c1, let c2):
+            consider(p)
+            consider(c1)
+            consider(c2)
         case .rect(let r):
             consider(r.origin)
             consider(CGPoint(x: r.origin.x + r.size.width, y: r.origin.y + r.size.height))
@@ -678,6 +722,8 @@ private func _strokePath(
 
     var curr: (Int, Int)? = nil
     var start: (Int, Int)? = nil
+    var currSrc: CGPoint? = nil
+    var startSrc: CGPoint? = nil
 
     for e in elements {
         switch e {
@@ -685,12 +731,15 @@ private func _strokePath(
             let mp = map(p)
             curr = mp
             start = mp
+            currSrc = p
+            startSrc = p
         case .line(let p):
             let mp = map(p)
             if let c = curr {
                 drawLine(c.0, c.1, mp.0, mp.1)
             }
             curr = mp
+            currSrc = p
         case .rect(let r):
             let p0 = map(r.origin)
             let p1 = map(CGPoint(x: r.origin.x + r.size.width, y: r.origin.y + r.size.height))
@@ -699,13 +748,78 @@ private func _strokePath(
             let p0 = map(r.origin)
             let p1 = map(CGPoint(x: r.origin.x + r.size.width, y: r.origin.y + r.size.height))
             fillEllipse(min(p0.0, p1.0), min(p0.1, p1.1), max(p0.0, p1.0), max(p0.1, p1.1))
+        case .quadCurve(let p, let c):
+            guard let s0 = currSrc else {
+                currSrc = p
+                curr = map(p)
+                break
+            }
+            let steps = 24
+            var prev = s0
+            for i in 1...steps {
+                let t = Double(i) / Double(steps)
+                let a = _lerp(s0, c, t)
+                let b = _lerp(c, p, t)
+                let q = _lerp(a, b, t)
+                let m0 = map(prev)
+                let m1 = map(q)
+                drawLine(m0.0, m0.1, m1.0, m1.1)
+                prev = q
+            }
+            currSrc = p
+            curr = map(p)
+        case .curve(let p, let c1, let c2):
+            guard let s0 = currSrc else {
+                currSrc = p
+                curr = map(p)
+                break
+            }
+            let steps = 32
+            var prev = s0
+            for i in 1...steps {
+                let t = Double(i) / Double(steps)
+                let q = _cubic(s0, c1, c2, p, t)
+                let m0 = map(prev)
+                let m1 = map(q)
+                drawLine(m0.0, m0.1, m1.0, m1.1)
+                prev = q
+            }
+            currSrc = p
+            curr = map(p)
         case .closeSubpath:
             if let c = curr, let s = start {
                 drawLine(c.0, c.1, s.0, s.1)
             }
             curr = start
+            currSrc = startSrc
         }
     }
+}
+
+private func _lerp(_ a: CGPoint, _ b: CGPoint, _ t: Double) -> CGPoint {
+    CGPoint(
+        x: CGFloat(Double(a.x) + (Double(b.x) - Double(a.x)) * t),
+        y: CGFloat(Double(a.y) + (Double(b.y) - Double(a.y)) * t)
+    )
+}
+
+private func _cubic(_ p0: CGPoint, _ c1: CGPoint, _ c2: CGPoint, _ p3: CGPoint, _ t: Double) -> CGPoint {
+    let u = 1.0 - t
+    let tt = t * t
+    let uu = u * u
+    let uuu = uu * u
+    let ttt = tt * t
+    let x =
+        uuu * Double(p0.x) +
+        3.0 * uu * t * Double(c1.x) +
+        3.0 * u * tt * Double(c2.x) +
+        ttt * Double(p3.x)
+    let y =
+        uuu * Double(p0.y) +
+        3.0 * uu * t * Double(c1.y) +
+        3.0 * u * tt * Double(c2.y) +
+        ttt * Double(p3.y)
+    return CGPoint(x: CGFloat(x), y: CGFloat(y))
 }
 
 private func _isShapePlaceholderCell(_ ch: String) -> Bool {
@@ -900,6 +1014,13 @@ private func _strokePathBraille(
         switch e {
         case .move(let p), .line(let p):
             consider(p)
+        case .quadCurve(let p, let c):
+            consider(p)
+            consider(c)
+        case .curve(let p, let c1, let c2):
+            consider(p)
+            consider(c1)
+            consider(c2)
         case .rect(let r):
             consider(r.origin)
             consider(CGPoint(x: r.origin.x + r.size.width, y: r.origin.y + r.size.height))
@@ -941,6 +1062,8 @@ private func _strokePathBraille(
 
     var curr: (Int, Int)? = nil
     var start: (Int, Int)? = nil
+    var currSrc: CGPoint? = nil
+    var startSrc: CGPoint? = nil
 
     for e in elements {
         switch e {
@@ -948,10 +1071,13 @@ private func _strokePathBraille(
             let mp = map(p)
             curr = mp
             start = mp
+            currSrc = p
+            startSrc = p
         case .line(let p):
             let mp = map(p)
             if let c = curr { line(c.0, c.1, mp.0, mp.1) }
             curr = mp
+            currSrc = p
         case .rect(let r):
             let p0 = map(r.origin)
             let p1 = map(CGPoint(x: r.origin.x + r.size.width, y: r.origin.y + r.size.height))
@@ -980,9 +1106,48 @@ private func _strokePathBraille(
                 if let p = prev { line(p.0, p.1, x, y) }
                 prev = (x, y)
             }
+        case .quadCurve(let p, let c):
+            guard let s0 = currSrc else {
+                currSrc = p
+                curr = map(p)
+                break
+            }
+            let steps = 24
+            var prevP = s0
+            for i in 1...steps {
+                let tt = Double(i) / Double(steps)
+                let a = _lerp(s0, c, tt)
+                let b = _lerp(c, p, tt)
+                let q = _lerp(a, b, tt)
+                let m0 = map(prevP)
+                let m1 = map(q)
+                line(m0.0, m0.1, m1.0, m1.1)
+                prevP = q
+            }
+            currSrc = p
+            curr = map(p)
+        case .curve(let p, let c1, let c2):
+            guard let s0 = currSrc else {
+                currSrc = p
+                curr = map(p)
+                break
+            }
+            let steps = 32
+            var prevP = s0
+            for i in 1...steps {
+                let tt = Double(i) / Double(steps)
+                let q = _cubic(s0, c1, c2, p, tt)
+                let m0 = map(prevP)
+                let m1 = map(q)
+                line(m0.0, m0.1, m1.0, m1.1)
+                prevP = q
+            }
+            currSrc = p
+            curr = map(p)
         case .closeSubpath:
             if let c = curr, let s = start { line(c.0, c.1, s.0, s.1) }
             curr = start
+            currSrc = startSrc
         }
     }
 }

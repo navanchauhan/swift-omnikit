@@ -15,6 +15,7 @@ public final class _UIRuntime: @unchecked Sendable {
 
     private var focusedPath: [Int]? = nil
     private var textEditors: [[Int]: _TextEditor] = [:]
+    private var textEditorCursors: [[Int]: Int] = [:]
     private var focusOrder: [[Int]] = []
     private var focusActivation: [[Int]: _ActionID] = [:]
 
@@ -165,10 +166,28 @@ public final class _UIRuntime: @unchecked Sendable {
     }
 
     public func _handleKeyPress(_ codepoint: UInt32) {
+        _handleKey(.char(codepoint))
+    }
+
+    public func _handleKey(_ ev: _KeyEvent) {
         // When a picker is expanded, it owns the keyboard.
         if expandedPickerPath != nil { return }
         guard let p = focusedPath, let editor = textEditors[p] else { return }
-        editor.handle(codepoint)
+        editor.handle(ev)
+    }
+
+    func _getTextCursor(path: [Int]) -> Int {
+        textEditorCursors[path] ?? 0
+    }
+
+    func _setTextCursor(path: [Int], _ v: Int) {
+        textEditorCursors[path] = max(0, v)
+    }
+
+    func _ensureTextCursorAtEndIfUnset(path: [Int], text: String) {
+        if textEditorCursors[path] == nil {
+            textEditorCursors[path] = text.unicodeScalars.count
+        }
     }
 
     public func isTextEditingFocused() -> Bool {
@@ -317,7 +336,17 @@ extension _UIRuntime {
 }
 
 struct _TextEditor {
-    let handle: (UInt32) -> Void
+    let handle: (_KeyEvent) -> Void
+}
+
+public enum _KeyEvent: Sendable {
+    case char(UInt32)
+    case backspace
+    case delete
+    case left
+    case right
+    case home
+    case end
 }
 
 struct _ScrollRegion: Sendable {
@@ -357,12 +386,12 @@ public struct DebugSnapshot: Sendable {
     /// Emulate typing into the currently-focused `TextField` (if any).
     public func type(_ s: String) {
         for scalar in s.unicodeScalars {
-            runtime._handleKeyPress(scalar.value)
+            runtime._handleKey(.char(scalar.value))
         }
     }
 
     public func backspace() {
-        runtime._handleKeyPress(8)
+        runtime._handleKey(.backspace)
     }
 }
 

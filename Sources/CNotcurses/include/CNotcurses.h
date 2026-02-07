@@ -12,6 +12,11 @@ uint32_t omni_nckey_backspace(void);
 uint32_t omni_nckey_enter(void);
 uint32_t omni_nckey_up(void);
 uint32_t omni_nckey_down(void);
+uint32_t omni_nckey_left(void);
+uint32_t omni_nckey_right(void);
+uint32_t omni_nckey_home(void);
+uint32_t omni_nckey_end(void);
+uint32_t omni_nckey_delete(void);
 
 unsigned omni_ncmice_all_events(void);
 
