@@ -54,14 +54,25 @@ public struct StateObject<ObjectType: ObservableObject> {
     }
 }
 
+final class _EnvironmentObjectLocation<ObjectType: AnyObject>: @unchecked Sendable {
+    var object: ObjectType? = nil
+    init() {}
+}
+
 @propertyWrapper
 @dynamicMemberLookup
 public struct EnvironmentObject<ObjectType: ObservableObject> {
+    private let location = _EnvironmentObjectLocation<ObjectType>()
+
     public init() {}
 
     public var wrappedValue: ObjectType {
+        if let cached = location.object {
+            return cached
+        }
         let env = _UIRuntime._currentEnvironment
         if let object = env?._getObject(ObjectType.self) {
+            location.object = object
             return object
         }
         fatalError("Missing EnvironmentObject<\(ObjectType.self)>. Use .environmentObject(_) on an ancestor view.")
@@ -70,9 +81,11 @@ public struct EnvironmentObject<ObjectType: ObservableObject> {
     public var projectedValue: EnvironmentObject<ObjectType> { self }
 
     public subscript<Value>(dynamicMember keyPath: ReferenceWritableKeyPath<ObjectType, Value>) -> Binding<Value> {
-        Binding(
-            get: { wrappedValue[keyPath: keyPath] },
-            set: { wrappedValue[keyPath: keyPath] = $0 }
+        // Capture the object now so later event contexts (keypresses, clicks) don't need TaskLocal environment.
+        let object = wrappedValue
+        return Binding(
+            get: { object[keyPath: keyPath] },
+            set: { object[keyPath: keyPath] = $0 }
         )
     }
 }
