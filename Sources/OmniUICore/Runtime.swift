@@ -16,8 +16,59 @@ public final class _UIRuntime: @unchecked Sendable {
     private var focusActivation: [[Int]: _ActionID] = [:]
 
     private var expandedPickerPath: [Int]? = nil
+    private var scrollOffsets: [String: Int] = [:]
+
+    private var navStacks: [String: [AnyView]] = [:]
+    private var navStackRoots: Set<[Int]> = []
 
     public init() {}
+
+    private func _pathKey(prefix: String, path: [Int]) -> String {
+        let p = path.map(String.init).joined(separator: ".")
+        return "\(prefix):\(p)"
+    }
+
+    func _getScrollOffset(path: [Int]) -> Int {
+        scrollOffsets[_pathKey(prefix: "scroll", path: path)] ?? 0
+    }
+
+    func _setScrollOffset(path: [Int], offset: Int) {
+        scrollOffsets[_pathKey(prefix: "scroll", path: path)] = max(0, offset)
+    }
+
+    func _scroll(path: [Int], deltaY: Int, maxOffset: Int) {
+        let key = _pathKey(prefix: "scroll", path: path)
+        let current = scrollOffsets[key] ?? 0
+        scrollOffsets[key] = min(max(0, current + deltaY), max(0, maxOffset))
+    }
+
+    func _navKey(stackPath: [Int]) -> String {
+        _pathKey(prefix: "nav", path: stackPath)
+    }
+
+    func _navPush(stackPath: [Int], view: AnyView) {
+        let key = _navKey(stackPath: stackPath)
+        var s = navStacks[key] ?? []
+        s.append(view)
+        navStacks[key] = s
+    }
+
+    func _navPop(stackPath: [Int]) {
+        let key = _navKey(stackPath: stackPath)
+        guard var s = navStacks[key], !s.isEmpty else { return }
+        _ = s.popLast()
+        navStacks[key] = s
+    }
+
+    func _navTop(stackPath: [Int]) -> AnyView? {
+        let key = _navKey(stackPath: stackPath)
+        return navStacks[key]?.last
+    }
+
+    func _navDepth(stackPath: [Int]) -> Int {
+        let key = _navKey(stackPath: stackPath)
+        return navStacks[key]?.count ?? 0
+    }
 
     func _registerAction(_ action: @escaping () -> Void, path: [Int]) -> _ActionID {
         let id = _ActionID(raw: nextActionID)
@@ -168,6 +219,7 @@ public final class _UIRuntime: @unchecked Sendable {
         runtime.textEditors.removeAll(keepingCapacity: true)
         runtime.focusOrder.removeAll(keepingCapacity: true)
         runtime.focusActivation.removeAll(keepingCapacity: true)
+        runtime.navStackRoots.removeAll(keepingCapacity: true)
 
         let ctx = _BuildContext(runtime: runtime, path: [], nextChildIndex: 0)
         let node = _BuildContext.withRuntime(runtime, path: []) {
@@ -176,7 +228,30 @@ public final class _UIRuntime: @unchecked Sendable {
         }
 
         let laidOut = _DebugLayout.layout(node: node, in: _Rect(origin: _Point(x: 0, y: 0), size: size))
-        return DebugSnapshot(size: size, lines: laidOut.lines, hitRegions: laidOut.hitRegions, runtime: runtime)
+        return DebugSnapshot(
+            size: size,
+            lines: laidOut.lines,
+            hitRegions: laidOut.hitRegions,
+            scrollRegions: laidOut.scrollRegions,
+            runtime: runtime
+        )
+    }
+}
+
+extension _UIRuntime {
+    func _registerNavStackRoot(path: [Int]) {
+        navStackRoots.insert(path)
+    }
+
+    func _nearestNavStackRoot(from path: [Int]) -> [Int]? {
+        guard !navStackRoots.isEmpty else { return nil }
+        if navStackRoots.contains(path) { return path }
+        if path.isEmpty { return nil }
+        for n in stride(from: path.count - 1, through: 0, by: -1) {
+            let p = Array(path.prefix(n))
+            if navStackRoots.contains(p) { return p }
+        }
+        return nil
     }
 }
 
@@ -184,11 +259,18 @@ struct _TextEditor {
     let handle: (UInt32) -> Void
 }
 
+struct _ScrollRegion: Sendable {
+    let rect: _Rect
+    let path: [Int]
+    let maxOffsetY: Int
+}
+
 public struct DebugSnapshot: Sendable {
     public let size: _Size
     public let lines: [String]
 
     let hitRegions: [(_Rect, _ActionID)]
+    let scrollRegions: [_ScrollRegion]
     let runtime: _UIRuntime
 
     public var text: String { lines.joined(separator: "\n") }
@@ -199,6 +281,13 @@ public struct DebugSnapshot: Sendable {
         // Prefer the last-added region (topmost) so overlays like Picker dropdowns win hit-testing.
         guard let (_, id) = hitRegions.last(where: { $0.0.contains(p) }) else { return }
         runtime._invokeAction(id)
+    }
+
+    /// Emulate a scroll wheel event at a coordinate in the last rendered snapshot.
+    public func scroll(x: Int, y: Int, deltaY: Int) {
+        let p = _Point(x: x, y: y)
+        guard let r = scrollRegions.last(where: { $0.rect.contains(p) }) else { return }
+        runtime._scroll(path: r.path, deltaY: deltaY, maxOffset: r.maxOffsetY)
     }
 
     /// Emulate typing into the currently-focused `TextField` (if any).

@@ -127,3 +127,45 @@ struct PickerOverlayView: View {
     let s2 = runtime.debugRender(PickerOverlayView(), size: size)
     #expect(s2.text.contains("Tip: this should stay in-place"))
 }
+
+struct ListRenderView: View {
+    var body: some View {
+        List(0..<5, id: \.self) { i in
+            Text("Row \(i)")
+        }
+    }
+}
+
+@Test func debugSnapshot_list_renders_rows() async throws {
+    let runtime = _UIRuntime()
+    let s0 = runtime.debugRender(ListRenderView(), size: _Size(width: 20, height: 10))
+    #expect(s0.text.contains("Row 0"))
+    #expect(s0.text.contains("Row 4"))
+}
+
+@Test func debugSnapshot_kitchensink_contains_list_row() async throws {
+    // Mirrors the demo: nested ScrollView + List.
+    struct Sink: View {
+        @State var pickedRow = 0
+        var body: some View {
+            ScrollView {
+                VStack(spacing: 1) {
+                    Text("Header")
+                    Text("List:")
+                    List(0..<12, id: \.self) { i in
+                        HStack(spacing: 1) {
+                            Text("Row \(i)")
+                            Spacer()
+                            Button("Pick") { pickedRow = i }
+                        }
+                    }
+                }
+                .padding(1)
+            }
+        }
+    }
+
+    let runtime = _UIRuntime()
+    let s0 = runtime.debugRender(Sink(), size: _Size(width: 80, height: 24))
+    #expect(s0.text.contains("Row 0"))
+}

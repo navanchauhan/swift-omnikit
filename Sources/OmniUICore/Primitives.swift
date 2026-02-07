@@ -32,6 +32,192 @@ public struct Spacer: View, _PrimitiveView {
     func _makeNode(_ ctx: inout _BuildContext) -> _VNode { .spacer }
 }
 
+public struct ScrollView<Content: View>: View, _PrimitiveView {
+    public typealias Body = Never
+
+    let axes: Axis.Set
+    let showsIndicators: Bool
+    let content: Content
+    let actionScopePath: [Int]
+
+    public init(_ axes: Axis.Set = .vertical, showsIndicators: Bool = true, @ViewBuilder content: () -> Content) {
+        self.axes = axes
+        self.showsIndicators = showsIndicators
+        self.content = content()
+        self.actionScopePath = _UIRuntime._currentPath ?? []
+    }
+
+    func _makeNode(_ ctx: inout _BuildContext) -> _VNode {
+        let runtime = ctx.runtime
+        let controlPath = ctx.path
+        let isFocused = runtime._isFocused(path: controlPath)
+
+        // Click-to-focus so scroll wheels can be routed predictably.
+        let id = runtime._registerAction({ runtime._setFocus(path: controlPath) }, path: actionScopePath)
+        runtime._registerFocusable(path: controlPath, activate: id)
+
+        let axis: _Axis = axes.contains(.horizontal) && !axes.contains(.vertical) ? .horizontal : .vertical
+        let offset = runtime._getScrollOffset(path: controlPath)
+
+        return .scrollView(
+            id: id,
+            path: controlPath,
+            isFocused: isFocused,
+            axis: axis,
+            offset: offset,
+            content: ctx.buildChild(content)
+        )
+    }
+}
+
+public struct List<Content: View>: View, _PrimitiveView {
+    public typealias Body = Never
+
+    let content: Content
+
+    public init(@ViewBuilder content: () -> Content) {
+        self.content = content()
+    }
+
+    public init<Data: RandomAccessCollection, ID: Hashable, RowContent: View>(
+        _ data: Data,
+        id: KeyPath<Data.Element, ID>,
+        @ViewBuilder rowContent: @escaping (Data.Element) -> RowContent
+    ) where Content == ForEach<Data, ID, RowContent> {
+        self.content = ForEach(data, id: id, content: rowContent)
+    }
+
+    public init<Data: RandomAccessCollection, RowContent: View>(
+        _ data: Data,
+        @ViewBuilder rowContent: @escaping (Data.Element) -> RowContent
+    ) where Data.Element: Identifiable, Content == ForEach<Data, Data.Element.ID, RowContent> {
+        self.content = ForEach(data, content: rowContent)
+    }
+
+    func _makeNode(_ ctx: inout _BuildContext) -> _VNode {
+        // Minimal: List is a ScrollView + VStack.
+        ctx.buildChild(
+            ScrollView {
+                VStack(spacing: 0) { content }
+            }
+        )
+    }
+}
+
+public struct ForEach<Data: RandomAccessCollection, ID: Hashable, Content: View>: View, _PrimitiveView {
+    public typealias Body = Never
+
+    let data: Data
+    let id: KeyPath<Data.Element, ID>
+    let content: (Data.Element) -> Content
+
+    public init(_ data: Data, id: KeyPath<Data.Element, ID>, @ViewBuilder content: @escaping (Data.Element) -> Content) {
+        self.data = data
+        self.id = id
+        self.content = content
+    }
+
+    public init(_ data: Data, @ViewBuilder content: @escaping (Data.Element) -> Content) where Data.Element: Identifiable, ID == Data.Element.ID {
+        self.data = data
+        self.id = \.id
+        self.content = content
+    }
+
+    func _makeNode(_ ctx: inout _BuildContext) -> _VNode {
+        // NOTE: We currently don't incorporate `id` into the build-path (path is `[Int]`).
+        // This preserves call-site compatibility, but state may "move" if data is reordered.
+        var nodes: [_VNode] = []
+        nodes.reserveCapacity(data.count)
+        for element in data {
+            _ = element[keyPath: id] // keep the id "used" (and future-proof for stable identity work)
+            nodes.append(ctx.buildChild(content(element)))
+        }
+        return .group(nodes)
+    }
+}
+
+public struct NavigationStack<Content: View>: View, _PrimitiveView {
+    public typealias Body = Never
+
+    let content: Content
+
+    public init(@ViewBuilder content: () -> Content) {
+        self.content = content()
+    }
+
+    func _makeNode(_ ctx: inout _BuildContext) -> _VNode {
+        let runtime = ctx.runtime
+        let stackPath = ctx.path
+        runtime._registerNavStackRoot(path: stackPath)
+        let depth = runtime._navDepth(stackPath: stackPath)
+
+        let top: AnyView? = runtime._navTop(stackPath: stackPath)
+
+        return .stack(
+            axis: .vertical,
+            spacing: 1,
+            children: _flatten(
+                .group([
+                    depth > 0
+                        ? ctx.buildChild(
+                            HStack(spacing: 1) {
+                                Button("Back") { runtime._navPop(stackPath: stackPath) }
+                                Text("Navigation (\(depth))")
+                                Spacer()
+                            }
+                          )
+                        : ctx.buildChild(Text("Navigation")),
+                    top.map { ctx.buildChild($0) } ?? ctx.buildChild(content),
+                ])
+            )
+        )
+    }
+}
+
+public struct NavigationLink<Label: View, Destination: View>: View, _PrimitiveView {
+    public typealias Body = Never
+
+    let destination: () -> Destination
+    let label: Label
+    let actionScopePath: [Int]
+    let stackPath: [Int]
+
+    public init(destination: @escaping () -> Destination, @ViewBuilder label: () -> Label) {
+        self.destination = destination
+        self.label = label()
+        self.actionScopePath = _UIRuntime._currentPath ?? []
+        self.stackPath = _UIRuntime._currentPath ?? []
+    }
+
+    public init(_ title: String, destination: @escaping () -> Destination) where Label == Text {
+        self.destination = destination
+        self.label = Text(title)
+        self.actionScopePath = _UIRuntime._currentPath ?? []
+        self.stackPath = _UIRuntime._currentPath ?? []
+    }
+
+    func _makeNode(_ ctx: inout _BuildContext) -> _VNode {
+        guard let stackPath = ctx.runtime._nearestNavStackRoot(from: ctx.path) else {
+            // Render as a button that does nothing if not inside a NavigationStack.
+            let runtime = ctx.runtime
+            let controlPath = ctx.path
+            let isFocused = runtime._isFocused(path: controlPath)
+            let id = runtime._registerAction({ runtime._setFocus(path: controlPath) }, path: actionScopePath)
+            runtime._registerFocusable(path: controlPath, activate: id)
+            return .button(id: id, isFocused: isFocused, label: ctx.buildChild(label))
+        }
+        let runtime = ctx.runtime
+        let controlPath = ctx.path
+        let isFocused = runtime._isFocused(path: controlPath)
+        let id = runtime._registerAction({
+            runtime._setFocus(path: controlPath)
+            runtime._navPush(stackPath: stackPath, view: AnyView(destination()))
+        }, path: actionScopePath)
+        runtime._registerFocusable(path: controlPath, activate: id)
+        return .button(id: id, isFocused: isFocused, label: ctx.buildChild(label))
+    }
+}
+
 public struct ZStack<Content: View>: View, _PrimitiveView {
     public typealias Body = Never
     public let content: Content
@@ -41,8 +227,9 @@ public struct ZStack<Content: View>: View, _PrimitiveView {
     }
 
     func _makeNode(_ ctx: inout _BuildContext) -> _VNode {
-        // Debug renderer doesn't do true overlays yet; group draws on top of each other.
-        return ctx.buildChild(content)
+        // Keep ZStack as a single node so parent stacks don't flatten it into siblings.
+        let child = ctx.buildChild(content)
+        return .zstack(children: _flatten(child))
     }
 }
 

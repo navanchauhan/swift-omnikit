@@ -45,7 +45,6 @@ public struct NotcursesApp<V: View> {
         // We install our own signal handlers; leave terminal line signals enabled.
 
         let runtime = _UIRuntime()
-        var scrollY: Int = 0
         let q: UInt32 = 113
         let esc: UInt32 = omni_nckey_esc()
         let backspace: UInt32 = omni_nckey_backspace()
@@ -71,14 +70,10 @@ public struct NotcursesApp<V: View> {
 
             let snapshot = runtime.debugRender(root(), size: _Size(width: width, height: height))
 
-            // Global scroll just to validate scroll-wheel input end-to-end.
-            let maxScroll = max(0, snapshot.lines.count - height)
-            scrollY = min(max(scrollY, 0), maxScroll)
-
             ncplane_erase(stdplane)
 
             for y in 0..<height {
-                let src = y + scrollY
+                let src = y
                 guard src < snapshot.lines.count else { break }
                 let line = snapshot.lines[src]
                 line.utf8CString.withUnsafeBufferPointer { buf in
@@ -115,10 +110,10 @@ public struct NotcursesApp<V: View> {
                         snapshot.click(x: Int(ni.x), y: Int(ni.y))
                         continue
                     } else if id == scrollUp {
-                        scrollY = max(0, scrollY - 1)
+                        snapshot.scroll(x: Int(ni.x), y: Int(ni.y), deltaY: -1)
                         continue
                     } else if id == scrollDown {
-                        scrollY = min(maxScroll, scrollY + 1)
+                        snapshot.scroll(x: Int(ni.x), y: Int(ni.y), deltaY: 1)
                         continue
                     }
                 }

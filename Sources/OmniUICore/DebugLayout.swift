@@ -6,27 +6,37 @@
 enum _DebugLayout {
     struct Overlay {
         var zIndex: Int
-        var draw: (_ canvas: inout [[String]], _ hitRegions: inout [(_Rect, _ActionID)]) -> Void
+        var draw: (_ canvas: inout [[String]], _ hitRegions: inout [(_Rect, _ActionID)], _ scrollRegions: inout [_ScrollRegion]) -> Void
     }
 
     struct Result {
         var lines: [String]
         var hitRegions: [(_Rect, _ActionID)]
+        var scrollRegions: [_ScrollRegion]
     }
 
     static func layout(node: _VNode, in rect: _Rect) -> Result {
         var canvas = Array(repeating: Array(repeating: " ", count: rect.size.width), count: rect.size.height)
         var hits: [(_Rect, _ActionID)] = []
+        var scrolls: [_ScrollRegion] = []
         var overlays: [Overlay] = []
-        _ = draw(node: node, origin: rect.origin, maxSize: rect.size, canvas: &canvas, hitRegions: &hits, overlays: &overlays)
+        _ = draw(
+            node: node,
+            origin: rect.origin,
+            maxSize: rect.size,
+            canvas: &canvas,
+            hitRegions: &hits,
+            scrollRegions: &scrolls,
+            overlays: &overlays
+        )
 
         // Draw overlays last so they appear "above" later siblings in stacks.
         for o in overlays.sorted(by: { $0.zIndex < $1.zIndex }) {
-            o.draw(&canvas, &hits)
+            o.draw(&canvas, &hits, &scrolls)
         }
 
         let lines = canvas.map { $0.joined() }
-        return Result(lines: lines, hitRegions: hits)
+        return Result(lines: lines, hitRegions: hits, scrollRegions: scrolls)
     }
 
     @discardableResult
@@ -36,6 +46,7 @@ enum _DebugLayout {
         maxSize: _Size,
         canvas: inout [[String]],
         hitRegions: inout [(_Rect, _ActionID)],
+        scrollRegions: inout [_ScrollRegion],
         overlays: inout [Overlay]
     ) -> _Size {
         guard maxSize.width > 0, maxSize.height > 0 else { return _Size(width: 0, height: 0) }
@@ -48,7 +59,32 @@ enum _DebugLayout {
             var used = _Size(width: 0, height: 0)
             for n in nodes {
                 // Groups are drawn on top of each other; callers should flatten for layout.
-                let s = draw(node: n, origin: origin, maxSize: maxSize, canvas: &canvas, hitRegions: &hitRegions, overlays: &overlays)
+                let s = draw(
+                    node: n,
+                    origin: origin,
+                    maxSize: maxSize,
+                    canvas: &canvas,
+                    hitRegions: &hitRegions,
+                    scrollRegions: &scrollRegions,
+                    overlays: &overlays
+                )
+                used.width = max(used.width, s.width)
+                used.height = max(used.height, s.height)
+            }
+            return used
+        
+        case .zstack(let children):
+            var used = _Size(width: 0, height: 0)
+            for n in children {
+                let s = draw(
+                    node: n,
+                    origin: origin,
+                    maxSize: maxSize,
+                    canvas: &canvas,
+                    hitRegions: &hitRegions,
+                    scrollRegions: &scrollRegions,
+                    overlays: &overlays
+                )
                 used.width = max(used.width, s.width)
                 used.height = max(used.height, s.height)
             }
@@ -77,12 +113,136 @@ enum _DebugLayout {
                 origin: _Point(x: origin.x + amount, y: origin.y + amount),
                 size: _Size(width: max(0, maxSize.width - amount * 2), height: max(0, maxSize.height - amount * 2))
             )
-            let s = draw(node: child, origin: inner.origin, maxSize: inner.size, canvas: &canvas, hitRegions: &hitRegions, overlays: &overlays)
+            let s = draw(
+                node: child,
+                origin: inner.origin,
+                maxSize: inner.size,
+                canvas: &canvas,
+                hitRegions: &hitRegions,
+                scrollRegions: &scrollRegions,
+                overlays: &overlays
+            )
             return _Size(width: min(maxSize.width, s.width + amount * 2), height: min(maxSize.height, s.height + amount * 2))
 
         case .stack(let axis, let spacing, let children):
+            // 2-pass layout to make `Spacer()` work (allocate remaining space across spacers).
+            // This is simplistic but good enough for terminal/grid renderers.
+            func measure(_ node: _VNode, _ maxSize: _Size) -> _Size {
+                guard maxSize.width > 0, maxSize.height > 0 else { return _Size(width: 0, height: 0) }
+                switch node {
+                case .empty:
+                    return _Size(width: 0, height: 0)
+                case .group(let nodes):
+                    var u = _Size(width: 0, height: 0)
+                    for n in nodes {
+                        let s = measure(n, maxSize)
+                        u.width = max(u.width, s.width)
+                        u.height = max(u.height, s.height)
+                    }
+                    return u
+                case .text(let s):
+                    return _Size(width: min(s.count, maxSize.width), height: 1)
+                case .image(let name):
+                    let s = "<\(name)>"
+                    return _Size(width: min(s.count, maxSize.width), height: 1)
+                case .spacer:
+                    return _Size(width: 0, height: 0)
+                case .padding(let amount, let child):
+                    let inner = _Size(width: max(0, maxSize.width - amount * 2), height: max(0, maxSize.height - amount * 2))
+                    let s = measure(child, inner)
+                    return _Size(width: min(maxSize.width, s.width + amount * 2), height: min(maxSize.height, s.height + amount * 2))
+                case .stack(let axis, let spacing, let children):
+                    switch axis {
+                    case .horizontal:
+                        var w = 0
+                        var h = 0
+                        let count = children.count
+                        for (i, c) in children.enumerated() {
+                            let s = measure(c, maxSize)
+                            w += s.width
+                            h = max(h, s.height)
+                            if i != count - 1 { w += spacing }
+                        }
+                        return _Size(width: min(w, maxSize.width), height: min(h, maxSize.height))
+                    case .vertical:
+                        var w = 0
+                        var h = 0
+                        let count = children.count
+                        for (i, c) in children.enumerated() {
+                            let s = measure(c, maxSize)
+                            h += s.height
+                            w = max(w, s.width)
+                            if i != count - 1 { h += spacing }
+                        }
+                        return _Size(width: min(w, maxSize.width), height: min(h, maxSize.height))
+                    }
+                case .zstack(let children):
+                    var u = _Size(width: 0, height: 0)
+                    for n in children {
+                        let s = measure(n, maxSize)
+                        u.width = max(u.width, s.width)
+                        u.height = max(u.height, s.height)
+                    }
+                    return u
+                case .button(_, let isFocused, let label):
+                    // Render as [ label ] with optional focus marker.
+                    let xPad = isFocused ? 1 : 0
+                    let labelMax = _Size(width: max(0, maxSize.width - (isFocused ? 5 : 4)), height: 1)
+                    let l = measure(label, labelMax)
+                    return _Size(width: min(maxSize.width, xPad + 4 + l.width), height: 1)
+                case .toggle(_, let isFocused, _, let label):
+                    let xPad = isFocused ? 1 : 0
+                    let boxCount = 4
+                    let labelMax = _Size(width: max(0, maxSize.width - boxCount - xPad), height: 1)
+                    let l = measure(label, labelMax)
+                    return _Size(width: min(maxSize.width, xPad + boxCount + l.width), height: 1)
+                case .textField(_, let placeholder, let text, _):
+                    let display = text.isEmpty ? placeholder : text
+                    let prefixCount = 2
+                    let s = prefixCount + 2 + display.count
+                    return _Size(width: min(maxSize.width, s), height: 1)
+                case .scrollView:
+                    // ScrollView takes all available size.
+                    return _Size(width: maxSize.width, height: maxSize.height)
+                case .menu(_, let isFocused, _, let title, let value, _):
+                    let headText = "\(title): \(value) v"
+                    let inner = " " + headText + " "
+                    let w = (isFocused ? 1 : 0) + 2 + min(inner.count, max(0, maxSize.width - (isFocused ? 3 : 2)))
+                    return _Size(width: min(w, maxSize.width), height: 1)
+                }
+            }
+
             var cursor = origin
             var used = _Size(width: 0, height: 0)
+
+            let spacerCount = children.reduce(0) { acc, n in
+                if case .spacer = n { return acc + 1 }
+                return acc
+            }
+            var fixedPrimary = 0
+            var measured: [_Size] = []
+            measured.reserveCapacity(children.count)
+            for c in children {
+                if case .spacer = c {
+                    measured.append(_Size(width: 0, height: 0))
+                } else {
+                    let s = measure(c, maxSize)
+                    measured.append(s)
+                    switch axis {
+                    case .horizontal: fixedPrimary += s.width
+                    case .vertical: fixedPrimary += s.height
+                    }
+                }
+            }
+            let spacingTotal = max(0, (children.count - 1) * spacing)
+            let availablePrimary: Int
+            switch axis {
+            case .horizontal: availablePrimary = maxSize.width
+            case .vertical: availablePrimary = maxSize.height
+            }
+            let leftover = max(0, availablePrimary - fixedPrimary - spacingTotal)
+            let spacerPrimary = spacerCount > 0 ? (leftover / spacerCount) : 0
+
             for (idx, child) in children.enumerated() {
                 let remaining: _Size
                 switch axis {
@@ -91,7 +251,25 @@ enum _DebugLayout {
                 case .horizontal:
                     remaining = _Size(width: maxSize.width - (cursor.x - origin.x), height: maxSize.height)
                 }
-                let s = draw(node: child, origin: cursor, maxSize: remaining, canvas: &canvas, hitRegions: &hitRegions, overlays: &overlays)
+                let s: _Size
+                if case .spacer = child {
+                    switch axis {
+                    case .horizontal:
+                        s = _Size(width: min(remaining.width, spacerPrimary), height: 0)
+                    case .vertical:
+                        s = _Size(width: 0, height: min(remaining.height, spacerPrimary))
+                    }
+                } else {
+                    s = draw(
+                        node: child,
+                        origin: cursor,
+                        maxSize: remaining,
+                        canvas: &canvas,
+                        hitRegions: &hitRegions,
+                        scrollRegions: &scrollRegions,
+                        overlays: &overlays
+                    )
+                }
                 switch axis {
                 case .vertical:
                     cursor.y += s.height
@@ -119,7 +297,15 @@ enum _DebugLayout {
             put("[", at: _Point(x: x0, y: origin.y), canvas: &canvas)
             let labelOrigin = _Point(x: x0 + 2, y: origin.y)
             let labelMax = _Size(width: max(0, maxSize.width - (isFocused ? 5 : 4)), height: 1)
-            let labelSize = draw(node: label, origin: labelOrigin, maxSize: labelMax, canvas: &canvas, hitRegions: &hitRegions, overlays: &overlays)
+            let labelSize = draw(
+                node: label,
+                origin: labelOrigin,
+                maxSize: labelMax,
+                canvas: &canvas,
+                hitRegions: &hitRegions,
+                scrollRegions: &scrollRegions,
+                overlays: &overlays
+            )
             put("]", at: _Point(x: x0 + 1 + labelSize.width + 2, y: origin.y), canvas: &canvas)
             let buttonWidth = min(maxSize.width, (isFocused ? 1 : 0) + 4 + labelSize.width)
             let rect = _Rect(origin: origin, size: _Size(width: buttonWidth, height: 1))
@@ -138,7 +324,15 @@ enum _DebugLayout {
             }
             let labelOrigin = _Point(x: x0 + box.count, y: origin.y)
             let labelMax = _Size(width: max(0, maxSize.width - box.count - (isFocused ? 1 : 0)), height: 1)
-            let labelSize = draw(node: label, origin: labelOrigin, maxSize: labelMax, canvas: &canvas, hitRegions: &hitRegions, overlays: &overlays)
+            let labelSize = draw(
+                node: label,
+                origin: labelOrigin,
+                maxSize: labelMax,
+                canvas: &canvas,
+                hitRegions: &hitRegions,
+                scrollRegions: &scrollRegions,
+                overlays: &overlays
+            )
             let width = min(maxSize.width, (isFocused ? 1 : 0) + box.count + labelSize.width)
             let rect = _Rect(origin: origin, size: _Size(width: width, height: 1))
             hitRegions.append((rect, id))
@@ -155,6 +349,169 @@ enum _DebugLayout {
             let rect = _Rect(origin: origin, size: _Size(width: min(maxSize.width, clipped.count), height: 1))
             hitRegions.append((rect, id))
             return _Size(width: min(maxSize.width, clipped.count), height: 1)
+
+        case .scrollView(let id, let path, let isFocused, let axis, let offset, let content):
+            // ScrollView is a clipping container; content is drawn translated by offset.
+            // We also register a scroll region so mouse wheel events can be routed.
+            // Compute max scroll in Y for now (vertical only); horizontal scroll is a no-op.
+            // Limit measurement height to avoid pathological allocations/work.
+            let measureMax = _Size(width: maxSize.width, height: 2048)
+            let contentSize = {
+                // Reuse the stack-local measure helper by calling into a small inline implementation.
+                func m(_ node: _VNode, _ maxSize: _Size) -> _Size {
+                    guard maxSize.width > 0, maxSize.height > 0 else { return _Size(width: 0, height: 0) }
+                    switch node {
+                    case .empty: return _Size(width: 0, height: 0)
+                    case .group(let nodes):
+                        var u = _Size(width: 0, height: 0)
+                        for n in nodes {
+                            let s = m(n, maxSize)
+                            u.width = max(u.width, s.width)
+                            u.height = max(u.height, s.height)
+                        }
+                        return u
+                    case .zstack(let children):
+                        var u = _Size(width: 0, height: 0)
+                        for n in children {
+                            let s = m(n, maxSize)
+                            u.width = max(u.width, s.width)
+                            u.height = max(u.height, s.height)
+                        }
+                        return u
+                    case .text(let s): return _Size(width: min(s.count, maxSize.width), height: 1)
+                    case .image(let name):
+                        let s = "<\(name)>"
+                        return _Size(width: min(s.count, maxSize.width), height: 1)
+                    case .spacer: return _Size(width: 0, height: 0)
+                    case .padding(let amount, let child):
+                        let inner = _Size(width: max(0, maxSize.width - amount * 2), height: max(0, maxSize.height - amount * 2))
+                        let s = m(child, inner)
+                        return _Size(width: min(maxSize.width, s.width + amount * 2), height: min(maxSize.height, s.height + amount * 2))
+                    case .stack(let axis, let spacing, let children):
+                        switch axis {
+                        case .horizontal:
+                            var w = 0
+                            var h = 0
+                            let count = children.count
+                            for (i, c) in children.enumerated() {
+                                let s = m(c, maxSize)
+                                w += s.width
+                                h = max(h, s.height)
+                                if i != count - 1 { w += spacing }
+                            }
+                            return _Size(width: min(w, maxSize.width), height: min(h, maxSize.height))
+                        case .vertical:
+                            var w = 0
+                            var h = 0
+                            let count = children.count
+                            for (i, c) in children.enumerated() {
+                                let s = m(c, maxSize)
+                                h += s.height
+                                w = max(w, s.width)
+                                if i != count - 1 { h += spacing }
+                            }
+                            return _Size(width: min(w, maxSize.width), height: min(h, maxSize.height))
+                        }
+                    case .button(_, let isFocused, let label):
+                        let xPad = isFocused ? 1 : 0
+                        let labelMax = _Size(width: max(0, maxSize.width - (isFocused ? 5 : 4)), height: 1)
+                        let l = m(label, labelMax)
+                        return _Size(width: min(maxSize.width, xPad + 4 + l.width), height: 1)
+                    case .toggle(_, let isFocused, _, let label):
+                        let xPad = isFocused ? 1 : 0
+                        let boxCount = 4
+                        let labelMax = _Size(width: max(0, maxSize.width - boxCount - xPad), height: 1)
+                        let l = m(label, labelMax)
+                        return _Size(width: min(maxSize.width, xPad + boxCount + l.width), height: 1)
+                    case .textField(_, let placeholder, let text, _):
+                        let display = text.isEmpty ? placeholder : text
+                        let prefixCount = 2
+                        let s = prefixCount + 2 + display.count
+                        return _Size(width: min(maxSize.width, s), height: 1)
+                    case .scrollView:
+                        return _Size(width: maxSize.width, height: maxSize.height)
+                    case .menu(_, let isFocused, _, let title, let value, _):
+                        let headText = "\(title): \(value) v"
+                        let inner = " " + headText + " "
+                        let w = (isFocused ? 1 : 0) + 2 + min(inner.count, max(0, maxSize.width - (isFocused ? 3 : 2)))
+                        return _Size(width: min(w, maxSize.width), height: 1)
+                    }
+                }
+                return m(content, measureMax)
+            }()
+
+            let viewportHeight: Int
+            switch axis {
+            case .vertical:
+                viewportHeight = min(maxSize.height, max(1, contentSize.height))
+            case .horizontal:
+                viewportHeight = min(maxSize.height, 1)
+            }
+            let viewportSize = _Size(width: maxSize.width, height: viewportHeight)
+
+            let rect = _Rect(origin: origin, size: viewportSize)
+            hitRegions.append((rect, id))
+
+            let maxOffsetY: Int
+            switch axis {
+            case .vertical:
+                maxOffsetY = max(0, contentSize.height - viewportHeight)
+            case .horizontal:
+                maxOffsetY = 0
+            }
+            scrollRegions.append(_ScrollRegion(rect: rect, path: path, maxOffsetY: maxOffsetY))
+
+            // Basic focus marker: draw a leading ">" on the first line if focused.
+            if isFocused {
+                put(">", at: origin, canvas: &canvas)
+            }
+
+            let yOff: Int
+            switch axis {
+            case .vertical: yOff = min(max(0, offset), maxOffsetY)
+            case .horizontal: yOff = 0
+            }
+
+            // Clip content to the scroll view's rect by drawing into an offscreen buffer first.
+            var sub = Array(repeating: Array(repeating: " ", count: viewportSize.width), count: viewportSize.height)
+            var subHits: [(_Rect, _ActionID)] = []
+            var subScrolls: [_ScrollRegion] = []
+            var subOverlays: [Overlay] = []
+            _ = draw(
+                node: content,
+                origin: _Point(x: 0, y: -yOff),
+                maxSize: _Size(width: viewportSize.width, height: viewportSize.height + yOff),
+                canvas: &sub,
+                hitRegions: &subHits,
+                scrollRegions: &subScrolls,
+                overlays: &subOverlays
+            )
+
+            // Composite subcanvas into the main canvas and translate hit regions.
+            for y in 0..<viewportSize.height {
+                let dy = origin.y + y
+                guard dy >= 0, dy < canvas.count else { continue }
+                for x in 0..<viewportSize.width {
+                    let dx = origin.x + x
+                    guard dx >= 0, dx < canvas[dy].count else { continue }
+                    let s = sub[y][x]
+                    if s != " " {
+                        canvas[dy][dx] = s
+                    }
+                }
+            }
+
+            for (r, a) in subHits {
+                let tr = _Rect(origin: _Point(x: r.origin.x + origin.x, y: r.origin.y + origin.y), size: r.size)
+                hitRegions.append((tr, a))
+            }
+            for sr in subScrolls {
+                let tr = _Rect(origin: _Point(x: sr.rect.origin.x + origin.x, y: sr.rect.origin.y + origin.y), size: sr.rect.size)
+                scrollRegions.append(_ScrollRegion(rect: tr, path: sr.path, maxOffsetY: sr.maxOffsetY))
+            }
+
+            // Note: overlays inside scroll views currently escape the clip (good enough for now).
+            return viewportSize
 
         case .menu(let id, let isFocused, let isExpanded, let title, let value, let items):
             // Header like:  >[ Flavor: Chocolate v ]
@@ -189,7 +546,7 @@ enum _DebugLayout {
             )
 
             let overlayItems = items
-            overlays.append(Overlay(zIndex: 1000, draw: { canvas, hitRegions in
+            overlays.append(Overlay(zIndex: 1000, draw: { canvas, hitRegions, _ in
                 guard overlayMax.width > 0, overlayMax.height > 0 else { return }
 
                 // Dropdown box (simple ASCII).

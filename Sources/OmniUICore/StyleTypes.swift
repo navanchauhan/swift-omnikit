@@ -77,3 +77,12 @@ public enum Edge {
     }
 }
 
+public enum Axis: Sendable {
+    public struct Set: OptionSet, Hashable, Sendable {
+        public let rawValue: Int
+        public init(rawValue: Int) { self.rawValue = rawValue }
+
+        public static let vertical = Set(rawValue: 1 << 0)
+        public static let horizontal = Set(rawValue: 1 << 1)
+    }
+}

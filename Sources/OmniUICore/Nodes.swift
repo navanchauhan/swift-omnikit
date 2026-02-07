@@ -39,10 +39,12 @@ indirect enum _VNode {
     case image(String)
     case spacer
     case stack(axis: _Axis, spacing: Int, children: [_VNode])
+    case zstack(children: [_VNode])
     case padding(Int, _VNode)
     case button(id: _ActionID, isFocused: Bool, label: _VNode)
     case toggle(id: _ActionID, isFocused: Bool, isOn: Bool, label: _VNode)
     case textField(id: _ActionID, placeholder: String, text: String, isFocused: Bool)
+    case scrollView(id: _ActionID, path: [Int], isFocused: Bool, axis: _Axis, offset: Int, content: _VNode)
     case menu(
         id: _ActionID,
         isFocused: Bool,

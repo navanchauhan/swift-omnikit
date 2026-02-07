@@ -8,6 +8,7 @@ struct KitchenSinkRoot: View {
     @State private var crtMode: Bool = false
     @State private var name: String = ""
     @State private var flavor: Flavor = .vanilla
+    @State private var pickedRow: Int = 0
 
     enum Flavor: String, Hashable {
         case vanilla = "Vanilla"
@@ -18,15 +19,21 @@ struct KitchenSinkRoot: View {
     var body: some View {
         VStack(spacing: 1) {
             Label("OmniUI KitchenSink", systemImage: "sparkles")
-            Text("Counter: \(count)")
+
             HStack(spacing: 1) {
-                Button("Increment") { count += 1 }
-                Button("Decrement") { count -= 1 }
+                Text("Count: \(count)")
+                Spacer()
+                Button("+") { count += 1 }
+                Button("-") { count -= 1 }
             }
-            Toggle("CRT Mode", isOn: $crtMode)
-            Text("CRT: \(crtMode ? "ON" : "OFF")")
+
+            HStack(spacing: 1) {
+                Toggle("CRT", isOn: $crtMode)
+                Spacer()
+                Text(crtMode ? "ON" : "OFF")
+            }
+
             TextField("Type your name", text: $name)
-            Text("Hello, \(name.isEmpty ? "anonymous" : name)")
             Picker(
                 "Flavor",
                 selection: $flavor,
@@ -36,7 +43,51 @@ struct KitchenSinkRoot: View {
                     (.strawberry, "Strawberry"),
                 ]
             )
-            Text("Tip: use `--notcurses` for the notcurses renderer.")
+
+            Text("ZStack:")
+            ZStack {
+                Text("Background text")
+                Text("Foreground text")
+            }
+
+            Text("List (picked: \(pickedRow))")
+            List(0..<2, id: \.self) { i in
+                HStack(spacing: 1) {
+                    Text("Row \(i)")
+                    Spacer()
+                    Button("Pick") { pickedRow = i }
+                }
+            }
+
+            NavigationStack {
+                VStack(spacing: 1) {
+                    NavigationLink("Open details") { KitchenSinkDetail() }
+                }
+            }
+
+            Text("ScrollView (wheel over it):")
+            ScrollView {
+                VStack(spacing: 0) {
+                    ForEach(0..<20, id: \.self) { i in
+                        Text("Item \(i)")
+                    }
+                }
+            }
+
+            Text("Tip: `--notcurses` for the notcurses renderer.")
+        }
+        .padding(1)
+    }
+}
+
+struct KitchenSinkDetail: View {
+    @State private var localCount: Int = 0
+
+    var body: some View {
+        VStack(spacing: 1) {
+            Text("Detail screen")
+            Text("Local: \(localCount)")
+            Button("Local +1") { localCount += 1 }
         }
         .padding(1)
     }
