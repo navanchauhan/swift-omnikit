@@ -15,6 +15,10 @@ uint32_t omni_nckey_down(void);
 
 unsigned omni_ncmice_all_events(void);
 
+// Modifiers helpers.
+// Returns 1 if Shift is pressed for the given input event, otherwise 0.
+uint32_t omni_ncinput_shift(const struct ncinput* ni);
+
 // Terminal safety helpers.
 // Install SIGINT/SIGTERM/SIGHUP/SIGQUIT handlers that request shutdown.
 void omni_install_signal_handlers(void);

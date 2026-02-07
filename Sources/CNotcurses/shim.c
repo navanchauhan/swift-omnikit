@@ -18,6 +18,13 @@ uint32_t omni_nckey_down(void) { return (uint32_t)NCKEY_DOWN; }
 
 unsigned omni_ncmice_all_events(void) { return (unsigned)NCMICE_ALL_EVENTS; }
 
+uint32_t omni_ncinput_shift(const struct ncinput* ni){
+  if(ni == NULL){
+    return 0;
+  }
+  return (ni->modifiers & NCKEY_MOD_SHIFT) ? 1u : 0u;
+}
+
 static volatile sig_atomic_t g_omni_signal = 0;
 
 static void

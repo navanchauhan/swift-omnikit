@@ -153,24 +153,21 @@ public struct NavigationStack<Content: View>: View, _PrimitiveView {
 
         let top: AnyView? = runtime._navTop(stackPath: stackPath)
 
-        return .stack(
-            axis: .vertical,
-            spacing: 1,
-            children: _flatten(
-                .group([
-                    depth > 0
-                        ? ctx.buildChild(
-                            HStack(spacing: 1) {
-                                Button("Back") { runtime._navPop(stackPath: stackPath) }
-                                Text("Navigation (\(depth))")
-                                Spacer()
-                            }
-                          )
-                        : ctx.buildChild(Text("Navigation")),
-                    top.map { ctx.buildChild($0) } ?? ctx.buildChild(content),
-                ])
-            )
-        )
+        if depth == 0 {
+            // Root: render content normally (no chrome).
+            return ctx.buildChild(content)
+        }
+
+        // Pushed: show a back button and render the pushed destination "full screen" within this stack.
+        return .stack(axis: .vertical, spacing: 1, children: _flatten(.group([
+            ctx.buildChild(
+                HStack(spacing: 1) {
+                    Button("Back") { runtime._navPop(stackPath: stackPath) }
+                    Spacer()
+                }
+            ),
+            top.map { ctx.buildChild($0) } ?? ctx.buildChild(content),
+        ])))
     }
 }
 

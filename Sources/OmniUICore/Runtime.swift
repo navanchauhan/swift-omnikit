@@ -258,6 +258,38 @@ extension _UIRuntime {
         }
         return nil
     }
+
+    private func _bestNavRoot(for path: [Int]) -> [Int]? {
+        var best: [Int]? = nil
+        for root in navStackRoots {
+            if _isPrefix(root, of: path) {
+                if best == nil || root.count > (best?.count ?? 0) {
+                    best = root
+                }
+            }
+        }
+        return best
+    }
+
+    public func canPopNavigation() -> Bool {
+        for root in navStackRoots where _navDepth(stackPath: root) > 0 {
+            return true
+        }
+        return false
+    }
+
+    public func popNavigation() {
+        let focus = focusedPath ?? []
+        let preferred = _bestNavRoot(for: focus) ?? navStackRoots.first
+        if let preferred, _navDepth(stackPath: preferred) > 0 {
+            _navPop(stackPath: preferred)
+            return
+        }
+        for root in navStackRoots where _navDepth(stackPath: root) > 0 {
+            _navPop(stackPath: root)
+            return
+        }
+    }
 }
 
 struct _TextEditor {

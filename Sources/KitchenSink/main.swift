@@ -4,6 +4,14 @@ import OmniUINotcursesRenderer
 import Foundation
 
 struct KitchenSinkRoot: View {
+    var body: some View {
+        NavigationStack {
+            KitchenSinkHome()
+        }
+    }
+}
+
+struct KitchenSinkHome: View {
     @State private var count: Int = 0
     @State private var crtMode: Bool = false
     @State private var name: String = ""
@@ -60,11 +68,7 @@ struct KitchenSinkRoot: View {
                 }
             }
 
-            NavigationStack {
-                VStack(spacing: 1) {
-                    NavigationLink("Open details") { KitchenSinkDetail() }
-                }
-            }
+            NavigationLink("Open details") { KitchenSinkDetail() }
 
             Text("ScrollView (wheel over it):")
             ScrollView {
@@ -95,7 +99,7 @@ struct KitchenSinkDetail: View {
             Text("Local: \(localCount)")
             Button("Local +1") { localCount += 1 }
             NavigationLink("Push next") { KitchenSinkDetail(level: level + 1) }
-            Text("Use Back to pop.")
+            Text("Back: click [ Back ] or press Backspace/Delete.")
         }
         .padding(1)
     }

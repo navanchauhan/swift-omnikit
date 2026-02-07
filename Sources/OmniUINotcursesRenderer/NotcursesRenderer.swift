@@ -120,10 +120,19 @@ public struct NotcursesApp<V: View> {
 
                 if ni.evtype == NCTYPE_PRESS || ni.evtype == NCTYPE_REPEAT {
                     if id == 9 { // Tab
-                        if runtime.hasExpandedPicker() {
-                            runtime.focusNextWithinExpandedPicker()
+                        let isShift = omni_ncinput_shift(&ni) != 0
+                        if isShift {
+                            if runtime.hasExpandedPicker() {
+                                runtime.focusPrevWithinExpandedPicker()
+                            } else {
+                                runtime.focusPrev()
+                            }
                         } else {
-                            runtime.focusNext()
+                            if runtime.hasExpandedPicker() {
+                                runtime.focusNextWithinExpandedPicker()
+                            } else {
+                                runtime.focusNext()
+                            }
                         }
                     } else if id == up {
                         if runtime.hasExpandedPicker() {
@@ -145,8 +154,12 @@ public struct NotcursesApp<V: View> {
                         } else {
                             runtime.activateFocused()
                         }
-                    } else if id == backspace {
-                        runtime._handleKeyPress(8)
+                    } else if id == backspace || id == 127 { // Backspace/Delete (ASCII DEL on macOS)
+                        if runtime.isTextEditingFocused() {
+                            runtime._handleKeyPress(8)
+                        } else if runtime.canPopNavigation() {
+                            runtime.popNavigation()
+                        }
                     } else if id < 0x110000 {
                         runtime._handleKeyPress(id)
                     }
