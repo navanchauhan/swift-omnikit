@@ -39,6 +39,26 @@ enum _DebugLayout {
         return Result(lines: lines, hitRegions: hits, scrollRegions: scrolls)
     }
 
+    private static func imageString(_ name: String) -> String {
+        // Tiny mapping to keep demos readable in terminals.
+        // Unknown symbols are rendered as a generic glyph (instead of `<name>`).
+        switch name {
+        case "sparkles": return "✨"
+        case "chevron.down": return "▾"
+        case "chevron.up": return "▴"
+        case "checkmark": return "✓"
+        case "xmark": return "✕"
+        case "plus": return "+"
+        case "minus": return "−"
+        case "arrow.up": return "↑"
+        case "arrow.down": return "↓"
+        case "arrow.left": return "←"
+        case "arrow.right": return "→"
+        default:
+            return "■"
+        }
+    }
+
     @discardableResult
     private static func draw(
         node: _VNode,
@@ -98,7 +118,7 @@ enum _DebugLayout {
             return _Size(width: min(s.count, maxSize.width), height: 1)
 
         case .image(let name):
-            let s = "<\(name)>"
+            let s = _DebugLayout.imageString(name)
             let clipped = String(s.prefix(maxSize.width))
             for (i, ch) in clipped.enumerated() {
                 put(String(ch), at: _Point(x: origin.x + i, y: origin.y), canvas: &canvas)
@@ -143,7 +163,7 @@ enum _DebugLayout {
                 case .text(let s):
                     return _Size(width: min(s.count, maxSize.width), height: 1)
                 case .image(let name):
-                    let s = "<\(name)>"
+                    let s = _DebugLayout.imageString(name)
                     return _Size(width: min(s.count, maxSize.width), height: 1)
                 case .spacer:
                     return _Size(width: 0, height: 0)
@@ -341,7 +361,8 @@ enum _DebugLayout {
         case .textField(let id, let placeholder, let text, let isFocused):
             let display = text.isEmpty ? placeholder : text
             let prefix = isFocused ? "> " : "  "
-            let s = prefix + "[" + display + "]"
+            let cursor = isFocused ? "|" : ""
+            let s = prefix + "[" + display + cursor + "]"
             let clipped = String(s.prefix(maxSize.width))
             for (i, ch) in clipped.enumerated() {
                 put(String(ch), at: _Point(x: origin.x + i, y: origin.y), canvas: &canvas)
@@ -380,7 +401,7 @@ enum _DebugLayout {
                         return u
                     case .text(let s): return _Size(width: min(s.count, maxSize.width), height: 1)
                     case .image(let name):
-                        let s = "<\(name)>"
+                        let s = _DebugLayout.imageString(name)
                         return _Size(width: min(s.count, maxSize.width), height: 1)
                     case .spacer: return _Size(width: 0, height: 0)
                     case .padding(let amount, let child):
@@ -497,6 +518,26 @@ enum _DebugLayout {
                     let s = sub[y][x]
                     if s != " " {
                         canvas[dy][dx] = s
+                    }
+                }
+            }
+
+            // Scrollbar (vertical only), drawn over the last column.
+            if axis == .vertical, maxOffsetY > 0, viewportSize.width > 0 {
+                let sbX = origin.x + viewportSize.width - 1
+                let trackH = viewportSize.height
+                if trackH > 0 {
+                    let total = maxOffsetY + viewportSize.height
+                    let thumbH = max(1, (viewportSize.height * viewportSize.height) / max(1, total))
+                    let travel = max(1, viewportSize.height - thumbH)
+                    let thumbY0 = origin.y + (yOff * travel) / max(1, maxOffsetY)
+                    let thumbY1 = min(origin.y + trackH - 1, thumbY0 + thumbH - 1)
+
+                    for yy in 0..<trackH {
+                        let y = origin.y + yy
+                        guard y >= 0, y < canvas.count else { continue }
+                        let ch = (y >= thumbY0 && y <= thumbY1) ? "█" : "│"
+                        put(ch, at: _Point(x: sbX, y: y), canvas: &canvas)
                     }
                 }
             }

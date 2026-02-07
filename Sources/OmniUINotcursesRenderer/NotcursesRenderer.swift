@@ -258,11 +258,24 @@ private func _boxify(_ c: Character, left: Character?, right: Character?, up: Ch
     case "-":
         return "─"
     case "+":
-        let hasH = (left == "-" || right == "-")
-        let hasV = (up == "|" || down == "|")
-        if hasH && hasV { return "┼" }
-        if hasH { return "─" }
-        if hasV { return "│" }
+        let l = (left == "-" || left == "+")
+        let r = (right == "-" || right == "+")
+        let u = (up == "|" || up == "+")
+        let d = (down == "|" || down == "+")
+        // Corners
+        if r && d && !l && !u { return "┌" }
+        if l && d && !r && !u { return "┐" }
+        if r && u && !l && !d { return "└" }
+        if l && u && !r && !d { return "┘" }
+        // Tee junctions
+        if l && r && d && !u { return "┬" }
+        if l && r && u && !d { return "┴" }
+        if u && d && r && !l { return "├" }
+        if u && d && l && !r { return "┤" }
+        // Cross/lines
+        if (l || r) && (u || d) { return "┼" }
+        if l || r { return "─" }
+        if u || d { return "│" }
         return "┼"
     default:
         return c
