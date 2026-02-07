@@ -125,6 +125,76 @@ enum _DebugLayout {
             }
             return _Size(width: min(s.count, maxSize.width), height: 1)
 
+        case .shape(let shape):
+            // Render small glyphs for shapes. This isn't geometric, but it gives a real visual.
+            // Target size: 7x3 (clipped by maxSize).
+            let w = min(maxSize.width, 7)
+            let h = min(maxSize.height, 3)
+            guard w > 0, h > 0 else { return _Size(width: 0, height: 0) }
+
+            func putLine(_ y: Int, _ s: String) {
+                let clipped = String(s.prefix(w))
+                for (i, ch) in clipped.enumerated() {
+                    put(String(ch), at: _Point(x: origin.x + i, y: origin.y + y), canvas: &canvas)
+                }
+            }
+
+            switch shape.kind {
+            case .rectangle:
+                if h >= 3 {
+                    putLine(0, "┌" + String(repeating: "─", count: max(0, w - 2)) + "┐")
+                    putLine(1, "│" + String(repeating: "█", count: max(0, w - 2)) + "│")
+                    putLine(2, "└" + String(repeating: "─", count: max(0, w - 2)) + "┘")
+                } else if h == 2 {
+                    putLine(0, "┌" + String(repeating: "─", count: max(0, w - 2)) + "┐")
+                    putLine(1, "└" + String(repeating: "─", count: max(0, w - 2)) + "┘")
+                } else {
+                    putLine(0, String(repeating: "█", count: w))
+                }
+            case .roundedRectangle:
+                if h >= 3 {
+                    putLine(0, "╭" + String(repeating: "─", count: max(0, w - 2)) + "╮")
+                    putLine(1, "│" + String(repeating: "█", count: max(0, w - 2)) + "│")
+                    putLine(2, "╰" + String(repeating: "─", count: max(0, w - 2)) + "╯")
+                } else {
+                    putLine(0, "╭" + String(repeating: "─", count: max(0, w - 2)) + "╮")
+                }
+            case .circle:
+                if h >= 3 && w >= 5 {
+                    putLine(0, "  ◜" + String(repeating: "─", count: max(0, w - 4)) + "◝")
+                    putLine(1, " ◟" + String(repeating: "█", count: max(0, w - 4)) + "◞ ")
+                    putLine(2, "  ◟" + String(repeating: "─", count: max(0, w - 4)) + "◞")
+                } else {
+                    putLine(0, "◯")
+                }
+            case .ellipse:
+                if h >= 3 && w >= 5 {
+                    putLine(0, "  ⟮" + String(repeating: "─", count: max(0, w - 4)) + "⟯")
+                    putLine(1, " ⟮" + String(repeating: "█", count: max(0, w - 4)) + "⟯ ")
+                    putLine(2, "  ⟮" + String(repeating: "─", count: max(0, w - 4)) + "⟯")
+                } else {
+                    putLine(0, "⬭")
+                }
+            case .capsule:
+                if h >= 3 && w >= 5 {
+                    putLine(0, "⟮" + String(repeating: "█", count: max(0, w - 2)) + "⟯")
+                    putLine(1, "⟮" + String(repeating: "█", count: max(0, w - 2)) + "⟯")
+                    putLine(2, "⟮" + String(repeating: "█", count: max(0, w - 2)) + "⟯")
+                } else {
+                    putLine(0, "⟮█⟯")
+                }
+            case .path:
+                if h >= 3 && w >= 7 {
+                    putLine(0, "╲     ╱")
+                    putLine(1, " ╲   ╱ ")
+                    putLine(2, "  ╲ ╱  ")
+                } else {
+                    putLine(0, "Path")
+                }
+            }
+
+            return _Size(width: w, height: h)
+
         case .spacer:
             return _Size(width: 0, height: 0)
 
@@ -165,6 +235,8 @@ enum _DebugLayout {
                 case .image(let name):
                     let s = _DebugLayout.imageString(name)
                     return _Size(width: min(s.count, maxSize.width), height: 1)
+                case .shape:
+                    return _Size(width: min(maxSize.width, 7), height: min(maxSize.height, 3))
                 case .spacer:
                     return _Size(width: 0, height: 0)
                 case .padding(let amount, let child):
@@ -403,6 +475,8 @@ enum _DebugLayout {
                     case .image(let name):
                         let s = _DebugLayout.imageString(name)
                         return _Size(width: min(s.count, maxSize.width), height: 1)
+                    case .shape:
+                        return _Size(width: min(maxSize.width, 7), height: min(maxSize.height, 3))
                     case .spacer: return _Size(width: 0, height: 0)
                     case .padding(let amount, let child):
                         let inner = _Size(width: max(0, maxSize.width - amount * 2), height: max(0, maxSize.height - amount * 2))
@@ -507,6 +581,11 @@ enum _DebugLayout {
                 scrollRegions: &subScrolls,
                 overlays: &subOverlays
             )
+
+            // Apply overlays (e.g. Picker dropdown) within the scroll view, then clip via composition.
+            for o in subOverlays.sorted(by: { $0.zIndex < $1.zIndex }) {
+                o.draw(&sub, &subHits, &subScrolls)
+            }
 
             // Composite subcanvas into the main canvas and translate hit regions.
             for y in 0..<viewportSize.height {

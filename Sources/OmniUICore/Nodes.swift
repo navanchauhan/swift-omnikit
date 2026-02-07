@@ -40,6 +40,7 @@ indirect enum _VNode {
     case spacer
     case stack(axis: _Axis, spacing: Int, children: [_VNode])
     case zstack(children: [_VNode])
+    case shape(_ShapeNode)
     case padding(Int, _VNode)
     case button(id: _ActionID, isFocused: Bool, label: _VNode)
     case toggle(id: _ActionID, isFocused: Bool, isOn: Bool, label: _VNode)
@@ -53,4 +54,17 @@ indirect enum _VNode {
         value: String,
         items: [(id: _ActionID, isSelected: Bool, isFocused: Bool, label: String)]
     )
+}
+
+enum _ShapeKind: Hashable, Sendable {
+    case rectangle
+    case roundedRectangle(cornerRadius: Int)
+    case circle
+    case ellipse
+    case capsule
+    case path
+}
+
+struct _ShapeNode: Hashable, Sendable {
+    var kind: _ShapeKind
 }

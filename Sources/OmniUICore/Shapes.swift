@@ -24,7 +24,7 @@ public struct CGRect: Hashable, Sendable {
     }
 }
 
-public struct Path: Hashable, Sendable {
+public struct Path: Hashable, Sendable, Shape, _PrimitiveView {
     public enum Element: Hashable, Sendable {
         case move(to: CGPoint)
         case line(to: CGPoint)
@@ -46,6 +46,10 @@ public struct Path: Hashable, Sendable {
     public mutating func addRect(_ rect: CGRect) { elements.append(.rect(rect)) }
     public mutating func addEllipse(in rect: CGRect) { elements.append(.ellipse(rect)) }
     public mutating func closeSubpath() { elements.append(.closeSubpath) }
+
+    func _makeNode(_ ctx: inout _BuildContext) -> _VNode {
+        .shape(_ShapeNode(kind: .path))
+    }
 }
 
 public protocol Shape: View {}
@@ -53,7 +57,7 @@ public protocol Shape: View {}
 public struct Rectangle: Shape, _PrimitiveView {
     public typealias Body = Never
     public init() {}
-    func _makeNode(_ ctx: inout _BuildContext) -> _VNode { .text("Rectangle") }
+    func _makeNode(_ ctx: inout _BuildContext) -> _VNode { .shape(_ShapeNode(kind: .rectangle)) }
 }
 
 public struct RoundedRectangle: Shape, _PrimitiveView {
@@ -68,26 +72,28 @@ public struct RoundedRectangle: Shape, _PrimitiveView {
         self.cornerRadius = cornerRadius
     }
 
-    func _makeNode(_ ctx: inout _BuildContext) -> _VNode { .text("RoundedRectangle(\(Int(cornerRadius)))") }
+    func _makeNode(_ ctx: inout _BuildContext) -> _VNode {
+        .shape(_ShapeNode(kind: .roundedRectangle(cornerRadius: Int(cornerRadius))))
+    }
 }
 
 public struct Circle: Shape, _PrimitiveView {
     public typealias Body = Never
     public init() {}
-    func _makeNode(_ ctx: inout _BuildContext) -> _VNode { .text("Circle") }
+    func _makeNode(_ ctx: inout _BuildContext) -> _VNode { .shape(_ShapeNode(kind: .circle)) }
 }
 
 public struct Ellipse: Shape, _PrimitiveView {
     public typealias Body = Never
     public init() {}
-    func _makeNode(_ ctx: inout _BuildContext) -> _VNode { .text("Ellipse") }
+    func _makeNode(_ ctx: inout _BuildContext) -> _VNode { .shape(_ShapeNode(kind: .ellipse)) }
 }
 
 public struct Capsule: Shape, _PrimitiveView {
     public typealias Body = Never
     public init() {}
     public init(style: Any = ()) {}
-    func _makeNode(_ ctx: inout _BuildContext) -> _VNode { .text("Capsule") }
+    func _makeNode(_ ctx: inout _BuildContext) -> _VNode { .shape(_ShapeNode(kind: .capsule)) }
 }
 
 public struct FillStyle: Hashable, Sendable {
@@ -124,4 +130,3 @@ public extension Shape {
         _Passthrough(self)
     }
 }
-
