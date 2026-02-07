@@ -730,13 +730,11 @@ private func _renderBraille(
     fillFG: _NCRGB,
     strokeFG: _NCRGB
 ) {
-    func setCell(_ x: Int, _ y: Int, _ mask: UInt8, _ fg: _NCRGB) {
+    func setCell(_ x: Int, _ y: Int, _ ch: String, _ fg: _NCRGB, _ bg: _NCRGB) {
         guard x >= 0, y >= 0, x < termSize.width, y < termSize.height else { return }
-        guard mask != 0 else { return }
         let idx = y * termSize.width + x
         if !_isShapePlaceholderCell(curr[idx].ch) { return }
-        let scalar = UnicodeScalar(0x2800 + Int(mask))!
-        curr[idx] = _NCCell(ch: String(Character(scalar)), fg: fg, bg: baseBG)
+        curr[idx] = _NCCell(ch: ch, fg: fg, bg: bg)
     }
 
     func dotBit(_ sx: Int, _ sy: Int) -> UInt8 {
@@ -762,65 +760,125 @@ private func _renderBraille(
         let y1 = min(termSize.height, r.origin.y + r.size.height)
         guard x1 > x0, y1 > y0 else { continue }
 
-        let subW = (x1 - x0) * 2
-        let subH = (y1 - y0) * 4
+        // Rasterize at braille-dot resolution (2x4 per cell). For filled shapes, we:
+        // - paint fully-covered cells as spaces with filled background
+        // - paint partially-covered cells as braille dots with stroke foreground + filled background
+        // This yields a solid interior with a smooth-ish edge, instead of a noisy dotted fill.
+        let regionW = x1 - x0
+        let regionH = y1 - y0
+        let subW = regionW * 2
+        let subH = regionH * 4
         if subW <= 0 || subH <= 0 { continue }
 
-        var sub = Array(repeating: false, count: subW * subH)
-        func setSub(_ sx: Int, _ sy: Int) {
-            guard sx >= 0, sy >= 0, sx < subW, sy < subH else { return }
-            sub[sy * subW + sx] = true
+        func insideFilledShape(_ sx: Int, _ sy: Int) -> Bool {
+            // Use the center of the subpixel for sampling.
+            let x = Double(sx) + 0.5
+            let y = Double(sy) + 0.5
+            let w = Double(subW)
+            let h = Double(subH)
+
+            switch s.kind {
+            case .rectangle:
+                return true
+            case .roundedRectangle(let crCells):
+                let rx = max(1.0, Double(crCells) * 2.0)
+                let ry = max(1.0, Double(crCells) * 4.0)
+                return _insideRoundedRect(x: x, y: y, w: w, h: h, rx: rx, ry: ry)
+            case .capsule:
+                let rx = max(1.0, min(w, h) / 2.0)
+                let ry = rx
+                return _insideRoundedRect(x: x, y: y, w: w, h: h, rx: rx, ry: ry)
+            case .circle, .ellipse:
+                let cx = w / 2.0
+                let cy = h / 2.0
+                let rx = max(1.0, (w - 1.0) / 2.0)
+                let ry = max(1.0, (h - 1.0) / 2.0)
+                let dx = (x - cx) / rx
+                let dy = (y - cy) / ry
+                return (dx * dx + dy * dy) <= 1.0
+            case .path:
+                return false
+            }
         }
 
-        switch s.kind {
-        case .path:
+        // Fast path: stroke-only paths.
+        if s.kind == .path {
+            var sub = Array(repeating: false, count: subW * subH)
+            func setSub(_ sx: Int, _ sy: Int) {
+                guard sx >= 0, sy >= 0, sx < subW, sy < subH else { return }
+                sub[sy * subW + sx] = true
+            }
             if let elements = s.pathElements {
-                _strokePathBraille(
-                    elements: elements,
-                    subW: subW,
-                    subH: subH,
-                    set: setSub
-                )
+                _strokePathBraille(elements: elements, subW: subW, subH: subH, set: setSub)
             }
-        case .circle, .ellipse:
-            let cx = Double(subW - 1) / 2.0
-            let cy = Double(subH - 1) / 2.0
-            let rx = max(1.0, Double(subW - 1) / 2.0)
-            let ry = max(1.0, Double(subH - 1) / 2.0)
-            for sy in 0..<subH {
-                for sx in 0..<subW {
-                    let dx = (Double(sx) - cx) / rx
-                    let dy = (Double(sy) - cy) / ry
-                    if dx * dx + dy * dy <= 1.0 {
-                        setSub(sx, sy)
+            for cy in y0..<y1 {
+                for cx in x0..<x1 {
+                    var mask: UInt8 = 0
+                    let baseSX = (cx - x0) * 2
+                    let baseSY = (cy - y0) * 4
+                    for sy in 0..<4 {
+                        for sx in 0..<2 {
+                            if sub[(baseSY + sy) * subW + (baseSX + sx)] {
+                                mask |= dotBit(sx, sy)
+                            }
+                        }
                     }
+                    guard mask != 0 else { continue }
+                    let scalar = UnicodeScalar(0x2800 + Int(mask))!
+                    setCell(cx, cy, String(Character(scalar)), strokeFG, baseBG)
                 }
             }
-        case .rectangle, .roundedRectangle, .capsule:
-            // Filled rect-ish.
-            for sy in 0..<subH {
-                for sx in 0..<subW {
-                    setSub(sx, sy)
-                }
-            }
+            continue
         }
 
+        // Filled shapes.
         for cy in y0..<y1 {
             for cx in x0..<x1 {
+                var insideCount = 0
                 var mask: UInt8 = 0
                 let baseSX = (cx - x0) * 2
                 let baseSY = (cy - y0) * 4
                 for sy in 0..<4 {
                     for sx in 0..<2 {
-                        if sub[(baseSY + sy) * subW + (baseSX + sx)] {
+                        if insideFilledShape(baseSX + sx, baseSY + sy) {
+                            insideCount += 1
                             mask |= dotBit(sx, sy)
                         }
                     }
                 }
-                setCell(cx, cy, mask, s.kind == .path ? strokeFG : fillFG)
+                if insideCount == 0 {
+                    continue
+                } else if insideCount == 8 {
+                    setCell(cx, cy, " ", fillFG, fillFG) // solid fill via background; fg doesn't matter
+                } else {
+                    let scalar = UnicodeScalar(0x2800 + Int(mask))!
+                    setCell(cx, cy, String(Character(scalar)), strokeFG, fillFG)
+                }
             }
         }
     }
+}
+
+private func _insideRoundedRect(x: Double, y: Double, w: Double, h: Double, rx: Double, ry: Double) -> Bool {
+    // Standard rounded-rect: central rect + four quarter-ellipses.
+    let left = 0.0
+    let top = 0.0
+    let right = w
+    let bottom = h
+
+    let crx = min(rx, w / 2.0)
+    let cry = min(ry, h / 2.0)
+
+    // Central bands.
+    if (x >= left + crx && x <= right - crx) { return true }
+    if (y >= top + cry && y <= bottom - cry) { return true }
+
+    // Corner ellipses.
+    let cx = (x < left + crx) ? (left + crx) : (right - crx)
+    let cy = (y < top + cry) ? (top + cry) : (bottom - cry)
+    let dx = (x - cx) / max(1e-6, crx)
+    let dy = (y - cy) / max(1e-6, cry)
+    return (dx * dx + dy * dy) <= 1.0
 }
 
 private func _strokePathBraille(

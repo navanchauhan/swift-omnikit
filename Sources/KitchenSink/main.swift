@@ -1,6 +1,7 @@
 import OmniUI
 import OmniUICore
 import OmniUINotcursesRenderer
+import OmniUITerminalRenderer
 #if os(Linux)
 import Glibc
 #else
@@ -202,6 +203,15 @@ enum KitchenSinkMain {
             } catch {
                 // Don't crash the whole demo if the terminal doesn't support notcurses/terminfo.
                 fputs("Notcurses renderer failed: \(error)\nFalling back to debug renderer.\n", stderr)
+            }
+        }
+
+        if CommandLine.arguments.contains("--ansi") {
+            do {
+                try await TerminalApp { KitchenSinkRoot() }.run()
+                return
+            } catch {
+                fputs("ANSI renderer failed: \(error)\nFalling back to debug renderer.\n", stderr)
             }
         }
 

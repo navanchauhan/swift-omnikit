@@ -1,0 +1,453 @@
+import OmniUICore
+
+#if os(Linux)
+import Glibc
+#else
+import Darwin
+#endif
+
+public enum OmniUITerminalRendererError: Error {
+    case notATerminal
+}
+
+/// ANSI/VT-based renderer with a differential cell cache.
+///
+/// This is intentionally minimal: it renders OmniUICore's `DebugSnapshot` grid and provides
+/// basic keyboard + mouse (SGR) input without depending on notcurses.
+public struct TerminalApp<V: View> {
+    let root: () -> V
+
+    public init(root: @escaping () -> V) {
+        self.root = root
+    }
+
+    @MainActor
+    public func run() async throws {
+        let runtime = _UIRuntime()
+
+        guard isatty(STDIN_FILENO) != 0, isatty(STDOUT_FILENO) != 0 else {
+            throw OmniUITerminalRendererError.notATerminal
+        }
+
+        var term = try _TerminalSession()
+        defer { term.restore() }
+
+        var prev: [_Cell]? = nil
+
+        while !Task.isCancelled {
+            let size = _terminalSize()
+            let snapshot = runtime.debugRender(root(), size: size)
+
+            let baseFG = _RGB(r: 0xD8, g: 0xDB, b: 0xE2)
+            let baseBG = _RGB(r: 0x0B, g: 0x10, b: 0x20)
+            let focusFG = _RGB(r: 0xFF, g: 0xFF, b: 0xFF)
+            let focusBG = _RGB(r: 0x1D, g: 0x4E, b: 0xD8)
+            let accentFG = _RGB(r: 0x34, g: 0xD3, b: 0x99)
+            let shapeFillBG = _RGB(r: 0x12, g: 0x1B, b: 0x33)
+            let borderFG = _RGB(r: 0xF2, g: 0xF4, b: 0xF8)
+
+            let focusRect = snapshot.focusedRect
+
+            var curr = Array(repeating: _Cell(ch: " ", fg: baseFG, bg: baseBG), count: size.width * size.height)
+            let lineChars: [[Character]] = snapshot.lines.map { Array($0) }
+            for y in 0..<size.height {
+                guard y < lineChars.count else { break }
+                let chars = lineChars[y]
+                for x in 0..<min(size.width, chars.count) {
+                    let c = chars[x]
+                    let left = x > 0 ? chars[x - 1] : nil
+                    let right = x + 1 < chars.count ? chars[x + 1] : nil
+                    let up: Character? = (y > 0 && y - 1 < lineChars.count) ? lineChars[y - 1][safe: x] : nil
+                    let down: Character? = (y + 1 < lineChars.count) ? lineChars[y + 1][safe: x] : nil
+                    let mapped = _boxify(c, left: left, right: right, up: up, down: down)
+
+                    var fg = baseFG
+                    var bg = baseBG
+
+                    if let fr = focusRect, fr.contains(_Point(x: x, y: y)) {
+                        fg = focusFG
+                        bg = focusBG
+                    } else if mapped == "*" {
+                        fg = accentFG
+                    } else if mapped == "·" {
+                        fg = baseFG
+                        bg = shapeFillBG
+                    } else if _isBorderGlyph(mapped) {
+                        fg = borderFG
+                    }
+
+                    let ch: String = (mapped == "·") ? " " : String(mapped)
+                    curr[y * size.width + x] = _Cell(ch: ch, fg: fg, bg: bg)
+                }
+            }
+
+            let changed: [(Int, _Cell)]
+            if let prev {
+                changed = curr.enumerated().compactMap { i, c in prev[i] == c ? nil : (i, c) }
+            } else {
+                term.write("\u{001B}[2J\u{001B}[H") // clear + home
+                changed = curr.enumerated().map { ($0.offset, $0.element) }
+            }
+
+            var penFG: _RGB? = nil
+            var penBG: _RGB? = nil
+            var penX = 0
+            var penY = 0
+            for (idx, cell) in changed {
+                let y = idx / size.width
+                let x = idx % size.width
+                if x != penX || y != penY {
+                    term.write(_move(row: y + 1, col: x + 1))
+                    penX = x
+                    penY = y
+                }
+                if penFG != cell.fg {
+                    term.write(_fg(cell.fg))
+                    penFG = cell.fg
+                }
+                if penBG != cell.bg {
+                    term.write(_bg(cell.bg))
+                    penBG = cell.bg
+                }
+                term.write(cell.ch)
+                penX += 1
+            }
+
+            prev = curr
+
+            // Drain input.
+            while let ev = term.pollEvent() {
+                switch ev {
+                case .quit:
+                    return
+                case .esc:
+                    if runtime.hasExpandedPicker() {
+                        runtime.collapseExpandedPicker()
+                    } else {
+                        return
+                    }
+                case .tab(let shift):
+                    if shift {
+                        if runtime.hasExpandedPicker() { runtime.focusPrevWithinExpandedPicker() }
+                        else { runtime.focusPrev() }
+                    } else {
+                        if runtime.hasExpandedPicker() { runtime.focusNextWithinExpandedPicker() }
+                        else { runtime.focusNext() }
+                    }
+                case .up:
+                    if runtime.hasExpandedPicker() { runtime.focusPrevWithinExpandedPicker() }
+                    else { runtime.focusPrev() }
+                case .down:
+                    if runtime.hasExpandedPicker() { runtime.focusNextWithinExpandedPicker() }
+                    else { runtime.focusNext() }
+                case .enter:
+                    runtime.activateFocused()
+                case .backspace:
+                    if runtime.isTextEditingFocused() {
+                        runtime._handleKeyPress(8)
+                    } else if runtime.canPopNavigation() {
+                        runtime.popNavigation()
+                    }
+                case .char(let u):
+                    if runtime.isTextEditingFocused() || u != 32 {
+                        runtime._handleKeyPress(u)
+                    } else {
+                        runtime.activateFocused()
+                    }
+                case .mouse(let x, let y, let kind):
+                    switch kind {
+                    case .leftDown:
+                        snapshot.click(x: x, y: y)
+                    case .wheelUp:
+                        snapshot.scroll(x: x, y: y, deltaY: -1)
+                    case .wheelDown:
+                        snapshot.scroll(x: x, y: y, deltaY: 1)
+                    }
+                }
+            }
+
+            try await Task.sleep(nanoseconds: 16_000_000)
+        }
+    }
+}
+
+private struct _TerminalSession {
+    private var orig = termios()
+    private var nonblockingWasSet = false
+    private var input = _InputParser()
+
+    init() throws {
+        // Save tty mode.
+        if tcgetattr(STDIN_FILENO, &orig) != 0 {
+            throw OmniUITerminalRendererError.notATerminal
+        }
+
+        var raw = orig
+        // Raw-ish mode, but keep ISIG so Ctrl+C still works.
+        raw.c_lflag &= ~tcflag_t(ECHO | ICANON | IEXTEN)
+        raw.c_iflag &= ~tcflag_t(IXON | ICRNL | INLCR)
+        raw.c_oflag &= ~tcflag_t(OPOST)
+        _setCC(&raw, VMIN, 0)
+        _setCC(&raw, VTIME, 0)
+
+        _ = tcsetattr(STDIN_FILENO, TCSANOW, &raw)
+
+        // Nonblocking stdin.
+        let flags = fcntl(STDIN_FILENO, F_GETFL, 0)
+        if flags >= 0 {
+            _ = fcntl(STDIN_FILENO, F_SETFL, flags | O_NONBLOCK)
+            nonblockingWasSet = true
+        }
+
+        // Enter alt screen, clear, hide cursor. Enable SGR mouse reporting.
+        write("\u{001B}[?1049h\u{001B}[2J\u{001B}[H\u{001B}[?25l\u{001B}[?1000h\u{001B}[?1006h")
+    }
+
+    func restore() {
+        // Disable mouse, show cursor, reset attrs, leave alt screen.
+        write("\u{001B}[?1000l\u{001B}[?1006l\u{001B}[0m\u{001B}[?25h\u{001B}[?1049l")
+        var o = orig
+        _ = tcsetattr(STDIN_FILENO, TCSANOW, &o)
+        if nonblockingWasSet {
+            let flags = fcntl(STDIN_FILENO, F_GETFL, 0)
+            if flags >= 0 {
+                _ = fcntl(STDIN_FILENO, F_SETFL, flags & ~O_NONBLOCK)
+            }
+        }
+    }
+
+    func write(_ s: String) {
+        s.withCString { _ = _sysWrite(STDOUT_FILENO, $0, strlen($0)) }
+    }
+
+    mutating func pollEvent() -> _Event? {
+        var buf = [UInt8](repeating: 0, count: 4096)
+        while true {
+            let n = _sysRead(STDIN_FILENO, &buf, buf.count)
+            if n > 0 {
+                input.push(buf[0..<n])
+            } else {
+                break
+            }
+        }
+        return input.next()
+    }
+}
+
+private enum _MouseKind {
+    case leftDown
+    case wheelUp
+    case wheelDown
+}
+
+private enum _Event {
+    case quit
+    case esc
+    case tab(shift: Bool)
+    case up
+    case down
+    case enter
+    case backspace
+    case char(UInt32)
+    case mouse(x: Int, y: Int, kind: _MouseKind)
+}
+
+private struct _InputParser {
+    private var bytes: [UInt8] = []
+
+    mutating func push(_ chunk: ArraySlice<UInt8>) {
+        bytes.append(contentsOf: chunk)
+    }
+
+    mutating func next() -> _Event? {
+        if bytes.isEmpty { return nil }
+        let b = bytes.removeFirst()
+
+        // Quit.
+        if b == UInt8(ascii: "q") { return .quit }
+
+        // Control keys.
+        if b == 9 { return .tab(shift: false) }
+        if b == 13 || b == 10 { return .enter }
+        if b == 127 || b == 8 { return .backspace }
+
+        if b == 0x1B {
+            // ESC sequences. If no more bytes, treat as ESC.
+            guard let n0 = bytes.first else { return .esc }
+            if n0 == UInt8(ascii: "[") {
+                // CSI.
+                bytes.removeFirst()
+                // Shift+Tab is ESC [ Z
+                if let z = bytes.first, z == UInt8(ascii: "Z") {
+                    bytes.removeFirst()
+                    return .tab(shift: true)
+                }
+                // Arrow keys ESC [ A/B
+                if let a = bytes.first, a == UInt8(ascii: "A") {
+                    bytes.removeFirst()
+                    return .up
+                }
+                if let b = bytes.first, b == UInt8(ascii: "B") {
+                    bytes.removeFirst()
+                    return .down
+                }
+
+                // SGR mouse: ESC [ < b ; x ; y M/m
+                if let lt = bytes.first, lt == UInt8(ascii: "<") {
+                    bytes.removeFirst()
+                    if let (code, x, y, upDown) = _parseSGRMouse(&bytes) {
+                        let kind: _MouseKind?
+                        switch code {
+                        case 0: kind = upDown ? nil : .leftDown
+                        case 64: kind = .wheelUp
+                        case 65: kind = .wheelDown
+                        default: kind = nil
+                        }
+                        if let kind {
+                            return .mouse(x: x - 1, y: y - 1, kind: kind)
+                        }
+                    }
+                    return nil
+                }
+
+                return .esc
+            }
+            return .esc
+        }
+
+        // UTF-8 (minimal): treat bytes < 0x80 as scalar.
+        if b < 0x80 {
+            return .char(UInt32(b))
+        }
+
+        return nil
+    }
+}
+
+private func _parseSGRMouse(_ bytes: inout [UInt8]) -> (Int, Int, Int, Bool)? {
+    func parseInt() -> Int? {
+        var v = 0
+        var seen = false
+        while let b = bytes.first {
+            if b >= UInt8(ascii: "0"), b <= UInt8(ascii: "9") {
+                bytes.removeFirst()
+                v = v * 10 + Int(b - UInt8(ascii: "0"))
+                seen = true
+            } else {
+                break
+            }
+        }
+        return seen ? v : nil
+    }
+
+    guard let code = parseInt() else { return nil }
+    guard bytes.first == UInt8(ascii: ";") else { return nil }
+    bytes.removeFirst()
+    guard let x = parseInt() else { return nil }
+    guard bytes.first == UInt8(ascii: ";") else { return nil }
+    bytes.removeFirst()
+    guard let y = parseInt() else { return nil }
+    guard let end = bytes.first else { return nil }
+    bytes.removeFirst()
+    if end == UInt8(ascii: "M") { return (code, x, y, false) }
+    if end == UInt8(ascii: "m") { return (code, x, y, true) }
+    return nil
+}
+
+private struct _RGB: Equatable {
+    var r: UInt8
+    var g: UInt8
+    var b: UInt8
+}
+
+private struct _Cell: Equatable {
+    var ch: String
+    var fg: _RGB
+    var bg: _RGB
+}
+
+private func _fg(_ c: _RGB) -> String { "\u{001B}[38;2;\(c.r);\(c.g);\(c.b)m" }
+private func _bg(_ c: _RGB) -> String { "\u{001B}[48;2;\(c.r);\(c.g);\(c.b)m" }
+private func _move(row: Int, col: Int) -> String { "\u{001B}[\(row);\(col)H" }
+
+private func _terminalSize() -> _Size {
+    var ws = winsize()
+    if ioctl(STDOUT_FILENO, TIOCGWINSZ, &ws) == 0 {
+        let w = max(1, Int(ws.ws_col))
+        let h = max(1, Int(ws.ws_row))
+        return _Size(width: w, height: h)
+    }
+    return _Size(width: 80, height: 24)
+}
+
+private func _sysWrite(_ fd: Int32, _ p: UnsafePointer<CChar>, _ n: Int) -> Int {
+    #if os(Linux)
+    return Glibc.write(fd, p, n)
+    #else
+    return Darwin.write(fd, p, n)
+    #endif
+}
+
+private func _sysRead(_ fd: Int32, _ buf: inout [UInt8], _ n: Int) -> Int {
+    return buf.withUnsafeMutableBytes { raw in
+        guard let base = raw.baseAddress else { return -1 }
+        #if os(Linux)
+        return Glibc.read(fd, base, n)
+        #else
+        return Darwin.read(fd, base, n)
+        #endif
+    }
+}
+
+private func _setCC(_ t: inout termios, _ idx: Int32, _ value: cc_t) {
+    withUnsafeMutablePointer(to: &t.c_cc) { ccp in
+        ccp.withMemoryRebound(to: cc_t.self, capacity: Int(NCCS)) { ptr in
+            ptr[Int(idx)] = value
+        }
+    }
+}
+
+private extension Array {
+    subscript(safe idx: Int) -> Element? {
+        guard idx >= 0, idx < count else { return nil }
+        return self[idx]
+    }
+}
+
+private func _isBorderGlyph(_ c: Character) -> Bool {
+    switch c {
+    case "┌", "┐", "└", "┘", "┬", "┴", "├", "┤", "┼", "─", "│",
+         "╭", "╮", "╰", "╯", "═", "║", "╬", "╦", "╩", "╠", "╣":
+        return true
+    default:
+        return false
+    }
+}
+
+private func _boxify(_ c: Character, left: Character?, right: Character?, up: Character?, down: Character?) -> Character {
+    switch c {
+    case "|":
+        return "│"
+    case "-":
+        return "─"
+    case "+":
+        let l = (left == "-" || left == "+")
+        let r = (right == "-" || right == "+")
+        let u = (up == "|" || up == "+")
+        let d = (down == "|" || down == "+")
+        if r && d && !l && !u { return "┌" }
+        if l && d && !r && !u { return "┐" }
+        if r && u && !l && !d { return "└" }
+        if l && u && !r && !d { return "┘" }
+        if l && r && d && !u { return "┬" }
+        if l && r && u && !d { return "┴" }
+        if u && d && r && !l { return "├" }
+        if u && d && l && !r { return "┤" }
+        if (l || r) && (u || d) { return "┼" }
+        if l || r { return "─" }
+        if u || d { return "│" }
+        return "┼"
+    default:
+        return c
+    }
+}
