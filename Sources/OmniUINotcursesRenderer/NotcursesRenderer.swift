@@ -43,6 +43,7 @@ public struct NotcursesApp<V: View> {
             omni_restore_terminal()
             if !userRequestedExit, let exitNote {
                 fputs("OmniUI notcurses renderer exited: \(exitNote)\n", stderr)
+                fflush(stderr)
             }
         }
 
@@ -101,6 +102,7 @@ public struct NotcursesApp<V: View> {
             let cellpix = _ncCellPix(nc)
             let canSprixel: Bool = {
                 guard let cellpix else { return false }
+                if notcurses_check_pixel_support(nc) == NCPIXEL_NONE { return false }
                 return cellpix.cdimx > 0 && cellpix.cdimy > 0 && cellpix.maxpixelx > 0 && cellpix.maxpixely > 0
             }()
 
@@ -131,7 +133,7 @@ public struct NotcursesApp<V: View> {
 
                 if let p = sprixelPlane {
                     ncplane_erase(p)
-                    _renderSprixels(
+                    let ok = _renderSprixels(
                         nc: nc,
                         plane: p,
                         termSize: _Size(width: width, height: height),
@@ -140,6 +142,11 @@ public struct NotcursesApp<V: View> {
                         fill: shapeFillBG,
                         stroke: borderFG
                     )
+                    if !ok {
+                        ncplane_destroy(p)
+                        sprixelPlane = nil
+                        sprixelPlaneSize = (0, 0)
+                    }
                 }
             } else {
                 // No pixel support; tear down any existing sprixel plane so it can't leave artifacts.
@@ -384,10 +391,10 @@ private func _renderSprixels(
     shapes: [(_Rect, _ShapeNode)],
     fill: _NCRGB,
     stroke: _NCRGB
-) {
+) -> Bool {
     let pixelW = min(termSize.width * cellpix.cdimx, cellpix.maxpixelx)
     let pixelH = min(termSize.height * cellpix.cdimy, cellpix.maxpixely)
-    guard pixelW > 0, pixelH > 0 else { return }
+    guard pixelW > 0, pixelH > 0 else { return false }
 
     // Transparent canvas; we only paint inside shape regions.
     var rgba = Array(repeating: UInt8(0), count: pixelW * pixelH * 4)
@@ -538,6 +545,7 @@ private func _renderSprixels(
         }
     }
 
+    var ok = false
     rgba.withUnsafeBytes { bytes in
         guard let base = bytes.baseAddress else { return }
         guard let ncv = ncvisual_from_rgba(base, Int32(pixelH), Int32(pixelW * 4), Int32(pixelW)) else { return }
@@ -558,8 +566,15 @@ private func _renderSprixels(
         vopts.pxoffy = 0
         vopts.pxoffx = 0
 
-        _ = ncvisual_blit(nc, ncv, &vopts)
+        ok = (ncvisual_blit(nc, ncv, &vopts) != nil)
     }
+
+    // If pixel support is present, ncvisual_blit should succeed. A NULL return indicates
+    // the environment couldn't actually accept NCBLIT_PIXEL (or a hard error occurred).
+    // We treat this as "sprixels unsupported" and fall back.
+    //
+    // Note: errors can still occur later, but this avoids drawing garbage.
+    return ok
 }
 
 private func _fillRoundedRect(

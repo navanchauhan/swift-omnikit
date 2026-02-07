@@ -52,9 +52,9 @@ public struct ScrollView<Content: View>: View, _PrimitiveView {
         let controlPath = ctx.path
         let isFocused = runtime._isFocused(path: controlPath)
 
-        // Click-to-focus so scroll wheels can be routed predictably.
-        let id = runtime._registerAction({ runtime._setFocus(path: controlPath) }, path: actionScopePath)
-        runtime._registerFocusable(path: controlPath, activate: id)
+        // ScrollView is a container; it should not participate in tab focus order.
+        // Wheel routing uses `scrollRegions` hit-testing and does not require focus.
+        let id = runtime._registerAction({}, path: actionScopePath)
 
         let axis: _Axis = axes.contains(.horizontal) && !axes.contains(.vertical) ? .horizontal : .vertical
         let offset = runtime._getScrollOffset(path: controlPath)

@@ -243,6 +243,12 @@ public final class _UIRuntime: @unchecked Sendable {
             return _makeNode(root, &local)
         }
 
+        // If nothing is focused yet, default focus to the first focusable control.
+        // This prevents "no focus highlight until interaction" and makes keyboard UX predictable.
+        if runtime.focusedPath == nil, let first = runtime.focusOrder.first {
+            runtime._setFocus(path: first)
+        }
+
         let laidOut = _DebugLayout.layout(node: node, in: _Rect(origin: _Point(x: 0, y: 0), size: size))
         let focusedRect: _Rect? = {
             guard let raw = focusedActionRawID() else { return nil }
