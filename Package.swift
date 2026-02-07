@@ -18,6 +18,22 @@ let package = Package(
             name: "OmniKit",
             targets: ["OmniKit"]
         ),
+        .library(
+            name: "OmniUICore",
+            targets: ["OmniUICore"]
+        ),
+        .library(
+            name: "OmniUI",
+            targets: ["OmniUI"]
+        ),
+        .library(
+            name: "OmniUINotcursesRenderer",
+            targets: ["OmniUINotcursesRenderer"]
+        ),
+        .executable(
+            name: "KitchenSink",
+            targets: ["KitchenSink"]
+        ),
     ],
     targets: [
         // Targets are the basic building blocks of a package, defining a module or a test suite.
@@ -30,9 +46,71 @@ let package = Package(
                 .unsafeFlags(["-enable-actor-data-race-checks"], .when(configuration: .debug)),
             ]
         ),
+        .target(
+            name: "OmniUICore",
+            swiftSettings: [
+                .unsafeFlags(["-warn-concurrency", "-strict-concurrency=complete"]),
+                .unsafeFlags(["-enable-actor-data-race-checks"], .when(configuration: .debug)),
+            ]
+        ),
+        .target(
+            name: "OmniUI",
+            dependencies: ["OmniUICore"],
+            swiftSettings: [
+                .unsafeFlags(["-warn-concurrency", "-strict-concurrency=complete"]),
+                .unsafeFlags(["-enable-actor-data-race-checks"], .when(configuration: .debug)),
+            ]
+        ),
+        .target(
+            name: "CNotcurses",
+            path: "Sources/CNotcurses",
+            publicHeadersPath: "include",
+            cSettings: [
+                // SwiftPM only accepts relative `headerSearchPath`, so use explicit `-I` flags.
+                // Homebrew (Apple Silicon default prefix).
+                .unsafeFlags(["-I/opt/homebrew/opt/notcurses/include"], .when(platforms: [.macOS])),
+                // Homebrew (Intel default prefix).
+                .unsafeFlags(["-I/usr/local/include"], .when(platforms: [.macOS])),
+                // Common Linux include prefix for distro packages.
+                .unsafeFlags(["-I/usr/include"], .when(platforms: [.linux])),
+            ]
+        ),
+        .target(
+            name: "OmniUINotcursesRenderer",
+            dependencies: [
+                "OmniUICore",
+                .target(name: "CNotcurses", condition: .when(platforms: [.linux, .macOS])),
+            ],
+            swiftSettings: [
+                .unsafeFlags(["-warn-concurrency", "-strict-concurrency=complete"]),
+                .unsafeFlags(["-enable-actor-data-race-checks"], .when(configuration: .debug)),
+                // Make notcurses headers visible to the Swift compiler when importing the Clang module.
+                .unsafeFlags(["-Xcc", "-I/opt/homebrew/opt/notcurses/include"], .when(platforms: [.macOS])),
+                .unsafeFlags(["-Xcc", "-I/usr/local/include"], .when(platforms: [.macOS])),
+                .unsafeFlags(["-Xcc", "-I/usr/include"], .when(platforms: [.linux])),
+            ],
+            linkerSettings: [
+                .linkedLibrary("notcurses", .when(platforms: [.linux, .macOS])),
+                .linkedLibrary("notcurses-core", .when(platforms: [.linux, .macOS])),
+                .unsafeFlags(["-L/opt/homebrew/opt/notcurses/lib"], .when(platforms: [.macOS])),
+                .unsafeFlags(["-L/usr/local/lib"], .when(platforms: [.macOS])),
+            ]
+        ),
+        .executableTarget(
+            name: "KitchenSink",
+            dependencies: ["OmniUI", "OmniUINotcursesRenderer"],
+            swiftSettings: [
+                .unsafeFlags(["-warn-concurrency", "-strict-concurrency=complete"]),
+                .unsafeFlags(["-enable-actor-data-race-checks"], .when(configuration: .debug)),
+            ]
+        ),
         .testTarget(
             name: "OmniKitTests",
             dependencies: ["OmniKit"]
+        ),
+        .testTarget(
+            name: "OmniUICoreTests",
+            dependencies: ["OmniUICore"]
         ),
     ],
     swiftLanguageModes: [.v6]

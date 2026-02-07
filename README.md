@@ -8,7 +8,7 @@ OmniKit is my highly opinionated ultimate personal Swift Library. Swift 6.0+ wit
 
 ## OmniUI
 
-Drop in SwiftUI replacement bringing my SwiftUI apps to other platforms.
+Drop in SwiftUI replacement bringing my SwiftUI apps to other platforms. Simply changing `import SwiftUI` to `import OmniUI` will get your apps running on another renderer.
 
 ### OmniUICore
 
@@ -30,6 +30,10 @@ GTK Renderer using Adwaita theme pack
 ### OmniUIWeb
 
 Render to web with opionated styling so you can bring your SwiftUI apps to the web while still looking pretty jazzy.
+
+### OmniUILVGL
+
+LVGL renderer
 
 ## OmniAI
 
