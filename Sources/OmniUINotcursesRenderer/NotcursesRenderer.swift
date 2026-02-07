@@ -76,6 +76,8 @@ public struct NotcursesApp<V: View> {
             let focusFG = _NCRGB(r: 0xFF, g: 0xFF, b: 0xFF)
             let focusBG = _NCRGB(r: 0x1D, g: 0x4E, b: 0xD8)
             let accentFG = _NCRGB(r: 0x34, g: 0xD3, b: 0x99)
+            let shapeFillBG = _NCRGB(r: 0x12, g: 0x1B, b: 0x33)
+            let borderFG = _NCRGB(r: 0xF2, g: 0xF4, b: 0xF8)
 
             let focusRect = snapshot.focusedRect
 
@@ -100,9 +102,16 @@ public struct NotcursesApp<V: View> {
                         bg = focusBG
                     } else if mapped == "*" {
                         fg = accentFG
+                    } else if mapped == "·" {
+                        // Shape fill token: render as a space with filled background.
+                        fg = baseFG
+                        bg = shapeFillBG
+                    } else if _isBorderGlyph(mapped) {
+                        fg = borderFG
                     }
 
-                    curr[y * width + x] = _NCCell(ch: String(mapped), fg: fg, bg: bg)
+                    let ch: String = (mapped == "·") ? " " : String(mapped)
+                    curr[y * width + x] = _NCCell(ch: ch, fg: fg, bg: bg)
                 }
             }
 
@@ -248,6 +257,16 @@ private struct _NCCell: Equatable {
     var ch: String
     var fg: _NCRGB
     var bg: _NCRGB
+}
+
+private func _isBorderGlyph(_ c: Character) -> Bool {
+    switch c {
+    case "┌", "┐", "└", "┘", "┬", "┴", "├", "┤", "┼", "─", "│",
+         "╭", "╮", "╰", "╯", "═", "║", "╬", "╦", "╩", "╠", "╣":
+        return true
+    default:
+        return false
+    }
 }
 
 private func _boxify(_ c: Character, left: Character?, right: Character?, up: Character?, down: Character?) -> Character {

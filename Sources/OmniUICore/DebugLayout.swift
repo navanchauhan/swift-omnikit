@@ -126,10 +126,13 @@ enum _DebugLayout {
             return _Size(width: min(s.count, maxSize.width), height: 1)
 
         case .shape(let shape):
-            // Render small glyphs for shapes. This isn't geometric, but it gives a real visual.
-            // Target size: 7x3 (clipped by maxSize).
-            let w = min(maxSize.width, 7)
-            let h = min(maxSize.height, 3)
+            // Render shapes using border glyphs plus a fill token.
+            // The notcurses renderer maps the fill token to a real background fill, so the
+            // interior becomes solid without printing noisy characters.
+            //
+            // Target size: 11x5 (clipped by maxSize).
+            let w = min(maxSize.width, 11)
+            let h = min(maxSize.height, 5)
             guard w > 0, h > 0 else { return _Size(width: 0, height: 0) }
 
             func putLine(_ y: Int, _ s: String) {
@@ -139,55 +142,82 @@ enum _DebugLayout {
                 }
             }
 
+            let fill = "·" // fill token, styled by notcurses
+            let innerW = max(0, w - 2)
+
             switch shape.kind {
             case .rectangle:
-                if h >= 3 {
-                    putLine(0, "┌" + String(repeating: "─", count: max(0, w - 2)) + "┐")
-                    putLine(1, "│" + String(repeating: "█", count: max(0, w - 2)) + "│")
-                    putLine(2, "└" + String(repeating: "─", count: max(0, w - 2)) + "┘")
-                } else if h == 2 {
-                    putLine(0, "┌" + String(repeating: "─", count: max(0, w - 2)) + "┐")
-                    putLine(1, "└" + String(repeating: "─", count: max(0, w - 2)) + "┘")
+                if h >= 2 {
+                    putLine(0, "┌" + String(repeating: "─", count: innerW) + "┐")
+                    if h > 2 {
+                        for y in 1..<(h - 1) {
+                            putLine(y, "│" + String(repeating: fill, count: innerW) + "│")
+                        }
+                        putLine(h - 1, "└" + String(repeating: "─", count: innerW) + "┘")
+                    } else {
+                        putLine(1, "└" + String(repeating: "─", count: innerW) + "┘")
+                    }
                 } else {
-                    putLine(0, String(repeating: "█", count: w))
+                    putLine(0, String(repeating: fill, count: w))
                 }
             case .roundedRectangle:
-                if h >= 3 {
-                    putLine(0, "╭" + String(repeating: "─", count: max(0, w - 2)) + "╮")
-                    putLine(1, "│" + String(repeating: "█", count: max(0, w - 2)) + "│")
-                    putLine(2, "╰" + String(repeating: "─", count: max(0, w - 2)) + "╯")
+                if h >= 2 {
+                    putLine(0, "╭" + String(repeating: "─", count: innerW) + "╮")
+                    if h > 2 {
+                        for y in 1..<(h - 1) {
+                            putLine(y, "│" + String(repeating: fill, count: innerW) + "│")
+                        }
+                        putLine(h - 1, "╰" + String(repeating: "─", count: innerW) + "╯")
+                    } else {
+                        putLine(1, "╰" + String(repeating: "─", count: innerW) + "╯")
+                    }
                 } else {
-                    putLine(0, "╭" + String(repeating: "─", count: max(0, w - 2)) + "╮")
+                    putLine(0, "╭" + String(repeating: "─", count: innerW) + "╮")
                 }
             case .circle:
-                if h >= 3 && w >= 5 {
-                    putLine(0, "  ◜" + String(repeating: "─", count: max(0, w - 4)) + "◝")
-                    putLine(1, " ◟" + String(repeating: "█", count: max(0, w - 4)) + "◞ ")
-                    putLine(2, "  ◟" + String(repeating: "─", count: max(0, w - 4)) + "◞")
+                if h >= 5 && w >= 7 {
+                    putLine(0, "  ╭" + String(repeating: "─", count: max(0, w - 6)) + "╮  ")
+                    putLine(1, " ╭" + String(repeating: fill, count: max(0, w - 4)) + "╮ ")
+                    putLine(2, " │" + String(repeating: fill, count: max(0, w - 4)) + "│ ")
+                    putLine(3, " ╰" + String(repeating: fill, count: max(0, w - 4)) + "╯ ")
+                    putLine(4, "  ╰" + String(repeating: "─", count: max(0, w - 6)) + "╯  ")
                 } else {
                     putLine(0, "◯")
                 }
             case .ellipse:
-                if h >= 3 && w >= 5 {
-                    putLine(0, "  ⟮" + String(repeating: "─", count: max(0, w - 4)) + "⟯")
-                    putLine(1, " ⟮" + String(repeating: "█", count: max(0, w - 4)) + "⟯ ")
-                    putLine(2, "  ⟮" + String(repeating: "─", count: max(0, w - 4)) + "⟯")
+                if h >= 5 && w >= 9 {
+                    putLine(0, "  ╭" + String(repeating: "─", count: max(0, w - 6)) + "╮  ")
+                    putLine(1, "╭" + String(repeating: fill, count: max(0, w - 2)) + "╮")
+                    putLine(2, "│" + String(repeating: fill, count: max(0, w - 2)) + "│")
+                    putLine(3, "╰" + String(repeating: fill, count: max(0, w - 2)) + "╯")
+                    putLine(4, "  ╰" + String(repeating: "─", count: max(0, w - 6)) + "╯  ")
                 } else {
                     putLine(0, "⬭")
                 }
             case .capsule:
-                if h >= 3 && w >= 5 {
-                    putLine(0, "⟮" + String(repeating: "█", count: max(0, w - 2)) + "⟯")
-                    putLine(1, "⟮" + String(repeating: "█", count: max(0, w - 2)) + "⟯")
-                    putLine(2, "⟮" + String(repeating: "█", count: max(0, w - 2)) + "⟯")
+                if h >= 3 && w >= 7 {
+                    putLine(0, "╭" + String(repeating: "─", count: innerW) + "╮")
+                    for y in 1..<(h - 1) {
+                        putLine(y, "│" + String(repeating: fill, count: innerW) + "│")
+                    }
+                    putLine(h - 1, "╰" + String(repeating: "─", count: innerW) + "╯")
                 } else {
-                    putLine(0, "⟮█⟯")
+                    putLine(0, "Capsule")
                 }
             case .path:
                 if h >= 3 && w >= 7 {
-                    putLine(0, "╲     ╱")
-                    putLine(1, " ╲   ╱ ")
-                    putLine(2, "  ╲ ╱  ")
+                    // Simple "mountain" polyline.
+                    putLine(0, "      ╱╲     ")
+                    if h > 2 {
+                        putLine(1, "    ╱" + String(repeating: fill, count: max(0, w - 8)) + "╲   ")
+                    }
+                    if h > 3 {
+                        putLine(2, "  ╱" + String(repeating: fill, count: max(0, w - 6)) + "╲  ")
+                    }
+                    if h > 4 {
+                        putLine(3, "╱" + String(repeating: fill, count: max(0, w - 2)) + "╲")
+                        putLine(4, String(repeating: "─", count: w))
+                    }
                 } else {
                     putLine(0, "Path")
                 }
@@ -236,7 +266,7 @@ enum _DebugLayout {
                     let s = _DebugLayout.imageString(name)
                     return _Size(width: min(s.count, maxSize.width), height: 1)
                 case .shape:
-                    return _Size(width: min(maxSize.width, 7), height: min(maxSize.height, 3))
+                    return _Size(width: min(maxSize.width, 11), height: min(maxSize.height, 5))
                 case .spacer:
                     return _Size(width: 0, height: 0)
                 case .padding(let amount, let child):
@@ -476,7 +506,7 @@ enum _DebugLayout {
                         let s = _DebugLayout.imageString(name)
                         return _Size(width: min(s.count, maxSize.width), height: 1)
                     case .shape:
-                        return _Size(width: min(maxSize.width, 7), height: min(maxSize.height, 3))
+                        return _Size(width: min(maxSize.width, 11), height: min(maxSize.height, 5))
                     case .spacer: return _Size(width: 0, height: 0)
                     case .padding(let amount, let child):
                         let inner = _Size(width: max(0, maxSize.width - amount * 2), height: max(0, maxSize.height - amount * 2))
