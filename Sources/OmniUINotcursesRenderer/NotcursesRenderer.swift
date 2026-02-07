@@ -45,6 +45,7 @@ public struct NotcursesApp<V: View> {
         // We install our own signal handlers; leave terminal line signals enabled.
 
         let runtime = _UIRuntime()
+        var prev: [_NCCell]? = nil
         let q: UInt32 = 113
         let esc: UInt32 = omni_nckey_esc()
         let backspace: UInt32 = omni_nckey_backspace()
@@ -70,16 +71,72 @@ public struct NotcursesApp<V: View> {
 
             let snapshot = runtime.debugRender(root(), size: _Size(width: width, height: height))
 
-            ncplane_erase(stdplane)
+            let baseFG = _NCRGB(r: 0xD8, g: 0xDB, b: 0xE2)
+            let baseBG = _NCRGB(r: 0x0B, g: 0x10, b: 0x20)
+            let focusFG = _NCRGB(r: 0xFF, g: 0xFF, b: 0xFF)
+            let focusBG = _NCRGB(r: 0x1D, g: 0x4E, b: 0xD8)
+            let accentFG = _NCRGB(r: 0x34, g: 0xD3, b: 0x99)
 
+            let focusRect = snapshot.focusedRect
+
+            var curr = Array(repeating: _NCCell(ch: " ", fg: baseFG, bg: baseBG), count: width * height)
+            let lineChars: [[Character]] = snapshot.lines.map { Array($0) }
             for y in 0..<height {
-                let src = y
-                guard src < snapshot.lines.count else { break }
-                let line = snapshot.lines[src]
-                line.utf8CString.withUnsafeBufferPointer { buf in
-                    _ = ncplane_putstr_yx(stdplane, Int32(y), 0, buf.baseAddress)
+                guard y < lineChars.count else { break }
+                let chars = lineChars[y]
+                for x in 0..<min(width, chars.count) {
+                    let c = chars[x]
+                    let left = x > 0 ? chars[x - 1] : nil
+                    let right = x + 1 < chars.count ? chars[x + 1] : nil
+                    let up: Character? = (y > 0 && y - 1 < lineChars.count) ? lineChars[y - 1][safe: x] : nil
+                    let down: Character? = (y + 1 < lineChars.count) ? lineChars[y + 1][safe: x] : nil
+                    let mapped = _boxify(c, left: left, right: right, up: up, down: down)
+
+                    var fg = baseFG
+                    var bg = baseBG
+
+                    if let fr = focusRect, fr.contains(_Point(x: x, y: y)) {
+                        fg = focusFG
+                        bg = focusBG
+                    } else if mapped == "*" {
+                        fg = accentFG
+                    }
+
+                    curr[y * width + x] = _NCCell(ch: String(mapped), fg: fg, bg: bg)
                 }
             }
+
+            // Differential paint (cell-level). This avoids full repaint when only a few cells change.
+            let toPaint: [(Int, _NCCell)]
+            if let prev {
+                toPaint = curr.enumerated().compactMap { idx, c in prev[idx] == c ? nil : (idx, c) }
+            } else {
+                toPaint = curr.enumerated().map { ($0.offset, $0.element) }
+            }
+
+            // Track ncplane style state to avoid redundant setters.
+            var lastFG: _NCRGB? = nil
+            var lastBG: _NCRGB? = nil
+
+            for (idx, cell) in toPaint {
+                let y = idx / width
+                let x = idx % width
+                if lastFG == nil || lastFG! != cell.fg {
+                    _ = ncplane_set_fg_rgb8(stdplane, UInt32(cell.fg.r), UInt32(cell.fg.g), UInt32(cell.fg.b))
+                    lastFG = cell.fg
+                }
+                if lastBG == nil || lastBG! != cell.bg {
+                    _ = ncplane_set_bg_rgb8(stdplane, UInt32(cell.bg.r), UInt32(cell.bg.g), UInt32(cell.bg.b))
+                    lastBG = cell.bg
+                }
+                cell.ch.utf8CString.withUnsafeBufferPointer { buf in
+                    if let p = buf.baseAddress {
+                        _ = ncplane_putegc_yx(stdplane, Int32(y), Int32(x), p, nil)
+                    }
+                }
+            }
+
+            prev = curr
 
             _ = notcurses_render(nc)
 
@@ -171,5 +228,43 @@ public struct NotcursesApp<V: View> {
         #else
         throw OmniUINotcursesRendererError.notSupportedOnThisPlatform
         #endif
+    }
+}
+
+private extension Array {
+    subscript(safe idx: Int) -> Element? {
+        guard idx >= 0, idx < count else { return nil }
+        return self[idx]
+    }
+}
+
+private struct _NCRGB: Equatable {
+    var r: UInt8
+    var g: UInt8
+    var b: UInt8
+}
+
+private struct _NCCell: Equatable {
+    var ch: String
+    var fg: _NCRGB
+    var bg: _NCRGB
+}
+
+private func _boxify(_ c: Character, left: Character?, right: Character?, up: Character?, down: Character?) -> Character {
+    // Convert ASCII box drawing used by the debug snapshot into Unicode box drawing.
+    switch c {
+    case "|":
+        return "│"
+    case "-":
+        return "─"
+    case "+":
+        let hasH = (left == "-" || right == "-")
+        let hasV = (up == "|" || down == "|")
+        if hasH && hasV { return "┼" }
+        if hasH { return "─" }
+        if hasV { return "│" }
+        return "┼"
+    default:
+        return c
     }
 }

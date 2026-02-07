@@ -201,6 +201,11 @@ public final class _UIRuntime: @unchecked Sendable {
         _invokeAction(id)
     }
 
+    public func focusedActionRawID() -> Int? {
+        guard let f = focusedPath, let id = focusActivation[f] else { return nil }
+        return id.raw
+    }
+
     func _getState<Value>(seed: _StateSeed, path: [Int], initial: () -> Value) -> Value {
         let key = _stateKey(seed: seed, path: path)
         if let existing = state[key] as? Value {
@@ -239,9 +244,14 @@ public final class _UIRuntime: @unchecked Sendable {
         }
 
         let laidOut = _DebugLayout.layout(node: node, in: _Rect(origin: _Point(x: 0, y: 0), size: size))
+        let focusedRect: _Rect? = {
+            guard let raw = focusedActionRawID() else { return nil }
+            return laidOut.hitRegions.last(where: { $0.1.raw == raw })?.0
+        }()
         return DebugSnapshot(
             size: size,
             lines: laidOut.lines,
+            focusedRect: focusedRect,
             hitRegions: laidOut.hitRegions,
             scrollRegions: laidOut.scrollRegions,
             runtime: runtime
@@ -311,6 +321,7 @@ struct _ScrollRegion: Sendable {
 public struct DebugSnapshot: Sendable {
     public let size: _Size
     public let lines: [String]
+    public let focusedRect: _Rect?
 
     let hitRegions: [(_Rect, _ActionID)]
     let scrollRegions: [_ScrollRegion]
