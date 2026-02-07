@@ -48,7 +48,7 @@ public struct Path: Hashable, Sendable, Shape, _PrimitiveView {
     public mutating func closeSubpath() { elements.append(.closeSubpath) }
 
     func _makeNode(_ ctx: inout _BuildContext) -> _VNode {
-        .shape(_ShapeNode(kind: .path))
+        .shape(_ShapeNode(kind: .path, pathElements: elements))
     }
 }
 

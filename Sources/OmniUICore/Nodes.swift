@@ -56,7 +56,7 @@ indirect enum _VNode {
     )
 }
 
-enum _ShapeKind: Hashable, Sendable {
+public enum _ShapeKind: Hashable, Sendable {
     case rectangle
     case roundedRectangle(cornerRadius: Int)
     case circle
@@ -65,6 +65,12 @@ enum _ShapeKind: Hashable, Sendable {
     case path
 }
 
-struct _ShapeNode: Hashable, Sendable {
-    var kind: _ShapeKind
+public struct _ShapeNode: Hashable, Sendable {
+    public var kind: _ShapeKind
+    public var pathElements: [Path.Element]?
+
+    public init(kind: _ShapeKind, pathElements: [Path.Element]? = nil) {
+        self.kind = kind
+        self.pathElements = pathElements
+    }
 }

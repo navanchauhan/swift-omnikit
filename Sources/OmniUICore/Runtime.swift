@@ -252,6 +252,7 @@ public final class _UIRuntime: @unchecked Sendable {
             size: size,
             lines: laidOut.lines,
             focusedRect: focusedRect,
+            shapeRegions: laidOut.shapeRegions,
             hitRegions: laidOut.hitRegions,
             scrollRegions: laidOut.scrollRegions,
             runtime: runtime
@@ -322,6 +323,7 @@ public struct DebugSnapshot: Sendable {
     public let size: _Size
     public let lines: [String]
     public let focusedRect: _Rect?
+    public let shapeRegions: [(_Rect, _ShapeNode)]
 
     let hitRegions: [(_Rect, _ActionID)]
     let scrollRegions: [_ScrollRegion]

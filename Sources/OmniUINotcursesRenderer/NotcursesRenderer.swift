@@ -46,6 +46,15 @@ public struct NotcursesApp<V: View> {
 
         let runtime = _UIRuntime()
         var prev: [_NCCell]? = nil
+        var sprixelPlane: OpaquePointer? = nil
+        var sprixelPlaneSize: (w: Int, h: Int) = (0, 0)
+
+        defer {
+            if let p = sprixelPlane {
+                ncplane_destroy(p)
+            }
+        }
+
         let q: UInt32 = 113
         let esc: UInt32 = omni_nckey_esc()
         let backspace: UInt32 = omni_nckey_backspace()
@@ -81,6 +90,59 @@ public struct NotcursesApp<V: View> {
 
             let focusRect = snapshot.focusedRect
 
+            // Prefer sprixels/pixels for shapes/paths; fall back to braille rasterization if pixels aren't supported.
+            let cellpix = _ncCellPix(nc)
+            let canSprixel: Bool = {
+                guard let cellpix else { return false }
+                return cellpix.cdimx > 0 && cellpix.cdimy > 0 && cellpix.maxpixelx > 0 && cellpix.maxpixely > 0
+            }()
+
+            if canSprixel, let cellpix {
+                if sprixelPlane == nil || sprixelPlaneSize.w != width || sprixelPlaneSize.h != height {
+                    if let p = sprixelPlane {
+                        ncplane_destroy(p)
+                        sprixelPlane = nil
+                    }
+                    var popts = ncplane_options()
+                    popts.y = 0
+                    popts.x = 0
+                    popts.rows = UInt32(height)
+                    popts.cols = UInt32(width)
+                    popts.name = nil
+                    popts.userptr = nil
+                    popts.resizecb = nil
+                    popts.flags = 0
+                    popts.margin_b = 0
+                    popts.margin_r = 0
+                    sprixelPlane = ncplane_create(stdplane, &popts)
+                    sprixelPlaneSize = (width, height)
+                    if let p = sprixelPlane {
+                        // Ensure shapes are behind the standard plane (text).
+                        _ = ncplane_move_above(p, nil)
+                    }
+                }
+
+                if let p = sprixelPlane {
+                    ncplane_erase(p)
+                    _renderSprixels(
+                        nc: nc,
+                        plane: p,
+                        termSize: _Size(width: width, height: height),
+                        cellpix: cellpix,
+                        shapes: snapshot.shapeRegions,
+                        fill: shapeFillBG,
+                        stroke: borderFG
+                    )
+                }
+            } else {
+                // No pixel support; tear down any existing sprixel plane so it can't leave artifacts.
+                if let p = sprixelPlane {
+                    ncplane_destroy(p)
+                    sprixelPlane = nil
+                }
+                sprixelPlaneSize = (0, 0)
+            }
+
             var curr = Array(repeating: _NCCell(ch: " ", fg: baseFG, bg: baseBG), count: width * height)
             let lineChars: [[Character]] = snapshot.lines.map { Array($0) }
             for y in 0..<height {
@@ -113,6 +175,38 @@ public struct NotcursesApp<V: View> {
                     let ch: String = (mapped == "·") ? " " : String(mapped)
                     curr[y * width + x] = _NCCell(ch: ch, fg: fg, bg: bg)
                 }
+            }
+
+            if canSprixel {
+                // When sprixels are active, suppress the placeholder shape glyphs in the text layer.
+                // Keep real text (e.g. overlays) intact by only blanking our known placeholder glyph set.
+                for (r, _) in snapshot.shapeRegions {
+                    let x0 = max(0, r.origin.x)
+                    let y0 = max(0, r.origin.y)
+                    let x1 = min(width, r.origin.x + r.size.width)
+                    let y1 = min(height, r.origin.y + r.size.height)
+                    guard x1 > x0, y1 > y0 else { continue }
+                    for yy in y0..<y1 {
+                        for xx in x0..<x1 {
+                            let idx = yy * width + xx
+                            let c = curr[idx].ch
+                            if _isShapePlaceholderCell(c) {
+                                curr[idx] = _NCCell(ch: " ", fg: baseFG, bg: baseBG)
+                            }
+                        }
+                    }
+                }
+            } else {
+                // Braille fallback: rasterize shape regions into braille characters, but only over
+                // placeholder shape glyphs so overlay text isn't clobbered.
+                _renderBraille(
+                    termSize: _Size(width: width, height: height),
+                    shapes: snapshot.shapeRegions,
+                    curr: &curr,
+                    baseBG: baseBG,
+                    fillFG: shapeFillBG,
+                    strokeFG: borderFG
+                )
             }
 
             // Differential paint (cell-level). This avoids full repaint when only a few cells change.
@@ -237,6 +331,572 @@ public struct NotcursesApp<V: View> {
         #else
         throw OmniUINotcursesRendererError.notSupportedOnThisPlatform
         #endif
+    }
+}
+
+private struct _CellPix {
+    var cdimy: Int
+    var cdimx: Int
+    var maxpixely: Int
+    var maxpixelx: Int
+}
+
+private func _ncCellPix(_ nc: OpaquePointer) -> _CellPix? {
+    var cdimy: UInt32 = 0
+    var cdimx: UInt32 = 0
+    var maxpixely: UInt32 = 0
+    var maxpixelx: UInt32 = 0
+    let rc = omni_notcurses_cellpix(nc, &cdimy, &cdimx, &maxpixely, &maxpixelx)
+    if rc != 0 { return nil }
+    return _CellPix(cdimy: Int(cdimy), cdimx: Int(cdimx), maxpixely: Int(maxpixely), maxpixelx: Int(maxpixelx))
+}
+
+private struct _RGBA {
+    var r: UInt8
+    var g: UInt8
+    var b: UInt8
+    var a: UInt8
+}
+
+private func _renderSprixels(
+    nc: OpaquePointer,
+    plane: OpaquePointer,
+    termSize: _Size,
+    cellpix: _CellPix,
+    shapes: [(_Rect, _ShapeNode)],
+    fill: _NCRGB,
+    stroke: _NCRGB
+) {
+    let pixelW = min(termSize.width * cellpix.cdimx, cellpix.maxpixelx)
+    let pixelH = min(termSize.height * cellpix.cdimy, cellpix.maxpixely)
+    guard pixelW > 0, pixelH > 0 else { return }
+
+    // Transparent canvas; we only paint inside shape regions.
+    var rgba = Array(repeating: UInt8(0), count: pixelW * pixelH * 4)
+
+    func set(_ x: Int, _ y: Int, _ c: _RGBA) {
+        guard x >= 0, y >= 0, x < pixelW, y < pixelH else { return }
+        let i = (y * pixelW + x) * 4
+        rgba[i + 0] = c.r
+        rgba[i + 1] = c.g
+        rgba[i + 2] = c.b
+        rgba[i + 3] = c.a
+    }
+
+    func fillRect(_ x0: Int, _ y0: Int, _ x1: Int, _ y1: Int, _ c: _RGBA) {
+        let ax0 = max(0, x0), ay0 = max(0, y0), ax1 = min(pixelW, x1), ay1 = min(pixelH, y1)
+        guard ax1 > ax0, ay1 > ay0 else { return }
+        for y in ay0..<ay1 {
+            for x in ax0..<ax1 {
+                set(x, y, c)
+            }
+        }
+    }
+
+    func insideEllipse(x: Int, y: Int, cx: Double, cy: Double, rx: Double, ry: Double) -> Double {
+        if rx <= 0 || ry <= 0 { return 2.0 }
+        let dx = (Double(x) - cx) / rx
+        let dy = (Double(y) - cy) / ry
+        return dx * dx + dy * dy
+    }
+
+    func drawLine(_ x0: Int, _ y0: Int, _ x1: Int, _ y1: Int, _ c: _RGBA, thickness: Int) {
+        // Bresenham with simple square brush.
+        var x0 = x0, y0 = y0
+        let dx = abs(x1 - x0)
+        let sx = x0 < x1 ? 1 : -1
+        let dy = -abs(y1 - y0)
+        let sy = y0 < y1 ? 1 : -1
+        var err = dx + dy
+        while true {
+            let t = max(1, thickness)
+            let r = t / 2
+            for yy in (y0 - r)...(y0 + r) {
+                for xx in (x0 - r)...(x0 + r) {
+                    set(xx, yy, c)
+                }
+            }
+            if x0 == x1 && y0 == y1 { break }
+            let e2 = 2 * err
+            if e2 >= dy { err += dy; x0 += sx }
+            if e2 <= dx { err += dx; y0 += sy }
+        }
+    }
+
+    let fillRGBA = _RGBA(r: fill.r, g: fill.g, b: fill.b, a: 0xFF)
+    let strokeRGBA = _RGBA(r: stroke.r, g: stroke.g, b: stroke.b, a: 0xFF)
+
+    for (r, s) in shapes {
+        let x0 = r.origin.x * cellpix.cdimx
+        let y0 = r.origin.y * cellpix.cdimy
+        let x1 = x0 + r.size.width * cellpix.cdimx
+        let y1 = y0 + r.size.height * cellpix.cdimy
+        let w = x1 - x0
+        let h = y1 - y0
+        if w <= 0 || h <= 0 { continue }
+
+        let border = 2
+
+        switch s.kind {
+        case .rectangle:
+            fillRect(x0 + border, y0 + border, x1 - border, y1 - border, fillRGBA)
+            fillRect(x0, y0, x1, y0 + border, strokeRGBA)
+            fillRect(x0, y1 - border, x1, y1, strokeRGBA)
+            fillRect(x0, y0, x0 + border, y1, strokeRGBA)
+            fillRect(x1 - border, y0, x1, y1, strokeRGBA)
+
+        case .roundedRectangle(let cr):
+            let rad = max(border, min(min(w, h) / 2, max(2, cr)))
+            _fillRoundedRect(
+                x0: x0, y0: y0, x1: x1, y1: y1,
+                radius: rad,
+                border: border,
+                fill: fillRGBA,
+                stroke: strokeRGBA,
+                setPixel: set
+            )
+
+        case .capsule:
+            let rad = max(border, min(w, h) / 2)
+            _fillRoundedRect(
+                x0: x0, y0: y0, x1: x1, y1: y1,
+                radius: rad,
+                border: border,
+                fill: fillRGBA,
+                stroke: strokeRGBA,
+                setPixel: set
+            )
+
+        case .circle:
+            fallthrough
+        case .ellipse:
+            let cx = Double(x0 + x1 - 1) / 2.0
+            let cy = Double(y0 + y1 - 1) / 2.0
+            let rx = Double(max(1, (x1 - x0 - 1) / 2))
+            let ry = Double(max(1, (y1 - y0 - 1) / 2))
+            let innerRx = max(1.0, rx - Double(border))
+            let innerRy = max(1.0, ry - Double(border))
+            for y in max(0, y0)..<min(pixelH, y1) {
+                for x in max(0, x0)..<min(pixelW, x1) {
+                    let v = insideEllipse(x: x, y: y, cx: cx, cy: cy, rx: rx, ry: ry)
+                    if v <= 1.0 {
+                        let vi = insideEllipse(x: x, y: y, cx: cx, cy: cy, rx: innerRx, ry: innerRy)
+                        set(x, y, vi <= 1.0 ? fillRGBA : strokeRGBA)
+                    }
+                }
+            }
+
+        case .path:
+            guard let elements = s.pathElements, !elements.isEmpty else { break }
+            _strokePath(
+                elements: elements,
+                x0: x0, y0: y0, x1: x1, y1: y1,
+                drawLine: { x0, y0, x1, y1 in
+                    drawLine(x0, y0, x1, y1, strokeRGBA, thickness: 2)
+                },
+                fillEllipse: { ex0, ey0, ex1, ey1 in
+                    // A rect/ellipse element inside a path: just stroke its outline for now.
+                    let cx = Double(ex0 + ex1 - 1) / 2.0
+                    let cy = Double(ey0 + ey1 - 1) / 2.0
+                    let rx = Double(max(1, (ex1 - ex0 - 1) / 2))
+                    let ry = Double(max(1, (ey1 - ey0 - 1) / 2))
+                    for y in max(0, ey0)..<min(pixelH, ey1) {
+                        for x in max(0, ex0)..<min(pixelW, ex1) {
+                            let v = insideEllipse(x: x, y: y, cx: cx, cy: cy, rx: rx, ry: ry)
+                            if abs(v - 1.0) <= 0.04 {
+                                set(x, y, strokeRGBA)
+                            }
+                        }
+                    }
+                },
+                strokeRect: { rx0, ry0, rx1, ry1 in
+                    let b = 2
+                    fillRect(rx0, ry0, rx1, ry0 + b, strokeRGBA)
+                    fillRect(rx0, ry1 - b, rx1, ry1, strokeRGBA)
+                    fillRect(rx0, ry0, rx0 + b, ry1, strokeRGBA)
+                    fillRect(rx1 - b, ry0, rx1, ry1, strokeRGBA)
+                }
+            )
+        }
+    }
+
+    rgba.withUnsafeBytes { bytes in
+        guard let base = bytes.baseAddress else { return }
+        guard let ncv = ncvisual_from_rgba(base, Int32(pixelH), Int32(pixelW * 4), Int32(pixelW)) else { return }
+        defer { ncvisual_destroy(ncv) }
+
+        var vopts = ncvisual_options()
+        vopts.n = plane
+        vopts.scaling = NCSCALE_NONE
+        vopts.y = 0
+        vopts.x = 0
+        vopts.begy = 0
+        vopts.begx = 0
+        vopts.leny = 0
+        vopts.lenx = 0
+        vopts.blitter = ncblitter_e(rawValue: omni_ncblit_pixel())
+        vopts.flags = omni_ncvisual_option_blend() | omni_ncvisual_option_nodegrade()
+        vopts.transcolor = 0
+        vopts.pxoffy = 0
+        vopts.pxoffx = 0
+
+        _ = ncvisual_blit(nc, ncv, &vopts)
+    }
+}
+
+private func _fillRoundedRect(
+    x0: Int,
+    y0: Int,
+    x1: Int,
+    y1: Int,
+    radius: Int,
+    border: Int,
+    fill: _RGBA,
+    stroke: _RGBA,
+    setPixel: (Int, Int, _RGBA) -> Void
+) {
+    let w = x1 - x0
+    let h = y1 - y0
+    guard w > 0, h > 0 else { return }
+
+    let rOuter = max(0, radius)
+    let rInner = max(0, radius - border)
+
+    func inside(_ x: Int, _ y: Int, _ inset: Int, _ r: Int) -> Bool {
+        let ax0 = x0 + inset
+        let ay0 = y0 + inset
+        let ax1 = x1 - inset
+        let ay1 = y1 - inset
+        if x < ax0 || x >= ax1 || y < ay0 || y >= ay1 { return false }
+
+        let rx = r
+        let ry = r
+        // Fast path: not in a corner square.
+        if x >= ax0 + rx && x < ax1 - rx { return true }
+        if y >= ay0 + ry && y < ay1 - ry { return true }
+
+        // Corner arcs.
+        let cx = (x < ax0 + rx) ? (ax0 + rx - 1) : (ax1 - rx)
+        let cy = (y < ay0 + ry) ? (ay0 + ry - 1) : (ay1 - ry)
+        let dx = x - cx
+        let dy = y - cy
+        return dx * dx + dy * dy <= max(1, rx - 1) * max(1, rx - 1)
+    }
+
+    for y in y0..<y1 {
+        for x in x0..<x1 {
+            let out = inside(x, y, 0, rOuter)
+            if !out { continue }
+            let inn = inside(x, y, border, rInner)
+            setPixel(x, y, inn ? fill : stroke)
+        }
+    }
+}
+
+private func _strokePath(
+    elements: [Path.Element],
+    x0: Int, y0: Int, x1: Int, y1: Int,
+    drawLine: (Int, Int, Int, Int) -> Void,
+    fillEllipse: (Int, Int, Int, Int) -> Void,
+    strokeRect: (Int, Int, Int, Int) -> Void
+) {
+    // Map element coordinates into the target pixel rect by normalizing to the
+    // bounds of the path data.
+    var minX = Double.greatestFiniteMagnitude
+    var minY = Double.greatestFiniteMagnitude
+    var maxX = -Double.greatestFiniteMagnitude
+    var maxY = -Double.greatestFiniteMagnitude
+
+    func consider(_ p: CGPoint) {
+        minX = min(minX, Double(p.x))
+        minY = min(minY, Double(p.y))
+        maxX = max(maxX, Double(p.x))
+        maxY = max(maxY, Double(p.y))
+    }
+
+    for e in elements {
+        switch e {
+        case .move(let p), .line(let p):
+            consider(p)
+        case .rect(let r):
+            consider(r.origin)
+            consider(CGPoint(x: r.origin.x + r.size.width, y: r.origin.y + r.size.height))
+        case .ellipse(let r):
+            consider(r.origin)
+            consider(CGPoint(x: r.origin.x + r.size.width, y: r.origin.y + r.size.height))
+        case .closeSubpath:
+            break
+        }
+    }
+
+    if !minX.isFinite || !minY.isFinite || !maxX.isFinite || !maxY.isFinite {
+        return
+    }
+
+    let rangeX = max(1e-6, maxX - minX)
+    let rangeY = max(1e-6, maxY - minY)
+    let pad = 2
+    let tw = max(1, (x1 - x0) - pad * 2)
+    let th = max(1, (y1 - y0) - pad * 2)
+
+    func map(_ p: CGPoint) -> (Int, Int) {
+        let nx = (Double(p.x) - minX) / rangeX
+        let ny = (Double(p.y) - minY) / rangeY
+        let px = x0 + pad + Int(nx * Double(tw - 1))
+        let py = y0 + pad + Int(ny * Double(th - 1))
+        return (px, py)
+    }
+
+    var curr: (Int, Int)? = nil
+    var start: (Int, Int)? = nil
+
+    for e in elements {
+        switch e {
+        case .move(let p):
+            let mp = map(p)
+            curr = mp
+            start = mp
+        case .line(let p):
+            let mp = map(p)
+            if let c = curr {
+                drawLine(c.0, c.1, mp.0, mp.1)
+            }
+            curr = mp
+        case .rect(let r):
+            let p0 = map(r.origin)
+            let p1 = map(CGPoint(x: r.origin.x + r.size.width, y: r.origin.y + r.size.height))
+            strokeRect(min(p0.0, p1.0), min(p0.1, p1.1), max(p0.0, p1.0), max(p0.1, p1.1))
+        case .ellipse(let r):
+            let p0 = map(r.origin)
+            let p1 = map(CGPoint(x: r.origin.x + r.size.width, y: r.origin.y + r.size.height))
+            fillEllipse(min(p0.0, p1.0), min(p0.1, p1.1), max(p0.0, p1.0), max(p0.1, p1.1))
+        case .closeSubpath:
+            if let c = curr, let s = start {
+                drawLine(c.0, c.1, s.0, s.1)
+            }
+            curr = start
+        }
+    }
+}
+
+private func _isShapePlaceholderCell(_ ch: String) -> Bool {
+    guard let c = ch.first else { return false }
+    if c == " " { return false }
+    if c == "·" { return true }
+    if _isBorderGlyph(c) { return true }
+    // Path placeholder glyphs used by the debug layout.
+    if c == "╱" || c == "╲" || c == "⬭" || c == "─" { return true }
+    return false
+}
+
+private func _renderBraille(
+    termSize: _Size,
+    shapes: [(_Rect, _ShapeNode)],
+    curr: inout [_NCCell],
+    baseBG: _NCRGB,
+    fillFG: _NCRGB,
+    strokeFG: _NCRGB
+) {
+    func setCell(_ x: Int, _ y: Int, _ mask: UInt8, _ fg: _NCRGB) {
+        guard x >= 0, y >= 0, x < termSize.width, y < termSize.height else { return }
+        guard mask != 0 else { return }
+        let idx = y * termSize.width + x
+        if !_isShapePlaceholderCell(curr[idx].ch) { return }
+        let scalar = UnicodeScalar(0x2800 + Int(mask))!
+        curr[idx] = _NCCell(ch: String(Character(scalar)), fg: fg, bg: baseBG)
+    }
+
+    func dotBit(_ sx: Int, _ sy: Int) -> UInt8 {
+        // Braille dots:
+        // (0,0)=1 (0,1)=2 (0,2)=3 (1,0)=4 (1,1)=5 (1,2)=6 (0,3)=7 (1,3)=8
+        switch (sx, sy) {
+        case (0, 0): return 0x01
+        case (0, 1): return 0x02
+        case (0, 2): return 0x04
+        case (1, 0): return 0x08
+        case (1, 1): return 0x10
+        case (1, 2): return 0x20
+        case (0, 3): return 0x40
+        case (1, 3): return 0x80
+        default: return 0
+        }
+    }
+
+    for (r, s) in shapes {
+        let x0 = max(0, r.origin.x)
+        let y0 = max(0, r.origin.y)
+        let x1 = min(termSize.width, r.origin.x + r.size.width)
+        let y1 = min(termSize.height, r.origin.y + r.size.height)
+        guard x1 > x0, y1 > y0 else { continue }
+
+        let subW = (x1 - x0) * 2
+        let subH = (y1 - y0) * 4
+        if subW <= 0 || subH <= 0 { continue }
+
+        var sub = Array(repeating: false, count: subW * subH)
+        func setSub(_ sx: Int, _ sy: Int) {
+            guard sx >= 0, sy >= 0, sx < subW, sy < subH else { return }
+            sub[sy * subW + sx] = true
+        }
+
+        switch s.kind {
+        case .path:
+            if let elements = s.pathElements {
+                _strokePathBraille(
+                    elements: elements,
+                    subW: subW,
+                    subH: subH,
+                    set: setSub
+                )
+            }
+        case .circle, .ellipse:
+            let cx = Double(subW - 1) / 2.0
+            let cy = Double(subH - 1) / 2.0
+            let rx = max(1.0, Double(subW - 1) / 2.0)
+            let ry = max(1.0, Double(subH - 1) / 2.0)
+            for sy in 0..<subH {
+                for sx in 0..<subW {
+                    let dx = (Double(sx) - cx) / rx
+                    let dy = (Double(sy) - cy) / ry
+                    if dx * dx + dy * dy <= 1.0 {
+                        setSub(sx, sy)
+                    }
+                }
+            }
+        case .rectangle, .roundedRectangle, .capsule:
+            // Filled rect-ish.
+            for sy in 0..<subH {
+                for sx in 0..<subW {
+                    setSub(sx, sy)
+                }
+            }
+        }
+
+        for cy in y0..<y1 {
+            for cx in x0..<x1 {
+                var mask: UInt8 = 0
+                let baseSX = (cx - x0) * 2
+                let baseSY = (cy - y0) * 4
+                for sy in 0..<4 {
+                    for sx in 0..<2 {
+                        if sub[(baseSY + sy) * subW + (baseSX + sx)] {
+                            mask |= dotBit(sx, sy)
+                        }
+                    }
+                }
+                setCell(cx, cy, mask, s.kind == .path ? strokeFG : fillFG)
+            }
+        }
+    }
+}
+
+private func _strokePathBraille(
+    elements: [Path.Element],
+    subW: Int,
+    subH: Int,
+    set: (Int, Int) -> Void
+) {
+    // Normalize to element bounds then draw into [0..subW)x[0..subH).
+    var minX = Double.greatestFiniteMagnitude
+    var minY = Double.greatestFiniteMagnitude
+    var maxX = -Double.greatestFiniteMagnitude
+    var maxY = -Double.greatestFiniteMagnitude
+
+    func consider(_ p: CGPoint) {
+        minX = min(minX, Double(p.x))
+        minY = min(minY, Double(p.y))
+        maxX = max(maxX, Double(p.x))
+        maxY = max(maxY, Double(p.y))
+    }
+
+    for e in elements {
+        switch e {
+        case .move(let p), .line(let p):
+            consider(p)
+        case .rect(let r):
+            consider(r.origin)
+            consider(CGPoint(x: r.origin.x + r.size.width, y: r.origin.y + r.size.height))
+        case .ellipse(let r):
+            consider(r.origin)
+            consider(CGPoint(x: r.origin.x + r.size.width, y: r.origin.y + r.size.height))
+        case .closeSubpath:
+            break
+        }
+    }
+
+    if !minX.isFinite || !minY.isFinite || !maxX.isFinite || !maxY.isFinite { return }
+    let rangeX = max(1e-6, maxX - minX)
+    let rangeY = max(1e-6, maxY - minY)
+
+    func map(_ p: CGPoint) -> (Int, Int) {
+        let nx = (Double(p.x) - minX) / rangeX
+        let ny = (Double(p.y) - minY) / rangeY
+        let x = Int(nx * Double(max(1, subW - 1)))
+        let y = Int(ny * Double(max(1, subH - 1)))
+        return (x, y)
+    }
+
+    func line(_ x0: Int, _ y0: Int, _ x1: Int, _ y1: Int) {
+        var x0 = x0, y0 = y0
+        let dx = abs(x1 - x0)
+        let sx = x0 < x1 ? 1 : -1
+        let dy = -abs(y1 - y0)
+        let sy = y0 < y1 ? 1 : -1
+        var err = dx + dy
+        while true {
+            set(x0, y0)
+            if x0 == x1 && y0 == y1 { break }
+            let e2 = 2 * err
+            if e2 >= dy { err += dy; x0 += sx }
+            if e2 <= dx { err += dx; y0 += sy }
+        }
+    }
+
+    var curr: (Int, Int)? = nil
+    var start: (Int, Int)? = nil
+
+    for e in elements {
+        switch e {
+        case .move(let p):
+            let mp = map(p)
+            curr = mp
+            start = mp
+        case .line(let p):
+            let mp = map(p)
+            if let c = curr { line(c.0, c.1, mp.0, mp.1) }
+            curr = mp
+        case .rect(let r):
+            let p0 = map(r.origin)
+            let p1 = map(CGPoint(x: r.origin.x + r.size.width, y: r.origin.y + r.size.height))
+            let ax0 = min(p0.0, p1.0), ay0 = min(p0.1, p1.1)
+            let ax1 = max(p0.0, p1.0), ay1 = max(p0.1, p1.1)
+            line(ax0, ay0, ax1, ay0)
+            line(ax1, ay0, ax1, ay1)
+            line(ax1, ay1, ax0, ay1)
+            line(ax0, ay1, ax0, ay0)
+        case .ellipse(let r):
+            // Approximate ellipse outline by sampling angles.
+            let p0 = map(r.origin)
+            let p1 = map(CGPoint(x: r.origin.x + r.size.width, y: r.origin.y + r.size.height))
+            let ax0 = min(p0.0, p1.0), ay0 = min(p0.1, p1.1)
+            let ax1 = max(p0.0, p1.0), ay1 = max(p0.1, p1.1)
+            let cx = Double(ax0 + ax1) / 2.0
+            let cy = Double(ay0 + ay1) / 2.0
+            let rx = max(1.0, Double(ax1 - ax0) / 2.0)
+            let ry = max(1.0, Double(ay1 - ay0) / 2.0)
+            var prev: (Int, Int)? = nil
+            let steps = 64
+            for i in 0...steps {
+                let t = Double(i) * (2.0 * Double.pi) / Double(steps)
+                let x = Int(cx + cos(t) * rx)
+                let y = Int(cy + sin(t) * ry)
+                if let p = prev { line(p.0, p.1, x, y) }
+                prev = (x, y)
+            }
+        case .closeSubpath:
+            if let c = curr, let s = start { line(c.0, c.1, s.0, s.1) }
+            curr = start
+        }
     }
 }
 

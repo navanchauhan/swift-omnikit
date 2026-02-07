@@ -19,6 +19,15 @@ unsigned omni_ncmice_all_events(void);
 // Returns 1 if Shift is pressed for the given input event, otherwise 0.
 uint32_t omni_ncinput_shift(const struct ncinput* ni);
 
+// Visual/pixel helpers.
+// Returns terminal cell pixel geometry (cdimy/cdimx) and maximum accepted bitmap size (maxpixely/maxpixelx).
+// Returns 0 on success, -1 on failure.
+int omni_notcurses_cellpix(struct notcurses* nc, unsigned* cdimy, unsigned* cdimx,
+                           unsigned* maxpixely, unsigned* maxpixelx);
+uint32_t omni_ncblit_pixel(void);
+uint64_t omni_ncvisual_option_blend(void);
+uint64_t omni_ncvisual_option_nodegrade(void);
+
 // Terminal safety helpers.
 // Install SIGINT/SIGTERM/SIGHUP/SIGQUIT handlers that request shutdown.
 void omni_install_signal_handlers(void);

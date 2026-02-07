@@ -25,6 +25,26 @@ uint32_t omni_ncinput_shift(const struct ncinput* ni){
   return (ni->modifiers & NCKEY_MOD_SHIFT) ? 1u : 0u;
 }
 
+int omni_notcurses_cellpix(struct notcurses* nc, unsigned* cdimy, unsigned* cdimx,
+                           unsigned* maxpixely, unsigned* maxpixelx){
+  if(!nc || !cdimy || !cdimx || !maxpixely || !maxpixelx){
+    return -1;
+  }
+  ncvgeom geom;
+  if(ncvisual_geom(nc, NULL, NULL, &geom)){
+    return -1;
+  }
+  *cdimy = geom.cdimy;
+  *cdimx = geom.cdimx;
+  *maxpixely = geom.maxpixely;
+  *maxpixelx = geom.maxpixelx;
+  return 0;
+}
+
+uint32_t omni_ncblit_pixel(void){ return (uint32_t)NCBLIT_PIXEL; }
+uint64_t omni_ncvisual_option_blend(void){ return (uint64_t)NCVISUAL_OPTION_BLEND; }
+uint64_t omni_ncvisual_option_nodegrade(void){ return (uint64_t)NCVISUAL_OPTION_NODEGRADE; }
+
 static volatile sig_atomic_t g_omni_signal = 0;
 
 static void
@@ -46,6 +66,8 @@ int omni_signal_received(void){
 void omni_restore_terminal(void){
   // Best-effort cleanup: reset attrs, show cursor, leave alt screen, disable bracketed paste.
   // This is safe to emit even if the terminal doesn't support some sequences.
-  const char* seq = "\x1b[0m\x1b[?25h\x1b[?1049l\x1b[?2004l";
+  // Also try to clear any Kitty graphics protocol images (sprixel/kitty artifacts)
+  // so they don't linger on crash/abort.
+  const char* seq = "\x1b_Ga=d\x1b\\\x1b[0m\x1b[?25h\x1b[?1049l\x1b[?2004l";
   (void)write(STDOUT_FILENO, seq, strlen(seq));
 }

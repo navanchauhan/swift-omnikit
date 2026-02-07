@@ -13,12 +13,14 @@ enum _DebugLayout {
         var lines: [String]
         var hitRegions: [(_Rect, _ActionID)]
         var scrollRegions: [_ScrollRegion]
+        var shapeRegions: [(_Rect, _ShapeNode)]
     }
 
     static func layout(node: _VNode, in rect: _Rect) -> Result {
         var canvas = Array(repeating: Array(repeating: " ", count: rect.size.width), count: rect.size.height)
         var hits: [(_Rect, _ActionID)] = []
         var scrolls: [_ScrollRegion] = []
+        var shapes: [(_Rect, _ShapeNode)] = []
         var overlays: [Overlay] = []
         _ = draw(
             node: node,
@@ -27,6 +29,7 @@ enum _DebugLayout {
             canvas: &canvas,
             hitRegions: &hits,
             scrollRegions: &scrolls,
+            shapeRegions: &shapes,
             overlays: &overlays
         )
 
@@ -36,7 +39,7 @@ enum _DebugLayout {
         }
 
         let lines = canvas.map { $0.joined() }
-        return Result(lines: lines, hitRegions: hits, scrollRegions: scrolls)
+        return Result(lines: lines, hitRegions: hits, scrollRegions: scrolls, shapeRegions: shapes)
     }
 
     private static func imageString(_ name: String) -> String {
@@ -67,6 +70,7 @@ enum _DebugLayout {
         canvas: inout [[String]],
         hitRegions: inout [(_Rect, _ActionID)],
         scrollRegions: inout [_ScrollRegion],
+        shapeRegions: inout [(_Rect, _ShapeNode)],
         overlays: inout [Overlay]
     ) -> _Size {
         guard maxSize.width > 0, maxSize.height > 0 else { return _Size(width: 0, height: 0) }
@@ -86,6 +90,7 @@ enum _DebugLayout {
                     canvas: &canvas,
                     hitRegions: &hitRegions,
                     scrollRegions: &scrollRegions,
+                    shapeRegions: &shapeRegions,
                     overlays: &overlays
                 )
                 used.width = max(used.width, s.width)
@@ -103,6 +108,7 @@ enum _DebugLayout {
                     canvas: &canvas,
                     hitRegions: &hitRegions,
                     scrollRegions: &scrollRegions,
+                    shapeRegions: &shapeRegions,
                     overlays: &overlays
                 )
                 used.width = max(used.width, s.width)
@@ -144,6 +150,11 @@ enum _DebugLayout {
 
             let fill = "·" // fill token, styled by notcurses
             let innerW = max(0, w - 2)
+
+            // Record a semantic region for renderers that can do true shape/path drawing.
+            // This allows the notcurses renderer to use sprixels (or braille) rather than
+            // relying on the placeholder glyph art below.
+            shapeRegions.append((_Rect(origin: origin, size: _Size(width: w, height: h)), shape))
 
             switch shape.kind {
             case .rectangle:
@@ -240,6 +251,7 @@ enum _DebugLayout {
                 canvas: &canvas,
                 hitRegions: &hitRegions,
                 scrollRegions: &scrollRegions,
+                shapeRegions: &shapeRegions,
                 overlays: &overlays
             )
             return _Size(width: min(maxSize.width, s.width + amount * 2), height: min(maxSize.height, s.height + amount * 2))
@@ -389,6 +401,7 @@ enum _DebugLayout {
                         canvas: &canvas,
                         hitRegions: &hitRegions,
                         scrollRegions: &scrollRegions,
+                        shapeRegions: &shapeRegions,
                         overlays: &overlays
                     )
                 }
@@ -426,6 +439,7 @@ enum _DebugLayout {
                 canvas: &canvas,
                 hitRegions: &hitRegions,
                 scrollRegions: &scrollRegions,
+                shapeRegions: &shapeRegions,
                 overlays: &overlays
             )
             put("]", at: _Point(x: x0 + 1 + labelSize.width + 2, y: origin.y), canvas: &canvas)
@@ -453,6 +467,7 @@ enum _DebugLayout {
                 canvas: &canvas,
                 hitRegions: &hitRegions,
                 scrollRegions: &scrollRegions,
+                shapeRegions: &shapeRegions,
                 overlays: &overlays
             )
             let width = min(maxSize.width, (isFocused ? 1 : 0) + box.count + labelSize.width)
@@ -602,6 +617,7 @@ enum _DebugLayout {
             var subHits: [(_Rect, _ActionID)] = []
             var subScrolls: [_ScrollRegion] = []
             var subOverlays: [Overlay] = []
+            var subShapes: [(_Rect, _ShapeNode)] = []
             _ = draw(
                 node: content,
                 origin: _Point(x: 0, y: -yOff),
@@ -609,6 +625,7 @@ enum _DebugLayout {
                 canvas: &sub,
                 hitRegions: &subHits,
                 scrollRegions: &subScrolls,
+                shapeRegions: &subShapes,
                 overlays: &subOverlays
             )
 
@@ -658,6 +675,10 @@ enum _DebugLayout {
             for sr in subScrolls {
                 let tr = _Rect(origin: _Point(x: sr.rect.origin.x + origin.x, y: sr.rect.origin.y + origin.y), size: sr.rect.size)
                 scrollRegions.append(_ScrollRegion(rect: tr, path: sr.path, maxOffsetY: sr.maxOffsetY))
+            }
+            for (r, s) in subShapes {
+                let tr = _Rect(origin: _Point(x: r.origin.x + origin.x, y: r.origin.y + origin.y), size: r.size)
+                shapeRegions.append((tr, s))
             }
 
             // Note: overlays inside scroll views currently escape the clip (good enough for now).
