@@ -469,6 +469,8 @@ private func _resolveColorNC(_ c: Color?) -> _NCRGB? {
         return _NCRGB(r: 0xFA, g: 0xD3, b: 0x5D)
     case "accentColor":
         return _NCRGB(r: 0x34, g: 0xD3, b: 0x99)
+    case "black":
+        return _NCRGB(r: 0x00, g: 0x00, b: 0x00)
     case "clear":
         return nil
     default:

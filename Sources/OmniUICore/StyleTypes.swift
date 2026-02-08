@@ -9,6 +9,17 @@ public struct Color: Hashable, Sendable {
         self.alpha = alpha
     }
 
+    // Compatibility initializers used by many SwiftUI call sites.
+    public init(_ any: Any) {
+        self.name = String(describing: any)
+        self.alpha = 1.0
+    }
+
+    public init(red: CGFloat, green: CGFloat, blue: CGFloat, opacity: CGFloat = 1.0) {
+        self.name = "rgb(\(red),\(green),\(blue))"
+        self.alpha = opacity
+    }
+
     public func opacity(_ alpha: CGFloat) -> Color {
         Color(name, alpha: alpha)
     }
@@ -19,6 +30,7 @@ public struct Color: Hashable, Sendable {
     public static let tertiary = Color("tertiary")
 
     public static let accentColor = Color("accentColor")
+    public static let black = Color("black")
     public static let white = Color("white")
     public static let gray = Color("gray")
     public static let yellow = Color("yellow")

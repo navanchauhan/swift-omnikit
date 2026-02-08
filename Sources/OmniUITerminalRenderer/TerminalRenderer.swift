@@ -262,6 +262,8 @@ private func _resolveColor(_ c: Color?) -> _RGB? {
         return _RGB(r: 0xFA, g: 0xD3, b: 0x5D)
     case "accentColor":
         return _RGB(r: 0x34, g: 0xD3, b: 0x99)
+    case "black":
+        return _RGB(r: 0x00, g: 0x00, b: 0x00)
     default:
         return nil
     }
