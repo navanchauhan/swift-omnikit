@@ -46,15 +46,18 @@ public struct TerminalApp<V: View> {
             let borderFG = _RGB(r: 0xF2, g: 0xF4, b: 0xF8)
 
             var curr = Array(repeating: _Cell(ch: " ", fg: baseFG, bg: baseBG), count: size.width * size.height)
+            var zbuf = Array(repeating: Int.min, count: size.width * size.height)
             // Rasterize typed ops into a cell buffer.
-            func setCell(_ x: Int, _ y: Int, _ egc: String, _ fg: _RGB?, _ bg: _RGB?) {
+            func setCell(_ x: Int, _ y: Int, _ egc: String, _ fg: _RGB?, _ bg: _RGB?, z: Int) {
                 guard x >= 0, y >= 0, x < size.width, y < size.height else { return }
                 let idx = y * size.width + x
+                if z < zbuf[idx] { return }
                 var c = curr[idx]
                 c.ch = egc
                 if let fg { c.fg = fg }
                 if let bg { c.bg = bg }
                 curr[idx] = c
+                zbuf[idx] = z
             }
 
             func intersect(_ a: _Rect, _ b: _Rect) -> _Rect? {
@@ -72,7 +75,7 @@ public struct TerminalApp<V: View> {
                 return c.contains(_Point(x: x, y: y))
             }
 
-            var shapesByClip: [_Rect: [(_Rect, _ShapeNode)]] = [:]
+            var shapesByClip: [_Rect: [(_Rect, _ShapeNode, Int)]] = [:]
 
             for op in snapshot.ops {
                 switch op.kind {
@@ -85,7 +88,7 @@ public struct TerminalApp<V: View> {
                     let outBG = rbg ?? baseBG
                     if mapped == "*" { outFG = accentFG }
                     if _isBorderGlyph(mapped) { outFG = borderFG }
-                    setCell(x, y, egc, outFG, outBG)
+                    setCell(x, y, egc, outFG, outBG, z: op.zIndex)
                 case .textRun(let x, let y, let text, let fg, let bg):
                     let rfg = _resolveColor(fg)
                     let rbg = _resolveColor(bg)
@@ -100,7 +103,7 @@ public struct TerminalApp<V: View> {
                         var fg2 = outFG
                         if mapped == "*" { fg2 = accentFG }
                         if _isBorderGlyph(mapped) { fg2 = borderFG }
-                        setCell(xx, y, String(ch), fg2, outBG)
+                        setCell(xx, y, String(ch), fg2, outBG, z: op.zIndex)
                         }
                         xx += 1
                         if xx >= size.width { break }
@@ -116,7 +119,7 @@ public struct TerminalApp<V: View> {
                     if x1 <= x0 || y1 <= y0 { continue }
                     for yy in y0..<y1 {
                         for xx in x0..<x1 {
-                            setCell(xx, yy, " ", nil, c)
+                            setCell(xx, yy, " ", nil, c, z: op.zIndex)
                         }
                     }
                 case .pushClip(let r):
@@ -130,7 +133,7 @@ public struct TerminalApp<V: View> {
                 case .shape:
                     if case .shape(let r, let s) = op.kind, let clip = clipStack.last, let rr = intersect(r, clip) {
                         // Render with braille clipped to rr.
-                        shapesByClip[rr, default: []].append((r, s))
+                        shapesByClip[rr, default: []].append((r, s, op.zIndex))
                     }
                 }
             }
@@ -138,16 +141,18 @@ public struct TerminalApp<V: View> {
             // Render shapes via braille into the cell grid (portable fallback).
             if !shapesByClip.isEmpty {
                 for (clip, shapeRegions) in shapesByClip {
-                    BrailleRaster.render(
-                        termSize: size,
-                        shapes: shapeRegions,
-                        clip: clip,
-                        fillBG: _RGB(r: 0x12, g: 0x1B, b: 0x33),
-                        strokeFG: borderFG,
-                        baseBG: baseBG,
-                        isEmpty: { x, y in curr[y * size.width + x].ch == " " },
-                        set: { x, y, ch, fg, bg in setCell(x, y, ch, fg, bg) }
-                    )
+                    for (r, s, z) in shapeRegions {
+                        BrailleRaster.render(
+                            termSize: size,
+                            shapes: [(r, s)],
+                            clip: clip,
+                            fillBG: _RGB(r: 0x12, g: 0x1B, b: 0x33),
+                            strokeFG: borderFG,
+                            baseBG: baseBG,
+                            isEmpty: { x, y in curr[y * size.width + x].ch == " " },
+                            set: { x, y, ch, fg, bg in setCell(x, y, ch, fg, bg, z: z) }
+                        )
+                    }
                 }
             }
 

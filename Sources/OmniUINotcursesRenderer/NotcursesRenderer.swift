@@ -154,14 +154,17 @@ public struct NotcursesApp<V: View> {
             }()
 
             var curr = Array(repeating: _NCCell(ch: " ", fg: baseFG, bg: baseBG), count: width * height)
-            func setCell(_ x: Int, _ y: Int, _ egc: String, _ fg: _NCRGB?, _ bg: _NCRGB?) {
+            var zbuf = Array(repeating: Int.min, count: width * height)
+            func setCell(_ x: Int, _ y: Int, _ egc: String, _ fg: _NCRGB?, _ bg: _NCRGB?, z: Int) {
                 guard x >= 0, y >= 0, x < width, y < height else { return }
                 let idx = y * width + x
+                if z < zbuf[idx] { return }
                 var c = curr[idx]
                 c.ch = egc
                 if let fg { c.fg = fg }
                 if let bg { c.bg = bg }
                 curr[idx] = c
+                zbuf[idx] = z
             }
 
             func intersect(_ a: _Rect, _ b: _Rect) -> _Rect? {
@@ -183,7 +186,7 @@ public struct NotcursesApp<V: View> {
             // Shapes either go to sprixels (full-screen / unclipped only) or to braille (clipped fallback).
             var shapesForSprixel: [(_Rect, _ShapeNode)] = []
             shapesForSprixel.reserveCapacity(16)
-            var shapesByClip: [_Rect: [(_Rect, _ShapeNode)]] = [:]
+            var shapesByClip: [_Rect: [(_Rect, _ShapeNode, Int)]] = [:]
 
             for op in snapshot.ops {
                 switch op.kind {
@@ -194,7 +197,7 @@ public struct NotcursesApp<V: View> {
                     let outBG = _resolveColorNC(bg) ?? baseBG
                     if mapped == "*" { outFG = accentFG }
                     if _isBorderGlyph(mapped) { outFG = borderFG }
-                    setCell(x, y, egc, outFG, outBG)
+                    setCell(x, y, egc, outFG, outBG, z: op.zIndex)
                 case .textRun(let x, let y, let text, let fg, let bg):
                     let outFG = _resolveColorNC(fg) ?? baseFG
                     let outBG = _resolveColorNC(bg) ?? baseBG
@@ -204,7 +207,7 @@ public struct NotcursesApp<V: View> {
                         var fg2 = outFG
                         if ch == "*" { fg2 = accentFG }
                         if _isBorderGlyph(ch) { fg2 = borderFG }
-                        setCell(xx, y, String(ch), fg2, outBG)
+                        setCell(xx, y, String(ch), fg2, outBG, z: op.zIndex)
                         }
                         xx += 1
                         if xx >= width { break }
@@ -219,7 +222,7 @@ public struct NotcursesApp<V: View> {
                     if x1 <= x0 || y1 <= y0 { continue }
                     for yy in y0..<y1 {
                         for xx in x0..<x1 {
-                            setCell(xx, yy, " ", nil, c)
+                            setCell(xx, yy, " ", nil, c, z: op.zIndex)
                         }
                     }
                 case .pushClip(let r):
@@ -234,7 +237,7 @@ public struct NotcursesApp<V: View> {
                     if canSprixel, clipStack.last == fullClip {
                         shapesForSprixel.append((rect, shape))
                     } else if let top = clipStack.last, let rr = intersect(rect, top) {
-                        shapesByClip[rr, default: []].append((rect, shape))
+                        shapesByClip[rr, default: []].append((rect, shape, op.zIndex))
                     }
                 }
             }
@@ -341,16 +344,18 @@ public struct NotcursesApp<V: View> {
             // over empty cells so overlay text isn't clobbered.
             if !shapesByClip.isEmpty {
                 for (clip, shapeRegions) in shapesByClip {
-                    BrailleRaster.render(
-                        termSize: _Size(width: width, height: height),
-                        shapes: shapeRegions,
-                        clip: clip,
-                        fillBG: shapeFillBG,
-                        strokeFG: borderFG,
-                        baseBG: baseBG,
-                        isEmpty: { x, y in curr[y * width + x].ch == " " },
-                        set: { x, y, ch, fg, bg in setCell(x, y, ch, fg, bg) }
-                    )
+                    for (r, s, z) in shapeRegions {
+                        BrailleRaster.render(
+                            termSize: _Size(width: width, height: height),
+                            shapes: [(r, s)],
+                            clip: clip,
+                            fillBG: shapeFillBG,
+                            strokeFG: borderFG,
+                            baseBG: baseBG,
+                            isEmpty: { x, y in curr[y * width + x].ch == " " },
+                            set: { x, y, ch, fg, bg in setCell(x, y, ch, fg, bg, z: z) }
+                        )
+                    }
                 }
             }
 
