@@ -361,11 +361,17 @@ public struct NotcursesApp<V: View> {
 
             if let fr = focusRect {
                 // Focus highlight over cells.
-                for y in max(0, fr.origin.y)..<min(height, fr.origin.y + fr.size.height) {
-                    for x in max(0, fr.origin.x)..<min(width, fr.origin.x + fr.size.width) {
-                        let idx = y * width + x
-                        curr[idx].fg = focusFG
-                        curr[idx].bg = focusBG
+                let y0 = max(0, fr.origin.y)
+                let x0 = max(0, fr.origin.x)
+                let y1 = min(height, fr.origin.y + fr.size.height)
+                let x1 = min(width, fr.origin.x + fr.size.width)
+                if y1 > y0, x1 > x0 {
+                    for y in y0..<y1 {
+                        for x in x0..<x1 {
+                            let idx = y * width + x
+                            curr[idx].fg = focusFG
+                            curr[idx].bg = focusBG
+                        }
                     }
                 }
             }
