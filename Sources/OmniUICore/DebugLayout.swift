@@ -204,6 +204,69 @@ enum _DebugLayout {
                 style: style
             )
 
+        case .frame(let width, let height, let minWidth, let maxWidth, let minHeight, let maxHeight, let child):
+            func clamp(_ v: Int?, _ minV: Int?, _ maxV: Int?) -> Int? {
+                guard let v else { return nil }
+                var out = v
+                if let minV { out = max(minV, out) }
+                if let maxV, maxV != Int.max { out = min(maxV, out) }
+                return out
+            }
+            let cw = clamp(width, minWidth, maxWidth)
+            let ch = clamp(height, minHeight, maxHeight)
+            let targetW: Int = {
+                if let cw, cw != Int.max { return min(cw, maxSize.width) }
+                if let maxWidth, maxWidth == Int.max { return maxSize.width }
+                return maxSize.width
+            }()
+            let targetH: Int = {
+                if let ch, ch != Int.max { return min(ch, maxSize.height) }
+                if let maxHeight, maxHeight == Int.max { return maxSize.height }
+                return maxSize.height
+            }()
+            let innerMax = _Size(width: targetW, height: targetH)
+            let s = draw(
+                node: child,
+                origin: origin,
+                maxSize: innerMax,
+                canvas: &canvas,
+                hitRegions: &hitRegions,
+                scrollRegions: &scrollRegions,
+                shapeRegions: &shapeRegions,
+                renderShapeGlyphs: renderShapeGlyphs,
+                overlays: &overlays,
+                style: style
+            )
+            // Enforce min sizes if specified.
+            let outW = max(minWidth ?? 0, min(s.width, maxSize.width))
+            let outH = max(minHeight ?? 0, min(s.height, maxSize.height))
+            return _Size(width: outW, height: outH)
+
+        case .edgePadding(let top, let leading, let bottom, let trailing, let child):
+            let inner = _Rect(
+                origin: _Point(x: origin.x + leading, y: origin.y + top),
+                size: _Size(
+                    width: max(0, maxSize.width - leading - trailing),
+                    height: max(0, maxSize.height - top - bottom)
+                )
+            )
+            let s = draw(
+                node: child,
+                origin: inner.origin,
+                maxSize: inner.size,
+                canvas: &canvas,
+                hitRegions: &hitRegions,
+                scrollRegions: &scrollRegions,
+                shapeRegions: &shapeRegions,
+                renderShapeGlyphs: renderShapeGlyphs,
+                overlays: &overlays,
+                style: style
+            )
+            return _Size(
+                width: min(maxSize.width, s.width + leading + trailing),
+                height: min(maxSize.height, s.height + top + bottom)
+            )
+
         case .group(let nodes):
             var used = _Size(width: 0, height: 0)
             for n in nodes {
@@ -217,7 +280,8 @@ enum _DebugLayout {
                     scrollRegions: &scrollRegions,
                     shapeRegions: &shapeRegions,
                     renderShapeGlyphs: renderShapeGlyphs,
-                    overlays: &overlays
+                    overlays: &overlays,
+                    style: style
                 )
                 used.width = max(used.width, s.width)
                 used.height = max(used.height, s.height)
@@ -236,7 +300,8 @@ enum _DebugLayout {
                     scrollRegions: &scrollRegions,
                     shapeRegions: &shapeRegions,
                     renderShapeGlyphs: renderShapeGlyphs,
-                    overlays: &overlays
+                    overlays: &overlays,
+                    style: style
                 )
                 used.width = max(used.width, s.width)
                 used.height = max(used.height, s.height)
@@ -372,23 +437,7 @@ enum _DebugLayout {
         case .spacer:
             return _Size(width: 0, height: 0)
 
-        case .padding(let amount, let child):
-            let inner = _Rect(
-                origin: _Point(x: origin.x + amount, y: origin.y + amount),
-                size: _Size(width: max(0, maxSize.width - amount * 2), height: max(0, maxSize.height - amount * 2))
-            )
-            let s = draw(
-                node: child,
-                origin: inner.origin,
-                maxSize: inner.size,
-                canvas: &canvas,
-                hitRegions: &hitRegions,
-                scrollRegions: &scrollRegions,
-                shapeRegions: &shapeRegions,
-                renderShapeGlyphs: renderShapeGlyphs,
-                overlays: &overlays
-            )
-            return _Size(width: min(maxSize.width, s.width + amount * 2), height: min(maxSize.height, s.height + amount * 2))
+        // `padding` is modeled as `.edgePadding` now.
 
         case .stack(let axis, let spacing, let children):
             // 2-pass layout to make `Spacer()` work (allocate remaining space across spacers).
@@ -406,6 +455,15 @@ enum _DebugLayout {
 	                    return measure(child, maxSize)
 	                case .tagged(_, let label):
 	                    return measure(label, maxSize)
+	                case .frame(_, _, let minWidth, let maxWidth, let minHeight, let maxHeight, let child):
+	                    let s = measure(child, maxSize)
+	                    let w = max(minWidth ?? 0, min(maxSize.width, maxWidth == Int.max ? maxSize.width : min(s.width, maxWidth ?? s.width)))
+	                    let h = max(minHeight ?? 0, min(maxSize.height, maxHeight == Int.max ? maxSize.height : min(s.height, maxHeight ?? s.height)))
+	                    return _Size(width: w, height: h)
+	                case .edgePadding(let top, let leading, let bottom, let trailing, let child):
+	                    let inner = _Size(width: max(0, maxSize.width - leading - trailing), height: max(0, maxSize.height - top - bottom))
+	                    let s = measure(child, inner)
+	                    return _Size(width: min(maxSize.width, s.width + leading + trailing), height: min(maxSize.height, s.height + top + bottom))
 	                case .group(let nodes):
 	                    var u = _Size(width: 0, height: 0)
 	                    for n in nodes {
@@ -423,10 +481,7 @@ enum _DebugLayout {
                     return _Size(width: min(maxSize.width, 11), height: min(maxSize.height, 5))
                 case .spacer:
                     return _Size(width: 0, height: 0)
-                case .padding(let amount, let child):
-                    let inner = _Size(width: max(0, maxSize.width - amount * 2), height: max(0, maxSize.height - amount * 2))
-                    let s = measure(child, inner)
-                    return _Size(width: min(maxSize.width, s.width + amount * 2), height: min(maxSize.height, s.height + amount * 2))
+                // `padding` is modeled as `.edgePadding` now.
                 case .stack(let axis, let spacing, let children):
                     switch axis {
                     case .horizontal:
@@ -545,7 +600,8 @@ enum _DebugLayout {
                         scrollRegions: &scrollRegions,
                         shapeRegions: &shapeRegions,
                         renderShapeGlyphs: renderShapeGlyphs,
-                        overlays: &overlays
+                        overlays: &overlays,
+                        style: style
                     )
                 }
                 switch axis {
@@ -584,7 +640,8 @@ enum _DebugLayout {
                 scrollRegions: &scrollRegions,
                 shapeRegions: &shapeRegions,
                 renderShapeGlyphs: renderShapeGlyphs,
-                overlays: &overlays
+                overlays: &overlays,
+                style: style
             )
             put("]", at: _Point(x: x0 + 1 + labelSize.width + 2, y: origin.y), canvas: &canvas)
             let buttonWidth = min(maxSize.width, (isFocused ? 1 : 0) + 4 + labelSize.width)
@@ -613,7 +670,8 @@ enum _DebugLayout {
                 scrollRegions: &scrollRegions,
                 shapeRegions: &shapeRegions,
                 renderShapeGlyphs: renderShapeGlyphs,
-                overlays: &overlays
+                overlays: &overlays,
+                style: style
             )
             let width = min(maxSize.width, (isFocused ? 1 : 0) + box.count + labelSize.width)
             let rect = _Rect(origin: origin, size: _Size(width: width, height: 1))
@@ -659,6 +717,15 @@ enum _DebugLayout {
 	                        return m(child, maxSize)
 	                    case .tagged(_, let label):
 	                        return m(label, maxSize)
+	                    case .frame(_, _, let minWidth, let maxWidth, let minHeight, let maxHeight, let child):
+	                        let s = m(child, maxSize)
+	                        let w = max(minWidth ?? 0, min(maxSize.width, maxWidth == Int.max ? maxSize.width : min(s.width, maxWidth ?? s.width)))
+	                        let h = max(minHeight ?? 0, min(maxSize.height, maxHeight == Int.max ? maxSize.height : min(s.height, maxHeight ?? s.height)))
+	                        return _Size(width: w, height: h)
+	                    case .edgePadding(let top, let leading, let bottom, let trailing, let child):
+	                        let inner = _Size(width: max(0, maxSize.width - leading - trailing), height: max(0, maxSize.height - top - bottom))
+	                        let s = m(child, inner)
+	                        return _Size(width: min(maxSize.width, s.width + leading + trailing), height: min(maxSize.height, s.height + top + bottom))
 	                    case .group(let nodes):
 	                        var u = _Size(width: 0, height: 0)
 	                        for n in nodes {
@@ -682,10 +749,7 @@ enum _DebugLayout {
                     case .shape:
                         return _Size(width: min(maxSize.width, 11), height: min(maxSize.height, 5))
                     case .spacer: return _Size(width: 0, height: 0)
-                    case .padding(let amount, let child):
-                        let inner = _Size(width: max(0, maxSize.width - amount * 2), height: max(0, maxSize.height - amount * 2))
-                        let s = m(child, inner)
-                        return _Size(width: min(maxSize.width, s.width + amount * 2), height: min(maxSize.height, s.height + amount * 2))
+                    // `padding` is modeled as `.edgePadding` now.
                     case .stack(let axis, let spacing, let children):
                         switch axis {
                         case .horizontal:
@@ -789,7 +853,8 @@ enum _DebugLayout {
                 scrollRegions: &subScrolls,
                 shapeRegions: &subShapes,
                 renderShapeGlyphs: renderShapeGlyphs,
-                overlays: &subOverlays
+                overlays: &subOverlays,
+                style: style
             )
 
             // Apply overlays (e.g. Picker dropdown) within the scroll view, then clip via composition.

@@ -25,6 +25,12 @@ public final class _UIRuntime: @unchecked Sendable {
     private var navStacks: [String: [AnyView]] = [:]
     private var navStackRoots: Set<[Int]> = []
 
+    private struct _OverlayEntry {
+        var view: AnyView
+        var dismiss: () -> Void
+    }
+    private var overlays: [_OverlayEntry] = []
+
     // Base environment at the root render call.
     var _baseEnvironment: EnvironmentValues = EnvironmentValues()
 
@@ -255,11 +261,27 @@ public final class _UIRuntime: @unchecked Sendable {
         runtime.focusOrder.removeAll(keepingCapacity: true)
         runtime.focusActivation.removeAll(keepingCapacity: true)
         runtime.navStackRoots.removeAll(keepingCapacity: true)
+        runtime.overlays.removeAll(keepingCapacity: true)
 
         let ctx = _BuildContext(runtime: runtime, path: [], nextChildIndex: 0)
-        let node = _BuildContext.withRuntime(runtime, path: []) {
+        var node = _BuildContext.withRuntime(runtime, path: []) {
             var local = ctx
             return _makeNode(root, &local)
+        }
+
+        if !runtime.overlays.isEmpty {
+            // Overlays are always above the root.
+            var local = ctx
+            let overlayNodes: [_VNode] = runtime.overlays.map { entry in
+                let current = _UIRuntime._currentEnvironment ?? runtime._baseEnvironment
+                var next = current
+                next.dismiss = DismissAction(entry.dismiss)
+                next.presentationMode = PresentationMode(dismiss: entry.dismiss)
+                return _UIRuntime.$_currentEnvironment.withValue(next) {
+                    local.buildChild(entry.view)
+                }
+            }
+            node = .zstack(children: [node] + overlayNodes)
         }
 
         // If nothing is focused yet, default focus to the first focusable control.
@@ -288,6 +310,12 @@ public final class _UIRuntime: @unchecked Sendable {
             scrollRegions: laidOut.scrollRegions,
             runtime: runtime
         )
+    }
+}
+
+extension _UIRuntime {
+    func _registerOverlay(view: AnyView, dismiss: @escaping () -> Void) {
+        overlays.append(_OverlayEntry(view: view, dismiss: dismiss))
     }
 }
 

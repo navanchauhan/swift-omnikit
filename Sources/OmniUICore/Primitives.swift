@@ -692,22 +692,21 @@ private func _collectTaggedPickerOptions<T: Hashable>(node: _VNode, valueType: T
 
 public extension View {
     func padding(_ amount: Int = 1) -> some View {
-        Padding(amount: amount, content: AnyView(self))
+        _EdgePadding(content: AnyView(self), top: amount, leading: amount, bottom: amount, trailing: amount)
     }
 }
 
-public struct Padding: View, _PrimitiveView {
-    public typealias Body = Never
-    let amount: Int
+// Int-based padding lives here for convenience; edge-based padding is implemented in `Modifiers.swift`.
+private struct _EdgePadding: View, _PrimitiveView {
+    typealias Body = Never
     let content: AnyView
-
-    init(amount: Int, content: AnyView) {
-        self.amount = amount
-        self.content = content
-    }
+    let top: Int
+    let leading: Int
+    let bottom: Int
+    let trailing: Int
 
     func _makeNode(_ ctx: inout _BuildContext) -> _VNode {
-        .padding(amount, ctx.buildChild(content))
+        .edgePadding(top: top, leading: leading, bottom: bottom, trailing: trailing, child: ctx.buildChild(content))
     }
 }
 

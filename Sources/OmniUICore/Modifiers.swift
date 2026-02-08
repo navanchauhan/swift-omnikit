@@ -6,6 +6,7 @@ public extension View {
     func lineLimit(_ limit: Int?) -> some View { _Passthrough(self) }
     func cornerRadius(_ radius: CGFloat) -> some View { _Passthrough(self) }
     func shadow(color: Color, radius: CGFloat) -> some View { _Passthrough(self) }
+    func shadow(color: Color, radius: CGFloat, x: CGFloat = 0, y: CGFloat = 0) -> some View { _Passthrough(self) }
     func opacity(_ value: CGFloat) -> some View { _Passthrough(self) }
     func ignoresSafeArea() -> some View { _Passthrough(self) }
     func clipShape<S: Shape>(_ shape: S, style: FillStyle = FillStyle()) -> some View { _Passthrough(self) }
@@ -14,25 +15,37 @@ public extension View {
 
     func background<B: View>(_ background: B) -> some View { _Background(content: AnyView(self), background: AnyView(background)) }
     func background(_ color: Color) -> some View { _Style(content: AnyView(self), fg: nil, bg: color) }
+    func background(_ material: Material) -> some View { _Passthrough(self) }
     func overlay<O: View>(_ overlay: O) -> some View { _Overlay(content: AnyView(self), overlay: AnyView(overlay)) }
 
     // MARK: SwiftUI API Surface (stubs/passthrough)
     func navigationTitle(_ title: String) -> some View { _Passthrough(self) }
     func navigationTitle(_ title: Text) -> some View { _Passthrough(self) }
+    func navigationBarTitleDisplayMode(_ mode: Any = ()) -> some View { _Passthrough(self) }
 
     func listStyle<S>(_ style: S) -> some View { _Passthrough(self) }
     func pickerStyle<S>(_ style: S) -> some View { _Passthrough(self) }
     func buttonStyle<S>(_ style: S) -> some View { _Passthrough(self) }
     func textFieldStyle<S>(_ style: S) -> some View { _Passthrough(self) }
     func toggleStyle<S>(_ style: S) -> some View { _Passthrough(self) }
+    func toolbar<Content: View>(@ViewBuilder content: () -> Content) -> some View { _Passthrough(self) }
+    func toolbar(_ any: Any = ()) -> some View { _Passthrough(self) }
+    func toolbarBackground(_ any: Any = (), for: Any = ()) -> some View { _Passthrough(self) }
+    func modelContainer(_ any: Any) -> some View { _Passthrough(self) }
 
     func keyboardShortcut(_ key: KeyEquivalent, modifiers: EventModifiers = []) -> some View { _Passthrough(self) }
     func keyboardShortcut(_ shortcut: KeyboardShortcut) -> some View { _Passthrough(self) }
     func help(_ text: String) -> some View { _Passthrough(self) }
 
-    func sheet<Content: View>(isPresented: Binding<Bool>, @ViewBuilder content: () -> Content) -> some View { _Passthrough(self) }
-    func sheet<Content: View>(isPresented: Binding<Bool>, onDismiss: (() -> Void)?, @ViewBuilder content: () -> Content) -> some View { _Passthrough(self) }
-    func alert(isPresented: Binding<Bool>, @ViewBuilder content: () -> some View) -> some View { _Passthrough(self) }
+    func sheet<Content: View>(isPresented: Binding<Bool>, @ViewBuilder content: () -> Content) -> some View {
+        _Sheet(content: AnyView(self), isPresented: isPresented, onDismiss: nil, sheet: AnyView(content()))
+    }
+    func sheet<Content: View>(isPresented: Binding<Bool>, onDismiss: (() -> Void)?, @ViewBuilder content: () -> Content) -> some View {
+        _Sheet(content: AnyView(self), isPresented: isPresented, onDismiss: onDismiss, sheet: AnyView(content()))
+    }
+    func alert<Content: View>(isPresented: Binding<Bool>, @ViewBuilder content: () -> Content) -> some View {
+        _Alert(content: AnyView(self), isPresented: isPresented, alert: AnyView(content()))
+    }
 
     func focused(_ isFocused: Binding<Bool>) -> some View { _Passthrough(self) }
     func focused(_ isFocused: FocusState<Bool>.Binding) -> some View { _Passthrough(self) }
@@ -48,7 +61,15 @@ public extension View {
         height: CGFloat? = nil,
         alignment: Alignment = .center
     ) -> some View {
-        _Passthrough(self)
+        _Frame(
+            content: AnyView(self),
+            width: width,
+            height: height,
+            minWidth: nil,
+            maxWidth: nil,
+            minHeight: nil,
+            maxHeight: nil
+        )
     }
 
     func frame(
@@ -60,19 +81,142 @@ public extension View {
         maxHeight: CGFloat? = nil,
         alignment: Alignment = .center
     ) -> some View {
-        _Passthrough(self)
+        _Frame(
+            content: AnyView(self),
+            width: idealWidth,
+            height: idealHeight,
+            minWidth: minWidth,
+            maxWidth: maxWidth,
+            minHeight: minHeight,
+            maxHeight: maxHeight
+        )
     }
 
     func padding(_ edges: Edge.Set = .all, _ length: CGFloat? = nil) -> some View {
-        // Only `Int` padding is currently implemented in the debug layout; keep API compatibility.
-        if let length {
-            return AnyView(Padding(amount: Int(length), content: AnyView(self)))
-        }
-        return AnyView(Padding(amount: 1, content: AnyView(self)))
+        let amt = Int(length ?? 1)
+        let t = edges.contains(.top) || edges == .all || edges.contains(.vertical)
+        let b = edges.contains(.bottom) || edges == .all || edges.contains(.vertical)
+        let l = edges.contains(.leading) || edges == .all || edges.contains(.horizontal)
+        let r = edges.contains(.trailing) || edges == .all || edges.contains(.horizontal)
+        return AnyView(_EdgePadding(
+            content: AnyView(self),
+            top: t ? amt : 0,
+            leading: l ? amt : 0,
+            bottom: b ? amt : 0,
+            trailing: r ? amt : 0
+        ))
     }
 
     func onAppear(perform action: @escaping () -> Void) -> some View {
         _OnAppear(content: AnyView(self), action: action)
+    }
+}
+
+private struct _Sheet: View, _PrimitiveView {
+    typealias Body = Never
+    let content: AnyView
+    let isPresented: Binding<Bool>
+    let onDismiss: (() -> Void)?
+    let sheet: AnyView
+
+    func _makeNode(_ ctx: inout _BuildContext) -> _VNode {
+        if isPresented.wrappedValue {
+            let dismiss = {
+                if isPresented.wrappedValue {
+                    isPresented.wrappedValue = false
+                    onDismiss?()
+                }
+            }
+            ctx.runtime._registerOverlay(view: AnyView(
+                ZStack {
+                    // Dim background.
+                    Color.gray.opacity(0.35)
+                    VStack(spacing: 1) {
+                        HStack(spacing: 1) {
+                            Text("Sheet")
+                            Spacer()
+                            Button("Close") { dismiss() }
+                        }
+                        sheet
+                    }
+                    .padding(1)
+                }
+            ), dismiss: dismiss)
+        }
+        return ctx.buildChild(content)
+    }
+}
+
+private struct _Alert: View, _PrimitiveView {
+    typealias Body = Never
+    let content: AnyView
+    let isPresented: Binding<Bool>
+    let alert: AnyView
+
+    func _makeNode(_ ctx: inout _BuildContext) -> _VNode {
+        if isPresented.wrappedValue {
+            let dismiss = {
+                if isPresented.wrappedValue {
+                    isPresented.wrappedValue = false
+                }
+            }
+            ctx.runtime._registerOverlay(view: AnyView(
+                ZStack {
+                    Color.gray.opacity(0.35)
+                    VStack(spacing: 1) {
+                        alert
+                        HStack(spacing: 1) {
+                            Spacer()
+                            Button("OK") { dismiss() }
+                        }
+                    }
+                    .padding(1)
+                }
+            ), dismiss: dismiss)
+        }
+        return ctx.buildChild(content)
+    }
+}
+
+private struct _Frame: View, _PrimitiveView {
+    typealias Body = Never
+
+    let content: AnyView
+    let width: CGFloat?
+    let height: CGFloat?
+    let minWidth: CGFloat?
+    let maxWidth: CGFloat?
+    let minHeight: CGFloat?
+    let maxHeight: CGFloat?
+
+    func _makeNode(_ ctx: inout _BuildContext) -> _VNode {
+        func toInt(_ v: CGFloat?) -> Int? {
+            guard let v else { return nil }
+            if v.isInfinite { return Int.max }
+            return max(0, Int(v.rounded()))
+        }
+        return .frame(
+            width: toInt(width),
+            height: toInt(height),
+            minWidth: toInt(minWidth),
+            maxWidth: toInt(maxWidth),
+            minHeight: toInt(minHeight),
+            maxHeight: toInt(maxHeight),
+            child: ctx.buildChild(content)
+        )
+    }
+}
+
+private struct _EdgePadding: View, _PrimitiveView {
+    typealias Body = Never
+    let content: AnyView
+    let top: Int
+    let leading: Int
+    let bottom: Int
+    let trailing: Int
+
+    func _makeNode(_ ctx: inout _BuildContext) -> _VNode {
+        .edgePadding(top: top, leading: leading, bottom: bottom, trailing: trailing, child: ctx.buildChild(content))
     }
 }
 

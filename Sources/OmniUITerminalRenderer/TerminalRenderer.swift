@@ -209,13 +209,13 @@ private struct _TerminalSession {
             nonblockingWasSet = true
         }
 
-        // Enter alt screen, clear, hide cursor. Enable SGR mouse reporting.
-        write("\u{001B}[?1049h\u{001B}[2J\u{001B}[H\u{001B}[?25l\u{001B}[?1000h\u{001B}[?1006h")
+        // Enter alt screen, clear, hide cursor. Enable SGR mouse reporting + bracketed paste.
+        write("\u{001B}[?1049h\u{001B}[2J\u{001B}[H\u{001B}[?25l\u{001B}[?1000h\u{001B}[?1006h\u{001B}[?2004h")
     }
 
     func restore() {
-        // Disable mouse, show cursor, reset attrs, leave alt screen.
-        write("\u{001B}[?1000l\u{001B}[?1006l\u{001B}[0m\u{001B}[?25h\u{001B}[?1049l")
+        // Disable bracketed paste + mouse, show cursor, reset attrs, leave alt screen.
+        write("\u{001B}[?2004l\u{001B}[?1000l\u{001B}[?1006l\u{001B}[0m\u{001B}[?25h\u{001B}[?1049l")
         var o = orig
         _ = tcsetattr(STDIN_FILENO, TCSANOW, &o)
         if nonblockingWasSet {
@@ -292,13 +292,32 @@ private enum _Event {
 
 private struct _InputParser {
     private var bytes: [UInt8] = []
+    private var pending: [_Event] = []
+    private var inPaste = false
 
     mutating func push(_ chunk: ArraySlice<UInt8>) {
         bytes.append(contentsOf: chunk)
     }
 
     mutating func next() -> _Event? {
+        if !pending.isEmpty { return pending.removeFirst() }
         if bytes.isEmpty { return nil }
+
+        // Bracketed paste mode:
+        // - Begin: ESC [ 200 ~
+        // - End:   ESC [ 201 ~
+        if inPaste {
+            if bytes.count >= 6,
+               bytes[0] == 0x1B, bytes[1] == UInt8(ascii: "["),
+               bytes[2] == UInt8(ascii: "2"), bytes[3] == UInt8(ascii: "0"),
+               bytes[4] == UInt8(ascii: "1"), bytes[5] == UInt8(ascii: "~") {
+                bytes.removeFirst(6)
+                inPaste = false
+                return nil
+            }
+            return _nextUTF8ScalarEvent()
+        }
+
         let b = bytes.removeFirst()
 
         // Quit.
@@ -315,6 +334,14 @@ private struct _InputParser {
             if n0 == UInt8(ascii: "[") {
                 // CSI.
                 bytes.removeFirst()
+                // Bracketed paste begin: ESC [ 200 ~
+                if bytes.count >= 4,
+                   bytes[0] == UInt8(ascii: "2"), bytes[1] == UInt8(ascii: "0"),
+                   bytes[2] == UInt8(ascii: "0"), bytes[3] == UInt8(ascii: "~") {
+                    bytes.removeFirst(4)
+                    inPaste = true
+                    return nil
+                }
                 // Shift+Tab is ESC [ Z
                 if let z = bytes.first, z == UInt8(ascii: "Z") {
                     bytes.removeFirst()
@@ -378,7 +405,13 @@ private struct _InputParser {
             return .esc
         }
 
-        // UTF-8 decoding (single scalar).
+        bytes.insert(b, at: 0)
+        return _nextUTF8ScalarEvent()
+    }
+
+    private mutating func _nextUTF8ScalarEvent() -> _Event? {
+        guard !bytes.isEmpty else { return nil }
+        let b = bytes.removeFirst()
         if b < 0x80 {
             return .char(UInt32(b))
         }

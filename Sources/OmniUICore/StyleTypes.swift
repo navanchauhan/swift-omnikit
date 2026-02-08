@@ -18,9 +18,20 @@ public struct Color: Hashable, Sendable {
     public static let secondary = Color("secondary")
     public static let tertiary = Color("tertiary")
 
+    public static let accentColor = Color("accentColor")
     public static let white = Color("white")
     public static let gray = Color("gray")
     public static let yellow = Color("yellow")
+}
+
+extension Color: View, _PrimitiveView {
+    public typealias Body = Never
+
+    func _makeNode(_ ctx: inout _BuildContext) -> _VNode {
+        // A Color acts like a background fill in SwiftUI. We model this as a background-style node
+        // that fills the available layout rect in `_DebugLayout`.
+        .style(fg: nil, bg: self, child: .empty)
+    }
 }
 
 public struct Font: Hashable, Sendable {
@@ -31,6 +42,11 @@ public struct Font: Hashable, Sendable {
 
     public let name: String
 
+    public static let largeTitle = Font(name: "largeTitle")
+    public static let title3 = Font(name: "title3")
+    public static let subheadline = Font(name: "subheadline")
+    public static let headline = Font(name: "headline")
+    public static let body = Font(name: "body")
     public static let caption = Font(name: "caption")
     public static let caption2 = Font(name: "caption2")
 
@@ -41,6 +57,14 @@ public struct Font: Hashable, Sendable {
     // SwiftUI exposes `.system(_:, design:)` overloads; this keeps call sites compiling.
     public static func system(_ style: Font, design: Design = .default) -> Font {
         Font(name: "system(\(style.name),\(design))")
+    }
+
+    public func weight(_ any: Any = ()) -> Font {
+        Font(name: "\(name).weight")
+    }
+
+    public func bold() -> Font {
+        Font(name: "\(name).bold")
     }
 }
 
@@ -97,4 +121,11 @@ public enum Axis: Sendable {
         public static let vertical = Set(rawValue: 1 << 0)
         public static let horizontal = Set(rawValue: 1 << 1)
     }
+}
+
+// SwiftUI materials (placeholder).
+public struct Material: Hashable, Sendable {
+    public let raw: String
+    public init(_ raw: String) { self.raw = raw }
+    public static let regularMaterial = Material("regularMaterial")
 }

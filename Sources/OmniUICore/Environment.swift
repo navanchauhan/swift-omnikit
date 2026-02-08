@@ -48,15 +48,15 @@ public enum ColorScheme: Sendable {
     case dark
 }
 
-public struct DismissAction: Sendable {
-    let _action: @Sendable () -> Void
-    public init(_ action: @escaping @Sendable () -> Void = {}) { self._action = action }
+public struct DismissAction: @unchecked Sendable {
+    let _action: () -> Void
+    public init(_ action: @escaping () -> Void = {}) { self._action = action }
     public func callAsFunction() { _action() }
 }
 
-public struct PresentationMode: Sendable {
-    let _dismiss: @Sendable () -> Void
-    public init(dismiss: @escaping @Sendable () -> Void = {}) { self._dismiss = dismiss }
+public struct PresentationMode: @unchecked Sendable {
+    let _dismiss: () -> Void
+    public init(dismiss: @escaping () -> Void = {}) { self._dismiss = dismiss }
     public mutating func dismiss() { _dismiss() }
 }
 

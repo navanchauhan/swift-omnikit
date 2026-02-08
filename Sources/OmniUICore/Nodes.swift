@@ -40,11 +40,12 @@ indirect enum _VNode {
     case style(fg: Color?, bg: Color?, child: _VNode)
     case background(child: _VNode, background: _VNode)
     case overlay(child: _VNode, overlay: _VNode)
+    case frame(width: Int?, height: Int?, minWidth: Int?, maxWidth: Int?, minHeight: Int?, maxHeight: Int?, child: _VNode)
+    case edgePadding(top: Int, leading: Int, bottom: Int, trailing: Int, child: _VNode)
     case spacer
     case stack(axis: _Axis, spacing: Int, children: [_VNode])
     case zstack(children: [_VNode])
     case shape(_ShapeNode)
-    case padding(Int, _VNode)
     case button(id: _ActionID, isFocused: Bool, label: _VNode)
     case toggle(id: _ActionID, isFocused: Bool, isOn: Bool, label: _VNode)
     case textField(id: _ActionID, placeholder: String, text: String, cursor: Int, isFocused: Bool)
