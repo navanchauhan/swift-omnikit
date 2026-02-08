@@ -5,6 +5,8 @@ public struct RenderOp: Hashable, Sendable {
         case glyph(x: Int, y: Int, egc: String, fg: Color?, bg: Color?)
         case textRun(x: Int, y: Int, text: String, fg: Color?, bg: Color?)
         case fillRect(rect: _Rect, color: Color)
+        case pushClip(rect: _Rect)
+        case popClip
         case shape(rect: _Rect, shape: _ShapeNode)
     }
 
@@ -65,16 +67,8 @@ enum _RenderLayout {
 
     private struct _Ctx {
         let size: _Size
-        var clip: _Rect?
         var style: _Style
         var z: Int
-
-        mutating func withClip<T>(_ r: _Rect, _ body: (inout _Ctx) -> T) -> T {
-            let prev = clip
-            clip = r
-            defer { clip = prev }
-            return body(&self)
-        }
     }
 
     static func layout(node: _VNode, size: _Size) -> Result {
@@ -82,7 +76,7 @@ enum _RenderLayout {
         var hits: [(_Rect, _ActionID)] = []
         var scrolls: [_ScrollRegion] = []
         var shapes: [(_Rect, _ShapeNode)] = []
-        var ctx = _Ctx(size: size, clip: _Rect(origin: _Point(x: 0, y: 0), size: size), style: _Style(fg: nil, bg: nil), z: 0)
+        var ctx = _Ctx(size: size, style: _Style(fg: nil, bg: nil), z: 0)
         _ = draw(
             node: node,
             origin: _Point(x: 0, y: 0),
@@ -93,36 +87,20 @@ enum _RenderLayout {
             scrollRegions: &scrolls,
             shapeRegions: &shapes
         )
-        // Stable-ish order: zIndex, then kind rank, then y/x.
-        func rank(_ k: RenderOp.Kind) -> Int {
-            switch k {
-            case .fillRect: return 0
-            case .shape: return 1
-            case .glyph, .textRun: return 2
-            }
-        }
-        func key(_ op: RenderOp) -> (Int, Int, Int, Int) {
-            switch op.kind {
-            case .glyph(let x, let y, _, _, _):
-                return (op.zIndex, rank(op.kind), y, x)
-            case .textRun(let x, let y, _, _, _):
-                return (op.zIndex, rank(op.kind), y, x)
-            case .fillRect(let r, _):
-                return (op.zIndex, rank(op.kind), r.origin.y, r.origin.x)
-            case .shape(let r, _):
-                return (op.zIndex, rank(op.kind), r.origin.y, r.origin.x)
-            }
-        }
-        ops.sort { key($0) < key($1) }
 
-        // Coalesce adjacent glyphs into text runs to reduce op count and make renderers faster.
-        var coalesced: [RenderOp] = []
-        coalesced.reserveCapacity(ops.count)
+        // Coalesce adjacent glyphs into text runs to reduce op count, without reordering.
+        var out: [RenderOp] = []
+        out.reserveCapacity(ops.count)
         var i = 0
         while i < ops.count {
             let op = ops[i]
             guard case .glyph(let x0, let y0, let egc0, let fg0, let bg0) = op.kind else {
-                coalesced.append(op)
+                out.append(op)
+                i += 1
+                continue
+            }
+            if egc0.count != 1 {
+                out.append(op)
                 i += 1
                 continue
             }
@@ -137,22 +115,21 @@ enum _RenderLayout {
                 if ny != y0 { break }
                 if nx != x + 1 { break }
                 if nfg != fg0 || nbg != bg0 { break }
-                // Only coalesce 1-cell glyphs (layout enforces this via sanitization).
                 if negc.count != 1 { break }
                 text.append(contentsOf: negc)
                 x = nx
                 j += 1
             }
             if text.count >= 2 {
-                coalesced.append(RenderOp(zIndex: op.zIndex, kind: .textRun(x: x0, y: y0, text: text, fg: fg0, bg: bg0)))
+                out.append(RenderOp(zIndex: op.zIndex, kind: .textRun(x: x0, y: y0, text: text, fg: fg0, bg: bg0)))
                 i = j
             } else {
-                coalesced.append(op)
+                out.append(op)
                 i += 1
             }
         }
 
-        return Result(ops: coalesced, hitRegions: hits, scrollRegions: scrolls, shapeRegions: shapes)
+        return Result(ops: out, hitRegions: hits, scrollRegions: scrolls, shapeRegions: shapes)
     }
 
     private static func draw(
@@ -167,14 +144,8 @@ enum _RenderLayout {
     ) -> _Size {
         guard maxSize.width > 0, maxSize.height > 0 else { return _Size(width: 0, height: 0) }
 
-        func inClip(_ p: _Point) -> Bool {
-            guard let c = ctx.clip else { return true }
-            return c.contains(p)
-        }
-
         func emitGlyph(_ s: String, at p: _Point) {
             guard p.x >= 0, p.y >= 0, p.x < ctx.size.width, p.y < ctx.size.height else { return }
-            guard inClip(p) else { return }
             let egc = _sanitizeCell(s)
             ops.append(RenderOp(zIndex: ctx.z, kind: .glyph(x: p.x, y: p.y, egc: egc, fg: ctx.style.fg, bg: ctx.style.bg)))
         }
@@ -415,11 +386,20 @@ enum _RenderLayout {
 
             let yOff = (axis == .vertical) ? min(max(0, offset), maxOffsetY) : 0
 
-            // Clip and translate.
+            // Clip and translate (renderer-enforced via ops).
+            ops.append(RenderOp(zIndex: ctx.z, kind: .pushClip(rect: rect)))
             let childOrigin = _Point(x: origin.x, y: origin.y - yOff)
-            _ = ctx.withClip(rect) { c in
-                draw(node: content, origin: childOrigin, maxSize: _Size(width: viewportSize.width, height: viewportSize.height + yOff), ctx: &c, ops: &ops, hitRegions: &hitRegions, scrollRegions: &scrollRegions, shapeRegions: &shapeRegions)
-            }
+            _ = draw(
+                node: content,
+                origin: childOrigin,
+                maxSize: _Size(width: viewportSize.width, height: viewportSize.height + yOff),
+                ctx: &ctx,
+                ops: &ops,
+                hitRegions: &hitRegions,
+                scrollRegions: &scrollRegions,
+                shapeRegions: &shapeRegions
+            )
+            ops.append(RenderOp(zIndex: ctx.z, kind: .popClip))
 
             return viewportSize
 

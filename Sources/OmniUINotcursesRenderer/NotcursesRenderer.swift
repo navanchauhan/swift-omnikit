@@ -22,8 +22,8 @@ private struct _NCShapePlaneEntry {
 
 /// A minimal notcurses-based renderer loop.
 ///
-/// This currently renders using OmniUICore's debug snapshot (plaintext grid) and uses notcurses
-/// for drawing + input (mouse clicks + scroll wheel + basic keyboard).
+/// This renders OmniUICore's typed `RenderOp`s and uses notcurses for drawing + input
+/// (mouse clicks + scroll wheel + basic keyboard).
 public struct NotcursesApp<V: View> {
     let root: () -> V
 
@@ -153,19 +153,98 @@ public struct NotcursesApp<V: View> {
                 return cellpix.cdimx > 0 && cellpix.cdimy > 0 && cellpix.maxpixelx > 0 && cellpix.maxpixely > 0
             }()
 
-            let shapeRegions = snapshot.ops.compactMap { op -> (_Rect, _ShapeNode)? in
-                if case .shape(let r, let s) = op.kind { return (r, s) }
-                return nil
+            var curr = Array(repeating: _NCCell(ch: " ", fg: baseFG, bg: baseBG), count: width * height)
+            func setCell(_ x: Int, _ y: Int, _ egc: String, _ fg: _NCRGB?, _ bg: _NCRGB?) {
+                guard x >= 0, y >= 0, x < width, y < height else { return }
+                let idx = y * width + x
+                var c = curr[idx]
+                c.ch = egc
+                if let fg { c.fg = fg }
+                if let bg { c.bg = bg }
+                curr[idx] = c
             }
 
-            if canSprixel, let cellpix {
-                // Per-shape sprixel planes. This is our "differential" pixel renderer:
-                // we only re-rasterize/re-blit shapes that changed, and we can safely
-                // remove shapes by destroying their planes.
-                var alive: Set<Int> = []
-                alive.reserveCapacity(shapeRegions.count)
+            func intersect(_ a: _Rect, _ b: _Rect) -> _Rect? {
+                let x0 = max(a.origin.x, b.origin.x)
+                let y0 = max(a.origin.y, b.origin.y)
+                let x1 = min(a.origin.x + a.size.width, b.origin.x + b.size.width)
+                let y1 = min(a.origin.y + a.size.height, b.origin.y + b.size.height)
+                if x1 <= x0 || y1 <= y0 { return nil }
+                return _Rect(origin: _Point(x: x0, y: y0), size: _Size(width: x1 - x0, height: y1 - y0))
+            }
 
-                for (idx, (r, s)) in shapeRegions.enumerated() {
+            let fullClip = _Rect(origin: _Point(x: 0, y: 0), size: _Size(width: width, height: height))
+            var clipStack: [_Rect] = [fullClip]
+            func inClip(_ x: Int, _ y: Int) -> Bool {
+                guard let c = clipStack.last else { return true }
+                return c.contains(_Point(x: x, y: y))
+            }
+
+            // Shapes either go to sprixels (full-screen / unclipped only) or to braille (clipped fallback).
+            var shapesForSprixel: [(_Rect, _ShapeNode)] = []
+            shapesForSprixel.reserveCapacity(16)
+            var shapesByClip: [_Rect: [(_Rect, _ShapeNode)]] = [:]
+
+            for op in snapshot.ops {
+                switch op.kind {
+                case .glyph(let x, let y, let egc, let fg, let bg):
+                    if !inClip(x, y) { break }
+                    let mapped = egc.first ?? " "
+                    var outFG = _resolveColorNC(fg) ?? baseFG
+                    let outBG = _resolveColorNC(bg) ?? baseBG
+                    if mapped == "*" { outFG = accentFG }
+                    if _isBorderGlyph(mapped) { outFG = borderFG }
+                    setCell(x, y, egc, outFG, outBG)
+                case .textRun(let x, let y, let text, let fg, let bg):
+                    let outFG = _resolveColorNC(fg) ?? baseFG
+                    let outBG = _resolveColorNC(bg) ?? baseBG
+                    var xx = x
+                    for ch in text {
+                        if inClip(xx, y) {
+                        var fg2 = outFG
+                        if ch == "*" { fg2 = accentFG }
+                        if _isBorderGlyph(ch) { fg2 = borderFG }
+                        setCell(xx, y, String(ch), fg2, outBG)
+                        }
+                        xx += 1
+                        if xx >= width { break }
+                    }
+                case .fillRect(let rect, let color):
+                    guard let c = _resolveColorNC(color) else { continue }
+                    guard let top = clipStack.last, let rr = intersect(rect, top) else { continue }
+                    let x0 = max(0, rr.origin.x)
+                    let y0 = max(0, rr.origin.y)
+                    let x1 = min(width, rr.origin.x + rr.size.width)
+                    let y1 = min(height, rr.origin.y + rr.size.height)
+                    if x1 <= x0 || y1 <= y0 { continue }
+                    for yy in y0..<y1 {
+                        for xx in x0..<x1 {
+                            setCell(xx, yy, " ", nil, c)
+                        }
+                    }
+                case .pushClip(let r):
+                    if let top = clipStack.last, let i = intersect(top, r) {
+                        clipStack.append(i)
+                    } else {
+                        clipStack.append(_Rect(origin: _Point(x: 0, y: 0), size: _Size(width: 0, height: 0)))
+                    }
+                case .popClip:
+                    if clipStack.count > 1 { _ = clipStack.popLast() }
+                case .shape(let rect, let shape):
+                    if canSprixel, clipStack.last == fullClip {
+                        shapesForSprixel.append((rect, shape))
+                    } else if let top = clipStack.last, let rr = intersect(rect, top) {
+                        shapesByClip[rr, default: []].append((rect, shape))
+                    }
+                }
+            }
+
+            // Update per-shape sprixel planes after collecting shapes for this frame.
+            if canSprixel, let cellpix {
+                var alive: Set<Int> = []
+                alive.reserveCapacity(shapesForSprixel.count)
+
+                for (idx, (r, s)) in shapesForSprixel.enumerated() {
                     alive.insert(idx)
 
                     var hasher = Hasher()
@@ -229,7 +308,7 @@ public struct NotcursesApp<V: View> {
                         plane: entry.plane,
                         termSize: _Size(width: width, height: height),
                         cellpix: cellpix,
-                        shapes: [( _Rect(origin: _Point(x: 0, y: 0), size: r.size), s )],
+                        shapes: [(_Rect(origin: _Point(x: 0, y: 0), size: r.size), s)],
                         fill: shapeFillBG,
                         stroke: borderFG
                     )
@@ -258,67 +337,21 @@ public struct NotcursesApp<V: View> {
                 shapePlanes.removeAll()
             }
 
-            var curr = Array(repeating: _NCCell(ch: " ", fg: baseFG, bg: baseBG), count: width * height)
-            func setCell(_ x: Int, _ y: Int, _ egc: String, _ fg: _NCRGB?, _ bg: _NCRGB?) {
-                guard x >= 0, y >= 0, x < width, y < height else { return }
-                let idx = y * width + x
-                var c = curr[idx]
-                c.ch = egc
-                if let fg { c.fg = fg }
-                if let bg { c.bg = bg }
-                curr[idx] = c
-            }
-
-            for op in snapshot.ops {
-                switch op.kind {
-                case .glyph(let x, let y, let egc, let fg, let bg):
-                    let mapped = egc.first ?? " "
-                    var outFG = _resolveColorNC(fg) ?? baseFG
-                    let outBG = _resolveColorNC(bg) ?? baseBG
-                    if mapped == "*" { outFG = accentFG }
-                    if _isBorderGlyph(mapped) { outFG = borderFG }
-                    setCell(x, y, egc, outFG, outBG)
-                case .textRun(let x, let y, let text, let fg, let bg):
-                    let outFG = _resolveColorNC(fg) ?? baseFG
-                    let outBG = _resolveColorNC(bg) ?? baseBG
-                    var xx = x
-                    for ch in text {
-                        var fg2 = outFG
-                        if ch == "*" { fg2 = accentFG }
-                        if _isBorderGlyph(ch) { fg2 = borderFG }
-                        setCell(xx, y, String(ch), fg2, outBG)
-                        xx += 1
-                        if xx >= width { break }
-                    }
-                case .fillRect(let rect, let color):
-                    guard let c = _resolveColorNC(color) else { continue }
-                    let x0 = max(0, rect.origin.x)
-                    let y0 = max(0, rect.origin.y)
-                    let x1 = min(width, rect.origin.x + rect.size.width)
-                    let y1 = min(height, rect.origin.y + rect.size.height)
-                    if x1 <= x0 || y1 <= y0 { continue }
-                    for yy in y0..<y1 {
-                        for xx in x0..<x1 {
-                            setCell(xx, yy, " ", nil, c)
-                        }
-                    }
-                case .shape:
-                    // Shapes are rendered via sprixels/braille; no text-plane work here.
-                    break
+            // Braille fallback: rasterize clipped/unsupported shapes into braille characters, but only
+            // over empty cells so overlay text isn't clobbered.
+            if !shapesByClip.isEmpty {
+                for (clip, shapeRegions) in shapesByClip {
+                    BrailleRaster.render(
+                        termSize: _Size(width: width, height: height),
+                        shapes: shapeRegions,
+                        clip: clip,
+                        fillBG: shapeFillBG,
+                        strokeFG: borderFG,
+                        baseBG: baseBG,
+                        isEmpty: { x, y in curr[y * width + x].ch == " " },
+                        set: { x, y, ch, fg, bg in setCell(x, y, ch, fg, bg) }
+                    )
                 }
-            }
-
-            if !canSprixel {
-                // Braille fallback: rasterize shape regions into braille characters, but only over
-                // empty cells so overlay text isn't clobbered.
-                _renderBraille(
-                    termSize: _Size(width: width, height: height),
-                    shapes: shapeRegions,
-                    curr: &curr,
-                    baseBG: baseBG,
-                    fillFG: shapeFillBG,
-                    strokeFG: borderFG
-                )
             }
 
             if let fr = focusRect {
@@ -1158,418 +1191,6 @@ private func _cubic(_ p0: CGPoint, _ c1: CGPoint, _ c2: CGPoint, _ p3: CGPoint, 
         3.0 * u * tt * Double(c2.y) +
         ttt * Double(p3.y)
     return CGPoint(x: CGFloat(x), y: CGFloat(y))
-}
-
-private func _isShapePlaceholderCell(_ ch: String) -> Bool {
-    guard let c = ch.first else { return false }
-    if c == " " { return false }
-    if c == "·" { return true }
-    if _isBorderGlyph(c) { return true }
-    // Path placeholder glyphs used by the debug layout.
-    if c == "╱" || c == "╲" || c == "⬭" || c == "─" { return true }
-    return false
-}
-
-private func _renderBraille(
-    termSize: _Size,
-    shapes: [(_Rect, _ShapeNode)],
-    curr: inout [_NCCell],
-    baseBG: _NCRGB,
-    fillFG: _NCRGB,
-    strokeFG: _NCRGB
-) {
-    func setCell(_ x: Int, _ y: Int, _ ch: String, _ fg: _NCRGB, _ bg: _NCRGB) {
-        guard x >= 0, y >= 0, x < termSize.width, y < termSize.height else { return }
-        let idx = y * termSize.width + x
-        if curr[idx].ch != " " { return }
-        curr[idx] = _NCCell(ch: ch, fg: fg, bg: bg)
-    }
-
-    func dotBit(_ sx: Int, _ sy: Int) -> UInt8 {
-        // Braille dots:
-        // (0,0)=1 (0,1)=2 (0,2)=3 (1,0)=4 (1,1)=5 (1,2)=6 (0,3)=7 (1,3)=8
-        switch (sx, sy) {
-        case (0, 0): return 0x01
-        case (0, 1): return 0x02
-        case (0, 2): return 0x04
-        case (1, 0): return 0x08
-        case (1, 1): return 0x10
-        case (1, 2): return 0x20
-        case (0, 3): return 0x40
-        case (1, 3): return 0x80
-        default: return 0
-        }
-    }
-
-    for (r, s) in shapes {
-        let x0 = max(0, r.origin.x)
-        let y0 = max(0, r.origin.y)
-        let x1 = min(termSize.width, r.origin.x + r.size.width)
-        let y1 = min(termSize.height, r.origin.y + r.size.height)
-        guard x1 > x0, y1 > y0 else { continue }
-
-        // Rasterize at braille-dot resolution (2x4 per cell). For filled shapes, we:
-        // - paint fully-covered cells as spaces with filled background
-        // - paint partially-covered cells as braille dots with stroke foreground + filled background
-        // This yields a solid interior with a smooth-ish edge, instead of a noisy dotted fill.
-        let regionW = x1 - x0
-        let regionH = y1 - y0
-        let subW = regionW * 2
-        let subH = regionH * 4
-        if subW <= 0 || subH <= 0 { continue }
-
-        func insideFilledShape(_ sx: Int, _ sy: Int) -> Bool {
-            // Use the center of the subpixel for sampling.
-            let x = Double(sx) + 0.5
-            let y = Double(sy) + 0.5
-            let w = Double(subW)
-            let h = Double(subH)
-
-            switch s.kind {
-            case .rectangle:
-                return true
-            case .roundedRectangle(let crCells):
-                let rx = max(1.0, Double(crCells) * 2.0)
-                let ry = max(1.0, Double(crCells) * 4.0)
-                return _insideRoundedRect(x: x, y: y, w: w, h: h, rx: rx, ry: ry)
-            case .capsule:
-                let rx = max(1.0, min(w, h) / 2.0)
-                let ry = rx
-                return _insideRoundedRect(x: x, y: y, w: w, h: h, rx: rx, ry: ry)
-            case .circle, .ellipse:
-                let cx = w / 2.0
-                let cy = h / 2.0
-                let rx = max(1.0, (w - 1.0) / 2.0)
-                let ry = max(1.0, (h - 1.0) / 2.0)
-                let dx = (x - cx) / rx
-                let dy = (y - cy) / ry
-                return (dx * dx + dy * dy) <= 1.0
-            case .path:
-                return false
-            }
-        }
-
-        // Fast path: stroke-only paths.
-        if s.kind == .path {
-            let fillEnabled = (s.fillStyle != nil)
-            let eoFill = s.fillStyle?.isEOFilled ?? false
-
-            var subStroke = Array(repeating: false, count: subW * subH)
-            func setStroke(_ sx: Int, _ sy: Int) {
-                guard sx >= 0, sy >= 0, sx < subW, sy < subH else { return }
-                subStroke[sy * subW + sx] = true
-            }
-
-            var segments: [(ax: Int, ay: Int, bx: Int, by: Int)] = []
-            if let elements = s.pathElements {
-                // Stroke mask.
-                _strokePathBraille(elements: elements, subW: subW, subH: subH, set: setStroke)
-                // Fill contour.
-                _strokePathCollectSegments(
-                    elements: elements,
-                    x0: 0, y0: 0, x1: subW, y1: subH,
-                    addSegment: { ax, ay, bx, by in
-                        segments.append((ax: ax, ay: ay, bx: bx, by: by))
-                    },
-                    fillEllipse: { _, _, _, _ in },
-                    strokeRect: { _, _, _, _ in }
-                )
-            }
-
-            func windingContains(_ x: Double, _ y: Double) -> Bool {
-                var winding = 0
-                for s in segments {
-                    let y0 = Double(s.ay)
-                    let y1 = Double(s.by)
-                    let x0 = Double(s.ax)
-                    let x1 = Double(s.bx)
-                    if y0 == y1 { continue }
-                    let upward = y0 < y1
-                    let ymin = min(y0, y1)
-                    let ymax = max(y0, y1)
-                    if y < ymin || y >= ymax { continue }
-                    let t = (y - y0) / (y1 - y0)
-                    let ix = x0 + t * (x1 - x0)
-                    if ix <= x { continue }
-                    winding += upward ? 1 : -1
-                }
-                return winding != 0
-            }
-
-            func evenOddContains(_ x: Double, _ y: Double) -> Bool {
-                var inside = false
-                for s in segments {
-                    let y0 = Double(s.ay)
-                    let y1 = Double(s.by)
-                    let x0 = Double(s.ax)
-                    let x1 = Double(s.bx)
-                    if y0 == y1 { continue }
-                    let ymin = min(y0, y1)
-                    let ymax = max(y0, y1)
-                    if y < ymin || y >= ymax { continue }
-                    let t = (y - y0) / (y1 - y0)
-                    let ix = x0 + t * (x1 - x0)
-                    if ix > x { inside.toggle() }
-                }
-                return inside
-            }
-
-            for cy in y0..<y1 {
-                for cx in x0..<x1 {
-                    let baseSX = (cx - x0) * 2
-                    let baseSY = (cy - y0) * 4
-
-                    var strokeMask: UInt8 = 0
-                    for sy in 0..<4 {
-                        for sx in 0..<2 {
-                            if subStroke[(baseSY + sy) * subW + (baseSX + sx)] {
-                                strokeMask |= dotBit(sx, sy)
-                            }
-                        }
-                    }
-
-                    var fillMask: UInt8 = 0
-                    var fillCount = 0
-                    if fillEnabled, !segments.isEmpty {
-                        for sy in 0..<4 {
-                            for sx in 0..<2 {
-                                let px = Double(baseSX + sx) + 0.5
-                                let py = Double(baseSY + sy) + 0.5
-                                let ins = eoFill ? evenOddContains(px, py) : windingContains(px, py)
-                                if ins {
-                                    fillCount += 1
-                                    fillMask |= dotBit(sx, sy)
-                                }
-                            }
-                        }
-                    }
-
-                    if fillEnabled, fillCount == 8, strokeMask == 0 {
-                        // Fully covered cell: paint a quiet solid fill using background color.
-                        setCell(cx, cy, " ", fillFG, fillFG)
-                        continue
-                    }
-
-                    let mask = strokeMask | ((fillEnabled && fillCount > 0 && fillCount < 8) ? fillMask : 0)
-                    guard mask != 0 else { continue }
-                    let scalar = UnicodeScalar(0x2800 + Int(mask))!
-                    // Use filled background so partially-covered cells blend with the interior.
-                    let bg = fillEnabled ? fillFG : baseBG
-                    setCell(cx, cy, String(Character(scalar)), strokeFG, bg)
-                }
-            }
-            continue
-        }
-
-        // Filled shapes.
-        for cy in y0..<y1 {
-            for cx in x0..<x1 {
-                var insideCount = 0
-                var mask: UInt8 = 0
-                let baseSX = (cx - x0) * 2
-                let baseSY = (cy - y0) * 4
-                for sy in 0..<4 {
-                    for sx in 0..<2 {
-                        if insideFilledShape(baseSX + sx, baseSY + sy) {
-                            insideCount += 1
-                            mask |= dotBit(sx, sy)
-                        }
-                    }
-                }
-                if insideCount == 0 {
-                    continue
-                } else if insideCount == 8 {
-                    setCell(cx, cy, " ", fillFG, fillFG) // solid fill via background; fg doesn't matter
-                } else {
-                    let scalar = UnicodeScalar(0x2800 + Int(mask))!
-                    setCell(cx, cy, String(Character(scalar)), strokeFG, fillFG)
-                }
-            }
-        }
-    }
-}
-
-private func _insideRoundedRect(x: Double, y: Double, w: Double, h: Double, rx: Double, ry: Double) -> Bool {
-    // Standard rounded-rect: central rect + four quarter-ellipses.
-    let left = 0.0
-    let top = 0.0
-    let right = w
-    let bottom = h
-
-    let crx = min(rx, w / 2.0)
-    let cry = min(ry, h / 2.0)
-
-    // Central bands.
-    if (x >= left + crx && x <= right - crx) { return true }
-    if (y >= top + cry && y <= bottom - cry) { return true }
-
-    // Corner ellipses.
-    let cx = (x < left + crx) ? (left + crx) : (right - crx)
-    let cy = (y < top + cry) ? (top + cry) : (bottom - cry)
-    let dx = (x - cx) / max(1e-6, crx)
-    let dy = (y - cy) / max(1e-6, cry)
-    return (dx * dx + dy * dy) <= 1.0
-}
-
-private func _strokePathBraille(
-    elements: [Path.Element],
-    subW: Int,
-    subH: Int,
-    set: (Int, Int) -> Void
-) {
-    // Normalize to element bounds then draw into [0..subW)x[0..subH).
-    var minX = Double.greatestFiniteMagnitude
-    var minY = Double.greatestFiniteMagnitude
-    var maxX = -Double.greatestFiniteMagnitude
-    var maxY = -Double.greatestFiniteMagnitude
-
-    func consider(_ p: CGPoint) {
-        minX = min(minX, Double(p.x))
-        minY = min(minY, Double(p.y))
-        maxX = max(maxX, Double(p.x))
-        maxY = max(maxY, Double(p.y))
-    }
-
-    for e in elements {
-        switch e {
-        case .move(let p), .line(let p):
-            consider(p)
-        case .quadCurve(let p, let c):
-            consider(p)
-            consider(c)
-        case .curve(let p, let c1, let c2):
-            consider(p)
-            consider(c1)
-            consider(c2)
-        case .rect(let r):
-            consider(r.origin)
-            consider(CGPoint(x: r.origin.x + r.size.width, y: r.origin.y + r.size.height))
-        case .ellipse(let r):
-            consider(r.origin)
-            consider(CGPoint(x: r.origin.x + r.size.width, y: r.origin.y + r.size.height))
-        case .closeSubpath:
-            break
-        }
-    }
-
-    if !minX.isFinite || !minY.isFinite || !maxX.isFinite || !maxY.isFinite { return }
-    let rangeX = max(1e-6, maxX - minX)
-    let rangeY = max(1e-6, maxY - minY)
-
-    func map(_ p: CGPoint) -> (Int, Int) {
-        let nx = (Double(p.x) - minX) / rangeX
-        let ny = (Double(p.y) - minY) / rangeY
-        let x = Int(nx * Double(max(1, subW - 1)))
-        let y = Int(ny * Double(max(1, subH - 1)))
-        return (x, y)
-    }
-
-    func line(_ x0: Int, _ y0: Int, _ x1: Int, _ y1: Int) {
-        var x0 = x0, y0 = y0
-        let dx = abs(x1 - x0)
-        let sx = x0 < x1 ? 1 : -1
-        let dy = -abs(y1 - y0)
-        let sy = y0 < y1 ? 1 : -1
-        var err = dx + dy
-        while true {
-            set(x0, y0)
-            if x0 == x1 && y0 == y1 { break }
-            let e2 = 2 * err
-            if e2 >= dy { err += dy; x0 += sx }
-            if e2 <= dx { err += dx; y0 += sy }
-        }
-    }
-
-    var curr: (Int, Int)? = nil
-    var start: (Int, Int)? = nil
-    var currSrc: CGPoint? = nil
-    var startSrc: CGPoint? = nil
-
-    for e in elements {
-        switch e {
-        case .move(let p):
-            let mp = map(p)
-            curr = mp
-            start = mp
-            currSrc = p
-            startSrc = p
-        case .line(let p):
-            let mp = map(p)
-            if let c = curr { line(c.0, c.1, mp.0, mp.1) }
-            curr = mp
-            currSrc = p
-        case .rect(let r):
-            let p0 = map(r.origin)
-            let p1 = map(CGPoint(x: r.origin.x + r.size.width, y: r.origin.y + r.size.height))
-            let ax0 = min(p0.0, p1.0), ay0 = min(p0.1, p1.1)
-            let ax1 = max(p0.0, p1.0), ay1 = max(p0.1, p1.1)
-            line(ax0, ay0, ax1, ay0)
-            line(ax1, ay0, ax1, ay1)
-            line(ax1, ay1, ax0, ay1)
-            line(ax0, ay1, ax0, ay0)
-        case .ellipse(let r):
-            // Approximate ellipse outline by sampling angles.
-            let p0 = map(r.origin)
-            let p1 = map(CGPoint(x: r.origin.x + r.size.width, y: r.origin.y + r.size.height))
-            let ax0 = min(p0.0, p1.0), ay0 = min(p0.1, p1.1)
-            let ax1 = max(p0.0, p1.0), ay1 = max(p0.1, p1.1)
-            let cx = Double(ax0 + ax1) / 2.0
-            let cy = Double(ay0 + ay1) / 2.0
-            let rx = max(1.0, Double(ax1 - ax0) / 2.0)
-            let ry = max(1.0, Double(ay1 - ay0) / 2.0)
-            var prev: (Int, Int)? = nil
-            let steps = 64
-            for i in 0...steps {
-                let t = Double(i) * (2.0 * Double.pi) / Double(steps)
-                let x = Int(cx + cos(t) * rx)
-                let y = Int(cy + sin(t) * ry)
-                if let p = prev { line(p.0, p.1, x, y) }
-                prev = (x, y)
-            }
-        case .quadCurve(let p, let c):
-            guard let s0 = currSrc else {
-                currSrc = p
-                curr = map(p)
-                break
-            }
-            let steps = 24
-            var prevP = s0
-            for i in 1...steps {
-                let tt = Double(i) / Double(steps)
-                let a = _lerp(s0, c, tt)
-                let b = _lerp(c, p, tt)
-                let q = _lerp(a, b, tt)
-                let m0 = map(prevP)
-                let m1 = map(q)
-                line(m0.0, m0.1, m1.0, m1.1)
-                prevP = q
-            }
-            currSrc = p
-            curr = map(p)
-        case .curve(let p, let c1, let c2):
-            guard let s0 = currSrc else {
-                currSrc = p
-                curr = map(p)
-                break
-            }
-            let steps = 32
-            var prevP = s0
-            for i in 1...steps {
-                let tt = Double(i) / Double(steps)
-                let q = _cubic(s0, c1, c2, p, tt)
-                let m0 = map(prevP)
-                let m1 = map(q)
-                line(m0.0, m0.1, m1.0, m1.1)
-                prevP = q
-            }
-            currSrc = p
-            curr = map(p)
-        case .closeSubpath:
-            if let c = curr, let s = start { line(c.0, c.1, s.0, s.1) }
-            curr = start
-            currSrc = startSrc
-        }
-    }
 }
 
 private extension Array {
