@@ -1,0 +1,66 @@
+/// Minimal SwiftUI-compatible `@FocusState`.
+///
+/// This currently does not integrate with OmniUI's focus system; it exists primarily to keep
+/// SwiftUI view code compiling (e.g. iGopherBrowser).
+@propertyWrapper
+public struct FocusState<Value: Hashable> {
+    private let seed: _StateSeed
+    private let initial: () -> Value
+    private let location: _StateLocation
+
+    public init(wrappedValue: Value, fileID: StaticString = #fileID, line: UInt = #line) {
+        self.seed = _StateSeed(fileID: fileID, line: line)
+        self.initial = { wrappedValue }
+        self.location = _StateLocation()
+    }
+
+    public var wrappedValue: Value {
+        get {
+            if let resolved = location.resolved {
+                return resolved.runtime._getState(seed: seed, path: resolved.path, initial: initial)
+            }
+            guard let runtime = _UIRuntime._current, let path = _UIRuntime._currentPath else {
+                return initial()
+            }
+            location.resolved = (runtime: runtime, path: path)
+            return runtime._getState(seed: seed, path: path, initial: initial)
+        }
+        nonmutating set {
+            if let resolved = location.resolved {
+                resolved.runtime._setState(seed: seed, path: resolved.path, value: newValue)
+                return
+            }
+            guard let runtime = _UIRuntime._current, let path = _UIRuntime._currentPath else { return }
+            location.resolved = (runtime: runtime, path: path)
+            runtime._setState(seed: seed, path: path, value: newValue)
+        }
+    }
+
+    public struct Binding {
+        public var wrappedValue: Value {
+            get { get() }
+            nonmutating set { set(newValue) }
+        }
+
+        let get: () -> Value
+        let set: (Value) -> Void
+    }
+
+    public var projectedValue: Binding {
+        if let resolved = location.resolved {
+            return Binding(
+                get: { resolved.runtime._getState(seed: seed, path: resolved.path, initial: initial) },
+                set: { resolved.runtime._setState(seed: seed, path: resolved.path, value: $0) }
+            )
+        }
+        if let runtime = _UIRuntime._current, let path = _UIRuntime._currentPath {
+            location.resolved = (runtime: runtime, path: path)
+            return Binding(
+                get: { runtime._getState(seed: seed, path: path, initial: initial) },
+                set: { runtime._setState(seed: seed, path: path, value: $0) }
+            )
+        }
+        return Binding(get: { self.wrappedValue }, set: { self.wrappedValue = $0 })
+    }
+}
+

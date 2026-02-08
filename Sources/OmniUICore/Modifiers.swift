@@ -34,10 +34,13 @@ public extension View {
     func alert(isPresented: Binding<Bool>, @ViewBuilder content: () -> some View) -> some View { _Passthrough(self) }
 
     func focused(_ isFocused: Binding<Bool>) -> some View { _Passthrough(self) }
+    func focused(_ isFocused: FocusState<Bool>.Binding) -> some View { _Passthrough(self) }
 
     func onChange<V: Equatable>(of value: V, perform action: @escaping (_ oldValue: V, _ newValue: V) -> Void) -> some View {
         _OnChange(content: AnyView(self), value: value, action: action)
     }
+
+    func disabled(_ disabled: Bool) -> some View { _Passthrough(self) }
 
     func frame(
         width: CGFloat? = nil,
@@ -77,6 +80,35 @@ public struct PlainListStyle: Hashable, Sendable { public init() {} }
 public struct RoundedBorderTextFieldStyle: Hashable, Sendable { public init() {} }
 public struct PlainButtonStyle: Hashable, Sendable { public init() {} }
 public struct PrimaryFillButtonStyle: Hashable, Sendable { public init() {} }
+
+public enum ListStyle {
+    public static var plain: PlainListStyle { PlainListStyle() }
+    public static var sidebar: PlainListStyle { PlainListStyle() }
+}
+
+public enum PickerStyle {
+    public struct Segmented: Hashable, Sendable { public init() {} }
+    public struct Menu: Hashable, Sendable { public init() {} }
+    public static var segmented: Segmented { Segmented() }
+    public static var menu: Menu { Menu() }
+}
+
+public enum ToggleStyle {
+    public struct Switch: Hashable, Sendable { public init() {} }
+    public static var `switch`: Switch { Switch() }
+}
+
+public enum ButtonStyle {
+    public static var plain: PlainButtonStyle { PlainButtonStyle() }
+    public static var bordered: PlainButtonStyle { PlainButtonStyle() }
+    public static var borderedProminent: PlainButtonStyle { PlainButtonStyle() }
+    public static var liquidGlass: PlainButtonStyle { PlainButtonStyle() }
+}
+
+public enum TextFieldStyle {
+    public static var plain: RoundedBorderTextFieldStyle { RoundedBorderTextFieldStyle() }
+    public static var roundedBorder: RoundedBorderTextFieldStyle { RoundedBorderTextFieldStyle() }
+}
 
 public struct KeyboardShortcut: Hashable, Sendable {
     public var key: KeyEquivalent
