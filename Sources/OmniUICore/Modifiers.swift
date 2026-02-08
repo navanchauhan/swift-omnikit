@@ -56,6 +56,18 @@ public extension View {
         _OnChange(content: AnyView(self), value: value, action: action)
     }
 
+    func task(priority: Any? = nil, _ action: @escaping () async -> Void) -> some View {
+        // Stub: retained for API compatibility (iGopherBrowser uses this).
+        // A real implementation should be lifecycle-aware and cancellation-safe.
+        _Passthrough(self)
+    }
+
+    func onSubmit(_ action: @escaping () -> Void) -> some View { _Passthrough(self) }
+    func submitLabel(_ label: SubmitLabel) -> some View { _Passthrough(self) }
+
+    func searchable(text: Binding<String>) -> some View { _Passthrough(self) }
+    func refreshable(action: @escaping () async -> Void) -> some View { _Passthrough(self) }
+
     func disabled(_ disabled: Bool) -> some View { _Passthrough(self) }
 
     func frame(
@@ -112,6 +124,15 @@ public extension View {
     func onAppear(perform action: @escaping () -> Void) -> some View {
         _OnAppear(content: AnyView(self), action: action)
     }
+}
+
+public enum SubmitLabel: Hashable, Sendable {
+    case done
+    case go
+    case search
+    case send
+    case next
+    case `return`
 }
 
 private struct _Sheet: View, _PrimitiveView {
