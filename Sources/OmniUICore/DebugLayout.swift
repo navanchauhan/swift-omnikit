@@ -102,7 +102,7 @@ enum _DebugLayout {
                 used.height = max(used.height, s.height)
             }
             return used
-        
+
         case .zstack(let children):
             var used = _Size(width: 0, height: 0)
             for n in children {

@@ -353,11 +353,41 @@ private struct _InputParser {
             return .esc
         }
 
-        // UTF-8 (minimal): treat bytes < 0x80 as scalar.
+        // UTF-8 decoding (single scalar).
         if b < 0x80 {
             return .char(UInt32(b))
         }
 
+        let expected: Int
+        if (b & 0xE0) == 0xC0 { expected = 2 }
+        else if (b & 0xF0) == 0xE0 { expected = 3 }
+        else if (b & 0xF8) == 0xF0 { expected = 4 }
+        else {
+            return nil
+        }
+
+        if bytes.count < expected - 1 {
+            // Wait for more bytes.
+            bytes.insert(b, at: 0)
+            return nil
+        }
+
+        var seq = [UInt8]()
+        seq.reserveCapacity(expected)
+        seq.append(b)
+        for _ in 0..<(expected - 1) {
+            let c = bytes.removeFirst()
+            if (c & 0xC0) != 0x80 {
+                // Invalid continuation; drop and resync.
+                return nil
+            }
+            seq.append(c)
+        }
+
+        let s = String(decoding: seq, as: UTF8.self)
+        if s.unicodeScalars.count == 1, let scalar = s.unicodeScalars.first {
+            return .char(scalar.value)
+        }
         return nil
     }
 }

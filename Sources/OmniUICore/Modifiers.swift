@@ -15,6 +15,30 @@ public extension View {
     func background<B: View>(_ background: B) -> some View { _Passthrough(self) }
     func overlay<O: View>(_ overlay: O) -> some View { _Passthrough(self) }
 
+    // MARK: SwiftUI API Surface (stubs/passthrough)
+    func navigationTitle(_ title: String) -> some View { _Passthrough(self) }
+    func navigationTitle(_ title: Text) -> some View { _Passthrough(self) }
+
+    func listStyle<S>(_ style: S) -> some View { _Passthrough(self) }
+    func pickerStyle<S>(_ style: S) -> some View { _Passthrough(self) }
+    func buttonStyle<S>(_ style: S) -> some View { _Passthrough(self) }
+    func textFieldStyle<S>(_ style: S) -> some View { _Passthrough(self) }
+    func toggleStyle<S>(_ style: S) -> some View { _Passthrough(self) }
+
+    func keyboardShortcut(_ key: KeyEquivalent, modifiers: EventModifiers = []) -> some View { _Passthrough(self) }
+    func keyboardShortcut(_ shortcut: KeyboardShortcut) -> some View { _Passthrough(self) }
+    func help(_ text: String) -> some View { _Passthrough(self) }
+
+    func sheet<Content: View>(isPresented: Binding<Bool>, @ViewBuilder content: () -> Content) -> some View { _Passthrough(self) }
+    func sheet<Content: View>(isPresented: Binding<Bool>, onDismiss: (() -> Void)?, @ViewBuilder content: () -> Content) -> some View { _Passthrough(self) }
+    func alert(isPresented: Binding<Bool>, @ViewBuilder content: () -> some View) -> some View { _Passthrough(self) }
+
+    func focused(_ isFocused: Binding<Bool>) -> some View { _Passthrough(self) }
+
+    func onChange<V: Equatable>(of value: V, perform action: @escaping (_ oldValue: V, _ newValue: V) -> Void) -> some View {
+        _OnChange(content: AnyView(self), value: value, action: action)
+    }
+
     func frame(
         width: CGFloat? = nil,
         height: CGFloat? = nil,
@@ -48,6 +72,41 @@ public extension View {
     }
 }
 
+// MARK: Stubs for SwiftUI style/shortcut types
+public struct PlainListStyle: Hashable, Sendable { public init() {} }
+public struct RoundedBorderTextFieldStyle: Hashable, Sendable { public init() {} }
+public struct PlainButtonStyle: Hashable, Sendable { public init() {} }
+public struct PrimaryFillButtonStyle: Hashable, Sendable { public init() {} }
+
+public struct KeyboardShortcut: Hashable, Sendable {
+    public var key: KeyEquivalent
+    public var modifiers: EventModifiers
+    public init(_ key: KeyEquivalent, modifiers: EventModifiers = []) {
+        self.key = key
+        self.modifiers = modifiers
+    }
+
+    public static let cancelAction = KeyboardShortcut(.escape)
+    public static let defaultAction = KeyboardShortcut(.return)
+}
+
+public struct KeyEquivalent: Hashable, Sendable, ExpressibleByStringLiteral {
+    public var rawValue: String
+    public init(stringLiteral value: StringLiteralType) { self.rawValue = value }
+
+    public static let escape: KeyEquivalent = "\u{001B}"
+    public static let `return`: KeyEquivalent = "\n"
+}
+
+public struct EventModifiers: OptionSet, Hashable, Sendable {
+    public let rawValue: Int
+    public init(rawValue: Int) { self.rawValue = rawValue }
+    public static let command = EventModifiers(rawValue: 1 << 0)
+    public static let shift = EventModifiers(rawValue: 1 << 1)
+    public static let option = EventModifiers(rawValue: 1 << 2)
+    public static let control = EventModifiers(rawValue: 1 << 3)
+}
+
 /// Used for API compatibility: modifiers that we don't yet model in the node tree.
 public struct _Passthrough<Content: View>: View, _PrimitiveView {
     public typealias Body = Never
@@ -70,6 +129,24 @@ public struct _OnAppear: View, _PrimitiveView {
         // Extremely small behavior: fire on every render for now.
         // TODO: fire once per identity path.
         action()
+        return ctx.buildChild(content)
+    }
+}
+
+public struct _OnChange<V: Equatable>: View, _PrimitiveView {
+    public typealias Body = Never
+
+    let content: AnyView
+    let value: V
+    let action: (_ oldValue: V, _ newValue: V) -> Void
+
+    @State private var last: V? = nil
+
+    func _makeNode(_ ctx: inout _BuildContext) -> _VNode {
+        if let prev = last, prev != value {
+            action(prev, value)
+        }
+        last = value
         return ctx.buildChild(content)
     }
 }

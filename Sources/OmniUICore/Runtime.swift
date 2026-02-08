@@ -372,6 +372,26 @@ public struct DebugSnapshot: Sendable {
 
     public var text: String { lines.joined(separator: "\n") }
 
+    // MARK: Display List
+    public var renderList: RenderList {
+        var cmds: [RenderCommand] = []
+        cmds.reserveCapacity(cells.count + shapeRegions.count)
+
+        let w = size.width
+        if w > 0, cells.count == size.width * size.height {
+            for (idx, s) in cells.enumerated() where s != " " {
+                let y = idx / w
+                let x = idx % w
+                cmds.append(.cell(x: x, y: y, egc: s))
+            }
+        }
+        for (r, s) in shapeRegions {
+            cmds.append(.shape(rect: r, shape: s))
+        }
+
+        return RenderList(size: size, commands: cmds)
+    }
+
     /// Emulate a mouse click at a coordinate in the last rendered snapshot.
     public func click(x: Int, y: Int) {
         let p = _Point(x: x, y: y)
@@ -397,6 +417,16 @@ public struct DebugSnapshot: Sendable {
     public func backspace() {
         runtime._handleKey(.backspace)
     }
+}
+
+public struct RenderList: Sendable {
+    public let size: _Size
+    public let commands: [RenderCommand]
+}
+
+public enum RenderCommand: Sendable {
+    case cell(x: Int, y: Int, egc: String)
+    case shape(rect: _Rect, shape: _ShapeNode)
 }
 
 private func _isPrefix(_ prefix: [Int], of path: [Int]) -> Bool {

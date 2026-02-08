@@ -50,6 +50,18 @@ public enum TextAlignment: Sendable {
     case trailing
 }
 
+public enum HorizontalAlignment: Sendable {
+    case leading
+    case center
+    case trailing
+}
+
+public enum VerticalAlignment: Sendable {
+    case top
+    case center
+    case bottom
+}
+
 public struct Alignment: Hashable, Sendable {
     public let raw: String
     public init(_ raw: String) { self.raw = raw }

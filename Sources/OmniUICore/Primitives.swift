@@ -28,6 +28,7 @@ public struct Image: View, _PrimitiveView {
 public struct Spacer: View, _PrimitiveView {
     public typealias Body = Never
     public init() {}
+    public init(minLength: CGFloat? = nil) { self.init() }
 
     func _makeNode(_ ctx: inout _BuildContext) -> _VNode { .spacer }
 }
@@ -320,6 +321,12 @@ public struct VStack<Content: View>: View, _PrimitiveView {
         self.content = content()
     }
 
+    public init(alignment: HorizontalAlignment = .center, spacing: CGFloat? = nil, @ViewBuilder content: () -> Content) {
+        let s = Int(spacing ?? 0)
+        self.spacing = s
+        self.content = content()
+    }
+
     func _makeNode(_ ctx: inout _BuildContext) -> _VNode {
         let child = ctx.buildChild(content)
         return .stack(axis: .vertical, spacing: spacing, children: _flatten(child))
@@ -333,6 +340,12 @@ public struct HStack<Content: View>: View, _PrimitiveView {
 
     public init(spacing: Int = 0, @ViewBuilder content: () -> Content) {
         self.spacing = spacing
+        self.content = content()
+    }
+
+    public init(alignment: VerticalAlignment = .center, spacing: CGFloat? = nil, @ViewBuilder content: () -> Content) {
+        let s = Int(spacing ?? 0)
+        self.spacing = s
         self.content = content()
     }
 
@@ -580,8 +593,6 @@ public struct Picker<SelectionValue: Hashable>: View, _PrimitiveView {
         )
     }
 }
-
-// (Tag extraction support will be reintroduced once we replace the recursive VNode tagging approach.)
 
 public extension View {
     func padding(_ amount: Int = 1) -> some View {
