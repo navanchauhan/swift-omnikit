@@ -122,7 +122,7 @@ public struct NotcursesApp<V: View> {
             let height = Int(rows)
             let width = Int(cols)
 
-            let snapshot = runtime.debugRender(root(), size: _Size(width: width, height: height), renderShapeGlyphs: false)
+            let snapshot = runtime.render(root(), size: _Size(width: width, height: height))
 
             let baseFG = _NCRGB(r: 0xD8, g: 0xDB, b: 0xE2)
             let baseBG = _NCRGB(r: 0x0B, g: 0x10, b: 0x20)
@@ -254,33 +254,40 @@ public struct NotcursesApp<V: View> {
             }
 
             var curr = Array(repeating: _NCCell(ch: " ", fg: baseFG, bg: baseBG), count: width * height)
-            let inCells = snapshot.styledCells
-            if inCells.count == width * height {
-                for y in 0..<height {
-                    for x in 0..<width {
-                        let c = inCells[y * width + x]
-                        let s = c.egc
-                        let mapped = s.first ?? " "
+            func setCell(_ x: Int, _ y: Int, _ egc: String, _ fg: _NCRGB?, _ bg: _NCRGB?) {
+                guard x >= 0, y >= 0, x < width, y < height else { return }
+                let idx = y * width + x
+                var c = curr[idx]
+                c.ch = egc
+                if let fg { c.fg = fg }
+                if let bg { c.bg = bg }
+                curr[idx] = c
+            }
 
-                        var fg = _resolveColorNC(c.fg) ?? baseFG
-                        var bg = _resolveColorNC(c.bg) ?? baseBG
-
-                        if let fr = focusRect, fr.contains(_Point(x: x, y: y)) {
-                            fg = focusFG
-                            bg = focusBG
-                        } else if mapped == "*" {
-                            fg = accentFG
-                        } else if mapped == "·" {
-                            // Shape fill token: render as a space with filled background.
-                            fg = baseFG
-                            bg = shapeFillBG
-                        } else if _isBorderGlyph(mapped) {
-                            fg = borderFG
+            for op in snapshot.ops {
+                switch op.kind {
+                case .glyph(let x, let y, let egc, let fg, let bg):
+                    let mapped = egc.first ?? " "
+                    var outFG = _resolveColorNC(fg) ?? baseFG
+                    let outBG = _resolveColorNC(bg) ?? baseBG
+                    if mapped == "*" { outFG = accentFG }
+                    if _isBorderGlyph(mapped) { outFG = borderFG }
+                    setCell(x, y, egc, outFG, outBG)
+                case .fillRect(let rect, let color):
+                    guard let c = _resolveColorNC(color) else { continue }
+                    let x0 = max(0, rect.origin.x)
+                    let y0 = max(0, rect.origin.y)
+                    let x1 = min(width, rect.origin.x + rect.size.width)
+                    let y1 = min(height, rect.origin.y + rect.size.height)
+                    if x1 <= x0 || y1 <= y0 { continue }
+                    for yy in y0..<y1 {
+                        for xx in x0..<x1 {
+                            setCell(xx, yy, " ", nil, c)
                         }
-
-                        let ch: String = (mapped == "·") ? " " : s
-                        curr[y * width + x] = _NCCell(ch: ch, fg: fg, bg: bg)
                     }
+                case .shape:
+                    // Shapes are rendered via sprixels/braille; no text-plane work here.
+                    break
                 }
             }
 
@@ -295,6 +302,17 @@ public struct NotcursesApp<V: View> {
                     fillFG: shapeFillBG,
                     strokeFG: borderFG
                 )
+            }
+
+            if let fr = focusRect {
+                // Focus highlight over cells.
+                for y in max(0, fr.origin.y)..<min(height, fr.origin.y + fr.size.height) {
+                    for x in max(0, fr.origin.x)..<min(width, fr.origin.x + fr.size.width) {
+                        let idx = y * width + x
+                        curr[idx].fg = focusFG
+                        curr[idx].bg = focusBG
+                    }
+                }
             }
 
             // Differential paint (cell-level). This avoids full repaint when only a few cells change.

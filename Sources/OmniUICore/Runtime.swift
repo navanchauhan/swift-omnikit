@@ -332,6 +332,60 @@ extension _UIRuntime {
 }
 
 extension _UIRuntime {
+    public func render<V: View>(_ root: V, size: _Size) -> RenderSnapshot {
+        let runtime = self
+
+        runtime.nextActionID = 1
+        runtime.actions.removeAll(keepingCapacity: true)
+        runtime.textEditors.removeAll(keepingCapacity: true)
+        runtime.focusOrder.removeAll(keepingCapacity: true)
+        runtime.focusActivation.removeAll(keepingCapacity: true)
+        runtime.focusBoolBindings.removeAll(keepingCapacity: true)
+        runtime.navStackRoots.removeAll(keepingCapacity: true)
+        runtime.overlays.removeAll(keepingCapacity: true)
+
+        let ctx = _BuildContext(runtime: runtime, path: [], nextChildIndex: 0)
+        var node = _BuildContext.withRuntime(runtime, path: []) {
+            var local = ctx
+            return _makeNode(root, &local)
+        }
+
+        if !runtime.overlays.isEmpty {
+            var local = ctx
+            let overlayNodes: [_VNode] = runtime.overlays.map { entry in
+                let current = _UIRuntime._currentEnvironment ?? runtime._baseEnvironment
+                var next = current
+                next.dismiss = DismissAction(entry.dismiss)
+                next.presentationMode = PresentationMode(dismiss: entry.dismiss)
+                return _UIRuntime.$_currentEnvironment.withValue(next) {
+                    local.buildChild(entry.view)
+                }
+            }
+            node = .zstack(children: [node] + overlayNodes)
+        }
+
+        if runtime.focusedPath == nil, let first = runtime.focusOrder.first {
+            runtime._setFocus(path: first)
+        }
+
+        let laidOut = _RenderLayout.layout(node: node, size: size)
+        let focusedRect: _Rect? = {
+            guard let raw = focusedActionRawID() else { return nil }
+            return laidOut.hitRegions.last(where: { $0.1.raw == raw })?.0
+        }()
+        return RenderSnapshot(
+            size: size,
+            ops: laidOut.ops,
+            focusedRect: focusedRect,
+            shapeRegions: laidOut.shapeRegions,
+            hitRegions: laidOut.hitRegions,
+            scrollRegions: laidOut.scrollRegions,
+            runtime: runtime
+        )
+    }
+}
+
+extension _UIRuntime {
     func _registerNavStackRoot(path: [Int]) {
         navStackRoots.insert(path)
     }

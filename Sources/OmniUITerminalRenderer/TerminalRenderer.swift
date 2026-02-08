@@ -36,45 +36,70 @@ public struct TerminalApp<V: View> {
 
         while !Task.isCancelled {
             let size = _terminalSize()
-            let snapshot = runtime.debugRender(root(), size: size, renderShapeGlyphs: false)
+            let snapshot = runtime.render(root(), size: size)
 
             let baseFG = _RGB(r: 0xD8, g: 0xDB, b: 0xE2)
             let baseBG = _RGB(r: 0x0B, g: 0x10, b: 0x20)
             let focusFG = _RGB(r: 0xFF, g: 0xFF, b: 0xFF)
             let focusBG = _RGB(r: 0x1D, g: 0x4E, b: 0xD8)
             let accentFG = _RGB(r: 0x34, g: 0xD3, b: 0x99)
-            let shapeFillBG = _RGB(r: 0x12, g: 0x1B, b: 0x33)
             let borderFG = _RGB(r: 0xF2, g: 0xF4, b: 0xF8)
 
-            let focusRect = snapshot.focusedRect
-
             var curr = Array(repeating: _Cell(ch: " ", fg: baseFG, bg: baseBG), count: size.width * size.height)
-            let inCells = snapshot.styledCells
-            if inCells.count == size.width * size.height {
-                for y in 0..<size.height {
-                    for x in 0..<size.width {
-                        let c = inCells[y * size.width + x]
-                        let s = c.egc
-                        let mapped = s.first ?? " "
+            // Rasterize typed ops into a cell buffer.
+            func setCell(_ x: Int, _ y: Int, _ egc: String, _ fg: _RGB?, _ bg: _RGB?) {
+                guard x >= 0, y >= 0, x < size.width, y < size.height else { return }
+                let idx = y * size.width + x
+                var c = curr[idx]
+                c.ch = egc
+                if let fg { c.fg = fg }
+                if let bg { c.bg = bg }
+                curr[idx] = c
+            }
 
-                        var fg = _resolveColor(c.fg) ?? baseFG
-                        var bg = _resolveColor(c.bg) ?? baseBG
-
-                        if let fr = focusRect, fr.contains(_Point(x: x, y: y)) {
-                            fg = focusFG
-                            bg = focusBG
-                        } else if mapped == "*" {
-                            fg = accentFG
-                        } else if mapped == "·" {
-                            // Shape fill token: render as a space with filled background.
-                            fg = baseFG
-                            bg = shapeFillBG
-                        } else if _isBorderGlyph(mapped) {
-                            fg = borderFG
+            for op in snapshot.ops {
+                switch op.kind {
+                case .glyph(let x, let y, let egc, let fg, let bg):
+                    let mapped = egc.first ?? " "
+                    let rfg = _resolveColor(fg)
+                    let rbg = _resolveColor(bg)
+                    var outFG = rfg ?? baseFG
+                    let outBG = rbg ?? baseBG
+                    if mapped == "*" { outFG = accentFG }
+                    if _isBorderGlyph(mapped) { outFG = borderFG }
+                    setCell(x, y, egc, outFG, outBG)
+                case .fillRect(let rect, let color):
+                    guard let c = _resolveColor(color) else { continue }
+                    let x0 = max(0, rect.origin.x)
+                    let y0 = max(0, rect.origin.y)
+                    let x1 = min(size.width, rect.origin.x + rect.size.width)
+                    let y1 = min(size.height, rect.origin.y + rect.size.height)
+                    if x1 <= x0 || y1 <= y0 { continue }
+                    for yy in y0..<y1 {
+                        for xx in x0..<x1 {
+                            setCell(xx, yy, " ", nil, c)
                         }
+                    }
+                case .shape:
+                    // Terminal renderer currently draws shapes via braille in the notcurses renderer.
+                    // For ANSI, leave as background fill token if present in ops (or no-op).
+                    break
+                }
+            }
 
-                        let ch: String = (mapped == "·") ? " " : s
-                        curr[y * size.width + x] = _Cell(ch: ch, fg: fg, bg: bg)
+            // Focus highlight overlays everything else.
+            if let fr = snapshot.focusedRect {
+                let x0 = max(0, fr.origin.x)
+                let y0 = max(0, fr.origin.y)
+                let x1 = min(size.width, fr.origin.x + fr.size.width)
+                let y1 = min(size.height, fr.origin.y + fr.size.height)
+                if x1 > x0, y1 > y0 {
+                    for yy in y0..<y1 {
+                        for xx in x0..<x1 {
+                            let idx = yy * size.width + xx
+                            curr[idx].fg = focusFG
+                            curr[idx].bg = focusBG
+                        }
                     }
                 }
             }
