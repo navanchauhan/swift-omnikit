@@ -37,6 +37,9 @@ indirect enum _VNode {
     case group([_VNode])
     case text(String)
     case image(String)
+    case style(fg: Color?, bg: Color?, child: _VNode)
+    case background(child: _VNode, background: _VNode)
+    case overlay(child: _VNode, overlay: _VNode)
     case spacer
     case stack(axis: _Axis, spacing: Int, children: [_VNode])
     case zstack(children: [_VNode])
@@ -54,6 +57,7 @@ indirect enum _VNode {
         value: String,
         items: [(id: _ActionID, isSelected: Bool, isFocused: Bool, label: String)]
     )
+    case tagged(value: AnyHashable, label: _VNode)
 }
 
 public enum _ShapeKind: Hashable, Sendable {
@@ -70,16 +74,22 @@ public struct _ShapeNode: Hashable, Sendable {
     public var pathElements: [Path.Element]?
     public var fillStyle: FillStyle?
     public var strokeStyle: StrokeStyle?
+    public var fillColor: Color?
+    public var strokeColor: Color?
 
     public init(
         kind: _ShapeKind,
         pathElements: [Path.Element]? = nil,
         fillStyle: FillStyle? = FillStyle(),
-        strokeStyle: StrokeStyle? = StrokeStyle(lineWidth: 1)
+        strokeStyle: StrokeStyle? = StrokeStyle(lineWidth: 1),
+        fillColor: Color? = nil,
+        strokeColor: Color? = nil
     ) {
         self.kind = kind
         self.pathElements = pathElements
         self.fillStyle = fillStyle
         self.strokeStyle = strokeStyle
+        self.fillColor = fillColor
+        self.strokeColor = strokeColor
     }
 }

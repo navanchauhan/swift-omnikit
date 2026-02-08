@@ -254,15 +254,16 @@ public struct NotcursesApp<V: View> {
             }
 
             var curr = Array(repeating: _NCCell(ch: " ", fg: baseFG, bg: baseBG), count: width * height)
-            let inCells = snapshot.cells
+            let inCells = snapshot.styledCells
             if inCells.count == width * height {
                 for y in 0..<height {
                     for x in 0..<width {
-                        let s = inCells[y * width + x]
+                        let c = inCells[y * width + x]
+                        let s = c.egc
                         let mapped = s.first ?? " "
 
-                        var fg = baseFG
-                        var bg = baseBG
+                        var fg = _resolveColorNC(c.fg) ?? baseFG
+                        var bg = _resolveColorNC(c.bg) ?? baseBG
 
                         if let fr = focusRect, fr.contains(_Point(x: x, y: y)) {
                             fg = focusFG
@@ -451,6 +452,30 @@ private struct _CellPix {
     var maxpixelx: Int
 }
 
+private func _resolveColorNC(_ c: Color?) -> _NCRGB? {
+    guard let c, c.alpha > 0 else { return nil }
+    switch c.name {
+    case "primary":
+        return _NCRGB(r: 0xD8, g: 0xDB, b: 0xE2)
+    case "secondary":
+        return _NCRGB(r: 0xA5, g: 0xAC, b: 0xB8)
+    case "tertiary":
+        return _NCRGB(r: 0x7D, g: 0x86, b: 0x96)
+    case "white":
+        return _NCRGB(r: 0xFF, g: 0xFF, b: 0xFF)
+    case "gray":
+        return _NCRGB(r: 0x99, g: 0xA1, b: 0xAE)
+    case "yellow":
+        return _NCRGB(r: 0xFA, g: 0xD3, b: 0x5D)
+    case "accentColor":
+        return _NCRGB(r: 0x34, g: 0xD3, b: 0x99)
+    case "clear":
+        return nil
+    default:
+        return nil
+    }
+}
+
 private func _ncCellPix(_ nc: OpaquePointer) -> _CellPix? {
     var cdimy: UInt32 = 0
     var cdimx: UInt32 = 0
@@ -479,8 +504,7 @@ private func _renderSprixels(
 ) -> Bool {
     guard termSize.width > 0, termSize.height > 0 else { return false }
 
-    let fillRGB = _RGBA(r: fill.r, g: fill.g, b: fill.b, a: 0xFF)
-    let strokeRGB = _RGBA(r: stroke.r, g: stroke.g, b: stroke.b, a: 0xFF)
+    func rgba(_ c: _NCRGB) -> _RGBA { _RGBA(r: c.r, g: c.g, b: c.b, a: 0xFF) }
 
     func clamp01(_ x: Double) -> Double { min(1.0, max(0.0, x)) }
 
@@ -531,7 +555,9 @@ private func _renderSprixels(
         pixelH: Int,
         radiusPx: Double?,
         fillEnabled: Bool,
-        strokeWidthPx: Double
+        strokeWidthPx: Double,
+        fillRGB: _RGBA,
+        strokeRGB: _RGBA
     ) -> [UInt8] {
         var buf = Array(repeating: UInt8(0), count: pixelW * pixelH * 4)
 
@@ -611,7 +637,9 @@ private func _renderSprixels(
         fillEnabled: Bool,
         eoFill: Bool,
         antialiased: Bool,
-        strokeWidthPx: Double
+        strokeWidthPx: Double,
+        fillRGB: _RGBA,
+        strokeRGB: _RGBA
     ) -> [UInt8] {
         var buf = Array(repeating: UInt8(0), count: pixelW * pixelH * 4)
 
@@ -766,6 +794,11 @@ private func _renderSprixels(
             return max(1.0, Double(st.lineWidth))
         }()
 
+        let localFill = (s.fillColor.flatMap(_resolveColorNC) ?? fill)
+        let localStroke = (s.strokeColor.flatMap(_resolveColorNC) ?? stroke)
+        let fillRGB = rgba(localFill)
+        let strokeRGB = rgba(localStroke)
+
         let buf: [UInt8]
         switch s.kind {
         case .path:
@@ -776,7 +809,9 @@ private func _renderSprixels(
                 fillEnabled: fillEnabled,
                 eoFill: eoFill,
                 antialiased: aa,
-                strokeWidthPx: strokeWidthPx
+                strokeWidthPx: strokeWidthPx,
+                fillRGB: fillRGB,
+                strokeRGB: strokeRGB
             )
         case .roundedRectangle(let cr):
             buf = rasterizeFilledShape(
@@ -785,7 +820,9 @@ private func _renderSprixels(
                 pixelH: pixelH,
                 radiusPx: Double(cr) * Double(cellpix.cdimx),
                 fillEnabled: fillEnabled,
-                strokeWidthPx: strokeWidthPx
+                strokeWidthPx: strokeWidthPx,
+                fillRGB: fillRGB,
+                strokeRGB: strokeRGB
             )
         default:
             buf = rasterizeFilledShape(
@@ -794,7 +831,9 @@ private func _renderSprixels(
                 pixelH: pixelH,
                 radiusPx: nil,
                 fillEnabled: fillEnabled,
-                strokeWidthPx: strokeWidthPx
+                strokeWidthPx: strokeWidthPx,
+                fillRGB: fillRGB,
+                strokeRGB: strokeRGB
             )
         }
 

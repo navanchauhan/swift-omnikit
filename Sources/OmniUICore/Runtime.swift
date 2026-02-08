@@ -281,6 +281,7 @@ public final class _UIRuntime: @unchecked Sendable {
             size: size,
             lines: laidOut.lines,
             cells: laidOut.cells,
+            styledCells: laidOut.styledCells,
             focusedRect: focusedRect,
             shapeRegions: laidOut.shapeRegions,
             hitRegions: laidOut.hitRegions,
@@ -353,6 +354,18 @@ public enum _KeyEvent: Sendable {
     case end
 }
 
+public struct StyledCell: Hashable, Sendable {
+    public var egc: String
+    public var fg: Color?
+    public var bg: Color?
+
+    public init(egc: String, fg: Color?, bg: Color?) {
+        self.egc = egc
+        self.fg = fg
+        self.bg = bg
+    }
+}
+
 struct _ScrollRegion: Sendable {
     let rect: _Rect
     let path: [Int]
@@ -363,6 +376,7 @@ public struct DebugSnapshot: Sendable {
     public let size: _Size
     public let lines: [String]
     public let cells: [String]
+    public let styledCells: [StyledCell]
     public let focusedRect: _Rect?
     public let shapeRegions: [(_Rect, _ShapeNode)]
 
@@ -378,11 +392,11 @@ public struct DebugSnapshot: Sendable {
         cmds.reserveCapacity(cells.count + shapeRegions.count)
 
         let w = size.width
-        if w > 0, cells.count == size.width * size.height {
-            for (idx, s) in cells.enumerated() where s != " " {
+        if w > 0, styledCells.count == size.width * size.height {
+            for (idx, c) in styledCells.enumerated() where c.egc != " " || c.fg != nil || c.bg != nil {
                 let y = idx / w
                 let x = idx % w
-                cmds.append(.cell(x: x, y: y, egc: s))
+                cmds.append(.cell(x: x, y: y, egc: c.egc, fg: c.fg, bg: c.bg))
             }
         }
         for (r, s) in shapeRegions {
@@ -425,7 +439,7 @@ public struct RenderList: Sendable {
 }
 
 public enum RenderCommand: Sendable {
-    case cell(x: Int, y: Int, egc: String)
+    case cell(x: Int, y: Int, egc: String, fg: Color?, bg: Color?)
     case shape(rect: _Rect, shape: _ShapeNode)
 }
 

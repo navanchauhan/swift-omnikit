@@ -48,14 +48,58 @@ public enum ColorScheme: Sendable {
     case dark
 }
 
+public struct DismissAction: Sendable {
+    let _action: @Sendable () -> Void
+    public init(_ action: @escaping @Sendable () -> Void = {}) { self._action = action }
+    public func callAsFunction() { _action() }
+}
+
+public struct PresentationMode: Sendable {
+    let _dismiss: @Sendable () -> Void
+    public init(dismiss: @escaping @Sendable () -> Void = {}) { self._dismiss = dismiss }
+    public mutating func dismiss() { _dismiss() }
+}
+
+// Placeholder for SwiftData's `ModelContext` so iGopherBrowser can compile.
+public struct ModelContext: Sendable {
+    public init() {}
+}
+
 private enum _ColorSchemeKey: EnvironmentKey {
     static let defaultValue: ColorScheme = .dark
+}
+
+private enum _DismissKey: EnvironmentKey {
+    static let defaultValue: DismissAction = DismissAction()
+}
+
+private enum _PresentationModeKey: EnvironmentKey {
+    static let defaultValue: PresentationMode = PresentationMode()
+}
+
+private enum _ModelContextKey: EnvironmentKey {
+    static let defaultValue: ModelContext = ModelContext()
 }
 
 public extension EnvironmentValues {
     var colorScheme: ColorScheme {
         get { self[_ColorSchemeKey.self] }
         set { self[_ColorSchemeKey.self] = newValue }
+    }
+
+    var dismiss: DismissAction {
+        get { self[_DismissKey.self] }
+        set { self[_DismissKey.self] = newValue }
+    }
+
+    var presentationMode: PresentationMode {
+        get { self[_PresentationModeKey.self] }
+        set { self[_PresentationModeKey.self] = newValue }
+    }
+
+    var modelContext: ModelContext {
+        get { self[_ModelContextKey.self] }
+        set { self[_ModelContextKey.self] = newValue }
     }
 }
 

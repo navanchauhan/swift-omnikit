@@ -159,6 +159,12 @@ public struct NavigationStack<Content: View>: View, _PrimitiveView {
             return ctx.buildChild(content)
         }
 
+        // Pushed destinations should be able to dismiss (pop) via `@Environment(\.dismiss)`.
+        let current = _UIRuntime._currentEnvironment ?? runtime._baseEnvironment
+        var next = current
+        next.dismiss = DismissAction { runtime._navPop(stackPath: stackPath) }
+        next.presentationMode = PresentationMode(dismiss: { runtime._navPop(stackPath: stackPath) })
+
         // Pushed: show a back button and render the pushed destination "full screen" within this stack.
         return .stack(axis: .vertical, spacing: 1, children: _flatten(.group([
             ctx.buildChild(
@@ -167,7 +173,9 @@ public struct NavigationStack<Content: View>: View, _PrimitiveView {
                     Spacer()
                 }
             ),
-            top.map { ctx.buildChild($0) } ?? ctx.buildChild(content),
+            _UIRuntime.$_currentEnvironment.withValue(next) {
+                top.map { ctx.buildChild($0) } ?? ctx.buildChild(content)
+            },
         ])))
     }
 }
@@ -528,13 +536,23 @@ public struct Picker<SelectionValue: Hashable>: View, _PrimitiveView {
 
     let selection: Binding<SelectionValue>
     let title: String
-    let options: [(SelectionValue, String)]
+    let options: [(SelectionValue, String)]?
+    let content: AnyView?
     let actionScopePath: [Int]
 
     public init(_ title: String, selection: Binding<SelectionValue>, options: [(SelectionValue, String)]) {
         self.title = title
         self.selection = selection
         self.options = options
+        self.content = nil
+        self.actionScopePath = _UIRuntime._currentPath ?? []
+    }
+
+    public init<Content: View>(_ title: String, selection: Binding<SelectionValue>, @ViewBuilder content: () -> Content) {
+        self.title = title
+        self.selection = selection
+        self.options = nil
+        self.content = AnyView(content())
         self.actionScopePath = _UIRuntime._currentPath ?? []
     }
 
@@ -542,16 +560,31 @@ public struct Picker<SelectionValue: Hashable>: View, _PrimitiveView {
         let runtime = ctx.runtime
         let controlPath = ctx.path
 
-        let values = options.map { $0.0 }
-        let labelsText = options.map { $0.1 }
-        let selectedIndex = values.firstIndex(of: selection.wrappedValue) ?? 0
+        let values: [SelectionValue]
+        let labelsText: [String]
+        if let options = options {
+            values = options.map { $0.0 }
+            labelsText = options.map { $0.1 }
+        } else if let content {
+            let node = ctx.buildChild(content)
+            let collected = _collectTaggedPickerOptions(node: node, valueType: SelectionValue.self)
+            values = collected.values
+            labelsText = collected.labels
+        } else {
+            values = []
+            labelsText = []
+        }
+
+        let safeValues = values.isEmpty ? [selection.wrappedValue] : values
+        let safeLabels = labelsText.isEmpty ? [String(describing: selection.wrappedValue)] : labelsText
+        let selectedIndex = safeValues.firstIndex(of: selection.wrappedValue) ?? 0
         let isExpanded = runtime._isPickerExpanded(path: controlPath)
 
         // Paths for focusability inside the picker: header is 0, options are 1...N.
         let headerPath = controlPath + [0]
 
         // Header button.
-        let valueText = (selectedIndex < labelsText.count) ? labelsText[selectedIndex] : String(describing: selection.wrappedValue)
+        let valueText = (selectedIndex < safeLabels.count) ? safeLabels[selectedIndex] : String(describing: selection.wrappedValue)
         let headerIsFocused = runtime._isFocused(path: headerPath)
         let toggleExpandedID = runtime._registerAction({
             runtime._setFocus(path: headerPath)
@@ -559,7 +592,7 @@ public struct Picker<SelectionValue: Hashable>: View, _PrimitiveView {
                 runtime._closePicker(path: controlPath)
             } else {
                 runtime._openPicker(path: controlPath)
-                let preferred = min(max(0, selectedIndex), max(0, values.count - 1))
+                let preferred = min(max(0, selectedIndex), max(0, safeValues.count - 1))
                 runtime._setFocus(path: controlPath + [1 + preferred])
             }
         }, path: actionScopePath)
@@ -568,8 +601,8 @@ public struct Picker<SelectionValue: Hashable>: View, _PrimitiveView {
         // Dropdown options as buttons beneath.
         var items: [(id: _ActionID, isSelected: Bool, isFocused: Bool, label: String)] = []
         if isExpanded {
-            items.reserveCapacity(values.count)
-            for (idx, value) in values.enumerated() {
+            items.reserveCapacity(safeValues.count)
+            for (idx, value) in safeValues.enumerated() {
                 let optionPath = controlPath + [1 + idx]
                 let optionIsFocused = runtime._isFocused(path: optionPath)
                 let optionID = runtime._registerAction({
@@ -579,7 +612,8 @@ public struct Picker<SelectionValue: Hashable>: View, _PrimitiveView {
                     runtime._setFocus(path: headerPath)
                 }, path: actionScopePath)
                 runtime._registerFocusable(path: optionPath, activate: optionID)
-                items.append((id: optionID, isSelected: value == selection.wrappedValue, isFocused: optionIsFocused, label: labelsText[idx]))
+                let label = (idx < safeLabels.count) ? safeLabels[idx] : String(describing: value)
+                items.append((id: optionID, isSelected: value == selection.wrappedValue, isFocused: optionIsFocused, label: label))
             }
         }
 
@@ -592,6 +626,68 @@ public struct Picker<SelectionValue: Hashable>: View, _PrimitiveView {
             items: items
         )
     }
+}
+
+private func _collectTaggedPickerOptions<T: Hashable>(node: _VNode, valueType: T.Type) -> (values: [T], labels: [String]) {
+    var values: [T] = []
+    var labels: [String] = []
+
+    func labelText(_ n: _VNode) -> String? {
+        switch n {
+        case .text(let s):
+            return s
+        case .style(_, _, let child):
+            return labelText(child)
+        case .group(let nodes):
+            // Prefer first text we find.
+            for c in nodes {
+                if let t = labelText(c) { return t }
+            }
+            return nil
+        case .stack(_, _, let children):
+            for c in children {
+                if let t = labelText(c) { return t }
+            }
+            return nil
+        case .zstack(let children):
+            for c in children {
+                if let t = labelText(c) { return t }
+            }
+            return nil
+        default:
+            return nil
+        }
+    }
+
+    func walk(_ n: _VNode) {
+        switch n {
+        case .tagged(let v, let label):
+            if let tv = v.base as? T {
+                values.append(tv)
+                labels.append(labelText(label) ?? String(describing: tv))
+            }
+        case .group(let nodes):
+            for c in nodes { walk(c) }
+        case .stack(_, _, let children):
+            for c in children { walk(c) }
+        case .zstack(let children):
+            for c in children { walk(c) }
+        case .background(let child, let bg):
+            // Picker content doesn't use this typically; but walk both to be safe.
+            walk(bg)
+            walk(child)
+        case .overlay(let child, let ov):
+            walk(child)
+            walk(ov)
+        case .style(_, _, let child):
+            walk(child)
+        default:
+            break
+        }
+    }
+
+    walk(node)
+    return (values, labels)
 }
 
 public extension View {

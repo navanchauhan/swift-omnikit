@@ -123,15 +123,15 @@ public struct ShapeView<S: Shape>: View, _PrimitiveView {
 
 public extension Shape {
     func fill(_ content: Color = .primary, style: FillStyle = FillStyle()) -> some View {
-        _ShapeStyle(content: AnyView(self), fill: style, stroke: nil)
+        _ShapeStyle(content: AnyView(self), fill: style, stroke: nil, fillColor: content, strokeColor: nil)
     }
 
     func stroke(_ content: Color = .primary, style: StrokeStyle = StrokeStyle()) -> some View {
-        _ShapeStyle(content: AnyView(self), fill: nil, stroke: style)
+        _ShapeStyle(content: AnyView(self), fill: nil, stroke: style, fillColor: nil, strokeColor: content)
     }
 
     func stroke(lineWidth: CGFloat = 1) -> some View {
-        _ShapeStyle(content: AnyView(self), fill: nil, stroke: StrokeStyle(lineWidth: lineWidth))
+        _ShapeStyle(content: AnyView(self), fill: nil, stroke: StrokeStyle(lineWidth: lineWidth), fillColor: nil, strokeColor: .primary)
     }
 }
 
@@ -141,12 +141,16 @@ private struct _ShapeStyle: View, _PrimitiveView {
     let content: AnyView
     let fill: FillStyle?
     let stroke: StrokeStyle?
+    let fillColor: Color?
+    let strokeColor: Color?
 
     func _makeNode(_ ctx: inout _BuildContext) -> _VNode {
         let n = ctx.buildChild(content)
         guard case .shape(var s) = n else { return n }
         s.fillStyle = fill
         s.strokeStyle = stroke
+        if let fillColor { s.fillColor = fillColor }
+        if let strokeColor { s.strokeColor = strokeColor }
         return .shape(s)
     }
 }

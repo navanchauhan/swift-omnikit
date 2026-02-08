@@ -49,27 +49,29 @@ public struct TerminalApp<V: View> {
             let focusRect = snapshot.focusedRect
 
             var curr = Array(repeating: _Cell(ch: " ", fg: baseFG, bg: baseBG), count: size.width * size.height)
-            let inCells = snapshot.cells
+            let inCells = snapshot.styledCells
             if inCells.count == size.width * size.height {
                 for y in 0..<size.height {
                     for x in 0..<size.width {
-                        let s = inCells[y * size.width + x]
+                        let c = inCells[y * size.width + x]
+                        let s = c.egc
                         let mapped = s.first ?? " "
 
-                    var fg = baseFG
-                    var bg = baseBG
+                        var fg = _resolveColor(c.fg) ?? baseFG
+                        var bg = _resolveColor(c.bg) ?? baseBG
 
-                    if let fr = focusRect, fr.contains(_Point(x: x, y: y)) {
-                        fg = focusFG
-                        bg = focusBG
-                    } else if mapped == "*" {
-                        fg = accentFG
-                    } else if mapped == "·" {
-                        fg = baseFG
-                        bg = shapeFillBG
-                    } else if _isBorderGlyph(mapped) {
-                        fg = borderFG
-                    }
+                        if let fr = focusRect, fr.contains(_Point(x: x, y: y)) {
+                            fg = focusFG
+                            bg = focusBG
+                        } else if mapped == "*" {
+                            fg = accentFG
+                        } else if mapped == "·" {
+                            // Shape fill token: render as a space with filled background.
+                            fg = baseFG
+                            bg = shapeFillBG
+                        } else if _isBorderGlyph(mapped) {
+                            fg = borderFG
+                        }
 
                         let ch: String = (mapped == "·") ? " " : s
                         curr[y * size.width + x] = _Cell(ch: ch, fg: fg, bg: bg)
@@ -239,6 +241,29 @@ private struct _TerminalSession {
             }
         }
         return input.next()
+    }
+}
+
+private func _resolveColor(_ c: Color?) -> _RGB? {
+    guard let c, c.alpha > 0 else { return nil }
+    // Very small palette; good enough for iGopherBrowser-style `.primary/.secondary` and basic colors.
+    switch c.name {
+    case "primary":
+        return _RGB(r: 0xD8, g: 0xDB, b: 0xE2)
+    case "secondary":
+        return _RGB(r: 0xA5, g: 0xAC, b: 0xB8)
+    case "tertiary":
+        return _RGB(r: 0x7D, g: 0x86, b: 0x96)
+    case "white":
+        return _RGB(r: 0xFF, g: 0xFF, b: 0xFF)
+    case "gray":
+        return _RGB(r: 0x99, g: 0xA1, b: 0xAE)
+    case "yellow":
+        return _RGB(r: 0xFA, g: 0xD3, b: 0x5D)
+    case "accentColor":
+        return _RGB(r: 0x34, g: 0xD3, b: 0x99)
+    default:
+        return nil
     }
 }
 

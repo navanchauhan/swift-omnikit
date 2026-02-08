@@ -4,21 +4,31 @@
 /// - deterministic plaintext output
 /// - hit testing for `Button`
 enum _DebugLayout {
+    struct _CanvasCell {
+        var ch: String
+        var fg: Color?
+        var bg: Color?
+    }
+
     struct Overlay {
         var zIndex: Int
-        var draw: (_ canvas: inout [[String]], _ hitRegions: inout [(_Rect, _ActionID)], _ scrollRegions: inout [_ScrollRegion]) -> Void
+        var draw: (_ canvas: inout [[_CanvasCell]], _ hitRegions: inout [(_Rect, _ActionID)], _ scrollRegions: inout [_ScrollRegion]) -> Void
     }
 
     struct Result {
         var lines: [String]
         var cells: [String]
+        var styledCells: [StyledCell]
         var hitRegions: [(_Rect, _ActionID)]
         var scrollRegions: [_ScrollRegion]
         var shapeRegions: [(_Rect, _ShapeNode)]
     }
 
     static func layout(node: _VNode, in rect: _Rect, renderShapeGlyphs: Bool = true) -> Result {
-        var canvas = Array(repeating: Array(repeating: " ", count: rect.size.width), count: rect.size.height)
+        var canvas = Array(
+            repeating: Array(repeating: _CanvasCell(ch: " ", fg: nil, bg: nil), count: rect.size.width),
+            count: rect.size.height
+        )
         var hits: [(_Rect, _ActionID)] = []
         var scrolls: [_ScrollRegion] = []
         var shapes: [(_Rect, _ShapeNode)] = []
@@ -32,7 +42,8 @@ enum _DebugLayout {
             scrollRegions: &scrolls,
             shapeRegions: &shapes,
             renderShapeGlyphs: renderShapeGlyphs,
-            overlays: &overlays
+            overlays: &overlays,
+            style: (fg: nil, bg: nil)
         )
 
         // Draw overlays last so they appear "above" later siblings in stacks.
@@ -40,9 +51,10 @@ enum _DebugLayout {
             o.draw(&canvas, &hits, &scrolls)
         }
 
-        let lines = canvas.map { $0.joined() }
-        let cells = canvas.flatMap { $0 }
-        return Result(lines: lines, cells: cells, hitRegions: hits, scrollRegions: scrolls, shapeRegions: shapes)
+        let lines = canvas.map { $0.map(\.ch).joined() }
+        let cells = canvas.flatMap { $0.map(\.ch) }
+        let styledCells = canvas.flatMap { row in row.map { StyledCell(egc: $0.ch, fg: $0.fg, bg: $0.bg) } }
+        return Result(lines: lines, cells: cells, styledCells: styledCells, hitRegions: hits, scrollRegions: scrolls, shapeRegions: shapes)
     }
 
     private static func imageString(_ name: String) -> String {
@@ -70,18 +82,127 @@ enum _DebugLayout {
         node: _VNode,
         origin: _Point,
         maxSize: _Size,
-        canvas: inout [[String]],
+        canvas: inout [[_CanvasCell]],
         hitRegions: inout [(_Rect, _ActionID)],
         scrollRegions: inout [_ScrollRegion],
         shapeRegions: inout [(_Rect, _ShapeNode)],
         renderShapeGlyphs: Bool,
-        overlays: inout [Overlay]
+        overlays: inout [Overlay],
+        style: (fg: Color?, bg: Color?) = (nil, nil)
     ) -> _Size {
         guard maxSize.width > 0, maxSize.height > 0 else { return _Size(width: 0, height: 0) }
 
         switch node {
         case .empty:
             return _Size(width: 0, height: 0)
+
+        case .style(_, _, let child):
+            // Merge local style into the inherited style.
+            // We model bg as a simple rect fill across the current available area.
+            // This is not SwiftUI-perfect, but it enables `.background(Color)` for TUI.
+            let fg = {
+                if case .style(let fg, _, _) = node { return fg }
+                return nil
+            }()
+            let bg = {
+                if case .style(_, let bg, _) = node { return bg }
+                return nil
+            }()
+            let merged: (fg: Color?, bg: Color?) = (fg: fg ?? style.fg, bg: bg ?? style.bg)
+
+            if let bg = merged.bg {
+                let x0 = max(0, origin.x)
+                let y0 = max(0, origin.y)
+                let x1 = min(canvas.first?.count ?? 0, origin.x + maxSize.width)
+                let y1 = min(canvas.count, origin.y + maxSize.height)
+                if x1 > x0, y1 > y0 {
+                    for y in y0..<y1 {
+                        for x in x0..<x1 {
+                            canvas[y][x].bg = bg
+                        }
+                    }
+                }
+            }
+
+            return draw(
+                node: child,
+                origin: origin,
+                maxSize: maxSize,
+                canvas: &canvas,
+                hitRegions: &hitRegions,
+                scrollRegions: &scrollRegions,
+                shapeRegions: &shapeRegions,
+                renderShapeGlyphs: renderShapeGlyphs,
+                overlays: &overlays,
+                style: merged
+            )
+
+        case .background(let child, let background):
+            _ = draw(
+                node: background,
+                origin: origin,
+                maxSize: maxSize,
+                canvas: &canvas,
+                hitRegions: &hitRegions,
+                scrollRegions: &scrollRegions,
+                shapeRegions: &shapeRegions,
+                renderShapeGlyphs: renderShapeGlyphs,
+                overlays: &overlays,
+                style: style
+            )
+            return draw(
+                node: child,
+                origin: origin,
+                maxSize: maxSize,
+                canvas: &canvas,
+                hitRegions: &hitRegions,
+                scrollRegions: &scrollRegions,
+                shapeRegions: &shapeRegions,
+                renderShapeGlyphs: renderShapeGlyphs,
+                overlays: &overlays,
+                style: style
+            )
+
+        case .overlay(let child, let overlay):
+            let base = draw(
+                node: child,
+                origin: origin,
+                maxSize: maxSize,
+                canvas: &canvas,
+                hitRegions: &hitRegions,
+                scrollRegions: &scrollRegions,
+                shapeRegions: &shapeRegions,
+                renderShapeGlyphs: renderShapeGlyphs,
+                overlays: &overlays,
+                style: style
+            )
+            _ = draw(
+                node: overlay,
+                origin: origin,
+                maxSize: base,
+                canvas: &canvas,
+                hitRegions: &hitRegions,
+                scrollRegions: &scrollRegions,
+                shapeRegions: &shapeRegions,
+                renderShapeGlyphs: renderShapeGlyphs,
+                overlays: &overlays,
+                style: style
+            )
+            return base
+
+        case .tagged(_, let label):
+            return draw(
+                node: label,
+                origin: origin,
+                maxSize: maxSize,
+                canvas: &canvas,
+                hitRegions: &hitRegions,
+                scrollRegions: &scrollRegions,
+                shapeRegions: &shapeRegions,
+                renderShapeGlyphs: renderShapeGlyphs,
+                overlays: &overlays,
+                style: style
+            )
 
         case .group(let nodes):
             var used = _Size(width: 0, height: 0)
@@ -125,7 +246,7 @@ enum _DebugLayout {
         case .text(let s):
             let clipped = String(s.prefix(maxSize.width))
             for (i, ch) in clipped.enumerated() {
-                put(String(ch), at: _Point(x: origin.x + i, y: origin.y), canvas: &canvas)
+                put(String(ch), at: _Point(x: origin.x + i, y: origin.y), canvas: &canvas, style: style)
             }
             return _Size(width: min(s.count, maxSize.width), height: 1)
 
@@ -133,7 +254,7 @@ enum _DebugLayout {
             let s = _DebugLayout.imageString(name)
             let clipped = String(s.prefix(maxSize.width))
             for (i, ch) in clipped.enumerated() {
-                put(String(ch), at: _Point(x: origin.x + i, y: origin.y), canvas: &canvas)
+                put(String(ch), at: _Point(x: origin.x + i, y: origin.y), canvas: &canvas, style: style)
             }
             return _Size(width: min(s.count, maxSize.width), height: 1)
 
@@ -272,16 +393,24 @@ enum _DebugLayout {
         case .stack(let axis, let spacing, let children):
             // 2-pass layout to make `Spacer()` work (allocate remaining space across spacers).
             // This is simplistic but good enough for terminal/grid renderers.
-            func measure(_ node: _VNode, _ maxSize: _Size) -> _Size {
-                guard maxSize.width > 0, maxSize.height > 0 else { return _Size(width: 0, height: 0) }
-                switch node {
-                case .empty:
-                    return _Size(width: 0, height: 0)
-                case .group(let nodes):
-                    var u = _Size(width: 0, height: 0)
-                    for n in nodes {
-                        let s = measure(n, maxSize)
-                        u.width = max(u.width, s.width)
+	            func measure(_ node: _VNode, _ maxSize: _Size) -> _Size {
+	                guard maxSize.width > 0, maxSize.height > 0 else { return _Size(width: 0, height: 0) }
+	                switch node {
+	                case .empty:
+	                    return _Size(width: 0, height: 0)
+	                case .style(_, _, let child):
+	                    return measure(child, maxSize)
+	                case .background(let child, _):
+	                    return measure(child, maxSize)
+	                case .overlay(let child, _):
+	                    return measure(child, maxSize)
+	                case .tagged(_, let label):
+	                    return measure(label, maxSize)
+	                case .group(let nodes):
+	                    var u = _Size(width: 0, height: 0)
+	                    for n in nodes {
+	                        let s = measure(n, maxSize)
+	                        u.width = max(u.width, s.width)
                         u.height = max(u.height, s.height)
                     }
                     return u
@@ -520,12 +649,20 @@ enum _DebugLayout {
                 // Reuse the stack-local measure helper by calling into a small inline implementation.
                 func m(_ node: _VNode, _ maxSize: _Size) -> _Size {
                     guard maxSize.width > 0, maxSize.height > 0 else { return _Size(width: 0, height: 0) }
-                    switch node {
-                    case .empty: return _Size(width: 0, height: 0)
-                    case .group(let nodes):
-                        var u = _Size(width: 0, height: 0)
-                        for n in nodes {
-                            let s = m(n, maxSize)
+	                    switch node {
+	                    case .empty: return _Size(width: 0, height: 0)
+	                    case .style(_, _, let child):
+	                        return m(child, maxSize)
+	                    case .background(let child, _):
+	                        return m(child, maxSize)
+	                    case .overlay(let child, _):
+	                        return m(child, maxSize)
+	                    case .tagged(_, let label):
+	                        return m(label, maxSize)
+	                    case .group(let nodes):
+	                        var u = _Size(width: 0, height: 0)
+	                        for n in nodes {
+	                            let s = m(n, maxSize)
                             u.width = max(u.width, s.width)
                             u.height = max(u.height, s.height)
                         }
@@ -635,7 +772,10 @@ enum _DebugLayout {
             }
 
             // Clip content to the scroll view's rect by drawing into an offscreen buffer first.
-            var sub = Array(repeating: Array(repeating: " ", count: viewportSize.width), count: viewportSize.height)
+            var sub = Array(
+                repeating: Array(repeating: _CanvasCell(ch: " ", fg: nil, bg: nil), count: viewportSize.width),
+                count: viewportSize.height
+            )
             var subHits: [(_Rect, _ActionID)] = []
             var subScrolls: [_ScrollRegion] = []
             var subOverlays: [Overlay] = []
@@ -664,9 +804,9 @@ enum _DebugLayout {
                 for x in 0..<viewportSize.width {
                     let dx = origin.x + x
                     guard dx >= 0, dx < canvas[dy].count else { continue }
-                    let s = sub[y][x]
+                    let s = sub[y][x].ch
                     if s != " " {
-                        canvas[dy][dx] = s
+                        canvas[dy][dx].ch = s
                     }
                 }
             }
@@ -798,10 +938,14 @@ enum _DebugLayout {
         }
     }
 
-    private static func put(_ s: String, at p: _Point, canvas: inout [[String]]) {
+    private static func put(_ s: String, at p: _Point, canvas: inout [[_CanvasCell]], style: (fg: Color?, bg: Color?)? = nil) {
         guard p.y >= 0, p.y < canvas.count else { return }
         guard p.x >= 0, p.x < canvas[p.y].count else { return }
-        canvas[p.y][p.x] = _sanitizeCell(s)
+        canvas[p.y][p.x].ch = _sanitizeCell(s)
+        if let style {
+            if let fg = style.fg { canvas[p.y][p.x].fg = fg }
+            if let bg = style.bg { canvas[p.y][p.x].bg = bg }
+        }
     }
 
     private static func _sanitizeCell(_ s: String) -> String {

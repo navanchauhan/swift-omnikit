@@ -1,7 +1,7 @@
 public extension View {
     func font(_ font: Font?) -> some View { _Passthrough(self) }
-    func foregroundStyle(_ color: Color) -> some View { _Passthrough(self) }
-    func foregroundColor(_ color: Color) -> some View { _Passthrough(self) }
+    func foregroundStyle(_ color: Color) -> some View { _Style(content: AnyView(self), fg: color, bg: nil) }
+    func foregroundColor(_ color: Color) -> some View { _Style(content: AnyView(self), fg: color, bg: nil) }
     func multilineTextAlignment(_ alignment: TextAlignment) -> some View { _Passthrough(self) }
     func lineLimit(_ limit: Int?) -> some View { _Passthrough(self) }
     func cornerRadius(_ radius: CGFloat) -> some View { _Passthrough(self) }
@@ -12,8 +12,9 @@ public extension View {
     func contentShape<S: Shape>(_ shape: S, eoFill: Bool = false) -> some View { _Passthrough(self) }
     func mask<M: View>(_ mask: M) -> some View { _Passthrough(self) }
 
-    func background<B: View>(_ background: B) -> some View { _Passthrough(self) }
-    func overlay<O: View>(_ overlay: O) -> some View { _Passthrough(self) }
+    func background<B: View>(_ background: B) -> some View { _Background(content: AnyView(self), background: AnyView(background)) }
+    func background(_ color: Color) -> some View { _Style(content: AnyView(self), fg: nil, bg: color) }
+    func overlay<O: View>(_ overlay: O) -> some View { _Overlay(content: AnyView(self), overlay: AnyView(overlay)) }
 
     // MARK: SwiftUI API Surface (stubs/passthrough)
     func navigationTitle(_ title: String) -> some View { _Passthrough(self) }
@@ -72,6 +73,37 @@ public extension View {
 
     func onAppear(perform action: @escaping () -> Void) -> some View {
         _OnAppear(content: AnyView(self), action: action)
+    }
+}
+
+private struct _Style: View, _PrimitiveView {
+    typealias Body = Never
+    let content: AnyView
+    let fg: Color?
+    let bg: Color?
+
+    func _makeNode(_ ctx: inout _BuildContext) -> _VNode {
+        .style(fg: fg, bg: bg, child: ctx.buildChild(content))
+    }
+}
+
+private struct _Background: View, _PrimitiveView {
+    typealias Body = Never
+    let content: AnyView
+    let background: AnyView
+
+    func _makeNode(_ ctx: inout _BuildContext) -> _VNode {
+        .background(child: ctx.buildChild(content), background: ctx.buildChild(background))
+    }
+}
+
+private struct _Overlay: View, _PrimitiveView {
+    typealias Body = Never
+    let content: AnyView
+    let overlay: AnyView
+
+    func _makeNode(_ ctx: inout _BuildContext) -> _VNode {
+        .overlay(child: ctx.buildChild(content), overlay: ctx.buildChild(overlay))
     }
 }
 
@@ -137,6 +169,23 @@ public struct EventModifiers: OptionSet, Hashable, Sendable {
     public static let shift = EventModifiers(rawValue: 1 << 1)
     public static let option = EventModifiers(rawValue: 1 << 2)
     public static let control = EventModifiers(rawValue: 1 << 3)
+}
+
+// MARK: Tagged options (Picker)
+public extension View {
+    func tag<V: Hashable>(_ value: V) -> some View {
+        _Tag(content: AnyView(self), value: AnyHashable(value))
+    }
+}
+
+private struct _Tag: View, _PrimitiveView {
+    typealias Body = Never
+    let content: AnyView
+    let value: AnyHashable
+
+    func _makeNode(_ ctx: inout _BuildContext) -> _VNode {
+        .tagged(value: value, label: ctx.buildChild(content))
+    }
 }
 
 /// Used for API compatibility: modifiers that we don't yet model in the node tree.
