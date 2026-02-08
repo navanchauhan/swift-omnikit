@@ -154,7 +154,9 @@ enum _DebugLayout {
                 }
             }
 
-            let fill = "·" // fill token, styled by notcurses
+            // Fill token, styled by renderers. If the shape is stroke-only, avoid emitting
+            // the fill token so the placeholder matches the semantic style.
+            let fill = (shape.fillStyle == nil) ? " " : "·"
             let innerW = max(0, w - 2)
 
             // Record a semantic region for renderers that can do true shape/path drawing.

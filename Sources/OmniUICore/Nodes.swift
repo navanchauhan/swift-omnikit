@@ -68,9 +68,18 @@ public enum _ShapeKind: Hashable, Sendable {
 public struct _ShapeNode: Hashable, Sendable {
     public var kind: _ShapeKind
     public var pathElements: [Path.Element]?
+    public var fillStyle: FillStyle?
+    public var strokeStyle: StrokeStyle?
 
-    public init(kind: _ShapeKind, pathElements: [Path.Element]? = nil) {
+    public init(
+        kind: _ShapeKind,
+        pathElements: [Path.Element]? = nil,
+        fillStyle: FillStyle? = FillStyle(),
+        strokeStyle: StrokeStyle? = StrokeStyle(lineWidth: 1)
+    ) {
         self.kind = kind
         self.pathElements = pathElements
+        self.fillStyle = fillStyle
+        self.strokeStyle = strokeStyle
     }
 }

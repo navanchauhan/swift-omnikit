@@ -14,6 +14,12 @@ public enum OmniUINotcursesRendererError: Error {
     case notcursesUnavailable
 }
 
+private struct _NCShapePlaneEntry {
+    var plane: OpaquePointer
+    var rect: _Rect
+    var sig: Int
+}
+
 /// A minimal notcurses-based renderer loop.
 ///
 /// This currently renders using OmniUICore's debug snapshot (plaintext grid) and uses notcurses
@@ -36,6 +42,9 @@ public struct NotcursesApp<V: View> {
             omni_restore_terminal()
             throw OmniUINotcursesRendererError.notcursesUnavailable
         }
+        // Prime notcurses once so the stdplane dimensions/colors are stable before our first frame.
+        // Without this, some terminals report 0x0 for a short period and we'd "render" a 1x1 frame.
+        _ = notcurses_render(nc)
         var userRequestedExit = false
         var exitNote: String? = nil
         let clock = ContinuousClock()
@@ -60,15 +69,15 @@ public struct NotcursesApp<V: View> {
 
         let runtime = _UIRuntime()
         var prev: [_NCCell]? = nil
-        var sprixelPlane: OpaquePointer? = nil
-        var sprixelPlaneSize: (w: Int, h: Int) = (0, 0)
-        var lastSprixelSig: Int? = nil
         let forceNoPixels = (getenv("TMUX") != nil) // tmux generally won't support Kitty graphics passthrough
+        var didRenderAtLeastOneFullFrame = false
+        var shapePlanes: [Int: _NCShapePlaneEntry] = [:]
 
         defer {
-            if let p = sprixelPlane {
-                ncplane_destroy(p)
+            for (_, e) in shapePlanes {
+                ncplane_destroy(e.plane)
             }
+            shapePlanes.removeAll()
         }
 
         let q: UInt32 = 113
@@ -102,8 +111,16 @@ public struct NotcursesApp<V: View> {
             var cols: UInt32 = 0
             ncplane_dim_yx(stdplane, &rows, &cols)
 
-            let height = max(1, Int(rows))
-            let width = max(1, Int(cols))
+            // Some terminals report 0x0 until at least one render; avoid "1x1" diffs that
+            // make it look like nothing rendered until the user interacts.
+            if rows == 0 || cols == 0 {
+                _ = notcurses_render(nc)
+                try await Task.sleep(nanoseconds: 16_000_000)
+                continue
+            }
+
+            let height = Int(rows)
+            let width = Int(cols)
 
             let snapshot = runtime.debugRender(root(), size: _Size(width: width, height: height), renderShapeGlyphs: false)
 
@@ -117,6 +134,16 @@ public struct NotcursesApp<V: View> {
 
             let focusRect = snapshot.focusedRect
 
+            // Force a full repaint on the very first frame and any terminal resize.
+            // This fixes "background/shapes only appear after first interaction" issues by ensuring
+            // we explicitly set every cell at least once.
+            if !didRenderAtLeastOneFullFrame || (prev != nil && prev!.count != width * height) {
+                prev = nil
+                didRenderAtLeastOneFullFrame = true
+                ncplane_home(stdplane)
+                ncplane_erase(stdplane)
+            }
+
             // Prefer sprixels/pixels for shapes/paths; fall back to braille rasterization if pixels aren't supported.
             let cellpix = _ncCellPix(nc)
             let canSprixel: Bool = {
@@ -127,73 +154,103 @@ public struct NotcursesApp<V: View> {
             }()
 
             if canSprixel, let cellpix {
-                var hasher = Hasher()
-                hasher.combine(width)
-                hasher.combine(height)
-                hasher.combine(cellpix.cdimx)
-                hasher.combine(cellpix.cdimy)
-                hasher.combine(snapshot.shapeRegions.count)
-                for (r, s) in snapshot.shapeRegions {
+                // Per-shape sprixel planes. This is our "differential" pixel renderer:
+                // we only re-rasterize/re-blit shapes that changed, and we can safely
+                // remove shapes by destroying their planes.
+                var alive: Set<Int> = []
+                alive.reserveCapacity(snapshot.shapeRegions.count)
+
+                for (idx, (r, s)) in snapshot.shapeRegions.enumerated() {
+                    alive.insert(idx)
+
+                    var hasher = Hasher()
+                    hasher.combine(width)
+                    hasher.combine(height)
+                    hasher.combine(cellpix.cdimx)
+                    hasher.combine(cellpix.cdimy)
                     hasher.combine(r)
                     hasher.combine(s.kind)
-                    if let e = s.pathElements { hasher.combine(e.count) ; for el in e { hasher.combine(el) } }
-                }
-                let sig = hasher.finalize()
-
-                if sprixelPlane == nil || sprixelPlaneSize.w != width || sprixelPlaneSize.h != height {
-                    if let p = sprixelPlane {
-                        ncplane_destroy(p)
-                        sprixelPlane = nil
+                    hasher.combine(s.fillStyle)
+                    hasher.combine(s.strokeStyle)
+                    if let e = s.pathElements {
+                        hasher.combine(e.count)
+                        for el in e { hasher.combine(el) }
                     }
-                    var popts = ncplane_options()
-                    popts.y = 0
-                    popts.x = 0
-                    popts.rows = UInt32(height)
-                    popts.cols = UInt32(width)
-                    popts.name = nil
-                    popts.userptr = nil
-                    popts.resizecb = nil
-                    popts.flags = 0
-                    popts.margin_b = 0
-                    popts.margin_r = 0
-                    sprixelPlane = ncplane_create(stdplane, &popts)
-                    sprixelPlaneSize = (width, height)
-                    if let p = sprixelPlane {
-                        // Ensure shapes are behind the standard plane (text).
-                        _ = ncplane_move_above(p, nil)
-                    }
-                }
+                    let sig = hasher.finalize()
 
-                if let p = sprixelPlane {
-                    if lastSprixelSig != sig {
-                        ncplane_erase(p)
-                        let ok = _renderSprixels(
-                            nc: nc,
-                            plane: p,
-                            termSize: _Size(width: width, height: height),
-                            cellpix: cellpix,
-                            shapes: snapshot.shapeRegions,
-                            fill: shapeFillBG,
-                            stroke: borderFG
-                        )
-                        if !ok {
-                            ncplane_destroy(p)
-                            sprixelPlane = nil
-                            sprixelPlaneSize = (0, 0)
-                            lastSprixelSig = nil
-                        } else {
-                            lastSprixelSig = sig
+                    let needsNewPlane: Bool = {
+                        guard let existing = shapePlanes[idx] else { return true }
+                        if existing.rect.size != r.size { return true }
+                        return false
+                    }()
+
+                    if needsNewPlane {
+                        if let existing = shapePlanes[idx] {
+                            ncplane_destroy(existing.plane)
+                            shapePlanes[idx] = nil
                         }
+                        var popts = ncplane_options()
+                        popts.y = Int32(r.origin.y)
+                        popts.x = Int32(r.origin.x)
+                        popts.rows = UInt32(r.size.height)
+                        popts.cols = UInt32(r.size.width)
+                        popts.name = nil
+                        popts.userptr = nil
+                        popts.resizecb = nil
+                        popts.flags = 0
+                        popts.margin_b = 0
+                        popts.margin_r = 0
+                        if let p = ncplane_create(stdplane, &popts) {
+                            // Ensure shapes are behind the standard plane (text).
+                            _ = ncplane_move_above(p, nil)
+                            shapePlanes[idx] = _NCShapePlaneEntry(plane: p, rect: r, sig: Int.min)
+                        } else {
+                            // If we can't create planes, fall back to braille for this frame.
+                            for (_, e) in shapePlanes { ncplane_destroy(e.plane) }
+                            shapePlanes.removeAll()
+                            break
+                        }
+                    } else if let existing = shapePlanes[idx], existing.rect.origin != r.origin {
+                        ncplane_move_yx(existing.plane, Int32(r.origin.y), Int32(r.origin.x))
+                        shapePlanes[idx]?.rect = r
+                    }
+
+                    guard var entry = shapePlanes[idx] else { continue }
+                    if entry.sig == sig { continue }
+
+                    ncplane_erase(entry.plane)
+                    let ok = _renderSprixels(
+                        nc: nc,
+                        plane: entry.plane,
+                        termSize: _Size(width: width, height: height),
+                        cellpix: cellpix,
+                        shapes: [( _Rect(origin: _Point(x: 0, y: 0), size: r.size), s )],
+                        fill: shapeFillBG,
+                        stroke: borderFG
+                    )
+                    if ok {
+                        entry.sig = sig
+                        entry.rect = r
+                        shapePlanes[idx] = entry
+                    } else {
+                        // Pixel blit failed; destroy all planes so we can cleanly fall back.
+                        for (_, e) in shapePlanes { ncplane_destroy(e.plane) }
+                        shapePlanes.removeAll()
+                        break
+                    }
+                }
+
+                // Delete planes for shapes that no longer exist.
+                if !shapePlanes.isEmpty {
+                    for (idx, e) in shapePlanes where !alive.contains(idx) {
+                        ncplane_destroy(e.plane)
+                        shapePlanes[idx] = nil
                     }
                 }
             } else {
-                // No pixel support; tear down any existing sprixel plane so it can't leave artifacts.
-                if let p = sprixelPlane {
-                    ncplane_destroy(p)
-                    sprixelPlane = nil
-                }
-                sprixelPlaneSize = (0, 0)
-                lastSprixelSig = nil
+                // No pixel support; tear down any existing sprixel planes so they can't leave artifacts.
+                for (_, e) in shapePlanes { ncplane_destroy(e.plane) }
+                shapePlanes.removeAll()
             }
 
             var curr = Array(repeating: _NCCell(ch: " ", fg: baseFG, bg: baseBG), count: width * height)
@@ -468,7 +525,14 @@ private func _renderSprixels(
         return (k - 1.0) * min(rx, ry)
     }
 
-    func rasterizeFilledShape(kind: _ShapeKind, pixelW: Int, pixelH: Int, radiusPx: Double?) -> [UInt8] {
+    func rasterizeFilledShape(
+        kind: _ShapeKind,
+        pixelW: Int,
+        pixelH: Int,
+        radiusPx: Double?,
+        fillEnabled: Bool,
+        strokeWidthPx: Double
+    ) -> [UInt8] {
         var buf = Array(repeating: UInt8(0), count: pixelW * pixelH * 4)
 
         func get(_ x: Int, _ y: Int) -> _RGBA {
@@ -488,8 +552,7 @@ private func _renderSprixels(
         let cx = (w - 1.0) / 2.0
         let cy = (h - 1.0) / 2.0
 
-        let strokeWidth = 2.0
-        let halfStroke = strokeWidth / 2.0
+        let halfStroke = max(0.0, strokeWidthPx) / 2.0
 
         for y in 0..<pixelH {
             for x in 0..<pixelW {
@@ -518,10 +581,9 @@ private func _renderSprixels(
                 }
 
                 // AA: treat the edge as 1px wide transition.
-                let fillA = clamp01(0.5 - dist) // inside => 1, outside => 0
-                if fillA <= 0 { continue }
-
-                let strokeA = clamp01((halfStroke + 0.5) - abs(dist))
+                let fillA = fillEnabled ? clamp01(0.5 - dist) : 0.0 // inside => 1, outside => 0
+                let strokeA = (strokeWidthPx > 0) ? clamp01((halfStroke + 0.5) - abs(dist)) : 0.0
+                if fillA <= 0, strokeA <= 0 { continue }
 
                 var out = _RGBA(r: 0, g: 0, b: 0, a: 0)
                 if fillA > 0 {
@@ -542,7 +604,15 @@ private func _renderSprixels(
         return buf
     }
 
-    func rasterizePath(elements: [Path.Element], pixelW: Int, pixelH: Int) -> [UInt8] {
+    func rasterizePath(
+        elements: [Path.Element],
+        pixelW: Int,
+        pixelH: Int,
+        fillEnabled: Bool,
+        eoFill: Bool,
+        antialiased: Bool,
+        strokeWidthPx: Double
+    ) -> [UInt8] {
         var buf = Array(repeating: UInt8(0), count: pixelW * pixelH * 4)
 
         func put(_ x: Int, _ y: Int, _ c: _RGBA) {
@@ -556,38 +626,121 @@ private func _renderSprixels(
             buf[i + 3] = dst.a
         }
 
-        func drawLine(_ x0: Int, _ y0: Int, _ x1: Int, _ y1: Int, thickness: Int) {
-            // Bresenham with simple square brush.
-            var x0 = x0, y0 = y0
-            let dx = abs(x1 - x0)
-            let sx = x0 < x1 ? 1 : -1
-            let dy = -abs(y1 - y0)
-            let sy = y0 < y1 ? 1 : -1
-            var err = dx + dy
-            while true {
-                let t = max(1, thickness)
-                let r = t / 2
-                for yy in (y0 - r)...(y0 + r) {
-                    for xx in (x0 - r)...(x0 + r) {
-                        put(xx, yy, _RGBA(r: strokeRGB.r, g: strokeRGB.g, b: strokeRGB.b, a: 0xFF))
-                    }
-                }
-                if x0 == x1 && y0 == y1 { break }
-                let e2 = 2 * err
-                if e2 >= dy { err += dy; x0 += sx }
-                if e2 <= dx { err += dx; y0 += sy }
+        struct Seg { var ax: Double; var ay: Double; var bx: Double; var by: Double }
+
+        func distToSegment(px: Double, py: Double, _ s: Seg) -> Double {
+            let vx = s.bx - s.ax
+            let vy = s.by - s.ay
+            let wx = px - s.ax
+            let wy = py - s.ay
+            let vv = vx * vx + vy * vy
+            if vv <= 1e-9 {
+                return hypot(px - s.ax, py - s.ay)
             }
+            var t = (wx * vx + wy * vy) / vv
+            t = min(1.0, max(0.0, t))
+            let cx = s.ax + t * vx
+            let cy = s.ay + t * vy
+            return hypot(px - cx, py - cy)
         }
 
-        _strokePath(
+        // Build a flattened segment list in pixel space using the same mapping as `_strokePath`.
+        var segments: [Seg] = []
+        segments.reserveCapacity(max(16, elements.count * 4))
+        _strokePathCollectSegments(
             elements: elements,
             x0: 0, y0: 0, x1: pixelW, y1: pixelH,
-            drawLine: { x0, y0, x1, y1 in
-                drawLine(x0, y0, x1, y1, thickness: 2)
+            addSegment: { x0, y0, x1, y1 in
+                segments.append(Seg(ax: Double(x0), ay: Double(y0), bx: Double(x1), by: Double(y1)))
             },
             fillEllipse: { _, _, _, _ in },
             strokeRect: { _, _, _, _ in }
         )
+
+        // Fill using a simple point-in-polygon test against the flattened segments.
+        // This supports both even-odd and (approx) nonzero winding rules.
+        func windingContains(_ x: Double, _ y: Double) -> Bool {
+            var winding = 0
+            for s in segments {
+                let y0 = s.ay
+                let y1 = s.by
+                let x0 = s.ax
+                let x1 = s.bx
+                // Ignore horizontal edges.
+                if y0 == y1 { continue }
+                let upward = y0 < y1
+                let ymin = min(y0, y1)
+                let ymax = max(y0, y1)
+                if y < ymin || y >= ymax { continue }
+                // Compute x intersection at y.
+                let t = (y - y0) / (y1 - y0)
+                let ix = x0 + t * (x1 - x0)
+                if ix <= x { continue }
+                if upward {
+                    winding += 1
+                } else {
+                    winding -= 1
+                }
+            }
+            return winding != 0
+        }
+
+        func evenOddContains(_ x: Double, _ y: Double) -> Bool {
+            var inside = false
+            for s in segments {
+                let y0 = s.ay
+                let y1 = s.by
+                let x0 = s.ax
+                let x1 = s.bx
+                if y0 == y1 { continue }
+                let ymin = min(y0, y1)
+                let ymax = max(y0, y1)
+                if y < ymin || y >= ymax { continue }
+                let t = (y - y0) / (y1 - y0)
+                let ix = x0 + t * (x1 - x0)
+                if ix > x {
+                    inside.toggle()
+                }
+            }
+            return inside
+        }
+
+        if fillEnabled, !segments.isEmpty {
+            let samples: [(Double, Double)] = antialiased ? [(0.25, 0.25), (0.75, 0.25), (0.25, 0.75), (0.75, 0.75)] : [(0.5, 0.5)]
+            for y in 0..<pixelH {
+                for x in 0..<pixelW {
+                    var covered = 0
+                    for (ox, oy) in samples {
+                        let px = Double(x) + ox
+                        let py = Double(y) + oy
+                        let ins = eoFill ? evenOddContains(px, py) : windingContains(px, py)
+                        if ins { covered += 1 }
+                    }
+                    if covered == 0 { continue }
+                    let a = UInt8(clamping: Int((Double(covered) / Double(samples.count)) * 255.0))
+                    put(x, y, _RGBA(r: fillRGB.r, g: fillRGB.g, b: fillRGB.b, a: a))
+                }
+            }
+        }
+
+        if strokeWidthPx > 0, !segments.isEmpty {
+            let half = strokeWidthPx / 2.0
+            for y in 0..<pixelH {
+                for x in 0..<pixelW {
+                    let px = Double(x) + 0.5
+                    let py = Double(y) + 0.5
+                    var best = Double.greatestFiniteMagnitude
+                    for s in segments {
+                        best = min(best, distToSegment(px: px, py: py, s))
+                    }
+                    // 1px AA ramp.
+                    let aa = antialiased ? 0.75 : 0.0
+                    let alpha = clamp01((half + aa) - best)
+                    if alpha <= 0 { continue }
+                    put(x, y, _RGBA(r: strokeRGB.r, g: strokeRGB.g, b: strokeRGB.b, a: UInt8(clamping: Int(alpha * 255.0))))
+                }
+            }
+        }
 
         return buf
     }
@@ -604,14 +757,45 @@ private func _renderSprixels(
         if pixelW <= 0 || pixelH <= 0 { continue }
         if pixelW > cellpix.maxpixelx || pixelH > cellpix.maxpixely { continue }
 
+        let fillEnabled = (s.fillStyle != nil)
+        let eoFill = s.fillStyle?.isEOFilled ?? false
+        let aa = s.fillStyle?.antialiased ?? true
+        let strokeWidthPx: Double = {
+            guard let st = s.strokeStyle else { return 0.0 }
+            // Treat `lineWidth` as "terminal points" and map to pixels conservatively.
+            return max(1.0, Double(st.lineWidth))
+        }()
+
         let buf: [UInt8]
         switch s.kind {
         case .path:
-            buf = rasterizePath(elements: s.pathElements ?? [], pixelW: pixelW, pixelH: pixelH)
+            buf = rasterizePath(
+                elements: s.pathElements ?? [],
+                pixelW: pixelW,
+                pixelH: pixelH,
+                fillEnabled: fillEnabled,
+                eoFill: eoFill,
+                antialiased: aa,
+                strokeWidthPx: strokeWidthPx
+            )
         case .roundedRectangle(let cr):
-            buf = rasterizeFilledShape(kind: s.kind, pixelW: pixelW, pixelH: pixelH, radiusPx: Double(cr) * Double(cellpix.cdimx))
+            buf = rasterizeFilledShape(
+                kind: s.kind,
+                pixelW: pixelW,
+                pixelH: pixelH,
+                radiusPx: Double(cr) * Double(cellpix.cdimx),
+                fillEnabled: fillEnabled,
+                strokeWidthPx: strokeWidthPx
+            )
         default:
-            buf = rasterizeFilledShape(kind: s.kind, pixelW: pixelW, pixelH: pixelH, radiusPx: nil)
+            buf = rasterizeFilledShape(
+                kind: s.kind,
+                pixelW: pixelW,
+                pixelH: pixelH,
+                radiusPx: nil,
+                fillEnabled: fillEnabled,
+                strokeWidthPx: strokeWidthPx
+            )
         }
 
         var blitOK = false
@@ -832,6 +1016,48 @@ private func _strokePath(
     }
 }
 
+private func _strokePathCollectSegments(
+    elements: [Path.Element],
+    x0: Int, y0: Int, x1: Int, y1: Int,
+    addSegment: (Int, Int, Int, Int) -> Void,
+    fillEllipse: (Int, Int, Int, Int) -> Void,
+    strokeRect: (Int, Int, Int, Int) -> Void
+) {
+    _strokePath(
+        elements: elements,
+        x0: x0, y0: y0, x1: x1, y1: y1,
+        drawLine: { ax, ay, bx, by in
+            addSegment(ax, ay, bx, by)
+        },
+        fillEllipse: { ex0, ey0, ex1, ey1 in
+            // Approximate ellipse boundary with a polyline so fills have a contour.
+            let cx = Double(ex0 + ex1) / 2.0
+            let cy = Double(ey0 + ey1) / 2.0
+            let rx = max(1.0, Double(ex1 - ex0) / 2.0)
+            let ry = max(1.0, Double(ey1 - ey0) / 2.0)
+            let steps = 48
+            var prevX = cx + rx
+            var prevY = cy
+            for i in 1...steps {
+                let t = (Double(i) / Double(steps)) * (Double.pi * 2.0)
+                let x = cx + cos(t) * rx
+                let y = cy + sin(t) * ry
+                addSegment(Int(prevX.rounded()), Int(prevY.rounded()), Int(x.rounded()), Int(y.rounded()))
+                prevX = x
+                prevY = y
+            }
+            fillEllipse(ex0, ey0, ex1, ey1)
+        },
+        strokeRect: { rx0, ry0, rx1, ry1 in
+            addSegment(rx0, ry0, rx1, ry0)
+            addSegment(rx1, ry0, rx1, ry1)
+            addSegment(rx1, ry1, rx0, ry1)
+            addSegment(rx0, ry1, rx0, ry0)
+            strokeRect(rx0, ry0, rx1, ry1)
+        }
+    )
+}
+
 private func _lerp(_ a: CGPoint, _ b: CGPoint, _ t: Double) -> CGPoint {
     CGPoint(
         x: CGFloat(Double(a.x) + (Double(b.x) - Double(a.x)) * t),
@@ -949,29 +1175,111 @@ private func _renderBraille(
 
         // Fast path: stroke-only paths.
         if s.kind == .path {
-            var sub = Array(repeating: false, count: subW * subH)
-            func setSub(_ sx: Int, _ sy: Int) {
+            let fillEnabled = (s.fillStyle != nil)
+            let eoFill = s.fillStyle?.isEOFilled ?? false
+
+            var subStroke = Array(repeating: false, count: subW * subH)
+            func setStroke(_ sx: Int, _ sy: Int) {
                 guard sx >= 0, sy >= 0, sx < subW, sy < subH else { return }
-                sub[sy * subW + sx] = true
+                subStroke[sy * subW + sx] = true
             }
+
+            var segments: [(ax: Int, ay: Int, bx: Int, by: Int)] = []
             if let elements = s.pathElements {
-                _strokePathBraille(elements: elements, subW: subW, subH: subH, set: setSub)
+                // Stroke mask.
+                _strokePathBraille(elements: elements, subW: subW, subH: subH, set: setStroke)
+                // Fill contour.
+                _strokePathCollectSegments(
+                    elements: elements,
+                    x0: 0, y0: 0, x1: subW, y1: subH,
+                    addSegment: { ax, ay, bx, by in
+                        segments.append((ax: ax, ay: ay, bx: bx, by: by))
+                    },
+                    fillEllipse: { _, _, _, _ in },
+                    strokeRect: { _, _, _, _ in }
+                )
             }
+
+            func windingContains(_ x: Double, _ y: Double) -> Bool {
+                var winding = 0
+                for s in segments {
+                    let y0 = Double(s.ay)
+                    let y1 = Double(s.by)
+                    let x0 = Double(s.ax)
+                    let x1 = Double(s.bx)
+                    if y0 == y1 { continue }
+                    let upward = y0 < y1
+                    let ymin = min(y0, y1)
+                    let ymax = max(y0, y1)
+                    if y < ymin || y >= ymax { continue }
+                    let t = (y - y0) / (y1 - y0)
+                    let ix = x0 + t * (x1 - x0)
+                    if ix <= x { continue }
+                    winding += upward ? 1 : -1
+                }
+                return winding != 0
+            }
+
+            func evenOddContains(_ x: Double, _ y: Double) -> Bool {
+                var inside = false
+                for s in segments {
+                    let y0 = Double(s.ay)
+                    let y1 = Double(s.by)
+                    let x0 = Double(s.ax)
+                    let x1 = Double(s.bx)
+                    if y0 == y1 { continue }
+                    let ymin = min(y0, y1)
+                    let ymax = max(y0, y1)
+                    if y < ymin || y >= ymax { continue }
+                    let t = (y - y0) / (y1 - y0)
+                    let ix = x0 + t * (x1 - x0)
+                    if ix > x { inside.toggle() }
+                }
+                return inside
+            }
+
             for cy in y0..<y1 {
                 for cx in x0..<x1 {
-                    var mask: UInt8 = 0
                     let baseSX = (cx - x0) * 2
                     let baseSY = (cy - y0) * 4
+
+                    var strokeMask: UInt8 = 0
                     for sy in 0..<4 {
                         for sx in 0..<2 {
-                            if sub[(baseSY + sy) * subW + (baseSX + sx)] {
-                                mask |= dotBit(sx, sy)
+                            if subStroke[(baseSY + sy) * subW + (baseSX + sx)] {
+                                strokeMask |= dotBit(sx, sy)
                             }
                         }
                     }
+
+                    var fillMask: UInt8 = 0
+                    var fillCount = 0
+                    if fillEnabled, !segments.isEmpty {
+                        for sy in 0..<4 {
+                            for sx in 0..<2 {
+                                let px = Double(baseSX + sx) + 0.5
+                                let py = Double(baseSY + sy) + 0.5
+                                let ins = eoFill ? evenOddContains(px, py) : windingContains(px, py)
+                                if ins {
+                                    fillCount += 1
+                                    fillMask |= dotBit(sx, sy)
+                                }
+                            }
+                        }
+                    }
+
+                    if fillEnabled, fillCount == 8, strokeMask == 0 {
+                        // Fully covered cell: paint a quiet solid fill using background color.
+                        setCell(cx, cy, " ", fillFG, fillFG)
+                        continue
+                    }
+
+                    let mask = strokeMask | ((fillEnabled && fillCount > 0 && fillCount < 8) ? fillMask : 0)
                     guard mask != 0 else { continue }
                     let scalar = UnicodeScalar(0x2800 + Int(mask))!
-                    setCell(cx, cy, String(Character(scalar)), strokeFG, baseBG)
+                    // Use filled background so partially-covered cells blend with the interior.
+                    let bg = fillEnabled ? fillFG : baseBG
+                    setCell(cx, cy, String(Character(scalar)), strokeFG, bg)
                 }
             }
             continue

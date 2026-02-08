@@ -123,14 +123,30 @@ public struct ShapeView<S: Shape>: View, _PrimitiveView {
 
 public extension Shape {
     func fill(_ content: Color = .primary, style: FillStyle = FillStyle()) -> some View {
-        _Passthrough(self)
+        _ShapeStyle(content: AnyView(self), fill: style, stroke: nil)
     }
 
     func stroke(_ content: Color = .primary, style: StrokeStyle = StrokeStyle()) -> some View {
-        _Passthrough(self)
+        _ShapeStyle(content: AnyView(self), fill: nil, stroke: style)
     }
 
     func stroke(lineWidth: CGFloat = 1) -> some View {
-        _Passthrough(self)
+        _ShapeStyle(content: AnyView(self), fill: nil, stroke: StrokeStyle(lineWidth: lineWidth))
+    }
+}
+
+private struct _ShapeStyle: View, _PrimitiveView {
+    typealias Body = Never
+
+    let content: AnyView
+    let fill: FillStyle?
+    let stroke: StrokeStyle?
+
+    func _makeNode(_ ctx: inout _BuildContext) -> _VNode {
+        let n = ctx.buildChild(content)
+        guard case .shape(var s) = n else { return n }
+        s.fillStyle = fill
+        s.strokeStyle = stroke
+        return .shape(s)
     }
 }
