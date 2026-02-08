@@ -3,6 +3,7 @@ import Foundation
 public struct RenderOp: Hashable, Sendable {
     public enum Kind: Hashable, Sendable {
         case glyph(x: Int, y: Int, egc: String, fg: Color?, bg: Color?)
+        case textRun(x: Int, y: Int, text: String, fg: Color?, bg: Color?)
         case fillRect(rect: _Rect, color: Color)
         case shape(rect: _Rect, shape: _ShapeNode)
     }
@@ -92,12 +93,66 @@ enum _RenderLayout {
             scrollRegions: &scrolls,
             shapeRegions: &shapes
         )
-        // Sort by zIndex, stable within z.
-        ops.sort { a, b in
-            if a.zIndex != b.zIndex { return a.zIndex < b.zIndex }
-            return false
+        // Stable-ish order: zIndex, then kind rank, then y/x.
+        func rank(_ k: RenderOp.Kind) -> Int {
+            switch k {
+            case .fillRect: return 0
+            case .shape: return 1
+            case .glyph, .textRun: return 2
+            }
         }
-        return Result(ops: ops, hitRegions: hits, scrollRegions: scrolls, shapeRegions: shapes)
+        func key(_ op: RenderOp) -> (Int, Int, Int, Int) {
+            switch op.kind {
+            case .glyph(let x, let y, _, _, _):
+                return (op.zIndex, rank(op.kind), y, x)
+            case .textRun(let x, let y, _, _, _):
+                return (op.zIndex, rank(op.kind), y, x)
+            case .fillRect(let r, _):
+                return (op.zIndex, rank(op.kind), r.origin.y, r.origin.x)
+            case .shape(let r, _):
+                return (op.zIndex, rank(op.kind), r.origin.y, r.origin.x)
+            }
+        }
+        ops.sort { key($0) < key($1) }
+
+        // Coalesce adjacent glyphs into text runs to reduce op count and make renderers faster.
+        var coalesced: [RenderOp] = []
+        coalesced.reserveCapacity(ops.count)
+        var i = 0
+        while i < ops.count {
+            let op = ops[i]
+            guard case .glyph(let x0, let y0, let egc0, let fg0, let bg0) = op.kind else {
+                coalesced.append(op)
+                i += 1
+                continue
+            }
+
+            var text = egc0
+            var x = x0
+            var j = i + 1
+            while j < ops.count {
+                let next = ops[j]
+                if next.zIndex != op.zIndex { break }
+                guard case .glyph(let nx, let ny, let negc, let nfg, let nbg) = next.kind else { break }
+                if ny != y0 { break }
+                if nx != x + 1 { break }
+                if nfg != fg0 || nbg != bg0 { break }
+                // Only coalesce 1-cell glyphs (layout enforces this via sanitization).
+                if negc.count != 1 { break }
+                text.append(contentsOf: negc)
+                x = nx
+                j += 1
+            }
+            if text.count >= 2 {
+                coalesced.append(RenderOp(zIndex: op.zIndex, kind: .textRun(x: x0, y: y0, text: text, fg: fg0, bg: bg0)))
+                i = j
+            } else {
+                coalesced.append(op)
+                i += 1
+            }
+        }
+
+        return Result(ops: coalesced, hitRegions: hits, scrollRegions: scrolls, shapeRegions: shapes)
     }
 
     private static func draw(

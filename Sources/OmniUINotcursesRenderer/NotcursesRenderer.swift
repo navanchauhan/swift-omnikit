@@ -153,14 +153,19 @@ public struct NotcursesApp<V: View> {
                 return cellpix.cdimx > 0 && cellpix.cdimy > 0 && cellpix.maxpixelx > 0 && cellpix.maxpixely > 0
             }()
 
+            let shapeRegions = snapshot.ops.compactMap { op -> (_Rect, _ShapeNode)? in
+                if case .shape(let r, let s) = op.kind { return (r, s) }
+                return nil
+            }
+
             if canSprixel, let cellpix {
                 // Per-shape sprixel planes. This is our "differential" pixel renderer:
                 // we only re-rasterize/re-blit shapes that changed, and we can safely
                 // remove shapes by destroying their planes.
                 var alive: Set<Int> = []
-                alive.reserveCapacity(snapshot.shapeRegions.count)
+                alive.reserveCapacity(shapeRegions.count)
 
-                for (idx, (r, s)) in snapshot.shapeRegions.enumerated() {
+                for (idx, (r, s)) in shapeRegions.enumerated() {
                     alive.insert(idx)
 
                     var hasher = Hasher()
@@ -273,6 +278,18 @@ public struct NotcursesApp<V: View> {
                     if mapped == "*" { outFG = accentFG }
                     if _isBorderGlyph(mapped) { outFG = borderFG }
                     setCell(x, y, egc, outFG, outBG)
+                case .textRun(let x, let y, let text, let fg, let bg):
+                    let outFG = _resolveColorNC(fg) ?? baseFG
+                    let outBG = _resolveColorNC(bg) ?? baseBG
+                    var xx = x
+                    for ch in text {
+                        var fg2 = outFG
+                        if ch == "*" { fg2 = accentFG }
+                        if _isBorderGlyph(ch) { fg2 = borderFG }
+                        setCell(xx, y, String(ch), fg2, outBG)
+                        xx += 1
+                        if xx >= width { break }
+                    }
                 case .fillRect(let rect, let color):
                     guard let c = _resolveColorNC(color) else { continue }
                     let x0 = max(0, rect.origin.x)
@@ -296,7 +313,7 @@ public struct NotcursesApp<V: View> {
                 // empty cells so overlay text isn't clobbered.
                 _renderBraille(
                     termSize: _Size(width: width, height: height),
-                    shapes: snapshot.shapeRegions,
+                    shapes: shapeRegions,
                     curr: &curr,
                     baseBG: baseBG,
                     fillFG: shapeFillBG,
