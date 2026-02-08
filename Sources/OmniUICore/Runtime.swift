@@ -18,6 +18,7 @@ public final class _UIRuntime: @unchecked Sendable {
     private var textEditorCursors: [[Int]: Int] = [:]
     private var focusOrder: [[Int]] = []
     private var focusActivation: [[Int]: _ActionID] = [:]
+    private var focusBoolBindings: [[Int]: (Bool) -> Void] = [:]
 
     private var expandedPickerPath: [Int]? = nil
     private var scrollOffsets: [String: Int] = [:]
@@ -99,6 +100,12 @@ public final class _UIRuntime: @unchecked Sendable {
 
     func _setFocus(path: [Int]?) {
         focusedPath = path
+        // Update any `FocusState<Bool>` bindings.
+        if !focusBoolBindings.isEmpty {
+            for (p, set) in focusBoolBindings {
+                set(p == path)
+            }
+        }
         if let expanded = expandedPickerPath, let p = path {
             if !_isPrefix(expanded, of: p) {
                 expandedPickerPath = nil
@@ -260,6 +267,7 @@ public final class _UIRuntime: @unchecked Sendable {
         runtime.textEditors.removeAll(keepingCapacity: true)
         runtime.focusOrder.removeAll(keepingCapacity: true)
         runtime.focusActivation.removeAll(keepingCapacity: true)
+        runtime.focusBoolBindings.removeAll(keepingCapacity: true)
         runtime.navStackRoots.removeAll(keepingCapacity: true)
         runtime.overlays.removeAll(keepingCapacity: true)
 
@@ -316,6 +324,10 @@ public final class _UIRuntime: @unchecked Sendable {
 extension _UIRuntime {
     func _registerOverlay(view: AnyView, dismiss: @escaping () -> Void) {
         overlays.append(_OverlayEntry(view: view, dismiss: dismiss))
+    }
+
+    func _registerFocusBoolBinding(path: [Int], set: @escaping (Bool) -> Void) {
+        focusBoolBindings[path] = set
     }
 }
 

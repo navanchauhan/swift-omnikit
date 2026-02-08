@@ -48,7 +48,9 @@ public extension View {
     }
 
     func focused(_ isFocused: Binding<Bool>) -> some View { _Passthrough(self) }
-    func focused(_ isFocused: FocusState<Bool>.Binding) -> some View { _Passthrough(self) }
+    func focused(_ isFocused: FocusState<Bool>.Binding) -> some View {
+        _FocusBoolBinder(content: AnyView(self), binding: isFocused)
+    }
 
     func onChange<V: Equatable>(of value: V, perform action: @escaping (_ oldValue: V, _ newValue: V) -> Void) -> some View {
         _OnChange(content: AnyView(self), value: value, action: action)
@@ -217,6 +219,24 @@ private struct _EdgePadding: View, _PrimitiveView {
 
     func _makeNode(_ ctx: inout _BuildContext) -> _VNode {
         .edgePadding(top: top, leading: leading, bottom: bottom, trailing: trailing, child: ctx.buildChild(content))
+    }
+}
+
+private struct _FocusBoolBinder: View, _PrimitiveView {
+    typealias Body = Never
+    let content: AnyView
+    let binding: FocusState<Bool>.Binding
+
+    func _makeNode(_ ctx: inout _BuildContext) -> _VNode {
+        let runtime = ctx.runtime
+        let p = ctx.path
+        runtime._registerFocusBoolBinding(path: p, set: { binding.wrappedValue = $0 })
+        // Programmatic focus: if the binding is already true and nothing is focused yet,
+        // move focus here.
+        if binding.wrappedValue, runtime.focusedActionRawID() == nil {
+            runtime._setFocus(path: p)
+        }
+        return ctx.buildChild(content)
     }
 }
 
