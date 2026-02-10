@@ -2,6 +2,7 @@
 // The swift-tools-version declares the minimum version of Swift required to build this package.
 
 import PackageDescription
+import CompilerPluginSupport
 
 let package = Package(
     name: "OmniKit",
@@ -14,6 +15,14 @@ let package = Package(
     ],
     products: [
         // Products define the executables and libraries a package produces, making them visible to other packages.
+        .library(
+            name: "SwiftUI",
+            targets: ["SwiftUI"]
+        ),
+        .library(
+            name: "SwiftData",
+            targets: ["SwiftData"]
+        ),
         .library(
             name: "OmniKit",
             targets: ["OmniKit"]
@@ -56,10 +65,43 @@ let package = Package(
         .package(url: "https://github.com/swift-server/async-http-client.git", from: "1.0.0"),
         .package(url: "https://github.com/apple/swift-nio.git", from: "2.0.0"),
         .package(url: "https://github.com/apple/swift-nio-transport-services.git", from: "1.0.0"),
+        // For Swift macro stubs (SwiftData compatibility).
+        .package(url: "https://github.com/swiftlang/swift-syntax.git", from: "602.0.0"),
     ],
     targets: [
         // Targets are the basic building blocks of a package, defining a module or a test suite.
         // Targets can depend on other targets in this package and products from dependencies.
+        .target(
+            name: "SwiftUI",
+            dependencies: ["OmniUI"],
+            swiftSettings: [
+                .unsafeFlags(["-warn-concurrency", "-strict-concurrency=complete"]),
+                .unsafeFlags(["-enable-actor-data-race-checks"], .when(configuration: .debug)),
+            ]
+        ),
+        .macro(
+            name: "SwiftDataMacros",
+            dependencies: [
+                .product(name: "SwiftCompilerPlugin", package: "swift-syntax"),
+                .product(name: "SwiftSyntaxMacros", package: "swift-syntax"),
+            ]
+        ),
+        .target(
+            name: "SwiftData",
+            dependencies: ["SwiftDataMacros"],
+            swiftSettings: [
+                .unsafeFlags(["-warn-concurrency", "-strict-concurrency=complete"]),
+                .unsafeFlags(["-enable-actor-data-race-checks"], .when(configuration: .debug)),
+            ]
+        ),
+        .executableTarget(
+            name: "SwiftUICompatibilityHarness",
+            dependencies: ["SwiftUI", "SwiftData"],
+            swiftSettings: [
+                .unsafeFlags(["-warn-concurrency", "-strict-concurrency=complete"]),
+                .unsafeFlags(["-enable-actor-data-race-checks"], .when(configuration: .debug)),
+            ]
+        ),
         .target(
             name: "OmniKit",
             swiftSettings: [

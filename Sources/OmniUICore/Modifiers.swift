@@ -23,11 +23,12 @@ public extension View {
     func navigationTitle(_ title: Text) -> some View { _Passthrough(self) }
     func navigationBarTitleDisplayMode(_ mode: Any = ()) -> some View { _Passthrough(self) }
 
-    func listStyle<S>(_ style: S) -> some View { _Passthrough(self) }
-    func pickerStyle<S>(_ style: S) -> some View { _Passthrough(self) }
-    func buttonStyle<S>(_ style: S) -> some View { _Passthrough(self) }
-    func textFieldStyle<S>(_ style: S) -> some View { _Passthrough(self) }
-    func toggleStyle<S>(_ style: S) -> some View { _Passthrough(self) }
+    func listStyle<S: ListStyle>(_ style: S) -> some View { _Passthrough(self) }
+    func pickerStyle<S: PickerStyle>(_ style: S) -> some View { _Passthrough(self) }
+    func buttonStyle<S: ButtonStyle>(_ style: S) -> some View { _Passthrough(self) }
+    func textFieldStyle<S: TextFieldStyle>(_ style: S) -> some View { _Passthrough(self) }
+    func toggleStyle<S: ToggleStyle>(_ style: S) -> some View { _Passthrough(self) }
+    func labelStyle<S: LabelStyle>(_ style: S) -> some View { _Passthrough(self) }
     func toolbar<Content: View>(@ViewBuilder content: () -> Content) -> some View { _Passthrough(self) }
     func toolbar(_ any: Any = ()) -> some View { _Passthrough(self) }
     func toolbarBackground(_ any: Any = (), for: Any = ()) -> some View { _Passthrough(self) }
@@ -292,40 +293,7 @@ private struct _Overlay: View, _PrimitiveView {
     }
 }
 
-// MARK: Stubs for SwiftUI style/shortcut types
-public struct PlainListStyle: Hashable, Sendable { public init() {} }
-public struct RoundedBorderTextFieldStyle: Hashable, Sendable { public init() {} }
-public struct PlainButtonStyle: Hashable, Sendable { public init() {} }
-public struct PrimaryFillButtonStyle: Hashable, Sendable { public init() {} }
-
-public enum ListStyle {
-    public static var plain: PlainListStyle { PlainListStyle() }
-    public static var sidebar: PlainListStyle { PlainListStyle() }
-}
-
-public enum PickerStyle {
-    public struct Segmented: Hashable, Sendable { public init() {} }
-    public struct Menu: Hashable, Sendable { public init() {} }
-    public static var segmented: Segmented { Segmented() }
-    public static var menu: Menu { Menu() }
-}
-
-public enum ToggleStyle {
-    public struct Switch: Hashable, Sendable { public init() {} }
-    public static var `switch`: Switch { Switch() }
-}
-
-public enum ButtonStyle {
-    public static var plain: PlainButtonStyle { PlainButtonStyle() }
-    public static var bordered: PlainButtonStyle { PlainButtonStyle() }
-    public static var borderedProminent: PlainButtonStyle { PlainButtonStyle() }
-    public static var liquidGlass: PlainButtonStyle { PlainButtonStyle() }
-}
-
-public enum TextFieldStyle {
-    public static var plain: RoundedBorderTextFieldStyle { RoundedBorderTextFieldStyle() }
-    public static var roundedBorder: RoundedBorderTextFieldStyle { RoundedBorderTextFieldStyle() }
-}
+// MARK: Keyboard shortcuts
 
 public struct KeyboardShortcut: Hashable, Sendable {
     public var key: KeyEquivalent
