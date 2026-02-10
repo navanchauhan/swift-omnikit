@@ -4,6 +4,10 @@ public extension View {
     func font(_ font: Font?) -> some View { _Passthrough(self) }
     func foregroundStyle(_ color: Color) -> some View { _Style(content: AnyView(self), fg: color, bg: nil) }
     func foregroundColor(_ color: Color) -> some View { _Style(content: AnyView(self), fg: color, bg: nil) }
+    func fontWeight(_ weight: Font.Weight?) -> some View {
+        _ = weight
+        return _Passthrough(self)
+    }
     func multilineTextAlignment(_ alignment: TextAlignment) -> some View { _Passthrough(self) }
     func lineLimit(_ limit: Int?) -> some View { _Passthrough(self) }
     func cornerRadius(_ radius: CGFloat) -> some View { _Passthrough(self) }
@@ -12,8 +16,23 @@ public extension View {
     func opacity(_ value: CGFloat) -> some View { _Passthrough(self) }
     func ignoresSafeArea() -> some View { _Passthrough(self) }
     func clipShape<S: Shape>(_ shape: S, style: FillStyle = FillStyle()) -> some View { _Passthrough(self) }
-    func contentShape<S: Shape>(_ shape: S, eoFill: Bool = false) -> some View { _Passthrough(self) }
+    func contentShape<S: Shape>(_ shape: S, eoFill: Bool = false) -> some View {
+        _ = shape
+        _ = eoFill
+        return _Passthrough(self)
+    }
     func mask<M: View>(_ mask: M) -> some View { _Passthrough(self) }
+    func labelsHidden() -> some View {
+        _LabelsHidden(content: AnyView(self), hidden: true)
+    }
+
+    // Liquid Glass (compile-only stubs)
+    func glassEffect() -> some View { _Passthrough(self) }
+    func glassEffect(_ style: GlassEffect) -> some View { _Passthrough(self) }
+    func glassEffect(in shape: GlassEffectShape) -> some View {
+        _ = shape
+        return _Passthrough(self)
+    }
 
     func background<B: View>(_ background: B) -> some View { _Background(content: AnyView(self), background: AnyView(background)) }
     func background(_ color: Color) -> some View { _Style(content: AnyView(self), fg: nil, bg: color) }
@@ -61,9 +80,20 @@ public extension View {
     func controlSize(_ size: ControlSize) -> some View { _Passthrough(self) }
     func modelContainer(_ any: Any) -> some View { _Passthrough(self) }
 
-    func keyboardShortcut(_ key: KeyEquivalent, modifiers: EventModifiers = []) -> some View { _Passthrough(self) }
-    func keyboardShortcut(_ shortcut: KeyboardShortcut) -> some View { _Passthrough(self) }
+    func keyboardShortcut(_ key: KeyEquivalent, modifiers: EventModifiers = []) -> some View {
+        _ = key
+        _ = modifiers
+        return _Passthrough(self)
+    }
+    func keyboardShortcut(_ shortcut: KeyboardShortcut) -> some View {
+        _ = shortcut
+        return _Passthrough(self)
+    }
     func help(_ text: String) -> some View { _Passthrough(self) }
+    func onExitCommand(perform action: @escaping () -> Void) -> some View {
+        _ = action
+        return _Passthrough(self)
+    }
 
     func sheet<Content: View>(isPresented: Binding<Bool>, @ViewBuilder content: () -> Content) -> some View {
         _Sheet(content: AnyView(self), isPresented: isPresented, onDismiss: nil, sheet: AnyView(content()))
@@ -558,6 +588,18 @@ private struct _Overlay: View, _PrimitiveView {
 
     func _makeNode(_ ctx: inout _BuildContext) -> _VNode {
         .overlay(child: ctx.buildChild(content), overlay: ctx.buildChild(overlay))
+    }
+}
+
+private struct _LabelsHidden: View, _PrimitiveView {
+    typealias Body = Never
+    let content: AnyView
+    let hidden: Bool
+
+    func _makeNode(_ ctx: inout _BuildContext) -> _VNode {
+        _UIRuntime.$_labelsHidden.withValue(hidden) {
+            ctx.buildChild(content)
+        }
     }
 }
 

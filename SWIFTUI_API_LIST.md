@@ -126,37 +126,37 @@ Keyboard + text entry must work in the notcurses renderer for iGopherBrowser to 
 
 Used mostly for CRT + “What’s New” UI.
 
-- [ ] `Canvas` view + minimal `GraphicsContext` + `GraphicsContext.fill(_:with:)` + `.color(_)` shading (used in `references/iGopherBrowser/iGopherBrowser/CRTEffect.swift`).
-- [ ] `Gradient` type + `Gradient(colors:)` initializer.
-- [ ] `LinearGradient` view (used in `references/iGopherBrowser/iGopherBrowser/CRTEffect.swift` and `references/iGopherBrowser/iGopherBrowser/WhatsNew.swift`).
-- [ ] `RadialGradient` view (used in `references/iGopherBrowser/iGopherBrowser/CRTEffect.swift`).
-- [ ] `UnitPoint` + `.center`/`.topLeading`/`.bottomTrailing` (used by gradients in `references/iGopherBrowser/iGopherBrowser/CRTEffect.swift` and `references/iGopherBrowser/iGopherBrowser/WhatsNew.swift`).
-- [ ] `RoundedCornerStyle` + `.continuous` (required for `RoundedRectangle(cornerRadius:style:)` usage in `references/iGopherBrowser/iGopherBrowser/WhatsNew.swift`).
-- [ ] `Material.ultraThinMaterial` (used in `references/iGopherBrowser/iGopherBrowser/BrowserView.swift` and `references/iGopherBrowser/iGopherBrowser/WhatsNew.swift`).
-- [ ] `glassEffect` / `GlassEffectContainer` / related Liquid Glass APIs as compile-only stubs (used in `references/iGopherBrowser/iGopherBrowser/LiquidGlass.swift` and toolbars in `references/iGopherBrowser/iGopherBrowser/BrowserView.swift`).
+- [x] `Canvas` view + minimal `GraphicsContext` + `GraphicsContext.fill(_:with:)` + `.color(_)` shading (used in `references/iGopherBrowser/iGopherBrowser/CRTEffect.swift`).
+- [x] `Gradient` type + `Gradient(colors:)` initializer.
+- [x] `LinearGradient` view (used in `references/iGopherBrowser/iGopherBrowser/CRTEffect.swift` and `references/iGopherBrowser/iGopherBrowser/WhatsNew.swift`).
+- [x] `RadialGradient` view (used in `references/iGopherBrowser/iGopherBrowser/CRTEffect.swift`).
+- [x] `UnitPoint` + `.center`/`.topLeading`/`.bottomTrailing` (used by gradients in `references/iGopherBrowser/iGopherBrowser/CRTEffect.swift` and `references/iGopherBrowser/iGopherBrowser/WhatsNew.swift`).
+- [x] `RoundedCornerStyle` + `.continuous` (required for `RoundedRectangle(cornerRadius:style:)` usage in `references/iGopherBrowser/iGopherBrowser/WhatsNew.swift`).
+- [x] `Material.ultraThinMaterial` (used in `references/iGopherBrowser/iGopherBrowser/BrowserView.swift` and `references/iGopherBrowser/iGopherBrowser/WhatsNew.swift`).
+- [x] `glassEffect` / `GlassEffectContainer` / related Liquid Glass APIs as compile-only stubs (used in `references/iGopherBrowser/iGopherBrowser/LiquidGlass.swift` and toolbars in `references/iGopherBrowser/iGopherBrowser/BrowserView.swift`).
 
 ## 13. Color & ColorPicker (Compile Blockers)
 
-- [ ] Implement `ColorPicker` view (used in `references/iGopherBrowser/iGopherBrowser/SettingsView.swift`).
-- [ ] Implement `.labelsHidden()` modifier (used with ColorPicker in `references/iGopherBrowser/iGopherBrowser/SettingsView.swift`).
-- [ ] Fix/extend `Color` construction patterns used by iGopherBrowser:
-- [ ] `Color(nsColor:)` initializer (used in macOS-only code paths).
-- [ ] `Color(uiColor:)` initializer (used in iOS-only code paths).
-- [ ] Support `Color(.systemBackground)`/`Color(.systemGray6)` patterns used in iOS-only code paths (can be stubbed to named colors).
-- [ ] Provide a strategy for `Color` persistence compatible with `@AppStorage` (iGopherBrowser stores `Color.rawValue` strings in `references/iGopherBrowser/iGopherBrowser/SettingsView.swift`).
+- [x] Implement `ColorPicker` view (used in `references/iGopherBrowser/iGopherBrowser/SettingsView.swift`).
+- [x] Implement `.labelsHidden()` modifier (used with ColorPicker in `references/iGopherBrowser/iGopherBrowser/SettingsView.swift`).
+- [x] Fix/extend `Color` construction patterns used by iGopherBrowser:
+- [x] `Color(nsColor:)` initializer (used in macOS-only code paths).
+- [x] `Color(uiColor:)` initializer (used in iOS-only code paths).
+- [x] Support `Color(.systemBackground)`/`Color(.systemGray6)` patterns used in iOS-only code paths (can be stubbed to named colors).
+- [x] Provide a strategy for `Color` persistence compatible with `@AppStorage` (iGopherBrowser stores `Color.rawValue` strings in `references/iGopherBrowser/iGopherBrowser/SettingsView.swift`).
 
 ## 14. Keyboard Shortcuts & Exit Command (Compile Blockers + Behavior)
 
 - [ ] `keyboardShortcut` modifier exists but is stubbed; implement at least:
 - [ ] `KeyboardShortcut(.cancelAction)` and `KeyboardShortcut(.defaultAction)` behavior for sheets/search bars where used.
-- [ ] `onExitCommand` modifier (used in macOS-only `references/iGopherBrowser/iGopherBrowser/SearchInputView.swift`).
-- [ ] `withAnimation` + `Animation` API stubs (`.spring()`, etc.) so `withAnimation { proxy.scrollTo(...) }` compiles (used in `references/iGopherBrowser/iGopherBrowser/BrowserView.swift`).
+- [x] `onExitCommand` modifier (used in macOS-only `references/iGopherBrowser/iGopherBrowser/SearchInputView.swift`).
+- [x] `withAnimation` + `Animation` API stubs (`.spring()`, etc.) so `withAnimation { proxy.scrollTo(...) }` compiles (used in `references/iGopherBrowser/iGopherBrowser/BrowserView.swift`).
 
 ## 15. Text API Gaps (Compile Blockers)
 
-- [ ] `Text` initializer `init(_ image: Image)` (used as `Text(Image(systemName: ...))` in `references/iGopherBrowser/iGopherBrowser/BrowserView.swift`).
-- [ ] `.fontWeight(_:)` modifier (used in `references/iGopherBrowser/iGopherBrowser/BrowserView.swift` and others; can be stubbed).
-- [ ] `.foregroundColor(_:)` modifier overloads used by iGopherBrowser (distinct from `.foregroundStyle`).
+- [x] `Text` initializer `init(_ image: Image)` (used as `Text(Image(systemName: ...))` in `references/iGopherBrowser/iGopherBrowser/BrowserView.swift`).
+- [x] `.fontWeight(_:)` modifier (used in `references/iGopherBrowser/iGopherBrowser/BrowserView.swift` and others; can be stubbed).
+- [x] `.foregroundColor(_:)` modifier overloads used by iGopherBrowser (distinct from `.foregroundStyle`).
 
 ## 16. Sharing / QuickLook (Compile-Only Stubs)
 

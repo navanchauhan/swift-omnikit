@@ -33,6 +33,9 @@ public struct Color: Hashable, Sendable {
     public static let black = Color("black")
     public static let white = Color("white")
     public static let gray = Color("gray")
+    public static let red = Color("red")
+    public static let green = Color("green")
+    public static let blue = Color("blue")
     public static let yellow = Color("yellow")
 }
 
@@ -52,6 +55,18 @@ public struct Font: Hashable, Sendable {
         case monospaced
     }
 
+    public enum Weight: Hashable, Sendable {
+        case ultraLight
+        case thin
+        case light
+        case regular
+        case medium
+        case semibold
+        case bold
+        case heavy
+        case black
+    }
+
     public let name: String
 
     public static let largeTitle = Font(name: "largeTitle")
@@ -66,9 +81,17 @@ public struct Font: Hashable, Sendable {
         Font(name: "system(\(size),\(design))")
     }
 
+    public static func system(size: CGFloat, weight: Weight, design: Design = .default) -> Font {
+        Font(name: "system(\(size),\(weight),\(design))")
+    }
+
     // SwiftUI exposes `.system(_:, design:)` overloads; this keeps call sites compiling.
     public static func system(_ style: Font, design: Design = .default) -> Font {
         Font(name: "system(\(style.name),\(design))")
+    }
+
+    public func weight(_ weight: Weight) -> Font {
+        Font(name: "\(name).weight(\(weight))")
     }
 
     public func weight(_ any: Any = ()) -> Font {
@@ -182,6 +205,7 @@ public struct Material: Hashable, Sendable {
     public let raw: String
     public init(_ raw: String) { self.raw = raw }
     public static let regularMaterial = Material("regularMaterial")
+    public static let ultraThinMaterial = Material("ultraThinMaterial")
 }
 
 public enum Visibility: Hashable, Sendable {

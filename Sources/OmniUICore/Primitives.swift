@@ -8,6 +8,12 @@ public struct Text: View, _PrimitiveView {
         self.content = content
     }
 
+    public init(_ image: Image) {
+        // SwiftUI supports `Text(Image(...))` for inline symbols. Our renderer is text-based,
+        // so approximate with the image's symbol name.
+        self.content = image.name
+    }
+
     func _makeNode(_ ctx: inout _BuildContext) -> _VNode {
         .text(content)
     }

@@ -21,6 +21,9 @@ public final class _UIRuntime: @unchecked Sendable {
     /// Used by `Menu` to discover nested `Button` actions without rendering them as normal controls.
     @TaskLocal static var _currentMenuCaptureID: Int?
 
+    /// Used by `.labelsHidden()` to hide built-in labels for certain controls.
+    @TaskLocal static var _labelsHidden: Bool = false
+
     private var nextActionID: Int = 1
     private var actions: [_ActionID: (path: [Int], action: () -> Void)] = [:]
 

@@ -24,6 +24,11 @@ public struct CGRect: Hashable, Sendable {
     }
 }
 
+public enum RoundedCornerStyle: Hashable, Sendable {
+    case circular
+    case continuous
+}
+
 public struct Path: Hashable, Sendable, Shape, _PrimitiveView {
     public enum Element: Hashable, Sendable {
         case move(to: CGPoint)
@@ -72,7 +77,8 @@ public struct RoundedRectangle: Shape, _PrimitiveView {
         self.cornerRadius = cornerRadius
     }
 
-    public init(cornerRadius: CGFloat, style: Any = ()) {
+    public init(cornerRadius: CGFloat, style: RoundedCornerStyle = .circular) {
+        _ = style
         self.cornerRadius = cornerRadius
     }
 
@@ -96,7 +102,7 @@ public struct Ellipse: Shape, _PrimitiveView {
 public struct Capsule: Shape, _PrimitiveView {
     public typealias Body = Never
     public init() {}
-    public init(style: Any = ()) {}
+    public init(style: RoundedCornerStyle = .circular) { _ = style }
     func _makeNode(_ ctx: inout _BuildContext) -> _VNode { .shape(_ShapeNode(kind: .capsule)) }
 }
 
@@ -126,8 +132,23 @@ public extension Shape {
         _ShapeStyle(content: AnyView(self), fill: style, stroke: nil, fillColor: content, strokeColor: nil)
     }
 
+    func fill(_ content: Material, style: FillStyle = FillStyle()) -> some View {
+        _ShapeStyle(content: AnyView(self), fill: style, stroke: nil, fillColor: Color(content.raw), strokeColor: nil)
+    }
+
+    func fill<S>(_ content: S, style: FillStyle = FillStyle()) -> some View {
+        _ = content
+        // Stub: treat arbitrary ShapeStyle-ish values (e.g. gradients) as a simple fill.
+        return _ShapeStyle(content: AnyView(self), fill: style, stroke: nil, fillColor: .secondary, strokeColor: nil)
+    }
+
     func stroke(_ content: Color = .primary, style: StrokeStyle = StrokeStyle()) -> some View {
         _ShapeStyle(content: AnyView(self), fill: nil, stroke: style, fillColor: nil, strokeColor: content)
+    }
+
+    func stroke<S>(_ content: S, lineWidth: CGFloat = 1) -> some View {
+        _ = content
+        return _ShapeStyle(content: AnyView(self), fill: nil, stroke: StrokeStyle(lineWidth: lineWidth), fillColor: nil, strokeColor: .primary)
     }
 
     func stroke(lineWidth: CGFloat = 1) -> some View {
