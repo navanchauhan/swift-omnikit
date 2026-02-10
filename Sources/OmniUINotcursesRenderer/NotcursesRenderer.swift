@@ -435,6 +435,10 @@ public struct NotcursesApp<V: View> {
                 if id == 0 {
                     break
                 }
+                if id == UInt32.max {
+                    exitNote = "notcurses_get_nblock() error"
+                    return
+                }
 
                 if id == q {
                     userRequestedExit = true
@@ -449,10 +453,10 @@ public struct NotcursesApp<V: View> {
                     return
                 }
 
-                // notcurses can deliver PRESS+RELEASE for mouse buttons and keys. Only react to:
-                // - mouse click/scroll on PRESS (or UNKNOWN; notcurses often reports "press" as UNKNOWN)
-                // - keypresses on PRESS/REPEAT (or UNKNOWN)
-                if ni.evtype == NCTYPE_PRESS || ni.evtype == NCTYPE_UNKNOWN {
+                // notcurses might report keypresses with limited classification. Treat all non-RELEASE
+                // events as "press-like" to avoid dropping keyboard input, while still preventing
+                // double-firing on RELEASE.
+                if ni.evtype != NCTYPE_RELEASE {
                     if id == button1 {
                         snapshot.click(x: Int(ni.x), y: Int(ni.y))
                         continue
@@ -465,7 +469,7 @@ public struct NotcursesApp<V: View> {
                     }
                 }
 
-                if ni.evtype == NCTYPE_PRESS || ni.evtype == NCTYPE_REPEAT || ni.evtype == NCTYPE_UNKNOWN {
+                if ni.evtype != NCTYPE_RELEASE {
                     if id == 9 { // Tab
                         let isShift = omni_ncinput_shift(&ni) != 0
                         if isShift {
