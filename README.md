@@ -6,6 +6,26 @@
 
 OmniKit is my highly opinionated ultimate personal Swift Library. Swift 6.0+ with strict concurrency.
 
+## OmniAI
+
+Unified AI
+
+### OmniAICore
+
+Unified multi-provider LLM API (OpenAI, Anthropic, OpenRouter, Gemini, Groq, Cerebras, e.t.c)
+
+### OmniAICoderAgent
+
+Coding agent runtime with tool calling and state management with provider prompts and tools
+
+### OmniAIAgentsSDK
+
+Framework for multi-agent workflows
+
+### OmniAIAttractor
+
+A DOT-based pipeline runner that uses directed graphs  to orchestrate multi-stage AI workflows.
+
 ## OmniUI
 
 Drop in SwiftUI replacement bringing my SwiftUI apps to other platforms. Simply changing `import SwiftUI` to `import OmniUI` will get your apps running on another renderer.
