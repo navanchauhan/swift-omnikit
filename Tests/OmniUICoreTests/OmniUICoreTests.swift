@@ -227,3 +227,69 @@ struct ListRenderView: View {
     let s1 = runtime.debugRender(V(), size: _Size(width: 50, height: 12))
     #expect(s1.text.contains("picked: 1"))
 }
+
+struct TapGestureView: View {
+    @State private var tapped: Int = 0
+
+    var body: some View {
+        VStack(spacing: 0) {
+            Text("tapped: \(tapped)")
+            Text("TapMe")
+                .onTapGesture { tapped += 1 }
+        }
+    }
+}
+
+@Test func debugSnapshot_onTapGesture_click_updates_state() async throws {
+    let runtime = _UIRuntime()
+    let size = _Size(width: 20, height: 4)
+
+    let s0 = runtime.debugRender(TapGestureView(), size: size)
+    #expect(s0.text.contains("tapped: 0"))
+
+    // TapMe is on the second row at x≈0,y=1.
+    s0.click(x: 0, y: 1)
+
+    let s1 = runtime.debugRender(TapGestureView(), size: size)
+    #expect(s1.text.contains("tapped: 1"))
+}
+
+struct MenuGestureView: View {
+    @State private var picked: String = "-"
+
+    var body: some View {
+        VStack(spacing: 0) {
+            Text("picked: \(picked)")
+            Menu {
+                Button("A") { picked = "A" }
+                Button("B") { picked = "B" }
+            } label: {
+                Text("Menu")
+            }
+        }
+    }
+}
+
+@Test func debugSnapshot_menu_click_selects_item() async throws {
+    let runtime = _UIRuntime()
+    let size = _Size(width: 40, height: 8)
+
+    // Collapsed.
+    let s0 = runtime.debugRender(MenuGestureView(), size: size)
+    #expect(s0.text.contains("picked: -"))
+
+    // Open dropdown (Menu header is on y=1).
+    s0.click(x: 1, y: 1)
+    let s1 = runtime.debugRender(MenuGestureView(), size: size)
+
+    // Click the second option ("B") in the dropdown.
+    // Menu layout:
+    // y=1 header
+    // y=2 top border
+    // y=3 option A
+    // y=4 option B
+    s1.click(x: 2, y: 4)
+
+    let s2 = runtime.debugRender(MenuGestureView(), size: size)
+    #expect(s2.text.contains("picked: B"))
+}

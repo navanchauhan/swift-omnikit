@@ -1,6 +1,14 @@
 /// A tiny subset of SwiftUI's `ViewBuilder`.
 @resultBuilder
 public enum ViewBuilder {
+    public static func buildExpression(_ expression: Never) -> Never {
+        fatalError("Unreachable")
+    }
+
+    public static func buildExpression<V: View>(_ expression: V) -> AnyView {
+        AnyView(expression)
+    }
+
     public static func buildBlock() -> EmptyView { EmptyView() }
     public static func buildBlock<Content: View>(_ content: Content) -> Content { content }
 

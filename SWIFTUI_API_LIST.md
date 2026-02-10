@@ -91,36 +91,36 @@ Keyboard + text entry must work in the notcurses renderer for iGopherBrowser to 
 
 ## 8. Gestures & Hit Testing (Compile Blockers + Behavior)
 
-- [ ] `.onTapGesture { … }` (used in `references/iGopherBrowser/iGopherBrowser/SidebarView.swift`).
-- [ ] `.allowsHitTesting(_:)` (used in `references/iGopherBrowser/iGopherBrowser/ContentView.swift` and `references/iGopherBrowser/iGopherBrowser/CRTEffect.swift`).
+- [x] `.onTapGesture { … }` (used in `references/iGopherBrowser/iGopherBrowser/SidebarView.swift`).
+- [x] `.allowsHitTesting(_:)` (used in `references/iGopherBrowser/iGopherBrowser/ContentView.swift` and `references/iGopherBrowser/iGopherBrowser/CRTEffect.swift`).
 - [ ] `contentShape(_:)` exists as stub; implement if needed for correct click hit-testing in lists/buttons (used in `references/iGopherBrowser/iGopherBrowser/BrowserView.swift`).
 
 ## 9. Layout & Containers (Compile Blockers)
 
-- [ ] `GeometryReader` (used in `references/iGopherBrowser/iGopherBrowser/FileView.swift` and `references/iGopherBrowser/iGopherBrowser/CRTEffect.swift`).
-- [ ] `LazyVStack` (used in `references/iGopherBrowser/iGopherBrowser/FileView.swift` and `references/iGopherBrowser/iGopherBrowser/WhatsNew.swift`).
-- [ ] `Form` (used in `references/iGopherBrowser/iGopherBrowser/BookmarksView.swift` and `references/iGopherBrowser/iGopherBrowser/SettingsView.swift`).
-- [ ] `GroupBox` (used in `references/iGopherBrowser/iGopherBrowser/SettingsView.swift`).
-- [ ] `ContentUnavailableView` (used in `references/iGopherBrowser/iGopherBrowser/BookmarksView.swift`).
-- [ ] `LabeledContent` (used in `references/iGopherBrowser/iGopherBrowser/BookmarksView.swift`).
-- [ ] `Divider` (used in `references/iGopherBrowser/iGopherBrowser/BrowserView.swift`).
+- [x] `GeometryReader` (used in `references/iGopherBrowser/iGopherBrowser/FileView.swift` and `references/iGopherBrowser/iGopherBrowser/CRTEffect.swift`).
+- [x] `LazyVStack` (used in `references/iGopherBrowser/iGopherBrowser/FileView.swift` and `references/iGopherBrowser/iGopherBrowser/WhatsNew.swift`).
+- [x] `Form` (used in `references/iGopherBrowser/iGopherBrowser/BookmarksView.swift` and `references/iGopherBrowser/iGopherBrowser/SettingsView.swift`).
+- [x] `GroupBox` (used in `references/iGopherBrowser/iGopherBrowser/SettingsView.swift`).
+- [x] `ContentUnavailableView` (used in `references/iGopherBrowser/iGopherBrowser/BookmarksView.swift`).
+- [x] `LabeledContent` (used in `references/iGopherBrowser/iGopherBrowser/BookmarksView.swift`).
+- [x] `Divider` (used in `references/iGopherBrowser/iGopherBrowser/BrowserView.swift`).
 
 ## 10. Menus, Toolbars, and Buttons (Compile Blockers + Behavior)
 
-- [ ] `Menu` view (used in `references/iGopherBrowser/iGopherBrowser/BrowserView.swift`).
-- [ ] `.toolbar { … }` is currently stubbed; add required types so toolbar bodies compile:
-- [ ] `ToolbarItem` type (used in `references/iGopherBrowser/iGopherBrowser/BookmarksView.swift` and `references/iGopherBrowser/iGopherBrowser/WhatsNew.swift`).
-- [ ] `ToolbarItemPlacement` + cases used by iGopherBrowser (`.cancellationAction`, `.confirmationAction`, `.topBarLeading`, `.topBarTrailing`, `.topBar…`).
-- [ ] `EditButton` (used in `references/iGopherBrowser/iGopherBrowser/BookmarksView.swift`).
-- [ ] `.controlSize(_:)` (used in `references/iGopherBrowser/iGopherBrowser/WhatsNew.swift`).
+- [x] `Menu` view (used in `references/iGopherBrowser/iGopherBrowser/BrowserView.swift`).
+- [x] `.toolbar { … }` is currently stubbed; add required types so toolbar bodies compile:
+- [x] `ToolbarItem` type (used in `references/iGopherBrowser/iGopherBrowser/BookmarksView.swift` and `references/iGopherBrowser/iGopherBrowser/WhatsNew.swift`).
+- [x] `ToolbarItemPlacement` + cases used by iGopherBrowser (`.cancellationAction`, `.confirmationAction`, `.topBarLeading`, `.topBarTrailing`, `.topBar…`).
+- [x] `EditButton` (used in `references/iGopherBrowser/iGopherBrowser/BookmarksView.swift`).
+- [x] `.controlSize(_:)` (used in `references/iGopherBrowser/iGopherBrowser/WhatsNew.swift`).
 
 ## 11. Presentation (Sheets, Alerts, Insets) (Compile Blockers + Behavior)
 
-- [ ] `.sheet(isPresented:onDismiss:content:)` exists; ensure dismiss environment is SwiftUI-compatible for iGopherBrowser sheets.
-- [ ] `.alert(isPresented:content:)` currently expects a `View`; iGopherBrowser uses `Alert(...)` (used in `references/iGopherBrowser/iGopherBrowser/SettingsView.swift`).
-- [ ] Implement `Alert` type + `Alert.Button` + `Alert(title:message:dismissButton:)` initializer.
-- [ ] Implement `.safeAreaInset(edge:content:)` (used in `references/iGopherBrowser/iGopherBrowser/BrowserView.swift`).
-- [ ] Implement `.presentationDetents(_:)` and `.presentationDragIndicator(_:)` as compile-only stubs (used in `references/iGopherBrowser/iGopherBrowser/BrowserView.swift` and `references/iGopherBrowser/iGopherBrowser/WhatsNew.swift`).
+- [x] `.sheet(isPresented:onDismiss:content:)` exists; ensure dismiss environment is SwiftUI-compatible for iGopherBrowser sheets.
+- [x] `.alert(isPresented:content:)` currently expects a `View`; iGopherBrowser uses `Alert(...)` (used in `references/iGopherBrowser/iGopherBrowser/SettingsView.swift`).
+- [x] Implement `Alert` type + `Alert.Button` + `Alert(title:message:dismissButton:)` initializer.
+- [x] Implement `.safeAreaInset(edge:content:)` (used in `references/iGopherBrowser/iGopherBrowser/BrowserView.swift`).
+- [x] Implement `.presentationDetents(_:)` and `.presentationDragIndicator(_:)` as compile-only stubs (used in `references/iGopherBrowser/iGopherBrowser/BrowserView.swift` and `references/iGopherBrowser/iGopherBrowser/WhatsNew.swift`).
 
 ## 12. Drawing / Effects / Gradients (Compile Blockers)
 

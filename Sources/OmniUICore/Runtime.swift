@@ -8,15 +8,32 @@ public final class _UIRuntime: @unchecked Sendable {
     /// Build-time ambient environment values.
     @TaskLocal static var _currentEnvironment: EnvironmentValues?
 
+    /// Build-time ambient terminal/grid size for the current render pass.
+    @TaskLocal static var _currentRenderSize: _Size?
+
+    /// Whether hit testing is enabled for the current subtree (SwiftUI `.allowsHitTesting`).
+    @TaskLocal static var _hitTestingEnabled: Bool = true
+
     /// Used by modifiers like `.focused`/`.onSubmit` to discover the first focusable control
     /// in a subtree, regardless of intervening modifier wrappers.
     @TaskLocal static var _currentFocusCaptureID: Int?
+
+    /// Used by `Menu` to discover nested `Button` actions without rendering them as normal controls.
+    @TaskLocal static var _currentMenuCaptureID: Int?
 
     private var nextActionID: Int = 1
     private var actions: [_ActionID: (path: [Int], action: () -> Void)] = [:]
 
     private var nextFocusCaptureID: Int = 1
     private var focusCaptureResults: [Int: [Int]] = [:]
+
+    struct _MenuCaptureItem {
+        var label: String
+        var actionScopePath: [Int]
+        var action: () -> Void
+    }
+    private var nextMenuCaptureID: Int = 1
+    private var menuCaptureResults: [Int: [_MenuCaptureItem]] = [:]
 
     private var state: [String: Any] = [:]
 
@@ -53,6 +70,20 @@ public final class _UIRuntime: @unchecked Sendable {
 
     func _endFocusCapture(_ id: Int) -> [Int]? {
         focusCaptureResults.removeValue(forKey: id)
+    }
+
+    func _beginMenuCapture() -> Int {
+        let id = nextMenuCaptureID
+        nextMenuCaptureID += 1
+        return id
+    }
+
+    func _registerMenuCaptureItem(_ item: _MenuCaptureItem, captureID: Int) {
+        menuCaptureResults[captureID, default: []].append(item)
+    }
+
+    func _endMenuCapture(_ id: Int) -> [_MenuCaptureItem] {
+        menuCaptureResults.removeValue(forKey: id) ?? []
     }
 
     private func _pathKey(prefix: String, path: [Int]) -> String {
@@ -294,9 +325,11 @@ public final class _UIRuntime: @unchecked Sendable {
         runtime.overlays.removeAll(keepingCapacity: true)
 
         let ctx = _BuildContext(runtime: runtime, path: [], nextChildIndex: 0)
-        var node = _BuildContext.withRuntime(runtime, path: []) {
-            var local = ctx
-            return _makeNode(root, &local)
+        var node = _UIRuntime.$_currentRenderSize.withValue(size) {
+            _BuildContext.withRuntime(runtime, path: []) {
+                var local = ctx
+                return _makeNode(root, &local)
+            }
         }
 
         if !runtime.overlays.isEmpty {
@@ -380,9 +413,11 @@ extension _UIRuntime {
         runtime.overlays.removeAll(keepingCapacity: true)
 
         let ctx = _BuildContext(runtime: runtime, path: [], nextChildIndex: 0)
-        var node = _BuildContext.withRuntime(runtime, path: []) {
-            var local = ctx
-            return _makeNode(root, &local)
+        var node = _UIRuntime.$_currentRenderSize.withValue(size) {
+            _BuildContext.withRuntime(runtime, path: []) {
+                var local = ctx
+                return _makeNode(root, &local)
+            }
         }
 
         if !runtime.overlays.isEmpty {

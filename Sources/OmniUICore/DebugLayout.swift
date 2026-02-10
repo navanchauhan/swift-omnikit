@@ -323,6 +323,14 @@ enum _DebugLayout {
             }
             return _Size(width: min(s.count, maxSize.width), height: 1)
 
+        case .divider:
+            if maxSize.width > 0 {
+                for i in 0..<maxSize.width {
+                    put("─", at: _Point(x: origin.x + i, y: origin.y), canvas: &canvas, style: style)
+                }
+            }
+            return _Size(width: maxSize.width, height: 1)
+
         case .shape(let shape):
             // Render shapes using border glyphs plus a fill token.
             // The notcurses renderer maps the fill token to a real background fill, so the
@@ -515,12 +523,16 @@ enum _DebugLayout {
                         u.height = max(u.height, s.height)
                     }
                     return u
+                case .divider:
+                    return _Size(width: maxSize.width, height: 1)
                 case .button(_, let isFocused, let label):
                     // Render as [ label ] with optional focus marker.
                     let xPad = isFocused ? 1 : 0
                     let labelMax = _Size(width: max(0, maxSize.width - (isFocused ? 5 : 4)), height: 1)
                     let l = measure(label, labelMax)
                     return _Size(width: min(maxSize.width, xPad + 4 + l.width), height: 1)
+                case .tapTarget(_, let child):
+                    return measure(child, maxSize)
                 case .toggle(_, let isFocused, _, let label):
                     let xPad = isFocused ? 1 : 0
                     let boxCount = 4
@@ -536,7 +548,7 @@ enum _DebugLayout {
                     // ScrollView takes all available size.
                     return _Size(width: maxSize.width, height: maxSize.height)
                 case .menu(_, let isFocused, _, let title, let value, _):
-                    let headText = "\(title): \(value) v"
+                    let headText = title.isEmpty ? "\(value) v" : "\(title): \(value) v"
                     let inner = " " + headText + " "
                     let w = (isFocused ? 1 : 0) + 2 + min(inner.count, max(0, maxSize.width - (isFocused ? 3 : 2)))
                     return _Size(width: min(w, maxSize.width), height: 1)
@@ -649,6 +661,25 @@ enum _DebugLayout {
             hitRegions.append((rect, id))
             return _Size(width: buttonWidth, height: 1)
 
+        case .tapTarget(let id, let child):
+            let s = draw(
+                node: child,
+                origin: origin,
+                maxSize: maxSize,
+                canvas: &canvas,
+                hitRegions: &hitRegions,
+                scrollRegions: &scrollRegions,
+                shapeRegions: &shapeRegions,
+                renderShapeGlyphs: renderShapeGlyphs,
+                overlays: &overlays,
+                style: style
+            )
+            let w = min(maxSize.width, max(1, s.width))
+            let h = min(maxSize.height, max(1, s.height))
+            let rect = _Rect(origin: origin, size: _Size(width: w, height: h))
+            hitRegions.append((rect, id))
+            return s
+
         case .toggle(let id, let isFocused, let isOn, let label):
             // Render as [x] label / [ ] label
             let box = isOn ? "[x] " : "[ ] "
@@ -742,6 +773,8 @@ enum _DebugLayout {
                             u.height = max(u.height, s.height)
                         }
                         return u
+                    case .divider:
+                        return _Size(width: maxSize.width, height: 1)
                     case .text(let s): return _Size(width: min(s.count, maxSize.width), height: 1)
                     case .image(let name):
                         let s = _DebugLayout.imageString(name)
@@ -780,6 +813,8 @@ enum _DebugLayout {
                         let labelMax = _Size(width: max(0, maxSize.width - (isFocused ? 5 : 4)), height: 1)
                         let l = m(label, labelMax)
                         return _Size(width: min(maxSize.width, xPad + 4 + l.width), height: 1)
+                    case .tapTarget(_, let child):
+                        return m(child, maxSize)
                     case .toggle(_, let isFocused, _, let label):
                         let xPad = isFocused ? 1 : 0
                         let boxCount = 4
@@ -794,7 +829,7 @@ enum _DebugLayout {
                     case .scrollView:
                         return _Size(width: maxSize.width, height: maxSize.height)
                     case .menu(_, let isFocused, _, let title, let value, _):
-                        let headText = "\(title): \(value) v"
+                        let headText = title.isEmpty ? "\(value) v" : "\(title): \(value) v"
                         let inner = " " + headText + " "
                         let w = (isFocused ? 1 : 0) + 2 + min(inner.count, max(0, maxSize.width - (isFocused ? 3 : 2)))
                         return _Size(width: min(w, maxSize.width), height: 1)
@@ -915,7 +950,7 @@ enum _DebugLayout {
         case .menu(let id, let isFocused, let isExpanded, let title, let value, let items):
             // Header like:  >[ Flavor: Chocolate v ]
             let v = isExpanded ? "^" : "v"
-            let headText = "\(title): \(value) \(v)"
+            let headText = title.isEmpty ? "\(value) \(v)" : "\(title): \(value) \(v)"
             let x0 = isFocused ? origin.x + 1 : origin.x
             if isFocused {
                 put(">", at: origin, canvas: &canvas)

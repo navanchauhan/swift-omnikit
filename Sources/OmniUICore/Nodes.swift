@@ -47,6 +47,7 @@ indirect enum _VNode {
     case zstack(children: [_VNode])
     case shape(_ShapeNode)
     case button(id: _ActionID, isFocused: Bool, label: _VNode)
+    case tapTarget(id: _ActionID, child: _VNode)
     case toggle(id: _ActionID, isFocused: Bool, isOn: Bool, label: _VNode)
     case textField(id: _ActionID, placeholder: String, text: String, cursor: Int, isFocused: Bool)
     case scrollView(id: _ActionID, path: [Int], isFocused: Bool, axis: _Axis, offset: Int, content: _VNode)
@@ -59,6 +60,7 @@ indirect enum _VNode {
         items: [(id: _ActionID, isSelected: Bool, isFocused: Bool, label: String)]
     )
     case tagged(value: AnyHashable, label: _VNode)
+    case divider
 }
 
 public enum _ShapeKind: Hashable, Sendable {

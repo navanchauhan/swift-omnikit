@@ -25,6 +25,18 @@ public extension View {
     func navigationTitle(_ title: Text) -> some View { _Passthrough(self) }
     func navigationBarTitleDisplayMode(_ mode: Any = ()) -> some View { _Passthrough(self) }
 
+    func onTapGesture(perform action: @escaping () -> Void) -> some View {
+        _TapGesture(content: AnyView(self), count: 1, action: action, actionScopePath: _UIRuntime._currentPath ?? [])
+    }
+
+    func onTapGesture(count: Int, perform action: @escaping () -> Void) -> some View {
+        _TapGesture(content: AnyView(self), count: count, action: action, actionScopePath: _UIRuntime._currentPath ?? [])
+    }
+
+    func allowsHitTesting(_ enabled: Bool) -> some View {
+        _AllowsHitTesting(content: AnyView(self), enabled: enabled)
+    }
+
     @ViewBuilder
     func preferredColorScheme(_ scheme: ColorScheme?) -> some View {
         if let scheme {
@@ -46,6 +58,7 @@ public extension View {
     func toolbar<Content: View>(@ViewBuilder content: () -> Content) -> some View { _Passthrough(self) }
     func toolbar(_ any: Any = ()) -> some View { _Passthrough(self) }
     func toolbarBackground(_ any: Any = (), for: Any = ()) -> some View { _Passthrough(self) }
+    func controlSize(_ size: ControlSize) -> some View { _Passthrough(self) }
     func modelContainer(_ any: Any) -> some View { _Passthrough(self) }
 
     func keyboardShortcut(_ key: KeyEquivalent, modifiers: EventModifiers = []) -> some View { _Passthrough(self) }
@@ -60,6 +73,10 @@ public extension View {
     }
     func alert<Content: View>(isPresented: Binding<Bool>, @ViewBuilder content: () -> Content) -> some View {
         _Alert(content: AnyView(self), isPresented: isPresented, alert: AnyView(content()))
+    }
+
+    func alert(isPresented: Binding<Bool>, content: @escaping () -> Alert) -> some View {
+        _AlertFromType(content: AnyView(self), isPresented: isPresented, makeAlert: content)
     }
 
     func focused(_ isFocused: Binding<Bool>) -> some View {
@@ -163,6 +180,20 @@ public extension View {
     func onAppear(perform action: @escaping () -> Void) -> some View {
         _OnAppear(content: AnyView(self), action: action)
     }
+
+    func safeAreaInset<Content: View>(edge: Edge, @ViewBuilder content: () -> Content) -> some View {
+        _SafeAreaInset(base: AnyView(self), edge: edge, inset: AnyView(content()))
+    }
+
+    func presentationDetents(_ detents: Set<PresentationDetent>) -> some View {
+        _ = detents
+        return _Passthrough(self)
+    }
+
+    func presentationDragIndicator(_ visibility: Visibility) -> some View {
+        _ = visibility
+        return _Passthrough(self)
+    }
 }
 
 public enum SubmitLabel: Hashable, Sendable {
@@ -237,6 +268,148 @@ private struct _Alert: View, _PrimitiveView {
             ), dismiss: dismiss)
         }
         return ctx.buildChild(content)
+    }
+}
+
+public struct Alert {
+    public struct Button {
+        enum Kind {
+            case `default`
+            case cancel
+            case destructive
+        }
+
+        let kind: Kind
+        let label: Text
+        let action: (() -> Void)?
+
+        private init(kind: Kind, label: Text, action: (() -> Void)?) {
+            self.kind = kind
+            self.label = label
+            self.action = action
+        }
+
+        public static func `default`(_ label: Text, action: (() -> Void)? = nil) -> Button {
+            Button(kind: .default, label: label, action: action)
+        }
+
+        public static func cancel(_ label: Text, action: (() -> Void)? = nil) -> Button {
+            Button(kind: .cancel, label: label, action: action)
+        }
+
+        public static func destructive(_ label: Text, action: (() -> Void)? = nil) -> Button {
+            Button(kind: .destructive, label: label, action: action)
+        }
+    }
+
+    public let title: Text
+    public let message: Text?
+    public let dismissButton: Button?
+
+    public init(title: Text, message: Text? = nil, dismissButton: Button? = nil) {
+        self.title = title
+        self.message = message
+        self.dismissButton = dismissButton
+    }
+}
+
+private struct _AlertFromType: View, _PrimitiveView {
+    typealias Body = Never
+
+    let content: AnyView
+    let isPresented: Binding<Bool>
+    let makeAlert: () -> Alert
+
+    func _makeNode(_ ctx: inout _BuildContext) -> _VNode {
+        if isPresented.wrappedValue {
+            let alert = makeAlert()
+
+            let dismiss = {
+                if isPresented.wrappedValue {
+                    isPresented.wrappedValue = false
+                }
+            }
+
+            let button = alert.dismissButton ?? .default(Text("OK"), action: nil)
+            let messageView: AnyView = alert.message.map(AnyView.init) ?? AnyView(EmptyView())
+            ctx.runtime._registerOverlay(view: AnyView(
+                ZStack {
+                    Color.gray.opacity(0.35)
+                    VStack(spacing: 1) {
+                        VStack(spacing: 1) {
+                            alert.title
+                            messageView
+                        }
+                        HStack(spacing: 1) {
+                            Spacer()
+                            Button(button.label.content) {
+                                dismiss()
+                                button.action?()
+                            }
+                        }
+                    }
+                    .padding(1)
+                }
+            ), dismiss: dismiss)
+        }
+        return ctx.buildChild(content)
+    }
+}
+
+private struct _TapGesture: View, _PrimitiveView {
+    typealias Body = Never
+    let content: AnyView
+    let count: Int
+    let action: () -> Void
+    let actionScopePath: [Int]
+
+    func _makeNode(_ ctx: inout _BuildContext) -> _VNode {
+        _ = count // multi-tap not modeled; retained for call-site compatibility.
+        guard _UIRuntime._hitTestingEnabled else {
+            return ctx.buildChild(content)
+        }
+
+        let runtime = ctx.runtime
+        let controlPath = ctx.path
+        let id = runtime._registerAction({
+            runtime._setFocus(path: controlPath)
+            action()
+        }, path: actionScopePath)
+        runtime._registerFocusable(path: controlPath, activate: id)
+        return .tapTarget(id: id, child: ctx.buildChild(content))
+    }
+}
+
+private struct _AllowsHitTesting: View, _PrimitiveView {
+    typealias Body = Never
+    let content: AnyView
+    let enabled: Bool
+
+    func _makeNode(_ ctx: inout _BuildContext) -> _VNode {
+        _UIRuntime.$_hitTestingEnabled.withValue(enabled) {
+            ctx.buildChild(content)
+        }
+    }
+}
+
+private struct _SafeAreaInset: View, _PrimitiveView {
+    typealias Body = Never
+
+    let base: AnyView
+    let edge: Edge
+    let inset: AnyView
+
+    func _makeNode(_ ctx: inout _BuildContext) -> _VNode {
+        switch edge {
+        case .top:
+            return ctx.buildChild(VStack(spacing: 0) { inset; base })
+        case .bottom:
+            return ctx.buildChild(VStack(spacing: 0) { base; inset })
+        case .leading:
+            return ctx.buildChild(HStack(spacing: 0) { inset; base })
+        case .trailing:
+            return ctx.buildChild(HStack(spacing: 0) { base; inset })
+        }
     }
 }
 

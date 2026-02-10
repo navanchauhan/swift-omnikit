@@ -1,3 +1,5 @@
+import Foundation
+
 public struct Text: View, _PrimitiveView {
     public typealias Body = Never
     public let content: String
@@ -31,6 +33,13 @@ public struct Spacer: View, _PrimitiveView {
     public init(minLength: CGFloat? = nil) { self.init() }
 
     func _makeNode(_ ctx: inout _BuildContext) -> _VNode { .spacer }
+}
+
+public struct Divider: View, _PrimitiveView {
+    public typealias Body = Never
+    public init() {}
+
+    func _makeNode(_ ctx: inout _BuildContext) -> _VNode { .divider }
 }
 
 public struct ScrollView<Content: View>: View, _PrimitiveView {
@@ -95,6 +104,28 @@ public struct ScrollViewReader<Content: View>: View, _PrimitiveView {
     }
 }
 
+public struct GeometryProxy: Sendable {
+    public let size: CGSize
+}
+
+public struct GeometryReader<Content: View>: View, _PrimitiveView {
+    public typealias Body = Never
+
+    let content: (GeometryProxy) -> Content
+
+    public init(@ViewBuilder content: @escaping (GeometryProxy) -> Content) {
+        self.content = content
+    }
+
+    func _makeNode(_ ctx: inout _BuildContext) -> _VNode {
+        // SwiftUI's GeometryReader provides the proposed size of its container.
+        // We approximate this with the current render size (terminal grid).
+        let rs = _UIRuntime._currentRenderSize ?? _Size(width: 0, height: 0)
+        let proxy = GeometryProxy(size: CGSize(width: CGFloat(rs.width), height: CGFloat(rs.height)))
+        return ctx.buildChild(content(proxy))
+    }
+}
+
 public struct List<Content: View>: View, _PrimitiveView {
     public typealias Body = Never
 
@@ -134,6 +165,26 @@ public struct List<Content: View>: View, _PrimitiveView {
         ctx.buildChild(
             ScrollView {
                 VStack(spacing: 0) { content }
+            }
+        )
+    }
+}
+
+public struct Form<Content: View>: View, _PrimitiveView {
+    public typealias Body = Never
+
+    let content: Content
+
+    public init(@ViewBuilder content: () -> Content) {
+        self.content = content()
+    }
+
+    func _makeNode(_ ctx: inout _BuildContext) -> _VNode {
+        // Approximate SwiftUI's Form as a scrollable vertical stack.
+        ctx.buildChild(
+            ScrollView {
+                VStack(alignment: .leading, spacing: 1) { content }
+                    .padding(1)
             }
         )
     }
@@ -327,6 +378,80 @@ public struct Group<Content: View>: View, _PrimitiveView {
     }
 }
 
+public struct GroupBox<Label: View, Content: View>: View, _PrimitiveView {
+    public typealias Body = Never
+
+    let label: Label
+    let content: Content
+
+    public init(@ViewBuilder content: () -> Content) where Label == EmptyView {
+        self.label = EmptyView()
+        self.content = content()
+    }
+
+    public init(@ViewBuilder content: () -> Content, @ViewBuilder label: () -> Label) {
+        self.label = label()
+        self.content = content()
+    }
+
+    func _makeNode(_ ctx: inout _BuildContext) -> _VNode {
+        ctx.buildChild(
+            VStack(alignment: .leading, spacing: 1) {
+                label
+                content
+            }
+            .padding(1)
+        )
+    }
+}
+
+public struct LabeledContent: View, _PrimitiveView {
+    public typealias Body = Never
+
+    let label: String
+    let value: String
+
+    public init(_ label: String, value: String) {
+        self.label = label
+        self.value = value
+    }
+
+    func _makeNode(_ ctx: inout _BuildContext) -> _VNode {
+        ctx.buildChild(
+            HStack(spacing: 1) {
+                Text(label)
+                Spacer()
+                Text(value)
+            }
+        )
+    }
+}
+
+public struct ContentUnavailableView<Description: View>: View, _PrimitiveView {
+    public typealias Body = Never
+
+    let title: String
+    let systemImage: String
+    let description: Description
+
+    public init(_ title: String, systemImage: String, description: Description) {
+        self.title = title
+        self.systemImage = systemImage
+        self.description = description
+    }
+
+    func _makeNode(_ ctx: inout _BuildContext) -> _VNode {
+        ctx.buildChild(
+            VStack(spacing: 1) {
+                Image(systemName: systemImage)
+                Text(title)
+                description
+            }
+            .padding(1)
+        )
+    }
+}
+
 public struct Section<Parent: View, Content: View, Footer: View>: View, _PrimitiveView {
     public typealias Body = Never
 
@@ -350,6 +475,18 @@ public struct Section<Parent: View, Content: View, Footer: View>: View, _Primiti
         self.header = header
         self.content = content()
         self.footer = footer
+    }
+
+    public init(@ViewBuilder content: () -> Content, @ViewBuilder header: () -> Parent) where Footer == EmptyView {
+        self.header = header()
+        self.content = content()
+        self.footer = EmptyView()
+    }
+
+    public init(@ViewBuilder content: () -> Content, @ViewBuilder header: () -> Parent, @ViewBuilder footer: () -> Footer) {
+        self.header = header()
+        self.content = content()
+        self.footer = footer()
     }
 
     func _makeNode(_ ctx: inout _BuildContext) -> _VNode {
@@ -416,6 +553,25 @@ public struct VStack<Content: View>: View, _PrimitiveView {
     }
 }
 
+public struct LazyVStack<Content: View>: View, _PrimitiveView {
+    public typealias Body = Never
+
+    let alignment: HorizontalAlignment
+    let spacing: CGFloat?
+    let content: Content
+
+    public init(alignment: HorizontalAlignment = .center, spacing: CGFloat? = nil, @ViewBuilder content: () -> Content) {
+        self.alignment = alignment
+        self.spacing = spacing
+        self.content = content()
+    }
+
+    func _makeNode(_ ctx: inout _BuildContext) -> _VNode {
+        // We don't currently implement laziness/virtualization; render as a regular VStack.
+        ctx.buildChild(VStack(alignment: alignment, spacing: spacing) { content })
+    }
+}
+
 public struct HStack<Content: View>: View, _PrimitiveView {
     public typealias Body = Never
     public let spacing: Int
@@ -459,6 +615,21 @@ public struct Button<Label: View>: View, _PrimitiveView {
 
     func _makeNode(_ ctx: inout _BuildContext) -> _VNode {
         let runtime = ctx.runtime
+
+        if let captureID = _UIRuntime._currentMenuCaptureID {
+            let labelNode = ctx.buildChild(label)
+            let text = _menuLabelText(from: labelNode)
+            runtime._registerMenuCaptureItem(
+                _UIRuntime._MenuCaptureItem(label: text, actionScopePath: actionScopePath, action: action),
+                captureID: captureID
+            )
+            return .empty
+        }
+
+        guard _UIRuntime._hitTestingEnabled else {
+            return ctx.buildChild(label)
+        }
+
         let controlPath = ctx.path
         let isFocused = runtime._isFocused(path: controlPath)
         let id = runtime._registerAction({
@@ -703,6 +874,90 @@ public struct Picker<SelectionValue: Hashable>: View, _PrimitiveView {
     }
 }
 
+public struct Menu<Content: View, Label: View>: View, _PrimitiveView {
+    public typealias Body = Never
+
+    let content: Content
+    let label: Label
+    let actionScopePath: [Int]
+
+    public init(@ViewBuilder content: () -> Content, @ViewBuilder label: () -> Label) {
+        self.content = content()
+        self.label = label()
+        self.actionScopePath = _UIRuntime._currentPath ?? []
+    }
+
+    func _makeNode(_ ctx: inout _BuildContext) -> _VNode {
+        guard _UIRuntime._hitTestingEnabled else {
+            return ctx.buildChild(label)
+        }
+
+        let runtime = ctx.runtime
+        let controlPath = ctx.path
+        let isExpanded = runtime._isPickerExpanded(path: controlPath)
+
+        // Paths for focusability: header is 0, items are 1...N.
+        let headerPath = controlPath + [0]
+        let headerIsFocused = runtime._isFocused(path: headerPath)
+
+        let labelText: String = {
+            var childCtx = _BuildContext(runtime: runtime, path: headerPath, nextChildIndex: 0)
+            let node = _BuildContext.withRuntime(runtime, path: childCtx.path) {
+                OmniUICore._makeNode(label, &childCtx)
+            }
+            let t = _menuLabelText(from: node)
+            return t.isEmpty ? "Menu" : t
+        }()
+
+        let toggleExpandedID = runtime._registerAction({
+            runtime._setFocus(path: headerPath)
+            if runtime._isPickerExpanded(path: controlPath) {
+                runtime._closePicker(path: controlPath)
+            } else {
+                runtime._openPicker(path: controlPath)
+                runtime._setFocus(path: controlPath + [1])
+            }
+        }, path: actionScopePath)
+        runtime._registerFocusable(path: headerPath, activate: toggleExpandedID)
+
+        var items: [(id: _ActionID, isSelected: Bool, isFocused: Bool, label: String)] = []
+        if isExpanded {
+            // Collect nested Buttons into a list of menu items.
+            let captureID = runtime._beginMenuCapture()
+            _UIRuntime.$_currentMenuCaptureID.withValue(captureID) {
+                var contentCtx = _BuildContext(runtime: runtime, path: controlPath + [1], nextChildIndex: 0)
+                _ = _BuildContext.withRuntime(runtime, path: contentCtx.path) {
+                    OmniUICore._makeNode(content, &contentCtx)
+                }
+            }
+            let captured = runtime._endMenuCapture(captureID)
+
+            items.reserveCapacity(captured.count)
+            for (idx, entry) in captured.enumerated() {
+                let optionPath = controlPath + [1 + idx]
+                let optionIsFocused = runtime._isFocused(path: optionPath)
+                let optionID = runtime._registerAction({
+                    runtime._setFocus(path: optionPath)
+                    runtime._closePicker(path: controlPath)
+                    runtime._setFocus(path: headerPath)
+                    entry.action()
+                }, path: entry.actionScopePath)
+                runtime._registerFocusable(path: optionPath, activate: optionID)
+                items.append((id: optionID, isSelected: false, isFocused: optionIsFocused, label: entry.label))
+            }
+        }
+
+        return .menu(
+            id: toggleExpandedID,
+            isFocused: headerIsFocused,
+            isExpanded: isExpanded,
+            title: "",
+            value: labelText,
+            items: items
+        )
+    }
+}
+
 private func _collectTaggedPickerOptions<T: Hashable>(node: _VNode, valueType: T.Type) -> (values: [T], labels: [String]) {
     var values: [T] = []
     var labels: [String] = []
@@ -794,4 +1049,42 @@ func _flatten(_ node: _VNode) -> [_VNode] {
     default:
         return [node]
     }
+}
+
+private func _menuLabelText(from node: _VNode) -> String {
+    var parts: [String] = []
+
+    func walk(_ n: _VNode) {
+        switch n {
+        case .text(let s):
+            let t = s.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !t.isEmpty { parts.append(t) }
+        case .image:
+            // Ignore icon-only nodes; the renderers already handle images.
+            break
+        case .style(_, _, let child):
+            walk(child)
+        case .background(let child, _):
+            walk(child)
+        case .overlay(let child, _):
+            walk(child)
+        case .frame(_, _, _, _, _, _, let child):
+            walk(child)
+        case .edgePadding(_, _, _, _, let child):
+            walk(child)
+        case .tagged(_, let label):
+            walk(label)
+        case .group(let nodes):
+            for c in nodes { walk(c) }
+        case .stack(_, _, let children):
+            for c in children { walk(c) }
+        case .zstack(let children):
+            for c in children { walk(c) }
+        default:
+            break
+        }
+    }
+
+    walk(node)
+    return parts.joined(separator: " ")
 }

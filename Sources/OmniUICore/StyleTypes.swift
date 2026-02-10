@@ -109,7 +109,12 @@ public struct Alignment: Hashable, Sendable {
     public static let bottom = Alignment("bottom")
 }
 
-public enum Edge {
+public enum Edge: Hashable, Sendable {
+    case top
+    case leading
+    case bottom
+    case trailing
+
     public struct Set: OptionSet, Hashable, Sendable {
         public let rawValue: Int
         public init(rawValue: Int) { self.rawValue = rawValue }
@@ -123,6 +128,21 @@ public enum Edge {
         public static let vertical: Set = [.top, .bottom]
         public static let all: Set = [.top, .leading, .bottom, .trailing]
     }
+}
+
+public enum ControlSize: Hashable, Sendable {
+    case mini
+    case small
+    case regular
+    case large
+}
+
+public struct PresentationDetent: Hashable, Sendable {
+    public let rawValue: String
+    public init(_ rawValue: String) { self.rawValue = rawValue }
+
+    public static let medium = PresentationDetent("medium")
+    public static let large = PresentationDetent("large")
 }
 
 public enum Axis: Sendable {
