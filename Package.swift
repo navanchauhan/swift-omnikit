@@ -19,6 +19,18 @@ let package = Package(
             targets: ["OmniKit"]
         ),
         .library(
+            name: "OmniHTTP",
+            targets: ["OmniHTTP"]
+        ),
+        .library(
+            name: "OmniHTTPNIO",
+            targets: ["OmniHTTPNIO"]
+        ),
+        .library(
+            name: "OmniAICore",
+            targets: ["OmniAICore"]
+        ),
+        .library(
             name: "OmniUICore",
             targets: ["OmniUICore"]
         ),
@@ -39,6 +51,12 @@ let package = Package(
             targets: ["KitchenSink"]
         ),
     ],
+    dependencies: [
+        // Cross-platform networking + streaming.
+        .package(url: "https://github.com/swift-server/async-http-client.git", from: "1.0.0"),
+        .package(url: "https://github.com/apple/swift-nio.git", from: "2.0.0"),
+        .package(url: "https://github.com/apple/swift-nio-transport-services.git", from: "1.0.0"),
+    ],
     targets: [
         // Targets are the basic building blocks of a package, defining a module or a test suite.
         // Targets can depend on other targets in this package and products from dependencies.
@@ -46,6 +64,39 @@ let package = Package(
             name: "OmniKit",
             swiftSettings: [
                 // Ensure strict-concurrency diagnostics even when the language mode changes.
+                .unsafeFlags(["-warn-concurrency", "-strict-concurrency=complete"]),
+                .unsafeFlags(["-enable-actor-data-race-checks"], .when(configuration: .debug)),
+            ]
+        ),
+        .target(
+            name: "OmniHTTP",
+            swiftSettings: [
+                .unsafeFlags(["-warn-concurrency", "-strict-concurrency=complete"]),
+                .unsafeFlags(["-enable-actor-data-race-checks"], .when(configuration: .debug)),
+            ]
+        ),
+        .target(
+            name: "OmniHTTPNIO",
+            dependencies: [
+                "OmniHTTP",
+                .product(name: "AsyncHTTPClient", package: "async-http-client"),
+                .product(name: "NIOCore", package: "swift-nio"),
+                .product(name: "NIOHTTP1", package: "swift-nio"),
+                .product(
+                    name: "NIOTransportServices",
+                    package: "swift-nio-transport-services",
+                    condition: .when(platforms: [.macOS, .iOS, .tvOS, .watchOS, .visionOS])
+                ),
+            ],
+            swiftSettings: [
+                .unsafeFlags(["-warn-concurrency", "-strict-concurrency=complete"]),
+                .unsafeFlags(["-enable-actor-data-race-checks"], .when(configuration: .debug)),
+            ]
+        ),
+        .target(
+            name: "OmniAICore",
+            dependencies: ["OmniHTTP"],
+            swiftSettings: [
                 .unsafeFlags(["-warn-concurrency", "-strict-concurrency=complete"]),
                 .unsafeFlags(["-enable-actor-data-race-checks"], .when(configuration: .debug)),
             ]
@@ -119,6 +170,14 @@ let package = Package(
         .testTarget(
             name: "OmniKitTests",
             dependencies: ["OmniKit"]
+        ),
+        .testTarget(
+            name: "OmniHTTPTests",
+            dependencies: ["OmniHTTP"]
+        ),
+        .testTarget(
+            name: "OmniAICoreTests",
+            dependencies: ["OmniAICore"]
         ),
         .testTarget(
             name: "OmniUICoreTests",
