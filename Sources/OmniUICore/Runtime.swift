@@ -8,8 +8,15 @@ public final class _UIRuntime: @unchecked Sendable {
     /// Build-time ambient environment values.
     @TaskLocal static var _currentEnvironment: EnvironmentValues?
 
+    /// Used by modifiers like `.focused`/`.onSubmit` to discover the first focusable control
+    /// in a subtree, regardless of intervening modifier wrappers.
+    @TaskLocal static var _currentFocusCaptureID: Int?
+
     private var nextActionID: Int = 1
     private var actions: [_ActionID: (path: [Int], action: () -> Void)] = [:]
+
+    private var nextFocusCaptureID: Int = 1
+    private var focusCaptureResults: [Int: [Int]] = [:]
 
     private var state: [String: Any] = [:]
 
@@ -19,6 +26,7 @@ public final class _UIRuntime: @unchecked Sendable {
     private var focusOrder: [[Int]] = []
     private var focusActivation: [[Int]: _ActionID] = [:]
     private var focusBoolBindings: [[Int]: (Bool) -> Void] = [:]
+    private var submitHandlers: [[Int]: (path: [Int], action: () -> Void)] = [:]
 
     private var expandedPickerPath: [Int]? = nil
     private var scrollOffsets: [String: Int] = [:]
@@ -36,6 +44,16 @@ public final class _UIRuntime: @unchecked Sendable {
     var _baseEnvironment: EnvironmentValues = EnvironmentValues()
 
     public init() {}
+
+    func _beginFocusCapture() -> Int {
+        let id = nextFocusCaptureID
+        nextFocusCaptureID += 1
+        return id
+    }
+
+    func _endFocusCapture(_ id: Int) -> [Int]? {
+        focusCaptureResults.removeValue(forKey: id)
+    }
 
     private func _pathKey(prefix: String, path: [Int]) -> String {
         let p = path.map(String.init).joined(separator: ".")
@@ -126,6 +144,9 @@ public final class _UIRuntime: @unchecked Sendable {
     func _registerFocusable(path: [Int], activate: _ActionID) {
         focusOrder.append(path)
         focusActivation[path] = activate
+        if let captureID = _UIRuntime._currentFocusCaptureID, focusCaptureResults[captureID] == nil {
+            focusCaptureResults[captureID] = path
+        }
     }
 
     func _isPickerExpanded(path: [Int]) -> Bool {
@@ -268,6 +289,7 @@ public final class _UIRuntime: @unchecked Sendable {
         runtime.focusOrder.removeAll(keepingCapacity: true)
         runtime.focusActivation.removeAll(keepingCapacity: true)
         runtime.focusBoolBindings.removeAll(keepingCapacity: true)
+        runtime.submitHandlers.removeAll(keepingCapacity: true)
         runtime.navStackRoots.removeAll(keepingCapacity: true)
         runtime.overlays.removeAll(keepingCapacity: true)
 
@@ -284,7 +306,8 @@ public final class _UIRuntime: @unchecked Sendable {
                 let current = _UIRuntime._currentEnvironment ?? runtime._baseEnvironment
                 var next = current
                 next.dismiss = DismissAction(entry.dismiss)
-                next.presentationMode = PresentationMode(dismiss: entry.dismiss)
+                let mode = PresentationMode(dismiss: entry.dismiss)
+                next.presentationMode = Binding(get: { mode }, set: { _ in })
                 return _UIRuntime.$_currentEnvironment.withValue(next) {
                     local.buildChild(entry.view)
                 }
@@ -329,6 +352,17 @@ extension _UIRuntime {
     func _registerFocusBoolBinding(path: [Int], set: @escaping (Bool) -> Void) {
         focusBoolBindings[path] = set
     }
+
+    func _registerSubmitHandler(controlPath: [Int], actionScopePath: [Int], action: @escaping () -> Void) {
+        submitHandlers[controlPath] = (path: actionScopePath, action: action)
+    }
+
+    public func submitFocusedTextEditor() {
+        guard let p = focusedPath, let entry = submitHandlers[p] else { return }
+        _BuildContext.withRuntime(self, path: entry.path) {
+            entry.action()
+        }
+    }
 }
 
 extension _UIRuntime {
@@ -341,6 +375,7 @@ extension _UIRuntime {
         runtime.focusOrder.removeAll(keepingCapacity: true)
         runtime.focusActivation.removeAll(keepingCapacity: true)
         runtime.focusBoolBindings.removeAll(keepingCapacity: true)
+        runtime.submitHandlers.removeAll(keepingCapacity: true)
         runtime.navStackRoots.removeAll(keepingCapacity: true)
         runtime.overlays.removeAll(keepingCapacity: true)
 
@@ -356,7 +391,8 @@ extension _UIRuntime {
                 let current = _UIRuntime._currentEnvironment ?? runtime._baseEnvironment
                 var next = current
                 next.dismiss = DismissAction(entry.dismiss)
-                next.presentationMode = PresentationMode(dismiss: entry.dismiss)
+                let mode = PresentationMode(dismiss: entry.dismiss)
+                next.presentationMode = Binding(get: { mode }, set: { _ in })
                 return _UIRuntime.$_currentEnvironment.withValue(next) {
                     local.buildChild(entry.view)
                 }

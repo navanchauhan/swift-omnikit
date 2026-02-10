@@ -71,6 +71,30 @@ public struct ScrollView<Content: View>: View, _PrimitiveView {
     }
 }
 
+public struct ScrollViewProxy {
+    let _scrollTo: (AnyHashable, Alignment?) -> Void
+
+    public func scrollTo<ID: Hashable>(_ id: ID, anchor: Alignment? = nil) {
+        _scrollTo(AnyHashable(id), anchor)
+    }
+}
+
+public struct ScrollViewReader<Content: View>: View, _PrimitiveView {
+    public typealias Body = Never
+
+    let content: (ScrollViewProxy) -> Content
+
+    public init(@ViewBuilder content: @escaping (ScrollViewProxy) -> Content) {
+        self.content = content
+    }
+
+    func _makeNode(_ ctx: inout _BuildContext) -> _VNode {
+        // Stub: we don't yet track view ids -> scroll offsets. Provide a proxy that compiles.
+        let proxy = ScrollViewProxy(_scrollTo: { _, _ in })
+        return ctx.buildChild(content(proxy))
+    }
+}
+
 public struct List<Content: View>: View, _PrimitiveView {
     public typealias Body = Never
 
@@ -92,6 +116,16 @@ public struct List<Content: View>: View, _PrimitiveView {
         _ data: Data,
         @ViewBuilder rowContent: @escaping (Data.Element) -> RowContent
     ) where Data.Element: Identifiable, Content == ForEach<Data, Data.Element.ID, RowContent> {
+        self.content = ForEach(data, content: rowContent)
+    }
+
+    public init<Data: RandomAccessCollection, RowContent: View>(
+        _ data: Data,
+        children: KeyPath<Data.Element, Data?>,
+        @ViewBuilder rowContent: @escaping (Data.Element) -> RowContent
+    ) where Data.Element: Identifiable, Content == ForEach<Data, Data.Element.ID, RowContent> {
+        _ = children
+        // Stub: hierarchical list rendering not implemented yet; render only the root nodes.
         self.content = ForEach(data, content: rowContent)
     }
 
@@ -163,7 +197,8 @@ public struct NavigationStack<Content: View>: View, _PrimitiveView {
         let current = _UIRuntime._currentEnvironment ?? runtime._baseEnvironment
         var next = current
         next.dismiss = DismissAction { runtime._navPop(stackPath: stackPath) }
-        next.presentationMode = PresentationMode(dismiss: { runtime._navPop(stackPath: stackPath) })
+        let mode = PresentationMode(dismiss: { runtime._navPop(stackPath: stackPath) })
+        next.presentationMode = Binding(get: { mode }, set: { _ in })
 
         // Pushed: show a back button and render the pushed destination "full screen" within this stack.
         return .stack(axis: .vertical, spacing: 1, children: _flatten(.group([
@@ -222,6 +257,46 @@ public struct NavigationLink<Label: View, Destination: View>: View, _PrimitiveVi
         runtime._registerFocusable(path: controlPath, activate: id)
         return .button(id: id, isFocused: isFocused, label: ctx.buildChild(label))
     }
+}
+
+public enum NavigationSplitViewVisibility: Hashable, Sendable {
+    case automatic
+    case all
+    case doubleColumn
+    case detailOnly
+}
+
+public struct NavigationSplitView<Sidebar: View, Detail: View>: View {
+    public typealias Body = AnyView
+
+    let columnVisibility: Binding<NavigationSplitViewVisibility>
+    let sidebar: Sidebar
+    let detail: Detail
+
+    public init(
+        columnVisibility: Binding<NavigationSplitViewVisibility> = Binding(get: { .automatic }, set: { _ in }),
+        @ViewBuilder sidebar: () -> Sidebar,
+        @ViewBuilder detail: () -> Detail
+    ) {
+        self.columnVisibility = columnVisibility
+        self.sidebar = sidebar()
+        self.detail = detail()
+    }
+
+    @ViewBuilder
+    private var composed: some View {
+        switch columnVisibility.wrappedValue {
+        case .detailOnly:
+            detail
+        default:
+            HStack(spacing: 1) {
+                sidebar
+                detail
+            }
+        }
+    }
+
+    public var body: AnyView { AnyView(composed) }
 }
 
 public struct ZStack<Content: View>: View, _PrimitiveView {

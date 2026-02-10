@@ -1,7 +1,7 @@
 /// Minimal SwiftUI-compatible `@FocusState`.
 ///
-/// This currently does not integrate with OmniUI's focus system; it exists primarily to keep
-/// SwiftUI view code compiling (e.g. iGopherBrowser).
+/// This integrates with OmniUI's focus system via the `.focused(...)` modifier, which registers
+/// a focus binding with the runtime and keeps it in sync.
 @propertyWrapper
 public struct FocusState<Value: Hashable> {
     private let seed: _StateSeed
@@ -63,4 +63,3 @@ public struct FocusState<Value: Hashable> {
         return Binding(get: { self.wrappedValue }, set: { self.wrappedValue = $0 })
     }
 }
-

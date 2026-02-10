@@ -1,6 +1,6 @@
 /// A SwiftUI-like `Binding`.
 @propertyWrapper
-public struct Binding<Value> {
+public struct Binding<Value>: @unchecked Sendable {
     public var wrappedValue: Value {
         get { get() }
         nonmutating set { set(newValue) }

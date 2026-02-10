@@ -135,9 +135,37 @@ public enum Axis: Sendable {
     }
 }
 
+// MARK: Text Input (stubs)
+
+public enum UIKeyboardType: Hashable, Sendable {
+    case `default`
+    case URL
+}
+
+public enum TextInputAutocapitalization: Hashable, Sendable {
+    case never
+    case sentences
+    case words
+    case characters
+}
+
+public struct UITextContentType: Hashable, Sendable, ExpressibleByStringLiteral {
+    public var rawValue: String
+    public init(_ rawValue: String) { self.rawValue = rawValue }
+    public init(stringLiteral value: StringLiteralType) { self.rawValue = value }
+
+    public static let URL = UITextContentType("URL")
+}
+
 // SwiftUI materials (placeholder).
 public struct Material: Hashable, Sendable {
     public let raw: String
     public init(_ raw: String) { self.raw = raw }
     public static let regularMaterial = Material("regularMaterial")
+}
+
+public enum Visibility: Hashable, Sendable {
+    case automatic
+    case visible
+    case hidden
 }

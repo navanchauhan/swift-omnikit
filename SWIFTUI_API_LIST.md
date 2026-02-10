@@ -49,45 +49,45 @@ Used by `references/iGopherBrowser/iGopherBrowser/iGopherBrowserApp.swift`.
 
 ## 4. Environment & Bindings (Compile Blockers + Behavior)
 
-- [ ] Match SwiftUI’s `@Environment(\.presentationMode)` type: iGopherBrowser expects `Binding<PresentationMode>` and calls `presentationMode.wrappedValue.dismiss()` (used in `references/iGopherBrowser/iGopherBrowser/SearchInputView.swift`).
-- [ ] Implement `View.environment(_:_:)` modifier to set `EnvironmentValues` entries (used in `references/iGopherBrowser/iGopherBrowser/CRTEffect.swift` via `.environment(\\.colorScheme, .dark)`).
-- [ ] Implement `EnvironmentValues` entries and keys required by iGopherBrowser:
-- [ ] `colorScheme` (already exists, but must be settable via `.preferredColorScheme` and `.environment`).
-- [ ] `dismiss` (already exists; verify correctness for sheets/navigation).
-- [ ] `presentationMode` (see Binding mismatch above).
-- [ ] `modelContext` (currently placeholder; needs real API surface for insert/delete).
-- [ ] Implement `openURL` environment action + `.onOpenURL` modifier wiring (used in `references/iGopherBrowser/iGopherBrowser/BrowserView.swift`).
+- [x] Match SwiftUI’s `@Environment(\.presentationMode)` type: iGopherBrowser expects `Binding<PresentationMode>` and calls `presentationMode.wrappedValue.dismiss()` (used in `references/iGopherBrowser/iGopherBrowser/SearchInputView.swift`).
+- [x] Implement `View.environment(_:_:)` modifier to set `EnvironmentValues` entries (used in `references/iGopherBrowser/iGopherBrowser/CRTEffect.swift` via `.environment(\\.colorScheme, .dark)`).
+- [x] Implement `EnvironmentValues` entries and keys required by iGopherBrowser:
+- [x] `colorScheme` (already exists, but must be settable via `.preferredColorScheme` and `.environment`).
+- [x] `dismiss` (already exists; verify correctness for sheets/navigation).
+- [x] `presentationMode` (see Binding mismatch above).
+- [x] `modelContext` (currently placeholder; needs real API surface for insert/delete).
+- [x] Implement `openURL` environment action + `.onOpenURL` modifier wiring (used in `references/iGopherBrowser/iGopherBrowser/BrowserView.swift`).
 
 ## 5. Navigation (Compile Blockers + Behavior)
 
-- [ ] `NavigationSplitView` (used in `references/iGopherBrowser/iGopherBrowser/ContentView.swift`).
-- [ ] `NavigationSplitViewVisibility` enum (used in `references/iGopherBrowser/iGopherBrowser/ContentView.swift`).
-- [ ] `NavigationStack`/`NavigationLink` parity gaps:
-- [ ] Push/pop behavior already exists; ensure `@Environment(\\.dismiss)` and `@Environment(\\.presentationMode)` behave like SwiftUI for pushed destinations.
+- [x] `NavigationSplitView` (used in `references/iGopherBrowser/iGopherBrowser/ContentView.swift`).
+- [x] `NavigationSplitViewVisibility` enum (used in `references/iGopherBrowser/iGopherBrowser/ContentView.swift`).
+- [x] `NavigationStack`/`NavigationLink` parity gaps:
+- [x] Push/pop behavior already exists; ensure `@Environment(\\.dismiss)` and `@Environment(\\.presentationMode)` behave like SwiftUI for pushed destinations.
 
 ## 6. Lists, Scrolling, and Identifiers (Compile Blockers + Behavior)
 
-- [ ] Hierarchical list initializer: `List(_:children:rowContent:)` (used in `references/iGopherBrowser/iGopherBrowser/SidebarView.swift`).
-- [ ] `ScrollViewReader` + `ScrollViewProxy.scrollTo(_:anchor:)` (used in `references/iGopherBrowser/iGopherBrowser/BrowserView.swift`).
-- [ ] `.id(_:)` modifier (used in `references/iGopherBrowser/iGopherBrowser/BrowserView.swift` list rows).
-- [ ] `.onDelete(perform:)` support for `ForEach` inside `List` (used in `references/iGopherBrowser/iGopherBrowser/BookmarksView.swift`).
-- [ ] `.listRowSeparator(_:)` modifier + `Visibility.hidden`/`.hidden` equivalent (used in `references/iGopherBrowser/iGopherBrowser/BrowserView.swift`).
-- [ ] `.listRowBackground(_:)` modifier (used in `references/iGopherBrowser/iGopherBrowser/BrowserView.swift`).
-- [ ] `.scrollContentBackground(_:)` + `.automatic`/`.hidden` API (used in `references/iGopherBrowser/iGopherBrowser/BrowserView.swift` and `references/iGopherBrowser/iGopherBrowser/SidebarView.swift`).
+- [x] Hierarchical list initializer: `List(_:children:rowContent:)` (used in `references/iGopherBrowser/iGopherBrowser/SidebarView.swift`).
+- [x] `ScrollViewReader` + `ScrollViewProxy.scrollTo(_:anchor:)` (used in `references/iGopherBrowser/iGopherBrowser/BrowserView.swift`).
+- [x] `.id(_:)` modifier (used in `references/iGopherBrowser/iGopherBrowser/BrowserView.swift` list rows).
+- [x] `.onDelete(perform:)` support for `ForEach` inside `List` (used in `references/iGopherBrowser/iGopherBrowser/BookmarksView.swift`).
+- [x] `.listRowSeparator(_:)` modifier + `Visibility.hidden`/`.hidden` equivalent (used in `references/iGopherBrowser/iGopherBrowser/BrowserView.swift`).
+- [x] `.listRowBackground(_:)` modifier (used in `references/iGopherBrowser/iGopherBrowser/BrowserView.swift`).
+- [x] `.scrollContentBackground(_:)` + `.automatic`/`.hidden` API (used in `references/iGopherBrowser/iGopherBrowser/BrowserView.swift` and `references/iGopherBrowser/iGopherBrowser/SidebarView.swift`).
 
 ## 7. Text Input, Focus, and Submit (Behavior-Critical)
 
 Keyboard + text entry must work in the notcurses renderer for iGopherBrowser to be usable.
 
-- [ ] Integrate `@FocusState` with the OmniUI focus system (currently “does not integrate”).
-- [ ] Implement `.focused(_:)` behavior for `FocusState<Bool>.Binding` and `Binding<Bool>` so iGopherBrowser can focus URL/find fields (used in `references/iGopherBrowser/iGopherBrowser/BrowserView.swift`).
-- [ ] Implement `.onSubmit { … }` so TextField submission triggers actions (used in `references/iGopherBrowser/iGopherBrowser/SearchInputView.swift` and `references/iGopherBrowser/iGopherBrowser/SettingsView.swift`).
-- [ ] Implement `SubmitLabel` (already stubbed type exists) + `.submitLabel(_:)` behavior if iGopherBrowser relies on it in future.
-- [ ] Add missing TextField configuration modifiers as compile-only stubs (iOS-only in iGopherBrowser, but should exist):
-- [ ] `.keyboardType(_:)` (used in `references/iGopherBrowser/iGopherBrowser/BrowserView.swift`).
-- [ ] `.textInputAutocapitalization(_:)` (used in `references/iGopherBrowser/iGopherBrowser/BrowserView.swift`).
-- [ ] `.textContentType(_:)` (used in `references/iGopherBrowser/iGopherBrowser/BrowserView.swift`).
-- [ ] `.disableAutocorrection(_:)` (used in `references/iGopherBrowser/iGopherBrowser/SettingsView.swift`).
+- [x] Integrate `@FocusState` with the OmniUI focus system (currently “does not integrate”).
+- [x] Implement `.focused(_:)` behavior for `FocusState<Bool>.Binding` and `Binding<Bool>` so iGopherBrowser can focus URL/find fields (used in `references/iGopherBrowser/iGopherBrowser/BrowserView.swift`).
+- [x] Implement `.onSubmit { … }` so TextField submission triggers actions (used in `references/iGopherBrowser/iGopherBrowser/SearchInputView.swift` and `references/iGopherBrowser/iGopherBrowser/SettingsView.swift`).
+- [x] Implement `SubmitLabel` (already stubbed type exists) + `.submitLabel(_:)` behavior if iGopherBrowser relies on it in future.
+- [x] Add missing TextField configuration modifiers as compile-only stubs (iOS-only in iGopherBrowser, but should exist):
+- [x] `.keyboardType(_:)` (used in `references/iGopherBrowser/iGopherBrowser/BrowserView.swift`).
+- [x] `.textInputAutocapitalization(_:)` (used in `references/iGopherBrowser/iGopherBrowser/BrowserView.swift`).
+- [x] `.textContentType(_:)` (used in `references/iGopherBrowser/iGopherBrowser/BrowserView.swift`).
+- [x] `.disableAutocorrection(_:)` (used in `references/iGopherBrowser/iGopherBrowser/SettingsView.swift`).
 
 ## 8. Gestures & Hit Testing (Compile Blockers + Behavior)
 

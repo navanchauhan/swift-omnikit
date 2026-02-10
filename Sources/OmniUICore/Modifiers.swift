@@ -1,3 +1,5 @@
+import Foundation
+
 public extension View {
     func font(_ font: Font?) -> some View { _Passthrough(self) }
     func foregroundStyle(_ color: Color) -> some View { _Style(content: AnyView(self), fg: color, bg: nil) }
@@ -23,12 +25,24 @@ public extension View {
     func navigationTitle(_ title: Text) -> some View { _Passthrough(self) }
     func navigationBarTitleDisplayMode(_ mode: Any = ()) -> some View { _Passthrough(self) }
 
+    @ViewBuilder
+    func preferredColorScheme(_ scheme: ColorScheme?) -> some View {
+        if let scheme {
+            environment(\.colorScheme, scheme)
+        } else {
+            self
+        }
+    }
+
     func listStyle<S: ListStyle>(_ style: S) -> some View { _Passthrough(self) }
     func pickerStyle<S: PickerStyle>(_ style: S) -> some View { _Passthrough(self) }
     func buttonStyle<S: ButtonStyle>(_ style: S) -> some View { _Passthrough(self) }
     func textFieldStyle<S: TextFieldStyle>(_ style: S) -> some View { _Passthrough(self) }
     func toggleStyle<S: ToggleStyle>(_ style: S) -> some View { _Passthrough(self) }
     func labelStyle<S: LabelStyle>(_ style: S) -> some View { _Passthrough(self) }
+    func scrollContentBackground(_ visibility: Visibility) -> some View { _Passthrough(self) }
+    func listRowSeparator(_ visibility: Visibility) -> some View { _Passthrough(self) }
+    func listRowBackground<B: View>(_ background: B) -> some View { _Passthrough(self) }
     func toolbar<Content: View>(@ViewBuilder content: () -> Content) -> some View { _Passthrough(self) }
     func toolbar(_ any: Any = ()) -> some View { _Passthrough(self) }
     func toolbarBackground(_ any: Any = (), for: Any = ()) -> some View { _Passthrough(self) }
@@ -48,9 +62,26 @@ public extension View {
         _Alert(content: AnyView(self), isPresented: isPresented, alert: AnyView(content()))
     }
 
-    func focused(_ isFocused: Binding<Bool>) -> some View { _Passthrough(self) }
+    func focused(_ isFocused: Binding<Bool>) -> some View {
+        _FocusBoolBinder(content: AnyView(self), get: { isFocused.wrappedValue }, set: { isFocused.wrappedValue = $0 })
+    }
+
+    func focused(_ isFocused: Bool) -> some View {
+        _FocusBoolValueBinder(content: AnyView(self), isFocused: isFocused)
+    }
+
     func focused(_ isFocused: FocusState<Bool>.Binding) -> some View {
-        _FocusBoolBinder(content: AnyView(self), binding: isFocused)
+        _FocusBoolBinder(content: AnyView(self), get: { isFocused.wrappedValue }, set: { isFocused.wrappedValue = $0 })
+    }
+
+    func id<ID: Hashable>(_ id: ID) -> some View {
+        _ = id
+        return _Passthrough(self)
+    }
+
+    func onDelete(perform action: @escaping (IndexSet) -> Void) -> some View {
+        _ = action
+        return _Passthrough(self)
     }
 
     func onChange<V: Equatable>(of value: V, perform action: @escaping (_ oldValue: V, _ newValue: V) -> Void) -> some View {
@@ -63,8 +94,15 @@ public extension View {
         _Passthrough(self)
     }
 
-    func onSubmit(_ action: @escaping () -> Void) -> some View { _Passthrough(self) }
+    func onSubmit(_ action: @escaping () -> Void) -> some View {
+        _OnSubmitBinder(content: AnyView(self), action: action, actionScopePath: _UIRuntime._currentPath ?? [])
+    }
     func submitLabel(_ label: SubmitLabel) -> some View { _Passthrough(self) }
+
+    func keyboardType(_ type: UIKeyboardType) -> some View { _Passthrough(self) }
+    func textInputAutocapitalization(_ style: TextInputAutocapitalization?) -> some View { _Passthrough(self) }
+    func textContentType(_ type: UITextContentType?) -> some View { _Passthrough(self) }
+    func disableAutocorrection(_ disable: Bool? = true) -> some View { _Passthrough(self) }
 
     func searchable(text: Binding<String>) -> some View { _Passthrough(self) }
     func refreshable(action: @escaping () async -> Void) -> some View { _Passthrough(self) }
@@ -247,18 +285,75 @@ private struct _EdgePadding: View, _PrimitiveView {
 private struct _FocusBoolBinder: View, _PrimitiveView {
     typealias Body = Never
     let content: AnyView
-    let binding: FocusState<Bool>.Binding
+    let get: () -> Bool
+    let set: (Bool) -> Void
 
     func _makeNode(_ ctx: inout _BuildContext) -> _VNode {
         let runtime = ctx.runtime
-        let p = ctx.path
-        runtime._registerFocusBoolBinding(path: p, set: { binding.wrappedValue = $0 })
-        // Programmatic focus: if the binding is already true and nothing is focused yet,
-        // move focus here.
-        if binding.wrappedValue, runtime.focusedActionRawID() == nil {
-            runtime._setFocus(path: p)
+        let captureID = runtime._beginFocusCapture()
+        let node = _UIRuntime.$_currentFocusCaptureID.withValue(captureID) {
+            ctx.buildChild(content)
         }
-        return ctx.buildChild(content)
+        guard let focusPath = runtime._endFocusCapture(captureID) else {
+            return node
+        }
+
+        runtime._registerFocusBoolBinding(path: focusPath, set: set)
+
+        let wantsFocus = get()
+        let isFocused = runtime._isFocused(path: focusPath)
+        if wantsFocus && !isFocused {
+            runtime._setFocus(path: focusPath)
+        } else if !wantsFocus && isFocused {
+            runtime._setFocus(path: nil)
+        }
+
+        return node
+    }
+}
+
+private struct _FocusBoolValueBinder: View, _PrimitiveView {
+    typealias Body = Never
+    let content: AnyView
+    let isFocused: Bool
+
+    func _makeNode(_ ctx: inout _BuildContext) -> _VNode {
+        let runtime = ctx.runtime
+        let captureID = runtime._beginFocusCapture()
+        let node = _UIRuntime.$_currentFocusCaptureID.withValue(captureID) {
+            ctx.buildChild(content)
+        }
+        guard let focusPath = runtime._endFocusCapture(captureID) else {
+            return node
+        }
+
+        let currentlyFocused = runtime._isFocused(path: focusPath)
+        if isFocused && !currentlyFocused {
+            runtime._setFocus(path: focusPath)
+        } else if !isFocused && currentlyFocused {
+            runtime._setFocus(path: nil)
+        }
+
+        return node
+    }
+}
+
+private struct _OnSubmitBinder: View, _PrimitiveView {
+    typealias Body = Never
+    let content: AnyView
+    let action: () -> Void
+    let actionScopePath: [Int]
+
+    func _makeNode(_ ctx: inout _BuildContext) -> _VNode {
+        let runtime = ctx.runtime
+        let captureID = runtime._beginFocusCapture()
+        let node = _UIRuntime.$_currentFocusCaptureID.withValue(captureID) {
+            ctx.buildChild(content)
+        }
+        if let focusPath = runtime._endFocusCapture(captureID) {
+            runtime._registerSubmitHandler(controlPath: focusPath, actionScopePath: actionScopePath, action: action)
+        }
+        return node
     }
 }
 

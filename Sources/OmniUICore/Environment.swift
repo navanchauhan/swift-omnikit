@@ -4,6 +4,8 @@
 // and `.environmentObject(_)` to compile and work in our debug/notcurses renderers
 // without relying on Combine or Apple-only frameworks.
 
+import Foundation
+
 public protocol EnvironmentKey {
     associatedtype Value
     static var defaultValue: Value { get }
@@ -60,9 +62,37 @@ public struct PresentationMode: @unchecked Sendable {
     public mutating func dismiss() { _dismiss() }
 }
 
+public struct OpenURLAction: @unchecked Sendable {
+    public enum Result: Sendable {
+        case handled
+        case discarded
+        case systemAction
+    }
+
+    let _open: (URL) -> Result
+    public init(_ open: @escaping (URL) -> Result = { _ in .systemAction }) {
+        self._open = open
+    }
+
+    @discardableResult
+    public func callAsFunction(_ url: URL) -> Result {
+        _open(url)
+    }
+}
+
 // Placeholder for SwiftData's `ModelContext` so iGopherBrowser can compile.
 public struct ModelContext: Sendable {
     public init() {}
+
+    public func insert<T>(_ model: T) {
+        _ = model
+        // Stub: persistence layer not implemented yet.
+    }
+
+    public func delete<T>(_ model: T) {
+        _ = model
+        // Stub: persistence layer not implemented yet.
+    }
 }
 
 private enum _ColorSchemeKey: EnvironmentKey {
@@ -74,11 +104,15 @@ private enum _DismissKey: EnvironmentKey {
 }
 
 private enum _PresentationModeKey: EnvironmentKey {
-    static let defaultValue: PresentationMode = PresentationMode()
+    static let defaultValue: Binding<PresentationMode> = Binding(get: { PresentationMode() }, set: { _ in })
 }
 
 private enum _ModelContextKey: EnvironmentKey {
     static let defaultValue: ModelContext = ModelContext()
+}
+
+private enum _OpenURLKey: EnvironmentKey {
+    static let defaultValue: OpenURLAction = OpenURLAction()
 }
 
 public extension EnvironmentValues {
@@ -92,7 +126,7 @@ public extension EnvironmentValues {
         set { self[_DismissKey.self] = newValue }
     }
 
-    var presentationMode: PresentationMode {
+    var presentationMode: Binding<PresentationMode> {
         get { self[_PresentationModeKey.self] }
         set { self[_PresentationModeKey.self] = newValue }
     }
@@ -101,11 +135,41 @@ public extension EnvironmentValues {
         get { self[_ModelContextKey.self] }
         set { self[_ModelContextKey.self] = newValue }
     }
+
+    var openURL: OpenURLAction {
+        get { self[_OpenURLKey.self] }
+        set { self[_OpenURLKey.self] = newValue }
+    }
 }
 
 public extension View {
+    func environment<V>(_ keyPath: WritableKeyPath<EnvironmentValues, V>, _ value: V) -> some View {
+        _EnvironmentValueProvider(content: AnyView(self), keyPath: keyPath, value: value)
+    }
+
     func environmentObject<T: AnyObject>(_ object: T) -> some View {
         _EnvironmentObjectProvider(object: object, content: AnyView(self))
+    }
+
+    func onOpenURL(perform action: @escaping (URL) -> Void) -> some View {
+        environment(\.openURL, OpenURLAction({ url in action(url); return .handled }))
+    }
+}
+
+struct _EnvironmentValueProvider<V>: View, _PrimitiveView {
+    public typealias Body = Never
+
+    let content: AnyView
+    let keyPath: WritableKeyPath<EnvironmentValues, V>
+    let value: V
+
+    func _makeNode(_ ctx: inout _BuildContext) -> _VNode {
+        let current = _UIRuntime._currentEnvironment ?? ctx.runtime._baseEnvironment
+        var next = current
+        next[keyPath: keyPath] = value
+        return _UIRuntime.$_currentEnvironment.withValue(next) {
+            ctx.buildChild(content)
+        }
     }
 }
 

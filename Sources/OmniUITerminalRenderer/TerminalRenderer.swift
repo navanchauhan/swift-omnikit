@@ -233,7 +233,11 @@ public struct TerminalApp<V: View> {
                     if runtime.hasExpandedPicker() { runtime.focusNextWithinExpandedPicker() }
                     else { runtime.focusNext() }
                 case .enter:
-                    runtime.activateFocused()
+                    if runtime.isTextEditingFocused() {
+                        runtime.submitFocusedTextEditor()
+                    } else {
+                        runtime.activateFocused()
+                    }
                 case .backspace:
                     if runtime.isTextEditingFocused() {
                         runtime._handleKey(.backspace)

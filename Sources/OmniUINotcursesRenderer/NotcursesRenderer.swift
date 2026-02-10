@@ -498,7 +498,11 @@ public struct NotcursesApp<V: View> {
                             runtime.focusNext()
                         }
                     } else if id == enter || id == 10 || id == 13 { // Enter/Return
-                        runtime.activateFocused()
+                        if runtime.isTextEditingFocused() {
+                            runtime.submitFocusedTextEditor()
+                        } else {
+                            runtime.activateFocused()
+                        }
                     } else if id == 32 { // Space
                         if runtime.isTextEditingFocused() {
                             runtime._handleKey(.char(32))
