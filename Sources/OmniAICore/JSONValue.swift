@@ -1,4 +1,7 @@
 import Foundation
+#if canImport(CoreFoundation)
+import CoreFoundation
+#endif
 
 public enum JSONValue: Sendable, Equatable, Codable {
     case null

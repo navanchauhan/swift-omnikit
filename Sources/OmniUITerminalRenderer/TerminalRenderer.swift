@@ -594,7 +594,7 @@ private func _move(row: Int, col: Int) -> String { "\u{001B}[\(row);\(col)H" }
 
 private func _terminalSize() -> _Size {
     var ws = winsize()
-    if ioctl(STDOUT_FILENO, TIOCGWINSZ, &ws) == 0 {
+    if ioctl(STDOUT_FILENO, UInt(TIOCGWINSZ), &ws) == 0 {
         let w = max(1, Int(ws.ws_col))
         let h = max(1, Int(ws.ws_row))
         return _Size(width: w, height: h)

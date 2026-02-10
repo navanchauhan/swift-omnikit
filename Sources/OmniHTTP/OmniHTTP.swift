@@ -162,8 +162,12 @@ public final class URLSessionHTTPTransport: HTTPTransport, @unchecked Sendable {
     }
 
     public func openStream(_ request: HTTPRequest, timeout: Duration?) async throws -> HTTPStreamResponse {
-        // NOTE: URLSession streaming APIs differ across platforms. This uses AsyncBytes when available.
+        // NOTE: URLSession streaming APIs differ across platforms.
+        // - On Darwin, `URLSession.bytes(for:)` is available on newer OS versions.
+        // - On Linux (FoundationNetworking), that API isn't currently available.
         #if os(WASI)
+        throw OmniHTTPError.streamingNotSupported
+        #elseif canImport(FoundationNetworking)
         throw OmniHTTPError.streamingNotSupported
         #else
         var urlRequest = URLRequest(url: request.url)
@@ -180,6 +184,10 @@ public final class URLSessionHTTPTransport: HTTPTransport, @unchecked Sendable {
         if let timeout {
             let seconds = Double(timeout.components.seconds) + Double(timeout.components.attoseconds) / 1e18
             urlRequest.timeoutInterval = seconds
+        }
+
+        guard #available(macOS 12.0, iOS 15.0, tvOS 15.0, watchOS 8.0, *) else {
+            throw OmniHTTPError.streamingNotSupported
         }
 
         // `bytes(for:)` yields individual bytes; we batch them into chunks.
@@ -332,4 +340,3 @@ public enum SSE {
         }
     }
 }
-

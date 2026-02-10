@@ -8,6 +8,19 @@ import Glibc
 import Darwin
 #endif
 
+private func _writeToStderr(_ message: String) {
+    // Avoid `stderr` (a C global `var`) under Swift 6 strict concurrency.
+    let bytes = Array(message.utf8)
+    bytes.withUnsafeBytes { raw in
+        guard let base = raw.baseAddress else { return }
+        #if os(Linux)
+        _ = Glibc.write(STDERR_FILENO, base, raw.count)
+        #else
+        _ = Darwin.write(STDERR_FILENO, base, raw.count)
+        #endif
+    }
+}
+
 struct KitchenSinkRoot: View {
     var body: some View {
         NavigationStack {
@@ -202,7 +215,7 @@ enum KitchenSinkMain {
                 return
             } catch {
                 // Don't crash the whole demo if the terminal doesn't support notcurses/terminfo.
-                fputs("Notcurses renderer failed: \(error)\nFalling back to debug renderer.\n", stderr)
+                _writeToStderr("Notcurses renderer failed: \(error)\nFalling back to debug renderer.\n")
             }
         }
 
@@ -211,7 +224,7 @@ enum KitchenSinkMain {
                 try await TerminalApp { KitchenSinkRoot() }.run()
                 return
             } catch {
-                fputs("ANSI renderer failed: \(error)\nFalling back to debug renderer.\n", stderr)
+                _writeToStderr("ANSI renderer failed: \(error)\nFalling back to debug renderer.\n")
             }
         }
 

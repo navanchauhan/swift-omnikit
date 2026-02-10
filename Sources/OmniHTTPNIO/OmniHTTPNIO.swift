@@ -3,8 +3,9 @@ import Foundation
 import AsyncHTTPClient
 import NIOCore
 import NIOHTTP1
+import NIOPosix
 
-#if canImport(NIOTransportServices)
+#if canImport(NIOTransportServices) && (os(macOS) || os(iOS) || os(tvOS) || os(watchOS) || os(visionOS))
 import NIOTransportServices
 #endif
 
@@ -144,7 +145,7 @@ public final class NIOHTTPTransport: HTTPTransport, @unchecked Sendable {
     }
 
     private static func makePlatformDefaultEventLoopGroup() -> EventLoopGroup {
-        #if canImport(NIOTransportServices)
+        #if canImport(NIOTransportServices) && (os(macOS) || os(iOS) || os(tvOS) || os(watchOS) || os(visionOS))
         return NIOTSEventLoopGroup(loopCount: System.coreCount)
         #else
         return MultiThreadedEventLoopGroup(numberOfThreads: System.coreCount)

@@ -20,6 +20,21 @@ private struct _NCShapePlaneEntry {
     var sig: Int
 }
 
+#if os(Linux) || os(macOS)
+private func _writeToStderr(_ message: String) {
+    // Avoid `stderr` (a C global `var`) under Swift 6 strict concurrency.
+    let bytes = Array(message.utf8)
+    bytes.withUnsafeBytes { raw in
+        guard let base = raw.baseAddress else { return }
+        #if os(Linux)
+        _ = Glibc.write(STDERR_FILENO, base, raw.count)
+        #else
+        _ = Darwin.write(STDERR_FILENO, base, raw.count)
+        #endif
+    }
+}
+#endif
+
 /// A minimal notcurses-based renderer loop.
 ///
 /// This renders OmniUICore's typed `RenderOp`s and uses notcurses for drawing + input
@@ -38,7 +53,7 @@ public struct NotcursesApp<V: View> {
 
         var opts = notcurses_options()
         opts.flags |= UInt64(NCOPTION_SUPPRESS_BANNERS)
-        guard let nc = notcurses_init(&opts, stdout) else {
+        guard let nc = notcurses_init(&opts, nil) else {
             omni_restore_terminal()
             throw OmniUINotcursesRendererError.notcursesUnavailable
         }
@@ -59,8 +74,7 @@ public struct NotcursesApp<V: View> {
             _ = notcurses_stop(nc)
             omni_restore_terminal()
             if !userRequestedExit, let exitNote {
-                fputs("OmniUI notcurses renderer exited: \(exitNote)\n", stderr)
-                fflush(stderr)
+                _writeToStderr("OmniUI notcurses renderer exited: \(exitNote)\n")
             }
         }
 
