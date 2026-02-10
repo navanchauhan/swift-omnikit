@@ -450,9 +450,9 @@ public struct NotcursesApp<V: View> {
                 }
 
                 // notcurses can deliver PRESS+RELEASE for mouse buttons and keys. Only react to:
-                // - mouse click/scroll on PRESS
-                // - keypresses on PRESS and REPEAT
-                if ni.evtype == NCTYPE_PRESS {
+                // - mouse click/scroll on PRESS (or UNKNOWN; notcurses often reports "press" as UNKNOWN)
+                // - keypresses on PRESS/REPEAT (or UNKNOWN)
+                if ni.evtype == NCTYPE_PRESS || ni.evtype == NCTYPE_UNKNOWN {
                     if id == button1 {
                         snapshot.click(x: Int(ni.x), y: Int(ni.y))
                         continue
@@ -465,7 +465,7 @@ public struct NotcursesApp<V: View> {
                     }
                 }
 
-                if ni.evtype == NCTYPE_PRESS || ni.evtype == NCTYPE_REPEAT {
+                if ni.evtype == NCTYPE_PRESS || ni.evtype == NCTYPE_REPEAT || ni.evtype == NCTYPE_UNKNOWN {
                     if id == 9 { // Tab
                         let isShift = omni_ncinput_shift(&ni) != 0
                         if isShift {
