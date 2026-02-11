@@ -342,29 +342,69 @@ enum _RenderLayout {
             var cursor = origin
             var used = _Size(width: 0, height: 0)
 
-            let spacerCount = children.reduce(0) { acc, n in
-                if case .spacer = n { return acc + 1 }
-                return acc
+            func isFlexibleCandidate(_ node: _VNode) -> Bool {
+                switch node {
+                case .spacer:
+                    return true
+                case .scrollView(_, _, _, let scrollAxis, _, _):
+                    return scrollAxis == axis
+                case .style(_, _, let child):
+                    return isFlexibleCandidate(child)
+                case .contentShapeRect(let child):
+                    return isFlexibleCandidate(child)
+                case .clip(_, let child):
+                    return isFlexibleCandidate(child)
+                case .shadow(let child, _, _, _, _):
+                    return isFlexibleCandidate(child)
+                case .background(let child, _):
+                    return isFlexibleCandidate(child)
+                case .overlay(let child, _):
+                    return isFlexibleCandidate(child)
+                case .tagged(_, let label):
+                    return isFlexibleCandidate(label)
+                case .edgePadding(_, _, _, _, let child):
+                    return isFlexibleCandidate(child)
+                case .group(let nodes):
+                    return nodes.contains(where: isFlexibleCandidate)
+                case .zstack(let nodes):
+                    return nodes.contains(where: isFlexibleCandidate)
+                case .stack(let childAxis, _, let nodes):
+                    guard childAxis == axis else { return false }
+                    return nodes.contains(where: isFlexibleCandidate)
+                default:
+                    return false
+                }
             }
+
             var fixedPrimary = 0
             var measured: [_Size] = []
+            var flexible: [Bool] = []
             measured.reserveCapacity(children.count)
+            flexible.reserveCapacity(children.count)
+
+            let availablePrimary: Int = (axis == .horizontal) ? maxSize.width : maxSize.height
             for c in children {
-                if case .spacer = c {
-                    measured.append(_Size(width: 0, height: 0))
-                } else {
-                    let s = measure(c, maxSize)
-                    measured.append(s)
-                    switch axis {
-                    case .horizontal: fixedPrimary += s.width
-                    case .vertical: fixedPrimary += s.height
-                    }
+                let s = measure(c, maxSize)
+                measured.append(s)
+                let primary = (axis == .horizontal) ? s.width : s.height
+
+                // Treat explicit flexible nodes (Spacer/ScrollView) as fill-space participants.
+                // Also treat "greedy" children as flexible when siblings are present so trailing
+                // fixed controls (e.g. toolbars under lists) remain visible.
+                let isFlexible = isFlexibleCandidate(c)
+                    || (children.count > 1 && primary >= availablePrimary)
+                flexible.append(isFlexible)
+
+                if !isFlexible {
+                    fixedPrimary += primary
                 }
             }
             let spacingTotal = max(0, (children.count - 1) * spacing)
-            let availablePrimary: Int = (axis == .horizontal) ? maxSize.width : maxSize.height
             let leftover = max(0, availablePrimary - fixedPrimary - spacingTotal)
-            let spacerPrimary = spacerCount > 0 ? (leftover / spacerCount) : 0
+            let flexibleCount = flexible.reduce(0) { $0 + ($1 ? 1 : 0) }
+            let flexiblePrimary = flexibleCount > 0 ? (leftover / flexibleCount) : 0
+            let flexibleRemainder = flexibleCount > 0 ? (leftover % flexibleCount) : 0
+            var seenFlexible = 0
 
             for (idx, child) in children.enumerated() {
                 let remaining: _Size = (axis == .vertical)
@@ -372,12 +412,42 @@ enum _RenderLayout {
                     : _Size(width: maxSize.width - (cursor.x - origin.x), height: maxSize.height)
 
                 let s: _Size
-                if case .spacer = child {
-                    s = (axis == .horizontal)
-                        ? _Size(width: min(remaining.width, spacerPrimary), height: 0)
-                        : _Size(width: 0, height: min(remaining.height, spacerPrimary))
+                if flexible[idx] {
+                    var allocated = flexiblePrimary
+                    if seenFlexible < flexibleRemainder { allocated += 1 }
+                    seenFlexible += 1
+
+                    let proposed: _Size = (axis == .horizontal)
+                        ? _Size(width: min(remaining.width, allocated), height: remaining.height)
+                        : _Size(width: remaining.width, height: min(remaining.height, allocated))
+
+                    if case .spacer = child {
+                        s = (axis == .horizontal)
+                            ? _Size(width: proposed.width, height: 0)
+                            : _Size(width: 0, height: proposed.height)
+                    } else {
+                        s = draw(
+                            node: child,
+                            origin: cursor,
+                            maxSize: proposed,
+                            ctx: &ctx,
+                            ops: &ops,
+                            hitRegions: &hitRegions,
+                            scrollRegions: &scrollRegions,
+                            shapeRegions: &shapeRegions
+                        )
+                    }
                 } else {
-                    s = draw(node: child, origin: cursor, maxSize: remaining, ctx: &ctx, ops: &ops, hitRegions: &hitRegions, scrollRegions: &scrollRegions, shapeRegions: &shapeRegions)
+                    s = draw(
+                        node: child,
+                        origin: cursor,
+                        maxSize: remaining,
+                        ctx: &ctx,
+                        ops: &ops,
+                        hitRegions: &hitRegions,
+                        scrollRegions: &scrollRegions,
+                        shapeRegions: &shapeRegions
+                    )
                 }
 
                 switch axis {
@@ -457,7 +527,8 @@ enum _RenderLayout {
             let measureMax = _Size(width: maxSize.width, height: 2048)
             let contentSize = measure(content, measureMax)
 
-            let viewportHeight: Int = (axis == .vertical) ? min(maxSize.height, max(1, contentSize.height)) : min(maxSize.height, 1)
+            // Scroll views should fill the space their parent allocates.
+            let viewportHeight: Int = (axis == .vertical) ? maxSize.height : min(maxSize.height, 1)
             let viewportSize = _Size(width: maxSize.width, height: viewportHeight)
 
             let rect = _Rect(origin: origin, size: viewportSize)

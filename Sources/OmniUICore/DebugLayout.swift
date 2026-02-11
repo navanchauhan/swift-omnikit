@@ -640,33 +640,74 @@ enum _DebugLayout {
             var cursor = origin
             var used = _Size(width: 0, height: 0)
 
-            let spacerCount = children.reduce(0) { acc, n in
-                if case .spacer = n { return acc + 1 }
-                return acc
-            }
-            var fixedPrimary = 0
-            var measured: [_Size] = []
-            measured.reserveCapacity(children.count)
-            for c in children {
-                if case .spacer = c {
-                    measured.append(_Size(width: 0, height: 0))
-                } else {
-                    let s = measure(c, maxSize)
-                    measured.append(s)
-                    switch axis {
-                    case .horizontal: fixedPrimary += s.width
-                    case .vertical: fixedPrimary += s.height
-                    }
+            func isFlexibleCandidate(_ node: _VNode) -> Bool {
+                switch node {
+                case .spacer:
+                    return true
+                case .scrollView(_, _, _, let scrollAxis, _, _):
+                    return scrollAxis == axis
+                case .style(_, _, let child):
+                    return isFlexibleCandidate(child)
+                case .contentShapeRect(let child):
+                    return isFlexibleCandidate(child)
+                case .clip(_, let child):
+                    return isFlexibleCandidate(child)
+                case .shadow(let child, _, _, _, _):
+                    return isFlexibleCandidate(child)
+                case .background(let child, _):
+                    return isFlexibleCandidate(child)
+                case .overlay(let child, _):
+                    return isFlexibleCandidate(child)
+                case .tagged(_, let label):
+                    return isFlexibleCandidate(label)
+                case .edgePadding(_, _, _, _, let child):
+                    return isFlexibleCandidate(child)
+                case .group(let nodes):
+                    return nodes.contains(where: isFlexibleCandidate)
+                case .zstack(let nodes):
+                    return nodes.contains(where: isFlexibleCandidate)
+                case .stack(let childAxis, _, let nodes):
+                    guard childAxis == axis else { return false }
+                    return nodes.contains(where: isFlexibleCandidate)
+                default:
+                    return false
                 }
             }
-            let spacingTotal = max(0, (children.count - 1) * spacing)
+
+            var fixedPrimary = 0
+            var measured: [_Size] = []
+            var flexible: [Bool] = []
+            measured.reserveCapacity(children.count)
+            flexible.reserveCapacity(children.count)
+
             let availablePrimary: Int
             switch axis {
             case .horizontal: availablePrimary = maxSize.width
             case .vertical: availablePrimary = maxSize.height
             }
+            for c in children {
+                let s = measure(c, maxSize)
+                measured.append(s)
+                let primary: Int
+                switch axis {
+                case .horizontal: primary = s.width
+                case .vertical: primary = s.height
+                }
+
+                let isFlexible = isFlexibleCandidate(c)
+                    || (children.count > 1 && primary >= availablePrimary)
+                flexible.append(isFlexible)
+
+                if !isFlexible {
+                    fixedPrimary += primary
+                }
+            }
+            let spacingTotal = max(0, (children.count - 1) * spacing)
             let leftover = max(0, availablePrimary - fixedPrimary - spacingTotal)
-            let spacerPrimary = spacerCount > 0 ? (leftover / spacerCount) : 0
+            let flexibleCount = flexible.reduce(0) { $0 + ($1 ? 1 : 0) }
+            let flexiblePrimary = flexibleCount > 0 ? (leftover / flexibleCount) : 0
+            let flexibleRemainder = flexibleCount > 0 ? (leftover % flexibleCount) : 0
+            var seenFlexible = 0
 
             for (idx, child) in children.enumerated() {
                 let remaining: _Size
@@ -677,12 +718,39 @@ enum _DebugLayout {
                     remaining = _Size(width: maxSize.width - (cursor.x - origin.x), height: maxSize.height)
                 }
                 let s: _Size
-                if case .spacer = child {
+                if flexible[idx] {
+                    var allocated = flexiblePrimary
+                    if seenFlexible < flexibleRemainder { allocated += 1 }
+                    seenFlexible += 1
+
+                    let proposed: _Size
                     switch axis {
                     case .horizontal:
-                        s = _Size(width: min(remaining.width, spacerPrimary), height: 0)
+                        proposed = _Size(width: min(remaining.width, allocated), height: remaining.height)
                     case .vertical:
-                        s = _Size(width: 0, height: min(remaining.height, spacerPrimary))
+                        proposed = _Size(width: remaining.width, height: min(remaining.height, allocated))
+                    }
+
+                    if case .spacer = child {
+                        switch axis {
+                        case .horizontal:
+                            s = _Size(width: proposed.width, height: 0)
+                        case .vertical:
+                            s = _Size(width: 0, height: proposed.height)
+                        }
+                    } else {
+                        s = draw(
+                            node: child,
+                            origin: cursor,
+                            maxSize: proposed,
+                            canvas: &canvas,
+                            hitRegions: &hitRegions,
+                            scrollRegions: &scrollRegions,
+                            shapeRegions: &shapeRegions,
+                            renderShapeGlyphs: renderShapeGlyphs,
+                            overlays: &overlays,
+                            style: style
+                        )
                     }
                 } else {
                     s = draw(
@@ -933,7 +1001,7 @@ enum _DebugLayout {
             let viewportHeight: Int
             switch axis {
             case .vertical:
-                viewportHeight = min(maxSize.height, max(1, contentSize.height))
+                viewportHeight = maxSize.height
             case .horizontal:
                 viewportHeight = min(maxSize.height, 1)
             }

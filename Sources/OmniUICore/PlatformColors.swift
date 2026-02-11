@@ -72,12 +72,14 @@ public final class UIColor: NSObject, NSSecureCoding, @unchecked Sendable {
 }
 
 public extension Color {
-    init(_ uiColor: UIColor) {
-        self.init(uiColor.name, alpha: uiColor.alpha)
-    }
+    #if !canImport(AppKit)
+        init(_ uiColor: UIColor) {
+            self.init(uiColor.name, alpha: uiColor.alpha)
+        }
+    #endif
 
     init(uiColor: UIColor) {
-        self.init(uiColor)
+        self.init(uiColor.name, alpha: uiColor.alpha)
     }
 }
 #endif

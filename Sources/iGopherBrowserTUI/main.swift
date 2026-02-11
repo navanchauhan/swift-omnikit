@@ -22,32 +22,45 @@ private func _writeToStderr(_ message: String) {
 @main
 enum iGopherBrowserTUIMain {
     @MainActor
-    static func main() async throws {
+    static func main() async {
         let root = iGopherBrowserTUISupport.makeRootView(inMemory: false)
         let args = Set(CommandLine.arguments.dropFirst())
         let forceANSI = args.contains("--ansi")
         let forceNotcurses = args.contains("--notcurses")
         let inTmux = (getenv("TMUX") != nil)
 
-        if forceANSI {
-            try await TerminalApp { root }.run()
-            return
-        }
-
-        // tmux + notcurses currently has unreliable keyboard handling (mouse still works).
-        // Default to ANSI in tmux unless notcurses was explicitly requested.
-        if inTmux && !forceNotcurses {
-            _writeToStderr("TMUX detected; using ANSI renderer by default. Pass --notcurses to force notcurses.\n")
-            try await TerminalApp { root }.run()
-            return
-        }
-
-        // Default to notcurses when available.
         do {
-            try await NotcursesApp { root }.run()
+            if forceANSI {
+                try await TerminalApp { root }.run()
+                return
+            }
+
+            // tmux + notcurses is unreliable (frequent blank screen / input issues), so always
+            // use ANSI inside tmux even if `--notcurses` was requested.
+            if inTmux {
+                if forceNotcurses {
+                    _writeToStderr("TMUX detected; ignoring --notcurses and using ANSI renderer for stability.\n")
+                } else {
+                    _writeToStderr("TMUX detected; using ANSI renderer by default.\n")
+                }
+                try await TerminalApp { root }.run()
+                return
+            }
+
+            // Default to notcurses when available.
+            do {
+                try await NotcursesApp { root }.run()
+            } catch {
+                _writeToStderr("Notcurses renderer failed: \(error)\nFalling back to ANSI renderer.\n")
+                try await TerminalApp { root }.run()
+            }
         } catch {
-            _writeToStderr("Notcurses renderer failed: \(error)\nFalling back to ANSI renderer.\n")
-            try await TerminalApp { root }.run()
+            if let terminalError = error as? OmniUITerminalRendererError, case .notATerminal = terminalError {
+                _writeToStderr("ANSI renderer failed: process is not attached to a TTY.\n")
+            } else {
+                _writeToStderr("Renderer failed: \(error)\n")
+            }
+            exit(1)
         }
     }
 }

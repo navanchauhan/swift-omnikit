@@ -175,3 +175,55 @@ struct SettingsView: View {
 }
 
 #endif
+
+#if !os(Linux)
+
+// Minimal fallback settings sheet for non-Linux builds when the upstream macOS SettingsView
+// is not part of this compatibility target.
+struct SettingsView: View {
+    @AppStorage("homeURL") private var homeURL: URL = URL(string: "gopher://gopher.navan.dev:70/")!
+    @State private var homeURLString: String = ""
+    @Environment(\.dismiss) private var dismiss
+    @State private var showAlert: Bool = false
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section(header: Text("Home")) {
+                    TextField("Home URL", text: $homeURLString)
+                        .textFieldStyle(.roundedBorder)
+
+                    HStack {
+                        Button("Save") {
+                            if let url = URL(string: homeURLString) {
+                                homeURL = url
+                                dismiss()
+                            } else {
+                                showAlert = true
+                            }
+                        }
+                        .keyboardShortcut(.defaultAction)
+
+                        Button("Reset") {
+                            homeURL = URL(string: "gopher://gopher.navan.dev:70/")!
+                            homeURLString = homeURL.absoluteString
+                        }
+                    }
+                }
+            }
+            .navigationTitle("Settings")
+        }
+        .onAppear {
+            homeURLString = homeURL.absoluteString
+        }
+        .alert(isPresented: $showAlert) {
+            Alert(
+                title: Text("Invalid URL"),
+                message: Text("Please provide a valid gopher URL."),
+                dismissButton: .default(Text("OK"))
+            )
+        }
+    }
+}
+
+#endif

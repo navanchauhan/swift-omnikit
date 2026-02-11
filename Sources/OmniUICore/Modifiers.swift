@@ -266,7 +266,9 @@ public extension View {
     }
 
     func padding(_ edges: Edge.Set = .all, _ length: CGFloat? = nil) -> some View {
-        let amt = Int(length ?? 1)
+        // Negative padding is used in some upstream SwiftUI views for fine visual tuning.
+        // OmniUI's box model doesn't support negative extents safely, so clamp to zero.
+        let amt = max(0, Int(length ?? 1))
         let t = edges.contains(.top) || edges == .all || edges.contains(.vertical)
         let b = edges.contains(.bottom) || edges == .all || edges.contains(.vertical)
         let l = edges.contains(.leading) || edges == .all || edges.contains(.horizontal)

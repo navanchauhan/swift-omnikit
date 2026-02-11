@@ -177,9 +177,11 @@ public final class GopherClient: @unchecked Sendable {
         // Gopher menus are UTF-8-ish text; parse by lines.
         let text = String(decoding: data, as: UTF8.self)
         var items: [gopherItem] = []
-        for lineSub in text.split(separator: "\n", omittingEmptySubsequences: false) {
+        // Split by newline characters instead of a literal `"\n"` separator because CRLF is
+        // represented as a single grapheme cluster in Swift strings.
+        for lineSub in text.split(whereSeparator: { $0.isNewline }) {
             let line = String(lineSub)
-            if line == ".\r" || line == "." { break }
+            if line == "." { break }
             items.append(gopherItem.parseMenuLine(line))
         }
         return items

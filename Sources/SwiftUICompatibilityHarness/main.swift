@@ -54,7 +54,7 @@ private struct HarnessView: View {
                 }
 
                 Text("Platform Colors")
-                    .background(Color(.systemGray6))
+                    .background(Color(uiColor: .systemGray6))
                     .background(Color(uiColor: .systemBackground))
 
                 RoundedRectangle(cornerRadius: 2, style: .continuous)

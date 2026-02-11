@@ -17,11 +17,11 @@ let package = Package(
         // Products define the executables and libraries a package produces, making them visible to other packages.
         .library(
             name: "SwiftUI",
-            targets: ["SwiftUI"]
+            targets: ["OmniSwiftUI"]
         ),
         .library(
             name: "SwiftData",
-            targets: ["SwiftData"]
+            targets: ["OmniSwiftData"]
         ),
         .library(
             name: "OmniKit",
@@ -76,8 +76,9 @@ let package = Package(
         // Targets are the basic building blocks of a package, defining a module or a test suite.
         // Targets can depend on other targets in this package and products from dependencies.
         .target(
-            name: "SwiftUI",
+            name: "OmniSwiftUI",
             dependencies: ["OmniUI", "SwiftUIMacros"],
+            path: "Sources/SwiftUI",
             swiftSettings: [
                 .unsafeFlags(["-warn-concurrency", "-strict-concurrency=complete"]),
                 .unsafeFlags(["-enable-actor-data-race-checks"], .when(configuration: .debug)),
@@ -100,8 +101,9 @@ let package = Package(
             ]
         ),
         .target(
-            name: "SwiftData",
+            name: "OmniSwiftData",
             dependencies: ["OmniUICore", "SwiftDataMacros"],
+            path: "Sources/SwiftData",
             swiftSettings: [
                 .unsafeFlags(["-warn-concurrency", "-strict-concurrency=complete"]),
                 .unsafeFlags(["-enable-actor-data-race-checks"], .when(configuration: .debug)),
@@ -109,10 +111,13 @@ let package = Package(
         ),
         .executableTarget(
             name: "SwiftUICompatibilityHarness",
-            dependencies: ["SwiftUI", "SwiftData"],
+            dependencies: ["OmniSwiftUI", "OmniSwiftData"],
             swiftSettings: [
                 .unsafeFlags(["-warn-concurrency", "-strict-concurrency=complete"]),
                 .unsafeFlags(["-enable-actor-data-race-checks"], .when(configuration: .debug)),
+                // Keep source compatibility with `import SwiftUI` / `import SwiftData`.
+                .unsafeFlags(["-module-alias", "SwiftUI=OmniSwiftUI"]),
+                .unsafeFlags(["-module-alias", "SwiftData=OmniSwiftData"]),
             ]
         ),
         .target(
@@ -256,8 +261,8 @@ let package = Package(
         .target(
             name: "iGopherBrowserViews",
             dependencies: [
-                "SwiftUI",
-                "SwiftData",
+                "OmniSwiftUI",
+                "OmniSwiftData",
                 "SwiftGopherClient",
                 "GopherHelpers",
                 "TelemetryDeck",
@@ -285,6 +290,11 @@ let package = Package(
                 // Swift 6's stricter `sending` diagnostics without patching the reference sources.
                 .swiftLanguageMode(.v5),
                 .unsafeFlags(["-warn-concurrency", "-strict-concurrency=minimal"]),
+                // BrowserView's body is large enough to trip the default solver timeout.
+                .unsafeFlags(["-Xfrontend", "-solver-expression-time-threshold=300"]),
+                // Upstream sources import `SwiftUI` / `SwiftData`; map those names to our shim modules.
+                .unsafeFlags(["-module-alias", "SwiftUI=OmniSwiftUI"]),
+                .unsafeFlags(["-module-alias", "SwiftData=OmniSwiftData"]),
             ]
         ),
         .executableTarget(

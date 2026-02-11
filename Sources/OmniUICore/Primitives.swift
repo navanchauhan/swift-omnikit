@@ -359,9 +359,14 @@ public struct NavigationSplitView<Sidebar: View, Detail: View>: View {
         switch columnVisibility.wrappedValue {
         case .detailOnly:
             detail
+        case .automatic:
+            // Terminal renderers don't support adaptive split metrics yet.
+            // Default to detail so primary content remains visible.
+            detail
         default:
             HStack(spacing: 1) {
-                sidebar
+                // Keep sidebar narrow so detail still receives space.
+                sidebar.frame(width: 28)
                 detail
             }
         }
