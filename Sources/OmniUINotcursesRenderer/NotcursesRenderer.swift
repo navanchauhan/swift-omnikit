@@ -110,6 +110,14 @@ public struct NotcursesApp<V: View> {
         let scrollUp: UInt32 = omni_nckey_scroll_up()
         let scrollDown: UInt32 = omni_nckey_scroll_down()
 
+        func eventModifiers(_ ni: inout ncinput) -> EventModifiers {
+            var mods: EventModifiers = []
+            if omni_ncinput_shift(&ni) != 0 { mods.insert(.shift) }
+            if omni_ncinput_ctrl(&ni) != 0 { mods.insert(.control) }
+            if omni_ncinput_alt(&ni) != 0 { mods.insert(.option) }
+            return mods
+        }
+
         while !Task.isCancelled {
             if let deadline = smokeDeadline, clock.now >= deadline {
                 userRequestedExit = true
@@ -441,23 +449,31 @@ public struct NotcursesApp<V: View> {
                     return
                 }
 
-                if id == q {
-                    userRequestedExit = true
-                    return
-                }
-                if id == esc {
-                    if runtime.hasExpandedPicker() {
-                        runtime.collapseExpandedPicker()
-                        continue
-                    }
-                    userRequestedExit = true
-                    return
-                }
-
                 // notcurses might report keypresses with limited classification. Treat all non-RELEASE
                 // events as "press-like" to avoid dropping keyboard input, while still preventing
                 // double-firing on RELEASE.
                 if ni.evtype != NCTYPE_RELEASE {
+                    let mods = eventModifiers(&ni)
+
+                    if id == q {
+                        userRequestedExit = true
+                        return
+                    }
+
+                    if id == esc {
+                        if runtime.hasExpandedPicker() {
+                            runtime.collapseExpandedPicker()
+                            continue
+                        }
+                        if runtime.invokeKeyboardShortcut(.escape, modifiers: mods) {
+                            continue
+                        }
+                        if runtime.canPopNavigation() {
+                            runtime.popNavigation()
+                        }
+                        continue
+                    }
+
                     if id == button1 {
                         snapshot.click(x: Int(ni.x), y: Int(ni.y))
                         continue
@@ -468,9 +484,7 @@ public struct NotcursesApp<V: View> {
                         snapshot.scroll(x: Int(ni.x), y: Int(ni.y), deltaY: 1)
                         continue
                     }
-                }
 
-                if ni.evtype != NCTYPE_RELEASE {
                     if id == 9 { // Tab
                         let isShift = omni_ncinput_shift(&ni) != 0
                         if isShift {
@@ -499,11 +513,15 @@ public struct NotcursesApp<V: View> {
                             runtime.focusNext()
                         }
                     } else if id == enter || id == 10 || id == 13 { // Enter/Return
-                        if runtime.isTextEditingFocused() {
-                            runtime.submitFocusedTextEditor()
-                        } else {
+                        if runtime.hasExpandedPicker() {
                             runtime.activateFocused()
+                            continue
                         }
+                        if runtime.invokeKeyboardShortcut(.return, modifiers: mods) {
+                            continue
+                        }
+                        if runtime.isTextEditingFocused() { runtime.submitFocusedTextEditor() }
+                        else { runtime.activateFocused() }
                     } else if id == 32 { // Space
                         if runtime.isTextEditingFocused() {
                             runtime._handleKey(.char(32))
@@ -529,6 +547,21 @@ public struct NotcursesApp<V: View> {
                     } else if id == end {
                         if runtime.isTextEditingFocused() { runtime._handleKey(.end) }
                     } else if id < 0x110000 {
+                        if mods.contains(.control), id >= 1, id <= 26 {
+                            let v = UInt32(UInt8(ascii: "a")) + (id - 1)
+                            if let letter = UnicodeScalar(v) {
+                                let key = KeyEquivalent(stringLiteral: String(letter))
+                                if runtime.invokeKeyboardShortcut(key, modifiers: mods) {
+                                    continue
+                                }
+                            }
+                        }
+                        if !mods.isEmpty, let scalar = UnicodeScalar(id) {
+                            let key = KeyEquivalent(stringLiteral: String(scalar))
+                            if runtime.invokeKeyboardShortcut(key, modifiers: mods) {
+                                continue
+                            }
+                        }
                         runtime._handleKey(.char(id))
                     }
                 }

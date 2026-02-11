@@ -215,8 +215,13 @@ public struct TerminalApp<V: View> {
                 case .esc:
                     if runtime.hasExpandedPicker() {
                         runtime.collapseExpandedPicker()
-                    } else {
-                        return
+                        continue
+                    }
+                    if runtime.invokeKeyboardShortcut(.escape) {
+                        continue
+                    }
+                    if runtime.canPopNavigation() {
+                        runtime.popNavigation()
                     }
                 case .tab(let shift):
                     if shift {
@@ -233,11 +238,15 @@ public struct TerminalApp<V: View> {
                     if runtime.hasExpandedPicker() { runtime.focusNextWithinExpandedPicker() }
                     else { runtime.focusNext() }
                 case .enter:
-                    if runtime.isTextEditingFocused() {
-                        runtime.submitFocusedTextEditor()
-                    } else {
+                    if runtime.hasExpandedPicker() {
                         runtime.activateFocused()
+                        continue
                     }
+                    if runtime.invokeKeyboardShortcut(.return) {
+                        continue
+                    }
+                    if runtime.isTextEditingFocused() { runtime.submitFocusedTextEditor() }
+                    else { runtime.activateFocused() }
                 case .backspace:
                     if runtime.isTextEditingFocused() {
                         runtime._handleKey(.backspace)
@@ -257,6 +266,16 @@ public struct TerminalApp<V: View> {
                 case .end:
                     if runtime.isTextEditingFocused() { runtime._handleKey(.end) }
                 case .char(let u):
+                    if u >= 1 && u <= 26 {
+                        // Ctrl+A...Ctrl+Z are delivered as ASCII control codes.
+                        let v = UInt32(UInt8(ascii: "a")) + (u - 1)
+                        if let letter = UnicodeScalar(v) {
+                            let key = KeyEquivalent(stringLiteral: String(letter))
+                            if runtime.invokeKeyboardShortcut(key, modifiers: [.control]) {
+                                continue
+                            }
+                        }
+                    }
                     if runtime.isTextEditingFocused() || u != 32 {
                         runtime._handleKey(.char(u))
                     } else {

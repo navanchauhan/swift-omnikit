@@ -93,7 +93,7 @@ Keyboard + text entry must work in the notcurses renderer for iGopherBrowser to 
 
 - [x] `.onTapGesture { … }` (used in `references/iGopherBrowser/iGopherBrowser/SidebarView.swift`).
 - [x] `.allowsHitTesting(_:)` (used in `references/iGopherBrowser/iGopherBrowser/ContentView.swift` and `references/iGopherBrowser/iGopherBrowser/CRTEffect.swift`).
-- [ ] `contentShape(_:)` exists as stub; implement if needed for correct click hit-testing in lists/buttons (used in `references/iGopherBrowser/iGopherBrowser/BrowserView.swift`).
+- [x] `contentShape(_:)` implemented (Rectangle-based) to expand hit-testing regions for list rows/buttons (used in `references/iGopherBrowser/iGopherBrowser/BrowserView.swift`).
 
 ## 9. Layout & Containers (Compile Blockers)
 
@@ -147,8 +147,8 @@ Used mostly for CRT + “What’s New” UI.
 
 ## 14. Keyboard Shortcuts & Exit Command (Compile Blockers + Behavior)
 
-- [ ] `keyboardShortcut` modifier exists but is stubbed; implement at least:
-- [ ] `KeyboardShortcut(.cancelAction)` and `KeyboardShortcut(.defaultAction)` behavior for sheets/search bars where used.
+- [x] `keyboardShortcut` modifier implemented and wired to the runtime/renderers.
+- [x] `KeyboardShortcut(.cancelAction)` and `KeyboardShortcut(.defaultAction)` behavior implemented (Esc/Enter + Ctrl fallback in terminal environments).
 - [x] `onExitCommand` modifier (used in macOS-only `references/iGopherBrowser/iGopherBrowser/SearchInputView.swift`).
 - [x] `withAnimation` + `Animation` API stubs (`.spring()`, etc.) so `withAnimation { proxy.scrollTo(...) }` compiles (used in `references/iGopherBrowser/iGopherBrowser/BrowserView.swift`).
 
@@ -180,10 +180,10 @@ The goal is not full SwiftData; the goal is “enough to run iGopherBrowser”:
 
 These exist in `Sources/OmniUICore/Modifiers.swift` but are currently no-ops; iGopherBrowser would benefit from real behavior:
 
-- [ ] `.task { … }` should run/cancel tasks tied to view lifecycle (used in `references/iGopherBrowser/iGopherBrowser/FileView.swift`).
-- [ ] `.preferredColorScheme(_:)` should set `EnvironmentValues.colorScheme` (used in `references/iGopherBrowser/iGopherBrowser/ContentView.swift`).
+- [x] `.task { … }` runs/cancels tasks tied to view lifecycle (used in `references/iGopherBrowser/iGopherBrowser/FileView.swift`).
+- [x] `.preferredColorScheme(_:)` sets `EnvironmentValues.colorScheme` (used in `references/iGopherBrowser/iGopherBrowser/ContentView.swift`).
 - [x] `.modelContainer(_:)` should seed the `modelContext` environment value (used in `references/iGopherBrowser/iGopherBrowser/iGopherBrowserApp.swift`).
-- [ ] `.shadow`, `.cornerRadius`, `.clipShape`, `.overlay`, `.background` should eventually render meaningfully in notcurses/terminal renderers (CRT visuals depend on it).
+- [x] `.shadow`, `.cornerRadius`, `.clipShape`, `.overlay`, `.background` render with terminal-friendly approximations in notcurses/terminal renderers (CRT visuals depend on it).
 
 ## 19. File-by-File “Definition of Done” (Compile Targets)
 

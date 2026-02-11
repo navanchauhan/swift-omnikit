@@ -25,7 +25,7 @@ public final class _UIRuntime: @unchecked Sendable {
     @TaskLocal static var _labelsHidden: Bool = false
 
     private var nextActionID: Int = 1
-    private var actions: [_ActionID: (path: [Int], action: () -> Void)] = [:]
+    private var actions: [_ActionID: (path: [Int], env: EnvironmentValues, action: () -> Void)] = [:]
 
     private var nextFocusCaptureID: Int = 1
     private var focusCaptureResults: [Int: [Int]] = [:]
@@ -46,7 +46,17 @@ public final class _UIRuntime: @unchecked Sendable {
     private var focusOrder: [[Int]] = []
     private var focusActivation: [[Int]: _ActionID] = [:]
     private var focusBoolBindings: [[Int]: (Bool) -> Void] = [:]
-    private var submitHandlers: [[Int]: (path: [Int], action: () -> Void)] = [:]
+    private var submitHandlers: [[Int]: (path: [Int], env: EnvironmentValues, action: () -> Void)] = [:]
+    private var keyboardShortcuts: [KeyboardShortcut: _ActionID] = [:]
+
+    private struct _TaskEntry {
+        var env: EnvironmentValues
+        var path: [Int]
+        var action: () async -> Void
+        var task: Task<Void, Never>?
+    }
+    private var tasks: [String: _TaskEntry] = [:]
+    private var tasksSeenThisFrame: Set<String> = []
 
     private var expandedPickerPath: [Int]? = nil
     private var scrollOffsets: [String: Int] = [:]
@@ -143,14 +153,18 @@ public final class _UIRuntime: @unchecked Sendable {
     func _registerAction(_ action: @escaping () -> Void, path: [Int]) -> _ActionID {
         let id = _ActionID(raw: nextActionID)
         nextActionID += 1
-        actions[id] = (path: path, action: action)
+        // Capture the current environment so `@Environment` reads correctly inside actions.
+        let env = _UIRuntime._currentEnvironment ?? _baseEnvironment
+        actions[id] = (path: path, env: env, action: action)
         return id
     }
 
     func _invokeAction(_ id: _ActionID) {
         guard let entry = actions[id] else { return }
-        _BuildContext.withRuntime(self, path: entry.path) {
-            entry.action()
+        _UIRuntime.$_currentEnvironment.withValue(entry.env) {
+            _BuildContext.withRuntime(self, path: entry.path) {
+                entry.action()
+            }
         }
     }
 
@@ -297,6 +311,90 @@ public final class _UIRuntime: @unchecked Sendable {
         return id.raw
     }
 
+    func _registerKeyboardShortcut(_ shortcut: KeyboardShortcut, forFocusablePath path: [Int]) {
+        guard let id = focusActivation[path] else { return }
+        keyboardShortcuts[shortcut] = id
+    }
+
+    @discardableResult
+    public func invokeKeyboardShortcut(_ key: KeyEquivalent, modifiers: EventModifiers = []) -> Bool {
+        func lookup(_ mods: EventModifiers) -> _ActionID? {
+            keyboardShortcuts[KeyboardShortcut(key, modifiers: mods)]
+        }
+
+        if let id = lookup(modifiers) {
+            _invokeAction(id)
+            return true
+        }
+
+        // Terminal environments typically don't have a "Command" key. We treat Control and Command as
+        // interchangeable for shortcut matching so `KeyboardShortcut(..., modifiers: .command)` works.
+        if modifiers.contains(.control), !modifiers.contains(.command) {
+            let alt = modifiers.subtracting(.control).union(.command)
+            if let id = lookup(alt) {
+                _invokeAction(id)
+                return true
+            }
+        }
+        if modifiers.contains(.command), !modifiers.contains(.control) {
+            let alt = modifiers.subtracting(.command).union(.control)
+            if let id = lookup(alt) {
+                _invokeAction(id)
+                return true
+            }
+        }
+
+        return false
+    }
+
+    @MainActor
+    private func _runTask(key: String) async {
+        guard let entry = tasks[key] else { return }
+        let env = entry.env
+        let path = entry.path
+        let action = entry.action
+
+        // Run with the view's environment so `@Environment` reads correctly.
+        await _UIRuntime.$_current.withValue(self) {
+            await _UIRuntime.$_currentPath.withValue(path) {
+                await _UIRuntime.$_currentEnvironment.withValue(env) {
+                    await action()
+                }
+            }
+        }
+    }
+
+    func _registerTask(path: [Int], action: @escaping () async -> Void) {
+        let key = _pathKey(prefix: "task", path: path)
+        tasksSeenThisFrame.insert(key)
+
+        if tasks[key] != nil { return }
+
+        let runtime = self
+        let env = _UIRuntime._currentEnvironment ?? _baseEnvironment
+
+        let t = Task { @MainActor in
+            await runtime._runTask(key: key)
+        }
+        tasks[key] = _TaskEntry(env: env, path: path, action: action, task: t)
+    }
+
+    func _reconcileTasksAfterFrame() {
+        guard !tasks.isEmpty else { return }
+        let seen = tasksSeenThisFrame
+        var toCancel: [String] = []
+        toCancel.reserveCapacity(tasks.count)
+        for (k, _) in tasks where !seen.contains(k) {
+            toCancel.append(k)
+        }
+        for k in toCancel {
+            if let t = tasks[k]?.task {
+                t.cancel()
+            }
+            tasks[k] = nil
+        }
+    }
+
     func _getState<Value>(seed: _StateSeed, path: [Int], initial: () -> Value) -> Value {
         let key = _stateKey(seed: seed, path: path)
         if let existing = state[key] as? Value {
@@ -328,8 +426,10 @@ public final class _UIRuntime: @unchecked Sendable {
         runtime.focusActivation.removeAll(keepingCapacity: true)
         runtime.focusBoolBindings.removeAll(keepingCapacity: true)
         runtime.submitHandlers.removeAll(keepingCapacity: true)
+        runtime.keyboardShortcuts.removeAll(keepingCapacity: true)
         runtime.navStackRoots.removeAll(keepingCapacity: true)
         runtime.overlays.removeAll(keepingCapacity: true)
+        runtime.tasksSeenThisFrame.removeAll(keepingCapacity: true)
 
         let ctx = _BuildContext(runtime: runtime, path: [], nextChildIndex: 0)
         var node = _UIRuntime.$_currentRenderSize.withValue(size) {
@@ -355,11 +455,21 @@ public final class _UIRuntime: @unchecked Sendable {
             node = .zstack(children: [node] + overlayNodes)
         }
 
+        // If a picker/menu was expanded in a view that no longer exists, clear the stale state.
+        if let expanded = runtime.expandedPickerPath {
+            let stillExists = runtime.focusOrder.contains(where: { _isPrefix(expanded, of: $0) })
+            if !stillExists {
+                runtime.expandedPickerPath = nil
+            }
+        }
+
         // If nothing is focused yet, default focus to the first focusable control.
         // This prevents "no focus highlight until interaction" and makes keyboard UX predictable.
         if runtime.focusedPath == nil, let first = runtime.focusOrder.first {
             runtime._setFocus(path: first)
         }
+
+        runtime._reconcileTasksAfterFrame()
 
         let laidOut = _DebugLayout.layout(
             node: node,
@@ -394,13 +504,17 @@ extension _UIRuntime {
     }
 
     func _registerSubmitHandler(controlPath: [Int], actionScopePath: [Int], action: @escaping () -> Void) {
-        submitHandlers[controlPath] = (path: actionScopePath, action: action)
+        // Capture the current environment so `@Environment` reads correctly inside submit handlers.
+        let env = _UIRuntime._currentEnvironment ?? _baseEnvironment
+        submitHandlers[controlPath] = (path: actionScopePath, env: env, action: action)
     }
 
     public func submitFocusedTextEditor() {
         guard let p = focusedPath, let entry = submitHandlers[p] else { return }
-        _BuildContext.withRuntime(self, path: entry.path) {
-            entry.action()
+        _UIRuntime.$_currentEnvironment.withValue(entry.env) {
+            _BuildContext.withRuntime(self, path: entry.path) {
+                entry.action()
+            }
         }
     }
 }
@@ -416,8 +530,10 @@ extension _UIRuntime {
         runtime.focusActivation.removeAll(keepingCapacity: true)
         runtime.focusBoolBindings.removeAll(keepingCapacity: true)
         runtime.submitHandlers.removeAll(keepingCapacity: true)
+        runtime.keyboardShortcuts.removeAll(keepingCapacity: true)
         runtime.navStackRoots.removeAll(keepingCapacity: true)
         runtime.overlays.removeAll(keepingCapacity: true)
+        runtime.tasksSeenThisFrame.removeAll(keepingCapacity: true)
 
         let ctx = _BuildContext(runtime: runtime, path: [], nextChildIndex: 0)
         var node = _UIRuntime.$_currentRenderSize.withValue(size) {
@@ -442,9 +558,18 @@ extension _UIRuntime {
             node = .zstack(children: [node] + overlayNodes)
         }
 
+        if let expanded = runtime.expandedPickerPath {
+            let stillExists = runtime.focusOrder.contains(where: { _isPrefix(expanded, of: $0) })
+            if !stillExists {
+                runtime.expandedPickerPath = nil
+            }
+        }
+
         if runtime.focusedPath == nil, let first = runtime.focusOrder.first {
             runtime._setFocus(path: first)
         }
+
+        runtime._reconcileTasksAfterFrame()
 
         let laidOut = _RenderLayout.layout(node: node, size: size)
         let focusedRect: _Rect? = {

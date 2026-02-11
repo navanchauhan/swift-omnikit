@@ -974,6 +974,12 @@ private func _collectTaggedPickerOptions<T: Hashable>(node: _VNode, valueType: T
             return s
         case .style(_, _, let child):
             return labelText(child)
+        case .contentShapeRect(let child):
+            return labelText(child)
+        case .clip(_, let child):
+            return labelText(child)
+        case .shadow(let child, _, _, _, _):
+            return labelText(child)
         case .group(let nodes):
             // Prefer first text we find.
             for c in nodes {
@@ -1002,6 +1008,12 @@ private func _collectTaggedPickerOptions<T: Hashable>(node: _VNode, valueType: T
                 values.append(tv)
                 labels.append(labelText(label) ?? String(describing: tv))
             }
+        case .contentShapeRect(let child):
+            walk(child)
+        case .clip(_, let child):
+            walk(child)
+        case .shadow(let child, _, _, _, _):
+            walk(child)
         case .group(let nodes):
             for c in nodes { walk(c) }
         case .stack(_, _, let children):
@@ -1069,6 +1081,12 @@ private func _menuLabelText(from node: _VNode) -> String {
             // Ignore icon-only nodes; the renderers already handle images.
             break
         case .style(_, _, let child):
+            walk(child)
+        case .contentShapeRect(let child):
+            walk(child)
+        case .clip(_, let child):
+            walk(child)
+        case .shadow(let child, _, _, _, _):
             walk(child)
         case .background(let child, _):
             walk(child)

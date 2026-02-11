@@ -23,6 +23,10 @@ unsigned omni_ncmice_all_events(void);
 // Modifiers helpers.
 // Returns 1 if Shift is pressed for the given input event, otherwise 0.
 uint32_t omni_ncinput_shift(const struct ncinput* ni);
+// Returns 1 if Ctrl is pressed for the given input event, otherwise 0.
+uint32_t omni_ncinput_ctrl(const struct ncinput* ni);
+// Returns 1 if Alt is pressed for the given input event, otherwise 0.
+uint32_t omni_ncinput_alt(const struct ncinput* ni);
 
 // Visual/pixel helpers.
 // Returns terminal cell pixel geometry (cdimy/cdimx) and maximum accepted bitmap size (maxpixely/maxpixelx).

@@ -77,6 +77,37 @@ enum _DebugLayout {
         }
     }
 
+    private static func hasContentShapeRect(_ node: _VNode) -> Bool {
+        switch node {
+        case .contentShapeRect:
+            return true
+        case .style(_, _, let child):
+            return hasContentShapeRect(child)
+        case .background(let child, let bg):
+            return hasContentShapeRect(child) || hasContentShapeRect(bg)
+        case .overlay(let child, let ov):
+            return hasContentShapeRect(child) || hasContentShapeRect(ov)
+        case .frame(_, _, _, _, _, _, let child):
+            return hasContentShapeRect(child)
+        case .edgePadding(_, _, _, _, let child):
+            return hasContentShapeRect(child)
+        case .tagged(_, let label):
+            return hasContentShapeRect(label)
+        case .shadow(let child, _, _, _, _):
+            return hasContentShapeRect(child)
+        case .clip(_, let child):
+            return hasContentShapeRect(child)
+        case .group(let nodes):
+            return nodes.contains(where: hasContentShapeRect)
+        case .stack(_, _, let children):
+            return children.contains(where: hasContentShapeRect)
+        case .zstack(let children):
+            return children.contains(where: hasContentShapeRect)
+        default:
+            return false
+        }
+    }
+
     @discardableResult
     private static func draw(
         node: _VNode,
@@ -135,6 +166,51 @@ enum _DebugLayout {
                 renderShapeGlyphs: renderShapeGlyphs,
                 overlays: &overlays,
                 style: merged
+            )
+
+        case .contentShapeRect(let child):
+            // Rendering is unaffected; this node only influences hit-testing.
+            return draw(
+                node: child,
+                origin: origin,
+                maxSize: maxSize,
+                canvas: &canvas,
+                hitRegions: &hitRegions,
+                scrollRegions: &scrollRegions,
+                shapeRegions: &shapeRegions,
+                renderShapeGlyphs: renderShapeGlyphs,
+                overlays: &overlays,
+                style: style
+            )
+
+        case .clip(_, let child):
+            // Debug renderer doesn't implement non-rectangular clipping; treat as a passthrough.
+            return draw(
+                node: child,
+                origin: origin,
+                maxSize: maxSize,
+                canvas: &canvas,
+                hitRegions: &hitRegions,
+                scrollRegions: &scrollRegions,
+                shapeRegions: &shapeRegions,
+                renderShapeGlyphs: renderShapeGlyphs,
+                overlays: &overlays,
+                style: style
+            )
+
+        case .shadow(let child, _, _, _, _):
+            // Debug renderer: ignore shadow, but keep the child.
+            return draw(
+                node: child,
+                origin: origin,
+                maxSize: maxSize,
+                canvas: &canvas,
+                hitRegions: &hitRegions,
+                scrollRegions: &scrollRegions,
+                shapeRegions: &shapeRegions,
+                renderShapeGlyphs: renderShapeGlyphs,
+                overlays: &overlays,
+                style: style
             )
 
         case .background(let child, let background):
@@ -457,6 +533,12 @@ enum _DebugLayout {
 	                    return _Size(width: 0, height: 0)
 	                case .style(_, _, let child):
 	                    return measure(child, maxSize)
+	                case .contentShapeRect(let child):
+	                    return measure(child, maxSize)
+	                case .clip(_, let child):
+	                    return measure(child, maxSize)
+	                case .shadow(let child, _, _, _, _):
+	                    return measure(child, maxSize)
 	                case .background(let child, _):
 	                    return measure(child, maxSize)
 	                case .overlay(let child, _):
@@ -636,6 +718,7 @@ enum _DebugLayout {
 
         case .button(let id, let isFocused, let label):
             // Render as [ label ]
+            let wantsFullHitRect = hasContentShapeRect(label)
             let x0 = isFocused ? origin.x + 1 : origin.x
             if isFocused {
                 put(">", at: origin, canvas: &canvas)
@@ -657,11 +740,13 @@ enum _DebugLayout {
             )
             put("]", at: _Point(x: x0 + 1 + labelSize.width + 2, y: origin.y), canvas: &canvas)
             let buttonWidth = min(maxSize.width, (isFocused ? 1 : 0) + 4 + labelSize.width)
-            let rect = _Rect(origin: origin, size: _Size(width: buttonWidth, height: 1))
+            let hitWidth = wantsFullHitRect ? maxSize.width : buttonWidth
+            let rect = _Rect(origin: origin, size: _Size(width: min(maxSize.width, hitWidth), height: 1))
             hitRegions.append((rect, id))
             return _Size(width: buttonWidth, height: 1)
 
         case .tapTarget(let id, let child):
+            let wantsFullHitRect = hasContentShapeRect(child)
             let s = draw(
                 node: child,
                 origin: origin,
@@ -676,7 +761,8 @@ enum _DebugLayout {
             )
             let w = min(maxSize.width, max(1, s.width))
             let h = min(maxSize.height, max(1, s.height))
-            let rect = _Rect(origin: origin, size: _Size(width: w, height: h))
+            let hitWidth = wantsFullHitRect ? maxSize.width : w
+            let rect = _Rect(origin: origin, size: _Size(width: min(maxSize.width, hitWidth), height: h))
             hitRegions.append((rect, id))
             return s
 
@@ -741,6 +827,12 @@ enum _DebugLayout {
 	                    switch node {
 	                    case .empty: return _Size(width: 0, height: 0)
 	                    case .style(_, _, let child):
+	                        return m(child, maxSize)
+	                    case .contentShapeRect(let child):
+	                        return m(child, maxSize)
+	                    case .clip(_, let child):
+	                        return m(child, maxSize)
+	                    case .shadow(let child, _, _, _, _):
 	                        return m(child, maxSize)
 	                    case .background(let child, _):
 	                        return m(child, maxSize)

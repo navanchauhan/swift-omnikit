@@ -10,16 +10,36 @@ public extension View {
     }
     func multilineTextAlignment(_ alignment: TextAlignment) -> some View { _Passthrough(self) }
     func lineLimit(_ limit: Int?) -> some View { _Passthrough(self) }
-    func cornerRadius(_ radius: CGFloat) -> some View { _Passthrough(self) }
-    func shadow(color: Color, radius: CGFloat) -> some View { _Passthrough(self) }
-    func shadow(color: Color, radius: CGFloat, x: CGFloat = 0, y: CGFloat = 0) -> some View { _Passthrough(self) }
+    func cornerRadius(_ radius: CGFloat) -> some View {
+        clipShape(RoundedRectangle(cornerRadius: radius))
+    }
+    func shadow(color: Color, radius: CGFloat) -> some View {
+        shadow(color: color, radius: radius, x: 0, y: 0)
+    }
+    func shadow(color: Color, radius: CGFloat, x: CGFloat = 0, y: CGFloat = 0) -> some View {
+        _Shadow(content: AnyView(self), color: color, radius: radius, x: x, y: y)
+    }
     func opacity(_ value: CGFloat) -> some View { _Passthrough(self) }
     func ignoresSafeArea() -> some View { _Passthrough(self) }
-    func clipShape<S: Shape>(_ shape: S, style: FillStyle = FillStyle()) -> some View { _Passthrough(self) }
+    func clipShape<S: Shape>(_ shape: S, style: FillStyle = FillStyle()) -> some View {
+        _ = style
+        let kind: _ShapeKind = {
+            if let rr = shape as? RoundedRectangle {
+                return .roundedRectangle(cornerRadius: Int(rr.cornerRadius.rounded()))
+            }
+            if shape is Rectangle { return .rectangle }
+            if shape is Circle { return .circle }
+            if shape is Ellipse { return .ellipse }
+            if shape is Capsule { return .capsule }
+            if shape is Path { return .path }
+            return .rectangle
+        }()
+        return _Clip(content: AnyView(self), kind: kind)
+    }
     func contentShape<S: Shape>(_ shape: S, eoFill: Bool = false) -> some View {
         _ = shape
         _ = eoFill
-        return _Passthrough(self)
+        return _ContentShapeRect(content: AnyView(self))
     }
     func mask<M: View>(_ mask: M) -> some View { _Passthrough(self) }
     func labelsHidden() -> some View {
@@ -35,9 +55,25 @@ public extension View {
     }
 
     func background<B: View>(_ background: B) -> some View { _Background(content: AnyView(self), background: AnyView(background)) }
+    func background<B: View>(@ViewBuilder _ background: () -> B) -> some View {
+        _Background(content: AnyView(self), background: AnyView(background()))
+    }
     func background(_ color: Color) -> some View { _Style(content: AnyView(self), fg: nil, bg: color) }
-    func background(_ material: Material) -> some View { _Passthrough(self) }
+    func background(_ material: Material) -> some View {
+        // Terminal-friendly approximation.
+        switch material.raw {
+        case Material.ultraThinMaterial.raw:
+            return AnyView(background(Color.gray.opacity(0.15)))
+        case Material.regularMaterial.raw:
+            return AnyView(background(Color.gray.opacity(0.25)))
+        default:
+            return AnyView(background(Color.gray.opacity(0.2)))
+        }
+    }
     func overlay<O: View>(_ overlay: O) -> some View { _Overlay(content: AnyView(self), overlay: AnyView(overlay)) }
+    func overlay<O: View>(@ViewBuilder _ overlay: () -> O) -> some View {
+        _Overlay(content: AnyView(self), overlay: AnyView(overlay()))
+    }
 
     // MARK: SwiftUI API Surface (stubs/passthrough)
     func navigationTitle(_ title: String) -> some View { _Passthrough(self) }
@@ -92,13 +128,10 @@ public extension View {
     }
 
     func keyboardShortcut(_ key: KeyEquivalent, modifiers: EventModifiers = []) -> some View {
-        _ = key
-        _ = modifiers
-        return _Passthrough(self)
+        _KeyboardShortcutBinder(content: AnyView(self), shortcut: KeyboardShortcut(key, modifiers: modifiers))
     }
     func keyboardShortcut(_ shortcut: KeyboardShortcut) -> some View {
-        _ = shortcut
-        return _Passthrough(self)
+        _KeyboardShortcutBinder(content: AnyView(self), shortcut: shortcut)
     }
     func help(_ text: String) -> some View { _Passthrough(self) }
     func onExitCommand(perform action: @escaping () -> Void) -> some View {
@@ -147,9 +180,8 @@ public extension View {
     }
 
     func task(priority: Any? = nil, _ action: @escaping () async -> Void) -> some View {
-        // Stub: retained for API compatibility (iGopherBrowser uses this).
-        // A real implementation should be lifecycle-aware and cancellation-safe.
-        _Passthrough(self)
+        _ = priority
+        return _TaskBinder(content: AnyView(self), action: action)
     }
 
     func onSubmit(_ action: @escaping () -> Void) -> some View {
@@ -587,6 +619,46 @@ private struct _Style: View, _PrimitiveView {
     }
 }
 
+private struct _Shadow: View, _PrimitiveView {
+    typealias Body = Never
+
+    let content: AnyView
+    let color: Color
+    let radius: CGFloat
+    let x: CGFloat
+    let y: CGFloat
+
+    func _makeNode(_ ctx: inout _BuildContext) -> _VNode {
+        .shadow(
+            child: ctx.buildChild(content),
+            color: color,
+            radius: max(0, Int(radius.rounded())),
+            x: Int(x.rounded()),
+            y: Int(y.rounded())
+        )
+    }
+}
+
+private struct _Clip: View, _PrimitiveView {
+    typealias Body = Never
+
+    let content: AnyView
+    let kind: _ShapeKind
+
+    func _makeNode(_ ctx: inout _BuildContext) -> _VNode {
+        .clip(kind: kind, child: ctx.buildChild(content))
+    }
+}
+
+private struct _ContentShapeRect: View, _PrimitiveView {
+    typealias Body = Never
+    let content: AnyView
+
+    func _makeNode(_ ctx: inout _BuildContext) -> _VNode {
+        .contentShapeRect(child: ctx.buildChild(content))
+    }
+}
+
 private struct _Background: View, _PrimitiveView {
     typealias Body = Never
     let content: AnyView
@@ -616,6 +688,25 @@ private struct _LabelsHidden: View, _PrimitiveView {
         _UIRuntime.$_labelsHidden.withValue(hidden) {
             ctx.buildChild(content)
         }
+    }
+}
+
+private struct _KeyboardShortcutBinder: View, _PrimitiveView {
+    typealias Body = Never
+
+    let content: AnyView
+    let shortcut: KeyboardShortcut
+
+    func _makeNode(_ ctx: inout _BuildContext) -> _VNode {
+        let runtime = ctx.runtime
+        let captureID = runtime._beginFocusCapture()
+        let node = _UIRuntime.$_currentFocusCaptureID.withValue(captureID) {
+            ctx.buildChild(content)
+        }
+        if let focusPath = runtime._endFocusCapture(captureID) {
+            runtime._registerKeyboardShortcut(shortcut, forFocusablePath: focusPath)
+        }
+        return node
     }
 }
 
@@ -707,6 +798,18 @@ public struct _OnChange<V: Equatable>: View, _PrimitiveView {
             action(prev, value)
         }
         last = value
+        return ctx.buildChild(content)
+    }
+}
+
+private struct _TaskBinder: View, _PrimitiveView {
+    typealias Body = Never
+
+    let content: AnyView
+    let action: () async -> Void
+
+    func _makeNode(_ ctx: inout _BuildContext) -> _VNode {
+        ctx.runtime._registerTask(path: ctx.path, action: action)
         return ctx.buildChild(content)
     }
 }

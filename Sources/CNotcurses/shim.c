@@ -30,6 +30,20 @@ uint32_t omni_ncinput_shift(const struct ncinput* ni){
   return (ni->modifiers & NCKEY_MOD_SHIFT) ? 1u : 0u;
 }
 
+uint32_t omni_ncinput_ctrl(const struct ncinput* ni){
+  if(ni == NULL){
+    return 0;
+  }
+  return (ni->modifiers & NCKEY_MOD_CTRL) ? 1u : 0u;
+}
+
+uint32_t omni_ncinput_alt(const struct ncinput* ni){
+  if(ni == NULL){
+    return 0;
+  }
+  return (ni->modifiers & NCKEY_MOD_ALT) ? 1u : 0u;
+}
+
 int omni_notcurses_cellpix(struct notcurses* nc, unsigned* cdimy, unsigned* cdimx,
                            unsigned* maxpixely, unsigned* maxpixelx){
   if(!nc || !cdimy || !cdimx || !maxpixely || !maxpixelx){

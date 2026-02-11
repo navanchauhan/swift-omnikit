@@ -1,4 +1,5 @@
 import Testing
+import Foundation
 import OmniUICore
 
 struct CounterView: View {
@@ -328,4 +329,149 @@ struct MenuGestureView: View {
 
     let s2 = runtime.debugRender(MenuGestureView(), size: size)
     #expect(s2.text.contains("picked: B"))
+}
+
+@Test func keyboardShortcut_defaultAction_invokes_button_action() async throws {
+    final class Box {
+        var value: Int = 0
+    }
+
+    struct V: View {
+        let box: Box
+        var body: some View {
+            Button("Inc") { box.value += 1 }
+                .keyboardShortcut(.defaultAction)
+        }
+    }
+
+    let box = Box()
+    let runtime = _UIRuntime()
+    _ = runtime.render(V(box: box), size: _Size(width: 20, height: 3))
+
+    #expect(box.value == 0)
+    #expect(runtime.invokeKeyboardShortcut(.return))
+    #expect(box.value == 1)
+}
+
+@Test func keyboardShortcut_cancelAction_invokes_button_action() async throws {
+    final class Box {
+        var cancelled: Bool = false
+    }
+
+    struct V: View {
+        let box: Box
+        var body: some View {
+            Button("Cancel") { box.cancelled = true }
+                .keyboardShortcut(.cancelAction)
+        }
+    }
+
+    let box = Box()
+    let runtime = _UIRuntime()
+    _ = runtime.render(V(box: box), size: _Size(width: 20, height: 3))
+
+    #expect(!box.cancelled)
+    #expect(runtime.invokeKeyboardShortcut(.escape))
+    #expect(box.cancelled)
+}
+
+@Test func keyboardShortcut_action_runs_with_captured_environment() async throws {
+    final class Box {
+        var opened: URL? = nil
+    }
+
+    struct V: View {
+        let box: Box
+        @Environment(\.openURL) private var openURL
+        var body: some View {
+            Button("Open") {
+                _ = openURL(URL(string: "https://example.com")!)
+            }
+            .keyboardShortcut(.defaultAction)
+        }
+    }
+
+    let box = Box()
+    let runtime = _UIRuntime()
+    let root = V(box: box)
+        .environment(\.openURL, OpenURLAction({ url in box.opened = url; return .handled }))
+    _ = runtime.render(root, size: _Size(width: 20, height: 3))
+
+    #expect(box.opened == nil)
+    #expect(runtime.invokeKeyboardShortcut(.return))
+    #expect(box.opened?.absoluteString == "https://example.com")
+}
+
+@MainActor
+@Test func task_runs_and_cancels_with_view_lifecycle() async throws {
+    final class Box {
+        var started: Int = 0
+        var cancelled: Int = 0
+    }
+
+    struct WithTask: View {
+        let box: Box
+        var body: some View {
+            Text("Hi")
+                .task {
+                    box.started += 1
+                    do {
+                        while true {
+                            try await Task.sleep(nanoseconds: 1_000_000) // 1ms
+                        }
+                    } catch {
+                        // Expected on cancellation.
+                    }
+                    box.cancelled += 1
+                }
+        }
+    }
+
+    let box = Box()
+    let runtime = _UIRuntime()
+
+    _ = runtime.render(WithTask(box: box), size: _Size(width: 10, height: 2))
+    for _ in 0..<50 {
+        if box.started == 1 { break }
+        await Task.yield()
+    }
+    #expect(box.started == 1)
+
+    // Remove the task from the tree; it should be cancelled on the next frame.
+    _ = runtime.render(Text("Hi"), size: _Size(width: 10, height: 2))
+    for _ in 0..<50 {
+        if box.cancelled == 1 { break }
+        await Task.yield()
+    }
+    #expect(box.cancelled == 1)
+}
+
+@Test func contentShape_rectangle_expands_button_hit_region() async throws {
+    final class Box {
+        var taps: Int = 0
+    }
+
+    struct V: View {
+        let box: Box
+        var body: some View {
+            Button(action: { box.taps += 1 }) {
+                HStack(spacing: 0) {
+                    Text("Tap")
+                }
+                .contentShape(Rectangle())
+            }
+        }
+    }
+
+    let box = Box()
+    let runtime = _UIRuntime()
+    let s0 = runtime.debugRender(V(box: box), size: _Size(width: 20, height: 3))
+    #expect(box.taps == 0)
+
+    // Click far to the right of the visible "[ Tap ]" label; `contentShape(Rectangle())`
+    // should make the whole row hit-testable.
+    s0.click(x: 19, y: 0)
+    let s1 = runtime.debugRender(V(box: box), size: _Size(width: 20, height: 3))
+    _ = s1
+    #expect(box.taps == 1)
 }

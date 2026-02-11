@@ -176,6 +176,78 @@ enum _RenderLayout {
             }
             return draw(node: child, origin: origin, maxSize: maxSize, ctx: &ctx, ops: &ops, hitRegions: &hitRegions, scrollRegions: &scrollRegions, shapeRegions: &shapeRegions)
 
+        case .contentShapeRect(let child):
+            // Rendering is unaffected; this node only influences hit-testing.
+            return draw(node: child, origin: origin, maxSize: maxSize, ctx: &ctx, ops: &ops, hitRegions: &hitRegions, scrollRegions: &scrollRegions, shapeRegions: &shapeRegions)
+
+        case .clip(_, let child):
+            let sz = measure(child, maxSize)
+            let rect = _Rect(origin: origin, size: sz)
+            ops.append(RenderOp(zIndex: ctx.z, kind: .pushClip(rect: rect)))
+            _ = draw(node: child, origin: origin, maxSize: sz, ctx: &ctx, ops: &ops, hitRegions: &hitRegions, scrollRegions: &scrollRegions, shapeRegions: &shapeRegions)
+            ops.append(RenderOp(zIndex: ctx.z, kind: .popClip))
+            return sz
+
+        case .shadow(let child, let color, let radius, let x, let y):
+            // Simple, terminal-friendly shadow/glow: draw the glyphs behind the child at a few offsets.
+            guard color.alpha > 0, (radius > 0 || x != 0 || y != 0) else {
+                return draw(node: child, origin: origin, maxSize: maxSize, ctx: &ctx, ops: &ops, hitRegions: &hitRegions, scrollRegions: &scrollRegions, shapeRegions: &shapeRegions)
+            }
+
+            let shadowZ = ctx.z - 1
+            let r = min(3, max(0, radius))
+            var offsets: [(dx: Int, dy: Int)] = []
+            offsets.reserveCapacity((2 * r + 1) * (2 * r + 1))
+            if r > 0 {
+                for dy in -r...r {
+                    for dx in -r...r {
+                        if dx == 0 && dy == 0 { continue }
+                        if abs(dx) + abs(dy) > r { continue }
+                        offsets.append((dx: x + dx, dy: y + dy))
+                    }
+                }
+            } else if x != 0 || y != 0 {
+                offsets.append((dx: x, dy: y))
+            }
+
+            if !offsets.isEmpty {
+                // Render shadow glyphs without hit regions / scroll regions etc.
+                var shadowOps: [RenderOp] = []
+                shadowOps.reserveCapacity(64)
+                var dummyHits: [(_Rect, _ActionID)] = []
+                var dummyScrolls: [_ScrollRegion] = []
+                var dummyShapes: [(_Rect, _ShapeNode)] = []
+
+                for o in offsets {
+                    var shadowCtx = ctx
+                    shadowCtx.z = shadowZ
+                    _ = draw(
+                        node: child,
+                        origin: _Point(x: origin.x + o.dx, y: origin.y + o.dy),
+                        maxSize: maxSize,
+                        ctx: &shadowCtx,
+                        ops: &shadowOps,
+                        hitRegions: &dummyHits,
+                        scrollRegions: &dummyScrolls,
+                        shapeRegions: &dummyShapes
+                    )
+                }
+
+                // Keep only glyph/text ops and override their colors so shadows don't clobber BG fills.
+                for op in shadowOps {
+                    switch op.kind {
+                    case .glyph(let x, let y, let egc, _, _):
+                        ops.append(RenderOp(zIndex: shadowZ, kind: .glyph(x: x, y: y, egc: egc, fg: color, bg: nil)))
+                    case .textRun(let x, let y, let text, _, _):
+                        ops.append(RenderOp(zIndex: shadowZ, kind: .textRun(x: x, y: y, text: text, fg: color, bg: nil)))
+                    default:
+                        break
+                    }
+                }
+            }
+
+            return draw(node: child, origin: origin, maxSize: maxSize, ctx: &ctx, ops: &ops, hitRegions: &hitRegions, scrollRegions: &scrollRegions, shapeRegions: &shapeRegions)
+
         case .background(let child, let background):
             let sz = measure(child, maxSize)
             _ = draw(node: background, origin: origin, maxSize: sz, ctx: &ctx, ops: &ops, hitRegions: &hitRegions, scrollRegions: &scrollRegions, shapeRegions: &shapeRegions)
@@ -327,6 +399,7 @@ enum _RenderLayout {
             return used
 
         case .button(let id, let isFocused, let label):
+            let wantsFullHitRect = hasContentShapeRect(label)
             let x0 = isFocused ? origin.x + 1 : origin.x
             if isFocused { emitGlyph(">", at: origin) }
             emitGlyph("[", at: _Point(x: x0, y: origin.y))
@@ -335,15 +408,18 @@ enum _RenderLayout {
             let labelSize = draw(node: label, origin: labelOrigin, maxSize: labelMax, ctx: &ctx, ops: &ops, hitRegions: &hitRegions, scrollRegions: &scrollRegions, shapeRegions: &shapeRegions)
             emitGlyph("]", at: _Point(x: x0 + 1 + labelSize.width + 2, y: origin.y))
             let buttonWidth = min(maxSize.width, (isFocused ? 1 : 0) + 4 + labelSize.width)
-            let rect = _Rect(origin: origin, size: _Size(width: buttonWidth, height: 1))
+            let hitWidth = wantsFullHitRect ? maxSize.width : buttonWidth
+            let rect = _Rect(origin: origin, size: _Size(width: min(maxSize.width, hitWidth), height: 1))
             hitRegions.append((rect, id))
             return _Size(width: buttonWidth, height: 1)
 
         case .tapTarget(let id, let child):
+            let wantsFullHitRect = hasContentShapeRect(child)
             let s = draw(node: child, origin: origin, maxSize: maxSize, ctx: &ctx, ops: &ops, hitRegions: &hitRegions, scrollRegions: &scrollRegions, shapeRegions: &shapeRegions)
             let w = min(maxSize.width, max(1, s.width))
             let h = min(maxSize.height, max(1, s.height))
-            let rect = _Rect(origin: origin, size: _Size(width: w, height: h))
+            let hitWidth = wantsFullHitRect ? maxSize.width : w
+            let rect = _Rect(origin: origin, size: _Size(width: min(maxSize.width, hitWidth), height: h))
             hitRegions.append((rect, id))
             return s
 
@@ -480,12 +556,49 @@ enum _RenderLayout {
         }
     }
 
+    private static func hasContentShapeRect(_ node: _VNode) -> Bool {
+        switch node {
+        case .contentShapeRect:
+            return true
+        case .style(_, _, let child):
+            return hasContentShapeRect(child)
+        case .background(let child, let bg):
+            return hasContentShapeRect(child) || hasContentShapeRect(bg)
+        case .overlay(let child, let ov):
+            return hasContentShapeRect(child) || hasContentShapeRect(ov)
+        case .frame(_, _, _, _, _, _, let child):
+            return hasContentShapeRect(child)
+        case .edgePadding(_, _, _, _, let child):
+            return hasContentShapeRect(child)
+        case .tagged(_, let label):
+            return hasContentShapeRect(label)
+        case .shadow(let child, _, _, _, _):
+            return hasContentShapeRect(child)
+        case .clip(_, let child):
+            return hasContentShapeRect(child)
+        case .group(let nodes):
+            return nodes.contains(where: hasContentShapeRect)
+        case .stack(_, _, let children):
+            return children.contains(where: hasContentShapeRect)
+        case .zstack(let children):
+            return children.contains(where: hasContentShapeRect)
+        default:
+            return false
+        }
+    }
+
     private static func measure(_ node: _VNode, _ maxSize: _Size) -> _Size {
         guard maxSize.width > 0, maxSize.height > 0 else { return _Size(width: 0, height: 0) }
         switch node {
         case .empty:
             return _Size(width: 0, height: 0)
         case .style(_, _, let child):
+            return measure(child, maxSize)
+        case .contentShapeRect(let child):
+            return measure(child, maxSize)
+        case .clip(_, let child):
+            return measure(child, maxSize)
+        case .shadow(let child, _, _, _, _):
             return measure(child, maxSize)
         case .background(let child, _):
             return measure(child, maxSize)
