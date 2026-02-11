@@ -10,6 +10,15 @@ public extension View {
     }
     func multilineTextAlignment(_ alignment: TextAlignment) -> some View { _Passthrough(self) }
     func lineLimit(_ limit: Int?) -> some View { _Passthrough(self) }
+    func monospacedDigit() -> some View { _Passthrough(self) }
+    func textSelection(_ selection: TextSelection) -> some View {
+        _ = selection
+        return _Passthrough(self)
+    }
+    func accentColor(_ color: Color?) -> some View {
+        _ = color
+        return _Passthrough(self)
+    }
     func cornerRadius(_ radius: CGFloat) -> some View {
         clipShape(RoundedRectangle(cornerRadius: radius))
     }
@@ -20,6 +29,15 @@ public extension View {
         _Shadow(content: AnyView(self), color: color, radius: radius, x: x, y: y)
     }
     func opacity(_ value: CGFloat) -> some View { _Passthrough(self) }
+    func offset(x: CGFloat = 0, y: CGFloat = 0) -> some View {
+        _ = x
+        _ = y
+        return _Passthrough(self)
+    }
+    func transition(_ t: AnyTransition) -> some View {
+        _ = t
+        return _Passthrough(self)
+    }
     func ignoresSafeArea() -> some View { _Passthrough(self) }
     func clipShape<S: Shape>(_ shape: S, style: FillStyle = FillStyle()) -> some View {
         _ = style
@@ -109,7 +127,10 @@ public extension View {
     func labelStyle<S: LabelStyle>(_ style: S) -> some View { _Passthrough(self) }
     func scrollContentBackground(_ visibility: Visibility) -> some View { _Passthrough(self) }
     func listRowSeparator(_ visibility: Visibility) -> some View { _Passthrough(self) }
-    func listRowBackground<B: View>(_ background: B) -> some View { _Passthrough(self) }
+    func listRowBackground<B: View>(_ background: B?) -> some View {
+        _ = background
+        return _Passthrough(self)
+    }
     func toolbar<Content: View>(@ViewBuilder content: () -> Content) -> some View { _Passthrough(self) }
     func toolbar(_ any: Any = ()) -> some View { _Passthrough(self) }
     func toolbarBackground(_ any: Any = (), for: Any = ()) -> some View { _Passthrough(self) }
@@ -199,6 +220,10 @@ public extension View {
 
     func disabled(_ disabled: Bool) -> some View { _Passthrough(self) }
 
+    func hidden() -> some View {
+        _Hidden(content: AnyView(self))
+    }
+
     func quickLookPreview(_ url: Binding<URL?>) -> some View {
         _ = url
         return _Passthrough(self)
@@ -255,6 +280,10 @@ public extension View {
         ))
     }
 
+    func padding(_ length: CGFloat) -> some View {
+        padding(.all, length)
+    }
+
     func onAppear(perform action: @escaping () -> Void) -> some View {
         _OnAppear(content: AnyView(self), action: action)
     }
@@ -271,6 +300,17 @@ public extension View {
     func presentationDragIndicator(_ visibility: Visibility) -> some View {
         _ = visibility
         return _Passthrough(self)
+    }
+}
+
+private struct _Hidden: View, _PrimitiveView {
+    typealias Body = Never
+    let content: AnyView
+
+    func _makeNode(_ ctx: inout _BuildContext) -> _VNode {
+        // Still build the subtree so it can register actions/shortcuts, but don't render it.
+        _ = ctx.buildChild(content)
+        return .empty
     }
 }
 
@@ -759,11 +799,13 @@ private struct _Tag: View, _PrimitiveView {
 }
 
 /// Used for API compatibility: modifiers that we don't yet model in the node tree.
-public struct _Passthrough<Content: View>: View, _PrimitiveView {
+public struct _Passthrough: View, _PrimitiveView {
     public typealias Body = Never
-    let content: Content
 
-    public init(_ content: Content) { self.content = content }
+    // Type-erase immediately to avoid exponential generic growth in large `body` expressions.
+    let content: AnyView
+
+    public init<V: View>(_ content: V) { self.content = AnyView(content) }
 
     func _makeNode(_ ctx: inout _BuildContext) -> _VNode {
         ctx.buildChild(content)

@@ -287,8 +287,22 @@ public struct NavigationLink<Label: View, Destination: View>: View, _PrimitiveVi
         self.stackPath = _UIRuntime._currentPath ?? []
     }
 
+    public init(destination: Destination, @ViewBuilder label: () -> Label) {
+        self.destination = { destination }
+        self.label = label()
+        self.actionScopePath = _UIRuntime._currentPath ?? []
+        self.stackPath = _UIRuntime._currentPath ?? []
+    }
+
     public init(_ title: String, destination: @escaping () -> Destination) where Label == Text {
         self.destination = destination
+        self.label = Text(title)
+        self.actionScopePath = _UIRuntime._currentPath ?? []
+        self.stackPath = _UIRuntime._currentPath ?? []
+    }
+
+    public init(_ title: String, destination: Destination) where Label == Text {
+        self.destination = { destination }
         self.label = Text(title)
         self.actionScopePath = _UIRuntime._currentPath ?? []
         self.stackPath = _UIRuntime._currentPath ?? []
@@ -358,9 +372,11 @@ public struct NavigationSplitView<Sidebar: View, Detail: View>: View {
 
 public struct ZStack<Content: View>: View, _PrimitiveView {
     public typealias Body = Never
+    public let alignment: Alignment
     public let content: Content
 
-    public init(@ViewBuilder content: () -> Content) {
+    public init(alignment: Alignment = .center, @ViewBuilder content: () -> Content) {
+        self.alignment = alignment
         self.content = content()
     }
 

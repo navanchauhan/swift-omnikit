@@ -39,6 +39,25 @@ public struct Color: Hashable, Sendable {
     public static let yellow = Color("yellow")
 }
 
+extension Color: RawRepresentable {
+    public typealias RawValue = String
+
+    public init?(rawValue: String) {
+        // Format: `<name>|<alpha>`
+        let parts = rawValue.split(separator: "|", maxSplits: 1, omittingEmptySubsequences: false).map(String.init)
+        if parts.count == 2, let a = Double(parts[1]) {
+            self.init(parts[0], alpha: CGFloat(a))
+            return
+        }
+        // Back-compat: treat the entire raw value as the name (alpha=1).
+        self.init(rawValue, alpha: 1.0)
+    }
+
+    public var rawValue: String {
+        "\(name)|\(alpha)"
+    }
+}
+
 extension Color: View, _PrimitiveView {
     public typealias Body = Never
 
@@ -212,4 +231,21 @@ public enum Visibility: Hashable, Sendable {
     case automatic
     case visible
     case hidden
+}
+
+public enum TextSelection: Hashable, Sendable {
+    case enabled
+    case disabled
+}
+
+public struct AnyTransition: Hashable, Sendable {
+    public let rawValue: String
+    public init(_ rawValue: String) { self.rawValue = rawValue }
+
+    public static var opacity: AnyTransition { AnyTransition("opacity") }
+    public static func move(edge: Edge) -> AnyTransition { AnyTransition("move(\(edge))") }
+
+    public func combined(with other: AnyTransition) -> AnyTransition {
+        AnyTransition("\(rawValue)+\(other.rawValue)")
+    }
 }

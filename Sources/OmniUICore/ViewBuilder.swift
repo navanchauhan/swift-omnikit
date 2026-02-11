@@ -5,78 +5,88 @@ public enum ViewBuilder {
         fatalError("Unreachable")
     }
 
+    public static func buildExpression(_ expression: AnyView) -> AnyView {
+        expression
+    }
+
     public static func buildExpression<V: View>(_ expression: V) -> AnyView {
         AnyView(expression)
     }
 
-    public static func buildBlock() -> EmptyView { EmptyView() }
-    public static func buildBlock<Content: View>(_ content: Content) -> Content { content }
-
-    public static func buildBlock<C0: View, C1: View>(_ c0: C0, _ c1: C1) -> TupleView {
-        TupleView([AnyView(c0), AnyView(c1)])
+    public static func buildBlock(_ content: Never) -> Never {
+        content
     }
 
-    public static func buildBlock<C0: View, C1: View, C2: View>(_ c0: C0, _ c1: C1, _ c2: C2) -> TupleView {
-        TupleView([AnyView(c0), AnyView(c1), AnyView(c2)])
+    // Keep the builder's component type stable (`AnyView`) to avoid generic inference
+    // failures in complex `if` / `switch` / availability blocks.
+    public static func buildBlock() -> AnyView { AnyView(EmptyView()) }
+    public static func buildBlock(_ c0: AnyView) -> AnyView { c0 }
+
+    public static func buildBlock(_ c0: AnyView, _ c1: AnyView) -> AnyView {
+        AnyView(TupleView([c0, c1]))
     }
 
-    public static func buildBlock<C0: View, C1: View, C2: View, C3: View>(_ c0: C0, _ c1: C1, _ c2: C2, _ c3: C3) -> TupleView {
-        TupleView([AnyView(c0), AnyView(c1), AnyView(c2), AnyView(c3)])
+    public static func buildBlock(_ c0: AnyView, _ c1: AnyView, _ c2: AnyView) -> AnyView {
+        AnyView(TupleView([c0, c1, c2]))
     }
 
-    public static func buildBlock<C0: View, C1: View, C2: View, C3: View, C4: View>(_ c0: C0, _ c1: C1, _ c2: C2, _ c3: C3, _ c4: C4) -> TupleView {
-        TupleView([AnyView(c0), AnyView(c1), AnyView(c2), AnyView(c3), AnyView(c4)])
+    public static func buildBlock(_ c0: AnyView, _ c1: AnyView, _ c2: AnyView, _ c3: AnyView) -> AnyView {
+        AnyView(TupleView([c0, c1, c2, c3]))
     }
 
-    public static func buildBlock<C0: View, C1: View, C2: View, C3: View, C4: View, C5: View>(_ c0: C0, _ c1: C1, _ c2: C2, _ c3: C3, _ c4: C4, _ c5: C5) -> TupleView {
-        TupleView([AnyView(c0), AnyView(c1), AnyView(c2), AnyView(c3), AnyView(c4), AnyView(c5)])
+    public static func buildBlock(_ c0: AnyView, _ c1: AnyView, _ c2: AnyView, _ c3: AnyView, _ c4: AnyView) -> AnyView {
+        AnyView(TupleView([c0, c1, c2, c3, c4]))
     }
 
-    public static func buildBlock<C0: View, C1: View, C2: View, C3: View, C4: View, C5: View, C6: View>(_ c0: C0, _ c1: C1, _ c2: C2, _ c3: C3, _ c4: C4, _ c5: C5, _ c6: C6) -> TupleView {
-        TupleView([AnyView(c0), AnyView(c1), AnyView(c2), AnyView(c3), AnyView(c4), AnyView(c5), AnyView(c6)])
+    public static func buildBlock(_ c0: AnyView, _ c1: AnyView, _ c2: AnyView, _ c3: AnyView, _ c4: AnyView, _ c5: AnyView) -> AnyView {
+        AnyView(TupleView([c0, c1, c2, c3, c4, c5]))
     }
 
-    public static func buildBlock<C0: View, C1: View, C2: View, C3: View, C4: View, C5: View, C6: View, C7: View>(_ c0: C0, _ c1: C1, _ c2: C2, _ c3: C3, _ c4: C4, _ c5: C5, _ c6: C6, _ c7: C7) -> TupleView {
-        TupleView([AnyView(c0), AnyView(c1), AnyView(c2), AnyView(c3), AnyView(c4), AnyView(c5), AnyView(c6), AnyView(c7)])
+    public static func buildBlock(_ c0: AnyView, _ c1: AnyView, _ c2: AnyView, _ c3: AnyView, _ c4: AnyView, _ c5: AnyView, _ c6: AnyView) -> AnyView {
+        AnyView(TupleView([c0, c1, c2, c3, c4, c5, c6]))
     }
 
-    public static func buildBlock<C0: View, C1: View, C2: View, C3: View, C4: View, C5: View, C6: View, C7: View, C8: View>(_ c0: C0, _ c1: C1, _ c2: C2, _ c3: C3, _ c4: C4, _ c5: C5, _ c6: C6, _ c7: C7, _ c8: C8) -> TupleView {
-        TupleView([AnyView(c0), AnyView(c1), AnyView(c2), AnyView(c3), AnyView(c4), AnyView(c5), AnyView(c6), AnyView(c7), AnyView(c8)])
+    public static func buildBlock(_ c0: AnyView, _ c1: AnyView, _ c2: AnyView, _ c3: AnyView, _ c4: AnyView, _ c5: AnyView, _ c6: AnyView, _ c7: AnyView) -> AnyView {
+        AnyView(TupleView([c0, c1, c2, c3, c4, c5, c6, c7]))
     }
 
-    public static func buildBlock<C0: View, C1: View, C2: View, C3: View, C4: View, C5: View, C6: View, C7: View, C8: View, C9: View>(_ c0: C0, _ c1: C1, _ c2: C2, _ c3: C3, _ c4: C4, _ c5: C5, _ c6: C6, _ c7: C7, _ c8: C8, _ c9: C9) -> TupleView {
-        TupleView([AnyView(c0), AnyView(c1), AnyView(c2), AnyView(c3), AnyView(c4), AnyView(c5), AnyView(c6), AnyView(c7), AnyView(c8), AnyView(c9)])
+    public static func buildBlock(_ c0: AnyView, _ c1: AnyView, _ c2: AnyView, _ c3: AnyView, _ c4: AnyView, _ c5: AnyView, _ c6: AnyView, _ c7: AnyView, _ c8: AnyView) -> AnyView {
+        AnyView(TupleView([c0, c1, c2, c3, c4, c5, c6, c7, c8]))
     }
 
-    public static func buildBlock<C0: View, C1: View, C2: View, C3: View, C4: View, C5: View, C6: View, C7: View, C8: View, C9: View, C10: View>(_ c0: C0, _ c1: C1, _ c2: C2, _ c3: C3, _ c4: C4, _ c5: C5, _ c6: C6, _ c7: C7, _ c8: C8, _ c9: C9, _ c10: C10) -> TupleView {
-        TupleView([AnyView(c0), AnyView(c1), AnyView(c2), AnyView(c3), AnyView(c4), AnyView(c5), AnyView(c6), AnyView(c7), AnyView(c8), AnyView(c9), AnyView(c10)])
+    public static func buildBlock(_ c0: AnyView, _ c1: AnyView, _ c2: AnyView, _ c3: AnyView, _ c4: AnyView, _ c5: AnyView, _ c6: AnyView, _ c7: AnyView, _ c8: AnyView, _ c9: AnyView) -> AnyView {
+        AnyView(TupleView([c0, c1, c2, c3, c4, c5, c6, c7, c8, c9]))
     }
 
-    public static func buildBlock<C0: View, C1: View, C2: View, C3: View, C4: View, C5: View, C6: View, C7: View, C8: View, C9: View, C10: View, C11: View>(_ c0: C0, _ c1: C1, _ c2: C2, _ c3: C3, _ c4: C4, _ c5: C5, _ c6: C6, _ c7: C7, _ c8: C8, _ c9: C9, _ c10: C10, _ c11: C11) -> TupleView {
-        TupleView([AnyView(c0), AnyView(c1), AnyView(c2), AnyView(c3), AnyView(c4), AnyView(c5), AnyView(c6), AnyView(c7), AnyView(c8), AnyView(c9), AnyView(c10), AnyView(c11)])
+    public static func buildBlock(_ c0: AnyView, _ c1: AnyView, _ c2: AnyView, _ c3: AnyView, _ c4: AnyView, _ c5: AnyView, _ c6: AnyView, _ c7: AnyView, _ c8: AnyView, _ c9: AnyView, _ c10: AnyView) -> AnyView {
+        AnyView(TupleView([c0, c1, c2, c3, c4, c5, c6, c7, c8, c9, c10]))
     }
 
-    public static func buildBlock<C0: View, C1: View, C2: View, C3: View, C4: View, C5: View, C6: View, C7: View, C8: View, C9: View, C10: View, C11: View, C12: View>(_ c0: C0, _ c1: C1, _ c2: C2, _ c3: C3, _ c4: C4, _ c5: C5, _ c6: C6, _ c7: C7, _ c8: C8, _ c9: C9, _ c10: C10, _ c11: C11, _ c12: C12) -> TupleView {
-        TupleView([AnyView(c0), AnyView(c1), AnyView(c2), AnyView(c3), AnyView(c4), AnyView(c5), AnyView(c6), AnyView(c7), AnyView(c8), AnyView(c9), AnyView(c10), AnyView(c11), AnyView(c12)])
+    public static func buildBlock(_ c0: AnyView, _ c1: AnyView, _ c2: AnyView, _ c3: AnyView, _ c4: AnyView, _ c5: AnyView, _ c6: AnyView, _ c7: AnyView, _ c8: AnyView, _ c9: AnyView, _ c10: AnyView, _ c11: AnyView) -> AnyView {
+        AnyView(TupleView([c0, c1, c2, c3, c4, c5, c6, c7, c8, c9, c10, c11]))
     }
 
-    public static func buildBlock<C0: View, C1: View, C2: View, C3: View, C4: View, C5: View, C6: View, C7: View, C8: View, C9: View, C10: View, C11: View, C12: View, C13: View>(_ c0: C0, _ c1: C1, _ c2: C2, _ c3: C3, _ c4: C4, _ c5: C5, _ c6: C6, _ c7: C7, _ c8: C8, _ c9: C9, _ c10: C10, _ c11: C11, _ c12: C12, _ c13: C13) -> TupleView {
-        TupleView([AnyView(c0), AnyView(c1), AnyView(c2), AnyView(c3), AnyView(c4), AnyView(c5), AnyView(c6), AnyView(c7), AnyView(c8), AnyView(c9), AnyView(c10), AnyView(c11), AnyView(c12), AnyView(c13)])
+    public static func buildBlock(_ c0: AnyView, _ c1: AnyView, _ c2: AnyView, _ c3: AnyView, _ c4: AnyView, _ c5: AnyView, _ c6: AnyView, _ c7: AnyView, _ c8: AnyView, _ c9: AnyView, _ c10: AnyView, _ c11: AnyView, _ c12: AnyView) -> AnyView {
+        AnyView(TupleView([c0, c1, c2, c3, c4, c5, c6, c7, c8, c9, c10, c11, c12]))
     }
 
-    public static func buildBlock<C0: View, C1: View, C2: View, C3: View, C4: View, C5: View, C6: View, C7: View, C8: View, C9: View, C10: View, C11: View, C12: View, C13: View, C14: View>(_ c0: C0, _ c1: C1, _ c2: C2, _ c3: C3, _ c4: C4, _ c5: C5, _ c6: C6, _ c7: C7, _ c8: C8, _ c9: C9, _ c10: C10, _ c11: C11, _ c12: C12, _ c13: C13, _ c14: C14) -> TupleView {
-        TupleView([AnyView(c0), AnyView(c1), AnyView(c2), AnyView(c3), AnyView(c4), AnyView(c5), AnyView(c6), AnyView(c7), AnyView(c8), AnyView(c9), AnyView(c10), AnyView(c11), AnyView(c12), AnyView(c13), AnyView(c14)])
+    public static func buildBlock(_ c0: AnyView, _ c1: AnyView, _ c2: AnyView, _ c3: AnyView, _ c4: AnyView, _ c5: AnyView, _ c6: AnyView, _ c7: AnyView, _ c8: AnyView, _ c9: AnyView, _ c10: AnyView, _ c11: AnyView, _ c12: AnyView, _ c13: AnyView) -> AnyView {
+        AnyView(TupleView([c0, c1, c2, c3, c4, c5, c6, c7, c8, c9, c10, c11, c12, c13]))
     }
 
-    public static func buildOptional<Content: View>(_ content: Content?) -> AnyView {
-        if let content { AnyView(content) } else { AnyView(EmptyView()) }
+    public static func buildBlock(_ c0: AnyView, _ c1: AnyView, _ c2: AnyView, _ c3: AnyView, _ c4: AnyView, _ c5: AnyView, _ c6: AnyView, _ c7: AnyView, _ c8: AnyView, _ c9: AnyView, _ c10: AnyView, _ c11: AnyView, _ c12: AnyView, _ c13: AnyView, _ c14: AnyView) -> AnyView {
+        AnyView(TupleView([c0, c1, c2, c3, c4, c5, c6, c7, c8, c9, c10, c11, c12, c13, c14]))
     }
 
-    public static func buildEither<Content: View>(first: Content) -> AnyView { AnyView(first) }
-    public static func buildEither<Content: View>(second: Content) -> AnyView { AnyView(second) }
+    public static func buildOptional(_ content: AnyView?) -> AnyView {
+        content ?? AnyView(EmptyView())
+    }
 
-    public static func buildArray<Content: View>(_ components: [Content]) -> TupleView {
-        TupleView(components.map { AnyView($0) })
+    public static func buildEither(first: AnyView) -> AnyView { first }
+    public static func buildEither(second: AnyView) -> AnyView { second }
+
+    public static func buildArray(_ components: [AnyView]) -> AnyView {
+        AnyView(TupleView(components))
     }
 }
 

@@ -14,6 +14,11 @@ public struct FocusState<Value: Hashable> {
         self.location = _StateLocation()
     }
 
+    // SwiftUI allows `@FocusState var isFocused: Bool` with no explicit default.
+    public init(fileID: StaticString = #fileID, line: UInt = #line) where Value == Bool {
+        self.init(wrappedValue: false, fileID: fileID, line: line)
+    }
+
     public var wrappedValue: Value {
         get {
             if let resolved = location.resolved {

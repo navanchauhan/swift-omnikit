@@ -59,6 +59,10 @@ let package = Package(
             name: "KitchenSink",
             targets: ["KitchenSink"]
         ),
+        .executable(
+            name: "iGopherBrowserTUI",
+            targets: ["iGopherBrowserTUI"]
+        ),
     ],
     dependencies: [
         // Cross-platform networking + streaming.
@@ -73,10 +77,19 @@ let package = Package(
         // Targets can depend on other targets in this package and products from dependencies.
         .target(
             name: "SwiftUI",
-            dependencies: ["OmniUI"],
+            dependencies: ["OmniUI", "SwiftUIMacros"],
             swiftSettings: [
                 .unsafeFlags(["-warn-concurrency", "-strict-concurrency=complete"]),
                 .unsafeFlags(["-enable-actor-data-race-checks"], .when(configuration: .debug)),
+                // iGopherBrowser's `BrowserView.body` is large enough to trip Swift's default solver timeout.
+                .unsafeFlags(["-Xfrontend", "-solver-expression-time-threshold=300"]),
+            ]
+        ),
+        .macro(
+            name: "SwiftUIMacros",
+            dependencies: [
+                .product(name: "SwiftCompilerPlugin", package: "swift-syntax"),
+                .product(name: "SwiftSyntaxMacros", package: "swift-syntax"),
             ]
         ),
         .macro(
@@ -201,9 +214,90 @@ let package = Package(
                 .unsafeFlags(["-enable-actor-data-race-checks"], .when(configuration: .debug)),
             ]
         ),
+        // iGopherBrowser dependency shims (compile-only on non-Apple platforms).
+        .target(
+            name: "TelemetryDeck",
+            swiftSettings: [
+                .unsafeFlags(["-warn-concurrency", "-strict-concurrency=complete"]),
+                .unsafeFlags(["-enable-actor-data-race-checks"], .when(configuration: .debug)),
+            ]
+        ),
+        .target(
+            name: "QuickLook",
+            swiftSettings: [
+                .unsafeFlags(["-warn-concurrency", "-strict-concurrency=complete"]),
+                .unsafeFlags(["-enable-actor-data-race-checks"], .when(configuration: .debug)),
+            ]
+        ),
+        .target(
+            name: "AppIntents",
+            swiftSettings: [
+                .unsafeFlags(["-warn-concurrency", "-strict-concurrency=complete"]),
+                .unsafeFlags(["-enable-actor-data-race-checks"], .when(configuration: .debug)),
+            ]
+        ),
+        // Minimal Gopher client + helpers (enough for iGopherBrowser).
+        .target(
+            name: "SwiftGopherClient",
+            swiftSettings: [
+                .unsafeFlags(["-warn-concurrency", "-strict-concurrency=complete"]),
+                .unsafeFlags(["-enable-actor-data-race-checks"], .when(configuration: .debug)),
+            ]
+        ),
+        .target(
+            name: "GopherHelpers",
+            dependencies: ["SwiftGopherClient"],
+            swiftSettings: [
+                .unsafeFlags(["-warn-concurrency", "-strict-concurrency=complete"]),
+                .unsafeFlags(["-enable-actor-data-race-checks"], .when(configuration: .debug)),
+            ]
+        ),
+        // Builds iGopherBrowser views (from `references/`) against our SwiftUI/SwiftData shims.
+        .target(
+            name: "iGopherBrowserViews",
+            dependencies: [
+                "SwiftUI",
+                "SwiftData",
+                "SwiftGopherClient",
+                "GopherHelpers",
+                "TelemetryDeck",
+                "QuickLook",
+                "AppIntents",
+            ],
+            path: ".",
+            sources: [
+                "references/iGopherBrowser/iGopherBrowser/Bookmark.swift",
+                "references/iGopherBrowser/iGopherBrowser/BookmarksView.swift",
+                "references/iGopherBrowser/iGopherBrowser/BrowserView.swift",
+                "references/iGopherBrowser/iGopherBrowser/CRTEffect.swift",
+                "references/iGopherBrowser/iGopherBrowser/ContentView.swift",
+                "references/iGopherBrowser/iGopherBrowser/FileView.swift",
+                "references/iGopherBrowser/iGopherBrowser/Helpers.swift",
+                "references/iGopherBrowser/iGopherBrowser/History.swift",
+                "references/iGopherBrowser/iGopherBrowser/LiquidGlass.swift",
+                "references/iGopherBrowser/iGopherBrowser/SearchInputView.swift",
+                "references/iGopherBrowser/iGopherBrowser/SidebarView.swift",
+                "references/iGopherBrowser/iGopherBrowser/WhatsNew.swift",
+                "Sources/iGopherBrowserCompat/iGopherBrowserCompat.swift",
+            ],
+            swiftSettings: [
+                // iGopherBrowser is upstream SwiftUI code. Compile it in Swift 5 mode to avoid
+                // Swift 6's stricter `sending` diagnostics without patching the reference sources.
+                .swiftLanguageMode(.v5),
+                .unsafeFlags(["-warn-concurrency", "-strict-concurrency=minimal"]),
+            ]
+        ),
         .executableTarget(
             name: "KitchenSink",
             dependencies: ["OmniUI", "OmniUINotcursesRenderer", "OmniUITerminalRenderer"],
+            swiftSettings: [
+                .unsafeFlags(["-warn-concurrency", "-strict-concurrency=complete"]),
+                .unsafeFlags(["-enable-actor-data-race-checks"], .when(configuration: .debug)),
+            ]
+        ),
+        .executableTarget(
+            name: "iGopherBrowserTUI",
+            dependencies: ["iGopherBrowserViews", "OmniUINotcursesRenderer", "OmniUITerminalRenderer"],
             swiftSettings: [
                 .unsafeFlags(["-warn-concurrency", "-strict-concurrency=complete"]),
                 .unsafeFlags(["-enable-actor-data-race-checks"], .when(configuration: .debug)),
