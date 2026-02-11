@@ -137,7 +137,6 @@ enum _OmniPlatformColor {
             let g = Double(parts[1]),
             let b = Double(parts[2])
         else { return nil }
-        return (r, g, b)
+        return (CGFloat(r), CGFloat(g), CGFloat(b))
     }
 }
-

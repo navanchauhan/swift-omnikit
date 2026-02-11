@@ -4,26 +4,17 @@
 // It exists so `import SwiftData` and common call sites (e.g. `@Model`, `@Query`)
 // compile when targeting non-Apple platforms.
 
+@_exported import Foundation
+import OmniUICore
+
 @attached(member, names: arbitrary)
-@attached(extension, names: arbitrary)
+@attached(extension, conformances: Identifiable, names: arbitrary)
 public macro Model() = #externalMacro(module: "SwiftDataMacros", type: "ModelMacro")
 
-public enum SortOrder: Sendable {
-    case forward
-    case reverse
-}
+public typealias SortOrder = OmniUICore.SortOrder
+public typealias Query = OmniUICore.Query
 
-@propertyWrapper
-public struct Query<Element> {
-    public var wrappedValue: [Element]
-
-    public init() {
-        self.wrappedValue = []
-    }
-
-    public init<V>(sort: KeyPath<Element, V>, order: SortOrder = .forward) where V: Comparable {
-        // Stub: real implementation should read from a `ModelContext` and keep results live.
-        self.wrappedValue = []
-    }
-}
-
+public typealias Schema = OmniUICore.Schema
+public typealias ModelConfiguration = OmniUICore.ModelConfiguration
+public typealias ModelContainer = OmniUICore.ModelContainer
+public typealias ModelContext = OmniUICore.ModelContext

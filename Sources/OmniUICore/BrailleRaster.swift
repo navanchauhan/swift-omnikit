@@ -3,6 +3,7 @@ import Glibc
 #else
 import Darwin
 #endif
+import Foundation
 
 // Shared, portable braille rasterization for shape render ops.
 //

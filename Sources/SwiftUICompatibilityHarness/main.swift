@@ -1,3 +1,4 @@
+import Foundation
 import SwiftData
 import SwiftUI
 
@@ -19,8 +20,11 @@ private struct HarnessView: View {
     @State private var text: String = ""
     @State private var showAlert: Bool = false
     @State private var picked: Color = .blue
+    @State private var quickLookURL: URL? = nil
+    @State private var didSeedModels: Bool = false
 
     @Query(sort: \HarnessModel.id, order: .reverse) private var models: [HarnessModel]
+    @Environment(\.modelContext) private var modelContext
 
     var body: some View {
         VStack(spacing: 1) {
@@ -69,6 +73,15 @@ private struct HarnessView: View {
                     startRadius: 0,
                     endRadius: 10
                 )
+
+                ShareLink(item: URL(string: "https://example.com")!) {
+                    Label("Share", systemImage: "square.and.arrow.up")
+                }
+
+                Button("QuickLook") {
+                    quickLookURL = URL(string: "file:///tmp/example.txt")
+                }
+                .quickLookPreview($quickLookURL)
             }
 
             Group {
@@ -84,11 +97,11 @@ private struct HarnessView: View {
                     Label("GroupBox", systemImage: "star")
                 }
 
-                if models.isEmpty {
-                    ContentUnavailableView("No Data", systemImage: "xmark", description: Text("Empty"))
-                } else {
-                    EmptyView()
-                }
+            if models.isEmpty {
+                ContentUnavailableView("No Data", systemImage: "xmark", description: Text("Empty"))
+            } else {
+                Text("Models: \(models.count)")
+            }
 
                 ColorPicker("Color", selection: $picked)
                     .labelsHidden()
@@ -129,14 +142,27 @@ private struct HarnessView: View {
         .alert(isPresented: $showAlert) {
             Alert(title: Text("Alert"), message: Text("Hello"), dismissButton: .default(Text("OK")))
         }
+        .onAppear {
+            guard !didSeedModels else { return }
+            didSeedModels = true
+            modelContext.insert(HarnessModel(id: 1))
+            modelContext.insert(HarnessModel(id: 2))
+        }
     }
 }
 
 @main
 struct SwiftUICompatibilityHarnessApp: App {
+    var container: ModelContainer = {
+        let schema = Schema([HarnessModel.self])
+        let config = ModelConfiguration(schema: schema, isStoredInMemoryOnly: true)
+        return try! ModelContainer(for: schema, configurations: [config])
+    }()
+
     var body: some Scene {
         WindowGroup {
             HarnessView()
+                .modelContainer(container)
         }
         .commands {
             #if os(macOS)

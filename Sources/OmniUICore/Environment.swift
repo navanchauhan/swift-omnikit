@@ -80,21 +80,6 @@ public struct OpenURLAction: @unchecked Sendable {
     }
 }
 
-// Placeholder for SwiftData's `ModelContext` so iGopherBrowser can compile.
-public struct ModelContext: Sendable {
-    public init() {}
-
-    public func insert<T>(_ model: T) {
-        _ = model
-        // Stub: persistence layer not implemented yet.
-    }
-
-    public func delete<T>(_ model: T) {
-        _ = model
-        // Stub: persistence layer not implemented yet.
-    }
-}
-
 private enum _ColorSchemeKey: EnvironmentKey {
     static let defaultValue: ColorScheme = .dark
 }

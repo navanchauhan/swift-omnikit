@@ -1,3 +1,5 @@
+import Foundation
+
 public struct _Point: Hashable, Sendable {
     public var x: Int
     public var y: Int

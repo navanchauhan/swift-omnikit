@@ -1,6 +1,8 @@
 // Minimal drawing/gradient API surface for SwiftUI compatibility.
 // These are currently compile-first stubs; renderers may ignore them.
 
+import Foundation
+
 public struct GraphicsContext: Sendable {
     public init() {}
 
@@ -114,4 +116,3 @@ public struct RadialGradient: View, _PrimitiveView {
         return .empty
     }
 }
-

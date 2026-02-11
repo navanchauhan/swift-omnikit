@@ -1,4 +1,5 @@
 import SwiftSyntax
+import SwiftSyntaxBuilder
 import SwiftSyntaxMacros
 
 /// Stub implementation for SwiftData's `@Model` macro.
@@ -22,6 +23,10 @@ public struct ModelMacro: MemberMacro, ExtensionMacro {
         conformingTo protocols: [TypeSyntax],
         in context: some MacroExpansionContext
     ) throws -> [ExtensionDeclSyntax] {
-        []
+        // SwiftData models are typically used with `ForEach(models) { ... }`, which relies on
+        // `Identifiable` conformance. iGopherBrowser's models already declare an `id` property,
+        // so adding this conformance provides a useful "drop-in" behavior for our shim.
+        let ext: DeclSyntax = "extension \(type.trimmed): Identifiable {}"
+        return [ext.cast(ExtensionDeclSyntax.self)]
     }
 }

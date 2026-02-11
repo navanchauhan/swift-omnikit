@@ -143,4 +143,9 @@ public extension Scene {
         _ = any
         return _ScenePassthrough(self)
     }
+
+    func modelContainer(_ container: ModelContainer) -> some Scene {
+        _ = container
+        return _ScenePassthrough(self)
+    }
 }

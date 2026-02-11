@@ -1,5 +1,7 @@
 // Compile-only stubs for iOS/macOS 26 "Liquid Glass" APIs used by iGopherBrowser.
 
+import Foundation
+
 public struct GlassEffect: Hashable, Sendable {
     public let rawValue: String
     public init(_ rawValue: String) { self.rawValue = rawValue }
@@ -38,4 +40,3 @@ public struct GlassEffectContainer<Content: View>: View, _PrimitiveView {
         return ctx.buildChild(content)
     }
 }
-

@@ -228,6 +228,42 @@ struct ListRenderView: View {
     #expect(s1.text.contains("picked: 1"))
 }
 
+@Test func swiftDataCompat_query_reflects_modelContext_inserts() async throws {
+    final class M {
+        var id: Int
+        init(id: Int) { self.id = id }
+    }
+
+    struct V: View {
+        @Environment(\.modelContext) private var modelContext
+        @Query(sort: \M.id, order: .reverse) private var models: [M]
+        @State private var seeded: Bool = false
+
+        var body: some View {
+            VStack(spacing: 1) {
+                Text("count: \(models.count)")
+                Text("first: \(models.first?.id ?? -1)")
+            }
+            .onAppear {
+                guard !seeded else { return }
+                seeded = true
+                modelContext.insert(M(id: 1))
+                modelContext.insert(M(id: 2))
+            }
+        }
+    }
+
+    let runtime = _UIRuntime()
+    let size = _Size(width: 30, height: 6)
+
+    let s0 = runtime.debugRender(V(), size: size)
+    #expect(s0.text.contains("count: 0"))
+
+    let s1 = runtime.debugRender(V(), size: size)
+    #expect(s1.text.contains("count: 2"))
+    #expect(s1.text.contains("first: 2"))
+}
+
 struct TapGestureView: View {
     @State private var tapped: Int = 0
 

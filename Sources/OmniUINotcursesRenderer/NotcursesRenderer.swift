@@ -1,3 +1,4 @@
+import Foundation
 import OmniUICore
 
 #if os(Linux) || os(macOS)

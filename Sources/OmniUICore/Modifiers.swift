@@ -79,6 +79,17 @@ public extension View {
     func toolbarBackground(_ any: Any = (), for: Any = ()) -> some View { _Passthrough(self) }
     func controlSize(_ size: ControlSize) -> some View { _Passthrough(self) }
     func modelContainer(_ any: Any) -> some View { _Passthrough(self) }
+    func modelContainer(_ container: ModelContainer) -> some View {
+        environment(\.modelContext, container.mainContext)
+    }
+    func modelContainer(for modelTypes: [Any.Type], inMemory: Bool = false) -> some View {
+        // SwiftUI's SwiftData modifier is non-throwing; mirror that here.
+        let container = (try? ModelContainer(for: modelTypes, inMemory: inMemory))
+        if let container {
+            return AnyView(environment(\.modelContext, container.mainContext))
+        }
+        return AnyView(self)
+    }
 
     func keyboardShortcut(_ key: KeyEquivalent, modifiers: EventModifiers = []) -> some View {
         _ = key
@@ -155,6 +166,11 @@ public extension View {
     func refreshable(action: @escaping () async -> Void) -> some View { _Passthrough(self) }
 
     func disabled(_ disabled: Bool) -> some View { _Passthrough(self) }
+
+    func quickLookPreview(_ url: Binding<URL?>) -> some View {
+        _ = url
+        return _Passthrough(self)
+    }
 
     func frame(
         width: CGFloat? = nil,

@@ -160,21 +160,21 @@ Used mostly for CRT + “What’s New” UI.
 
 ## 16. Sharing / QuickLook (Compile-Only Stubs)
 
-- [ ] `ShareLink` view (used in `references/iGopherBrowser/iGopherBrowser/BrowserView.swift` and `references/iGopherBrowser/iGopherBrowser/FileView.swift`).
-- [ ] `quickLookPreview(_:)` modifier stub (used in `references/iGopherBrowser/iGopherBrowser/FileView.swift`).
+- [x] `ShareLink` view (used in `references/iGopherBrowser/iGopherBrowser/BrowserView.swift` and `references/iGopherBrowser/iGopherBrowser/FileView.swift`).
+- [x] `quickLookPreview(_:)` modifier stub (used in `references/iGopherBrowser/iGopherBrowser/FileView.swift`).
 
 ## 17. SwiftData Compatibility Layer (Compile Blockers + Behavior)
 
 The goal is not full SwiftData; the goal is “enough to run iGopherBrowser”:
 
-- [ ] `Schema` type and `Schema([Model.Type])` initializer (used in `references/iGopherBrowser/iGopherBrowser/iGopherBrowserApp.swift`).
-- [ ] `ModelConfiguration(schema:isStoredInMemoryOnly:)` (used in `references/iGopherBrowser/iGopherBrowser/iGopherBrowserApp.swift`).
-- [ ] `ModelContainer(for:configurations:)` and `ModelContainer(for:inMemory:)` (used in `references/iGopherBrowser/iGopherBrowser/iGopherBrowserApp.swift` and previews).
-- [ ] `ModelContext` API: `insert(_:)`, `delete(_:)`, and `fetch`/query hooks used by `@Query` (used in `references/iGopherBrowser/iGopherBrowser/BrowserView.swift` and `references/iGopherBrowser/iGopherBrowser/BookmarksView.swift`).
-- [ ] `@Query(sort:order:)` implementation supporting:
-- [ ] key-path sort (e.g. `\\Bookmark.dateAdded`, `\\HistoryItem.visitedAt`).
-- [ ] order `.reverse` (and the enum used by iGopherBrowser).
-- [ ] live updates when `ModelContext` changes (or at least “eventual” updates for this app).
+- [x] `Schema` type and `Schema([Model.Type])` initializer (used in `references/iGopherBrowser/iGopherBrowser/iGopherBrowserApp.swift`).
+- [x] `ModelConfiguration(schema:isStoredInMemoryOnly:)` (used in `references/iGopherBrowser/iGopherBrowser/iGopherBrowserApp.swift`).
+- [x] `ModelContainer(for:configurations:)` and `ModelContainer(for:inMemory:)` (used in `references/iGopherBrowser/iGopherBrowser/iGopherBrowserApp.swift` and previews).
+- [x] `ModelContext` API: `insert(_:)`, `delete(_:)`, and `fetch`/query hooks used by `@Query` (used in `references/iGopherBrowser/iGopherBrowser/BrowserView.swift` and `references/iGopherBrowser/iGopherBrowser/BookmarksView.swift`).
+- [x] `@Query(sort:order:)` implementation supporting:
+- [x] key-path sort (e.g. `\\Bookmark.dateAdded`, `\\HistoryItem.visitedAt`).
+- [x] order `.reverse` (and the enum used by iGopherBrowser).
+- [x] live updates when `ModelContext` changes (or at least “eventual” updates for this app).
 
 ## 18. “Stub Today, Implement Later” Items Already Present in OmniUICore
 
@@ -182,7 +182,7 @@ These exist in `Sources/OmniUICore/Modifiers.swift` but are currently no-ops; iG
 
 - [ ] `.task { … }` should run/cancel tasks tied to view lifecycle (used in `references/iGopherBrowser/iGopherBrowser/FileView.swift`).
 - [ ] `.preferredColorScheme(_:)` should set `EnvironmentValues.colorScheme` (used in `references/iGopherBrowser/iGopherBrowser/ContentView.swift`).
-- [ ] `.modelContainer(_:)` should seed the `modelContext` environment value (used in `references/iGopherBrowser/iGopherBrowser/iGopherBrowserApp.swift`).
+- [x] `.modelContainer(_:)` should seed the `modelContext` environment value (used in `references/iGopherBrowser/iGopherBrowser/iGopherBrowserApp.swift`).
 - [ ] `.shadow`, `.cornerRadius`, `.clipShape`, `.overlay`, `.background` should eventually render meaningfully in notcurses/terminal renderers (CRT visuals depend on it).
 
 ## 19. File-by-File “Definition of Done” (Compile Targets)

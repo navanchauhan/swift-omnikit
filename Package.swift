@@ -88,7 +88,7 @@ let package = Package(
         ),
         .target(
             name: "SwiftData",
-            dependencies: ["SwiftDataMacros"],
+            dependencies: ["OmniUICore", "SwiftDataMacros"],
             swiftSettings: [
                 .unsafeFlags(["-warn-concurrency", "-strict-concurrency=complete"]),
                 .unsafeFlags(["-enable-actor-data-race-checks"], .when(configuration: .debug)),

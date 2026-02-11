@@ -1,4 +1,4 @@
-public typealias CGFloat = Double
+import Foundation
 
 public struct Color: Hashable, Sendable {
     public let name: String

@@ -63,7 +63,11 @@ public final class _UIRuntime: @unchecked Sendable {
     // Base environment at the root render call.
     var _baseEnvironment: EnvironmentValues = EnvironmentValues()
 
-    public init() {}
+    public init() {
+        // Provide a per-runtime model context so `@Environment(\\.modelContext)` and `@Query` have
+        // a stable default even if the app doesn't call `.modelContainer(...)`.
+        _baseEnvironment.modelContext = ModelContext()
+    }
 
     func _beginFocusCapture() -> Int {
         let id = nextFocusCaptureID
