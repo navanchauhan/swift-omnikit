@@ -1,5 +1,5 @@
 import Foundation
-import OmniAILLMClient
+import OmniAICore
 
 public final class GeminiProfile: ProviderProfile, @unchecked Sendable {
     public let id: String = "gemini"
@@ -124,7 +124,7 @@ public final class GeminiProfile: ProviderProfile, @unchecked Sendable {
         return "Check with current date for recency"
     }
 
-    public func providerOptions() -> [String: [String: AnyCodable]]? {
+    public func providerOptions() -> [String: JSONValue]? {
         return nil
     }
 }

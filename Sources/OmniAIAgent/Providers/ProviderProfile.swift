@@ -1,5 +1,5 @@
 import Foundation
-import OmniAILLMClient
+import OmniAICore
 
 public protocol ProviderProfile: Sendable {
     var id: String { get }
@@ -7,8 +7,8 @@ public protocol ProviderProfile: Sendable {
     var toolRegistry: ToolRegistry { get }
 
     func buildSystemPrompt(environment: ExecutionEnvironment, projectDocs: String?, userInstructions: String?, gitContext: GitContext?) -> String
-    func tools() -> [ToolDefinition]
-    func providerOptions() -> [String: [String: AnyCodable]]?
+    func tools() -> [Tool]
+    func providerOptions() -> [String: JSONValue]?
 
     var supportsReasoning: Bool { get }
     var supportsStreaming: Bool { get }
@@ -17,7 +17,7 @@ public protocol ProviderProfile: Sendable {
 }
 
 extension ProviderProfile {
-    public func tools() -> [ToolDefinition] {
+    public func tools() -> [Tool] {
         toolRegistry.llmKitDefinitions()
     }
 }

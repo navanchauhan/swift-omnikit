@@ -1,5 +1,5 @@
 import Foundation
-import OmniAILLMClient
+import OmniAICore
 import OmniAIAgent
 
 // MARK: - Coding Agent Backend
@@ -7,11 +7,11 @@ import OmniAIAgent
 /// A CodergenBackend that uses CodingAgentLoop sessions instead of raw LLM text generation.
 /// Each pipeline node gets a full coding agent with file read/write, shell execution, grep, glob, etc.
 public final class CodingAgentBackend: CodergenBackend, @unchecked Sendable {
-    private let client: LLMClient
+    private let client: Client?
     private let workingDirectory: String
 
-    public init(client: LLMClient? = nil, workingDirectory: String? = nil) {
-        self.client = client ?? LLMClient.fromEnv()
+    public init(client: Client? = nil, workingDirectory: String? = nil) {
+        self.client = client
         self.workingDirectory = workingDirectory ?? FileManager.default.currentDirectoryPath
     }
 
@@ -22,6 +22,7 @@ public final class CodingAgentBackend: CodergenBackend, @unchecked Sendable {
         reasoningEffort: String,
         context: PipelineContext
     ) async throws -> CodergenResult {
+        let resolvedClient = try (client ?? Client.fromEnv())
         // 1. Build the enriched prompt with pipeline context
         let enrichedPrompt = buildEnrichedPrompt(prompt: prompt, context: context)
 
@@ -47,10 +48,10 @@ public final class CodingAgentBackend: CodergenBackend, @unchecked Sendable {
         let env = LocalExecutionEnvironment(workingDir: workingDirectory)
 
         // 6. Create the session
-        let session = Session(
+        let session = try Session(
             profile: profile,
             environment: env,
-            client: client,
+            client: resolvedClient,
             config: sessionConfig
         )
 

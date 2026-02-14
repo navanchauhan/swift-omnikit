@@ -13,6 +13,7 @@ public struct ToolExecutionContext: Sendable {
 }
 
 public typealias ToolExecute = @Sendable (_ arguments: [String: JSONValue], _ context: ToolExecutionContext) async throws -> JSONValue
+public typealias ToolExecuteHandler = @Sendable (_ arguments: [String: Any]) async throws -> Any
 
 public struct Tool: Sendable {
     public var name: String
@@ -27,6 +28,44 @@ public struct Tool: Sendable {
         self.description = description
         self.parameters = parameters
         self.execute = execute
+    }
+
+    /// Compatibility initializer for `OmniAILLMClient` style tool definitions.
+    public init(
+        name: String,
+        description: String,
+        parameters: [String: Any],
+        execute: ToolExecuteHandler? = nil
+    ) throws {
+        let schema: JSONValue
+        do {
+            schema = try JSONValue(parameters)
+        } catch {
+            throw InvalidToolCallError(message: "Tool parameters must be valid JSON: \(error)")
+        }
+
+        let wrappedExecute: ToolExecute?
+        if let legacyExecute = execute {
+            wrappedExecute = { arguments, _ in
+                let foundationArguments: [String: Any]
+                do {
+                    foundationArguments = try arguments.mapValues { try $0.asFoundationObject() }
+                } catch {
+                    throw InvalidToolCallError(message: "Tool arguments could not be converted to Foundation values: \(error)")
+                }
+
+                let output = try await legacyExecute(foundationArguments)
+                do {
+                    return try JSONValue(output)
+                } catch {
+                    throw InvalidToolCallError(message: "Legacy tool output must be valid JSON: \(error)")
+                }
+            }
+        } else {
+            wrappedExecute = nil
+        }
+
+        try self.init(name: name, description: description, parameters: schema, execute: wrappedExecute)
     }
 
     private static func validateName(_ name: String) throws {
@@ -64,5 +103,12 @@ public struct ToolChoice: Sendable, Equatable {
     public init(mode: ToolChoiceMode, toolName: String? = nil) {
         self.mode = mode
         self.toolName = toolName
+    }
+
+    public static let auto = ToolChoice(mode: .auto)
+    public static let none = ToolChoice(mode: .none)
+    public static let required = ToolChoice(mode: .required)
+    public static func named(_ name: String) -> ToolChoice {
+        ToolChoice(mode: .named, toolName: name)
     }
 }

@@ -164,6 +164,14 @@ public struct ContentPart: Sendable, Equatable {
         self.data = data
     }
 
+    /// Compatibility alias used in `OmniAILLMClient`.
+    public var contentKind: ContentKind? {
+        if case .standard(let k) = kind {
+            return k
+        }
+        return nil
+    }
+
     public static func text(_ value: String) -> ContentPart {
         ContentPart(kind: .standard(.text), text: value)
     }
@@ -229,5 +237,22 @@ public struct Message: Sendable, Equatable {
             guard part.kind.rawValue == ContentKind.text.rawValue else { return nil }
             return part.text
         }.joined()
+    }
+
+    public var toolCalls: [ToolCall] {
+        content.compactMap { part in
+            guard part.kind.rawValue == ContentKind.toolCall.rawValue else { return nil }
+            return part.toolCall
+        }
+    }
+
+    public var reasoning: String? {
+        let parts: [String] = content.compactMap { part -> String? in
+            guard part.kind.rawValue == ContentKind.thinking.rawValue || part.kind.rawValue == ContentKind.redactedThinking.rawValue else {
+                return nil
+            }
+            return part.thinking?.text
+        }
+        return parts.isEmpty ? nil : parts.joined()
     }
 }

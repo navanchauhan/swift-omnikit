@@ -2,6 +2,16 @@ import Foundation
 
 import OmniHTTP
 
+public typealias CompleteMiddleware = @Sendable (
+    Request,
+    @Sendable (Request) async throws -> Response
+) async throws -> Response
+
+public typealias StreamMiddleware = @Sendable (
+    Request,
+    @Sendable (Request) async throws -> AsyncThrowingStream<StreamEvent, Error>
+) async throws -> AsyncThrowingStream<StreamEvent, Error>
+
 public protocol ProviderAdapter: Sendable {
     var name: String { get }
 
@@ -31,21 +41,56 @@ public protocol Middleware: Sendable {
     ) async throws -> AsyncThrowingStream<StreamEvent, Error>
 }
 
+private final class _ClosureMiddleware: Middleware, @unchecked Sendable {
+    private let completeClosure: CompleteMiddleware?
+    private let streamClosure: StreamMiddleware?
+
+    init(complete: CompleteMiddleware?, stream: StreamMiddleware?) {
+        self.completeClosure = complete
+        self.streamClosure = stream
+    }
+
+    func complete(
+        request: Request,
+        next: @Sendable @escaping (Request) async throws -> Response
+    ) async throws -> Response {
+        if let completeClosure {
+            return try await completeClosure(request, next)
+        }
+        return try await next(request)
+    }
+
+    func stream(
+        request: Request,
+        next: @Sendable @escaping (Request) async throws -> AsyncThrowingStream<StreamEvent, Error>
+    ) async throws -> AsyncThrowingStream<StreamEvent, Error> {
+        if let streamClosure {
+            return try await streamClosure(request, next)
+        }
+        return try await next(request)
+    }
+}
+
 public final class Client: @unchecked Sendable {
     private var providers: [String: ProviderAdapter]
-    public let defaultProvider: String?
-    public let middleware: [Middleware]
+    private var _defaultProvider: String?
+    private var _middleware: [Middleware]
+    private let stateLock = NSLock()
     public let modelCatalog: ModelCatalog
 
     public init(
         providers: [String: ProviderAdapter],
         defaultProvider: String? = nil,
         middleware: [Middleware] = [],
+        completeMiddleware: [CompleteMiddleware] = [],
+        streamMiddleware: [StreamMiddleware] = [],
         modelCatalog: ModelCatalog = .default
     ) throws {
         self.providers = providers
-        self.defaultProvider = defaultProvider ?? providers.first?.key
-        self.middleware = middleware
+        self._defaultProvider = defaultProvider ?? providers.first?.key
+        self._middleware = middleware
+        self._middleware.append(contentsOf: completeMiddleware.map { _ClosureMiddleware(complete: $0, stream: nil) })
+        self._middleware.append(contentsOf: streamMiddleware.map { _ClosureMiddleware(complete: nil, stream: $0) })
         self.modelCatalog = modelCatalog
 
         for (_, adapter) in providers {
@@ -53,11 +98,26 @@ public final class Client: @unchecked Sendable {
         }
     }
 
+    public var defaultProvider: String? {
+        _withStateLock { _defaultProvider }
+    }
+
+    public var defaultProviderName: String? {
+        defaultProvider
+    }
+
+    public var middleware: [Middleware] {
+        _withStateLock { _middleware }
+    }
+
     public static func fromEnv(
         environment: [String: String],
         transport: OmniHTTP.HTTPTransport = OmniHTTP.URLSessionHTTPTransport(),
         modelCatalog: ModelCatalog = .default,
-        middleware: [Middleware] = []
+        middleware: [Middleware] = [],
+        completeMiddleware: [CompleteMiddleware] = [],
+        streamMiddleware: [StreamMiddleware] = [],
+        allowEmptyProviders: Bool = false
     ) throws -> Client {
         // Provider adapters are registered only if their env var keys exist.
         // This is implemented in Providers/*.swift.
@@ -81,7 +141,7 @@ public final class Client: @unchecked Sendable {
             providers["gemini"] = GeminiAdapter(apiKey: key, baseURL: env["GEMINI_BASE_URL"], transport: transport)
         }
 
-        if providers.isEmpty {
+        if providers.isEmpty && !allowEmptyProviders {
             throw ConfigurationError(message: "No providers configured. Set OPENAI_API_KEY and/or ANTHROPIC_API_KEY and/or GEMINI_API_KEY.")
         }
 
@@ -89,6 +149,8 @@ public final class Client: @unchecked Sendable {
             providers: providers,
             defaultProvider: providers.first?.key,
             middleware: middleware,
+            completeMiddleware: completeMiddleware,
+            streamMiddleware: streamMiddleware,
             modelCatalog: modelCatalog
         )
     }
@@ -96,26 +158,116 @@ public final class Client: @unchecked Sendable {
     public static func fromEnv(
         transport: OmniHTTP.HTTPTransport = OmniHTTP.URLSessionHTTPTransport(),
         modelCatalog: ModelCatalog = .default,
-        middleware: [Middleware] = []
+        middleware: [Middleware] = [],
+        completeMiddleware: [CompleteMiddleware] = [],
+        streamMiddleware: [StreamMiddleware] = [],
+        allowEmptyProviders: Bool = false
     ) throws -> Client {
-        try fromEnv(environment: ProcessInfo.processInfo.environment, transport: transport, modelCatalog: modelCatalog, middleware: middleware)
+        try fromEnv(
+            environment: ProcessInfo.processInfo.environment,
+            transport: transport,
+            modelCatalog: modelCatalog,
+            middleware: middleware,
+            completeMiddleware: completeMiddleware,
+            streamMiddleware: streamMiddleware,
+            allowEmptyProviders: allowEmptyProviders
+        )
+    }
+
+    public static func fromEnvAllowingEmpty(
+        environment: [String: String],
+        transport: OmniHTTP.HTTPTransport = OmniHTTP.URLSessionHTTPTransport(),
+        modelCatalog: ModelCatalog = .default,
+        middleware: [Middleware] = [],
+        completeMiddleware: [CompleteMiddleware] = [],
+        streamMiddleware: [StreamMiddleware] = []
+    ) throws -> Client {
+        try fromEnv(
+            environment: environment,
+            transport: transport,
+            modelCatalog: modelCatalog,
+            middleware: middleware,
+            completeMiddleware: completeMiddleware,
+            streamMiddleware: streamMiddleware,
+            allowEmptyProviders: true
+        )
+    }
+
+    public static func fromEnvAllowingEmpty(
+        transport: OmniHTTP.HTTPTransport = OmniHTTP.URLSessionHTTPTransport(),
+        modelCatalog: ModelCatalog = .default,
+        middleware: [Middleware] = [],
+        completeMiddleware: [CompleteMiddleware] = [],
+        streamMiddleware: [StreamMiddleware] = []
+    ) throws -> Client {
+        try fromEnv(
+            environment: ProcessInfo.processInfo.environment,
+            transport: transport,
+            modelCatalog: modelCatalog,
+            middleware: middleware,
+            completeMiddleware: completeMiddleware,
+            streamMiddleware: streamMiddleware,
+            allowEmptyProviders: true
+        )
     }
 
     // Spec-style alias.
     public static func from_env(
         transport: OmniHTTP.HTTPTransport = OmniHTTP.URLSessionHTTPTransport(),
         modelCatalog: ModelCatalog = .default,
-        middleware: [Middleware] = []
+        middleware: [Middleware] = [],
+        completeMiddleware: [CompleteMiddleware] = [],
+        streamMiddleware: [StreamMiddleware] = [],
+        allowEmptyProviders: Bool = false
     ) throws -> Client {
-        try fromEnv(transport: transport, modelCatalog: modelCatalog, middleware: middleware)
+        try fromEnv(
+            transport: transport,
+            modelCatalog: modelCatalog,
+            middleware: middleware,
+            completeMiddleware: completeMiddleware,
+            streamMiddleware: streamMiddleware,
+            allowEmptyProviders: allowEmptyProviders
+        )
+    }
+
+    // Spec-style alias.
+    public static func from_env_allowing_empty(
+        transport: OmniHTTP.HTTPTransport = OmniHTTP.URLSessionHTTPTransport(),
+        modelCatalog: ModelCatalog = .default,
+        middleware: [Middleware] = [],
+        completeMiddleware: [CompleteMiddleware] = [],
+        streamMiddleware: [StreamMiddleware] = []
+    ) throws -> Client {
+        try fromEnvAllowingEmpty(
+            transport: transport,
+            modelCatalog: modelCatalog,
+            middleware: middleware,
+            completeMiddleware: completeMiddleware,
+            streamMiddleware: streamMiddleware
+        )
     }
 
     public func register(provider name: String, adapter: ProviderAdapter) {
-        providers[name] = adapter
+        _withStateLock {
+            providers[name] = adapter
+            if _defaultProvider == nil {
+                _defaultProvider = name
+            }
+        }
+    }
+
+    public func registerProvider(_ name: String, adapter: ProviderAdapter) {
+        register(provider: name, adapter: adapter)
+    }
+
+    public func setDefault(provider: String) {
+        _withStateLock {
+            _defaultProvider = provider
+        }
     }
 
     public func close() async {
-        for (_, adapter) in providers {
+        for (_, adapter) in _withStateLock({ providers }) {
             await adapter.close()
         }
     }
@@ -149,6 +301,7 @@ public final class Client: @unchecked Sendable {
 
     public func complete(_ request: Request) async throws -> Response {
         let adapter = try resolveAdapter(for: request)
+        let middleware = _withStateLock { _middleware }
         let base: @Sendable (Request) async throws -> Response = { req in
             try await adapter.complete(request: req)
         }
@@ -163,8 +316,13 @@ public final class Client: @unchecked Sendable {
         return try await handler(request)
     }
 
+    public func complete(request: Request) async throws -> Response {
+        try await complete(request)
+    }
+
     public func stream(_ request: Request) async throws -> AsyncThrowingStream<StreamEvent, Error> {
         let adapter = try resolveAdapter(for: request)
+        let middleware = _withStateLock { _middleware }
         let base: @Sendable (Request) async throws -> AsyncThrowingStream<StreamEvent, Error> = { req in
             try await adapter.stream(request: req)
         }
@@ -179,19 +337,45 @@ public final class Client: @unchecked Sendable {
         return try await handler(request)
     }
 
+    public func stream(request: Request) async throws -> AsyncThrowingStream<StreamEvent, Error> {
+        try await stream(request)
+    }
+
+    public func addMiddleware(_ middleware: Middleware) {
+        _withStateLock {
+            _middleware.append(middleware)
+        }
+    }
+
+    public func addMiddleware(_ middleware: @escaping CompleteMiddleware) {
+        addMiddleware(_ClosureMiddleware(complete: middleware, stream: nil))
+    }
+
+    public func addStreamMiddleware(_ middleware: @escaping StreamMiddleware) {
+        addMiddleware(_ClosureMiddleware(complete: nil, stream: middleware))
+    }
+
+    private func _withStateLock<T>(_ body: () throws -> T) rethrows -> T {
+        stateLock.lock()
+        defer { stateLock.unlock() }
+        return try body()
+    }
+
     private func resolveAdapter(for request: Request) throws -> ProviderAdapter {
-        if let p = request.provider {
-            guard let a = providers[p] else {
-                throw ConfigurationError(message: "Provider '\(p)' not configured")
+        try _withStateLock {
+            if let p = request.provider {
+                guard let a = providers[p] else {
+                    throw ConfigurationError(message: "Provider '\(p)' not configured")
+                }
+                return a
+            }
+            guard let def = _defaultProvider else {
+                throw ConfigurationError(message: "No default provider configured and request.provider is nil")
+            }
+            guard let a = providers[def] else {
+                throw ConfigurationError(message: "Default provider '\(def)' not configured")
             }
             return a
         }
-        guard let def = defaultProvider else {
-            throw ConfigurationError(message: "No default provider configured and request.provider is nil")
-        }
-        guard let a = providers[def] else {
-            throw ConfigurationError(message: "Default provider '\(def)' not configured")
-        }
-        return a
     }
 }

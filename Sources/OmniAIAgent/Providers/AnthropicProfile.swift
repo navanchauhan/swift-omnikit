@@ -1,5 +1,5 @@
 import Foundation
-import OmniAILLMClient
+import OmniAICore
 
 public final class AnthropicProfile: ProviderProfile, @unchecked Sendable {
 
@@ -128,7 +128,7 @@ public final class AnthropicProfile: ProviderProfile, @unchecked Sendable {
 
     // MARK: - Provider Options
 
-    public func providerOptions() -> [String: [String: AnyCodable]]? {
+    public func providerOptions() -> [String: JSONValue]? {
         return nil
     }
 }

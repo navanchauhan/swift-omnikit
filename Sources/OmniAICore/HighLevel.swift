@@ -467,6 +467,168 @@ public func generateObject(
     )
 }
 
+private func _parseJSONObjectFromUTF8(_ text: String) -> JSONValue? {
+    guard let data = text.data(using: .utf8),
+          let parsed = try? JSONValue.parse(data),
+          parsed.objectValue != nil else {
+        return nil
+    }
+    return parsed
+}
+
+/// A stream of parsed JSON objects derived from the text delta stream of `stream(...)`.
+/// It yields progressively more complete values whenever the accumulated text becomes valid JSON.
+public final class ObjectStreamResult<T>: AsyncSequence, @unchecked Sendable where T: Sendable {
+    public typealias Element = T
+
+    private let eventStream: AsyncThrowingStream<T, Error>
+    private let underlyingStream: StreamResult
+
+    init(eventStream: AsyncThrowingStream<T, Error>, underlyingStream: StreamResult) {
+        self.eventStream = eventStream
+        self.underlyingStream = underlyingStream
+    }
+
+    public struct AsyncIterator: AsyncIteratorProtocol {
+        var base: AsyncThrowingStream<T, Error>.AsyncIterator
+
+        public mutating func next() async throws -> T? {
+            try await base.next()
+        }
+    }
+
+    public func makeAsyncIterator() -> AsyncIterator {
+        AsyncIterator(base: eventStream.makeAsyncIterator())
+    }
+
+    /// Underlying stream result for access to metadata and final response.
+    public var rawStream: StreamResult {
+        underlyingStream
+    }
+}
+
+public func streamObject(
+    model: String,
+    prompt: String? = nil,
+    messages: [Message]? = nil,
+    system: String? = nil,
+    schema: JSONValue,
+    temperature: Double? = nil,
+    topP: Double? = nil,
+    maxTokens: Int? = nil,
+    stopSequences: [String]? = nil,
+    reasoningEffort: String? = nil,
+    metadata: [String: String]? = nil,
+    provider: String? = nil,
+    providerOptions: [String: JSONValue]? = nil,
+    maxRetries: Int = 2,
+    retryPolicy: RetryPolicy? = nil,
+    timeout: Timeout? = nil,
+    abortSignal: AbortSignal? = nil,
+    client: Client? = nil
+) async throws -> ObjectStreamResult<JSONValue> {
+    let baseStream = try await stream(
+        model: model,
+        prompt: prompt,
+        messages: messages,
+        system: system,
+        tools: nil,
+        toolChoice: nil,
+        maxToolRounds: 0,
+        stopWhen: nil,
+        responseFormat: ResponseFormat(type: "json_schema", jsonSchema: schema, strict: true),
+        temperature: temperature,
+        topP: topP,
+        maxTokens: maxTokens,
+        stopSequences: stopSequences,
+        reasoningEffort: reasoningEffort,
+        metadata: metadata,
+        provider: provider,
+        providerOptions: providerOptions,
+        maxRetries: maxRetries,
+        retryPolicy: retryPolicy,
+        timeout: timeout,
+        abortSignal: abortSignal,
+        client: client
+    )
+
+    let objectStream = AsyncThrowingStream<JSONValue, Error> { continuation in
+        let task = Task {
+            var accumulated = ""
+            var lastParsed: JSONValue?
+
+            do {
+                for try await event in baseStream {
+                    if event.type.rawValue == StreamEventType.textDelta.rawValue, let delta = event.delta {
+                        accumulated += delta
+                        if let parsed = _parseJSONObjectFromUTF8(accumulated), parsed != lastParsed {
+                            lastParsed = parsed
+                            continuation.yield(parsed)
+                        }
+                    }
+                }
+
+                if let parsed = _parseJSONObjectFromUTF8(accumulated), parsed != lastParsed {
+                    continuation.yield(parsed)
+                }
+
+                continuation.finish()
+            } catch {
+                continuation.finish(throwing: error)
+            }
+        }
+
+        continuation.onTermination = { _ in
+            task.cancel()
+        }
+    }
+
+    return ObjectStreamResult(eventStream: objectStream, underlyingStream: baseStream)
+}
+
+// Spec-style alias.
+public func stream_object(
+    model: String,
+    prompt: String? = nil,
+    messages: [Message]? = nil,
+    system: String? = nil,
+    schema: JSONValue,
+    temperature: Double? = nil,
+    topP: Double? = nil,
+    maxTokens: Int? = nil,
+    stopSequences: [String]? = nil,
+    reasoningEffort: String? = nil,
+    metadata: [String: String]? = nil,
+    provider: String? = nil,
+    providerOptions: [String: JSONValue]? = nil,
+    maxRetries: Int = 2,
+    retryPolicy: RetryPolicy? = nil,
+    timeout: Timeout? = nil,
+    abortSignal: AbortSignal? = nil,
+    client: Client? = nil
+) async throws -> ObjectStreamResult<JSONValue> {
+    try await streamObject(
+        model: model,
+        prompt: prompt,
+        messages: messages,
+        system: system,
+        schema: schema,
+        temperature: temperature,
+        topP: topP,
+        maxTokens: maxTokens,
+        stopSequences: stopSequences,
+        reasoningEffort: reasoningEffort,
+        metadata: metadata,
+        provider: provider,
+        providerOptions: providerOptions,
+        maxRetries: maxRetries,
+        retryPolicy: retryPolicy,
+        timeout: timeout,
+        abortSignal: abortSignal,
+        client: client
+    )
+}
+
 private actor _StreamFinal {
     private var response: Response?
     private var error: Error?

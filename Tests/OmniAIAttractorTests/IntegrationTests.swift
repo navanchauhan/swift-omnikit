@@ -1,7 +1,7 @@
 import XCTest
 import Foundation
 @testable import OmniAIAttractor
-import OmniAILLMClient
+import OmniAICore
 import OmniAIAgent
 
 // MARK: - Integration Tests with Real LLM Providers
@@ -54,7 +54,7 @@ final class IntegrationTests: XCTestCase {
         let logsRoot = try makeTempDir()
         defer { cleanup(logsRoot) }
 
-        let client = LLMClient.fromEnv()
+        let client = try Client.fromEnv()
         let backend = LLMKitBackend(client: client)
 
         let config = PipelineConfig(
@@ -825,7 +825,7 @@ final class IntegrationTests: XCTestCase {
     func testUnifiedE2EAllProviders() async throws {
         try requireUnifiedE2E()
 
-        let client = LLMClient.fromEnv()
+        let client = try Client.fromEnv()
         let providers: [(id: String, reasoning: String)] = [
             ("openai", "low"),
             ("anthropic", "high"),
@@ -835,7 +835,7 @@ final class IntegrationTests: XCTestCase {
         for item in providers {
             let model = e2eModel(provider: item.id)
 
-            // 1) OmniAILLMClient
+            // 1) OmniAICore
             let llmResult = try await generate(
                 model: model,
                 prompt: "Reply with exactly E2E_OK.",
@@ -846,7 +846,7 @@ final class IntegrationTests: XCTestCase {
             )
             XCTAssertFalse(
                 llmResult.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
-                "OmniAILLMClient returned empty text for \(item.id)"
+                "OmniAICore generate() returned empty text for \(item.id)"
             )
 
             // 2) OmniAIAgent
@@ -915,7 +915,7 @@ private struct MinimalE2EProfile: ProviderProfile {
         "You are a concise assistant. Follow the user's request exactly."
     }
 
-    func providerOptions() -> [String: [String: AnyCodable]]? {
+    func providerOptions() -> [String: JSONValue]? {
         nil
     }
 

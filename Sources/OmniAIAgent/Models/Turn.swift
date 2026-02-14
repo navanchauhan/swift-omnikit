@@ -1,5 +1,5 @@
 import Foundation
-import OmniAILLMClient
+import OmniAICore
 
 public enum Turn: Sendable {
     case user(UserTurn)

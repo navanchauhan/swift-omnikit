@@ -1,5 +1,5 @@
 import Foundation
-import OmniAILLMClient
+import OmniAICore
 
 // MARK: - Subagent Tools
 
@@ -47,7 +47,7 @@ public func spawnAgentTool(parentSession: Session) -> RegisteredTool {
             var subConfig = SessionConfig(maxTurns: maxTurns)
             subConfig.reasoningEffort = await parentSession.config.reasoningEffort
 
-            let subSession = Session(
+            let subSession = try Session(
                 profile: profile,
                 environment: subEnv,
                 client: client,

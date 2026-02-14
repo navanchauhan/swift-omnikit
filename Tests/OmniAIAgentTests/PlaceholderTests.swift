@@ -1,5 +1,5 @@
 import XCTest
-import OmniAILLMClient
+import OmniAICore
 @testable import OmniAIAgent
 
 final class TruncationTests: XCTestCase {
@@ -325,8 +325,8 @@ final class HistoryConversionTests: XCTestCase {
     func testToolResultsTurn() {
         // Verify ToolResultsTurn stores results
         let results = [
-            ToolResult(toolCallId: "1", content: "ok" as Any, isError: false),
-            ToolResult(toolCallId: "2", content: "error" as Any, isError: true),
+            ToolResult(toolCallId: "1", content: .string("ok"), isError: false),
+            ToolResult(toolCallId: "2", content: .string("error"), isError: true),
         ]
         let turn = ToolResultsTurn(results: results)
         XCTAssertEqual(turn.results.count, 2)
@@ -383,7 +383,7 @@ final class LoopDetectionTests: XCTestCase {
 
 final class SessionLifecycleTests: XCTestCase {
 
-    func testSessionLifecycleIdleToProcessingToIdle() async {
+    func testSessionLifecycleIdleToProcessingToIdle() async throws {
         let mockAdapter = MockProviderAdapter(fixedResponse: Response(
             id: "resp-1",
             model: "mock-model",
@@ -392,10 +392,10 @@ final class SessionLifecycleTests: XCTestCase {
             finishReason: .stop,
             usage: Usage(inputTokens: 10, outputTokens: 5)
         ))
-        let client = LLMClient(providers: ["anthropic": mockAdapter], defaultProvider: "anthropic")
+        let client = try Client(providers: ["anthropic": mockAdapter], defaultProvider: "anthropic")
         let env = MockExecutionEnvironment()
         let profile = AnthropicProfile()
-        let session = Session(profile: profile, environment: env, client: client)
+        let session = try Session(profile: profile, environment: env, client: client)
 
         // Initially idle
         let initialState = await session.getState()
@@ -427,7 +427,7 @@ final class SessionLifecycleTests: XCTestCase {
         }
     }
 
-    func testSessionAbortTransitionsToClosed() async {
+    func testSessionAbortTransitionsToClosed() async throws {
         let mockAdapter = MockProviderAdapter(fixedResponse: Response(
             id: "resp-1",
             model: "mock-model",
@@ -436,10 +436,10 @@ final class SessionLifecycleTests: XCTestCase {
             finishReason: .stop,
             usage: .zero
         ))
-        let client = LLMClient(providers: ["anthropic": mockAdapter], defaultProvider: "anthropic")
+        let client = try Client(providers: ["anthropic": mockAdapter], defaultProvider: "anthropic")
         let env = MockExecutionEnvironment()
         let profile = AnthropicProfile()
-        let session = Session(profile: profile, environment: env, client: client)
+        let session = try Session(profile: profile, environment: env, client: client)
 
         await session.abort()
 
@@ -447,7 +447,7 @@ final class SessionLifecycleTests: XCTestCase {
         XCTAssertEqual(state, .closed)
     }
 
-    func testSessionMultipleSequentialInputs() async {
+    func testSessionMultipleSequentialInputs() async throws {
         let mockAdapter = MockProviderAdapter(fixedResponse: Response(
             id: "resp-1",
             model: "mock-model",
@@ -456,10 +456,10 @@ final class SessionLifecycleTests: XCTestCase {
             finishReason: .stop,
             usage: .zero
         ))
-        let client = LLMClient(providers: ["anthropic": mockAdapter], defaultProvider: "anthropic")
+        let client = try Client(providers: ["anthropic": mockAdapter], defaultProvider: "anthropic")
         let env = MockExecutionEnvironment()
         let profile = AnthropicProfile()
-        let session = Session(profile: profile, environment: env, client: client)
+        let session = try Session(profile: profile, environment: env, client: client)
 
         await session.submit("First input")
         let stateAfterFirst = await session.getState()
@@ -474,7 +474,7 @@ final class SessionLifecycleTests: XCTestCase {
         XCTAssertGreaterThanOrEqual(history.count, 4)
     }
 
-    func testSessionEventsEmitted() async {
+    func testSessionEventsEmitted() async throws {
         let mockAdapter = MockProviderAdapter(fixedResponse: Response(
             id: "resp-1",
             model: "mock-model",
@@ -483,10 +483,10 @@ final class SessionLifecycleTests: XCTestCase {
             finishReason: .stop,
             usage: .zero
         ))
-        let client = LLMClient(providers: ["anthropic": mockAdapter], defaultProvider: "anthropic")
+        let client = try Client(providers: ["anthropic": mockAdapter], defaultProvider: "anthropic")
         let env = MockExecutionEnvironment()
         let profile = AnthropicProfile()
-        let session = Session(profile: profile, environment: env, client: client)
+        let session = try Session(profile: profile, environment: env, client: client)
 
         await session.submit("Test")
 

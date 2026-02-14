@@ -183,7 +183,7 @@ let package = Package(
         ),
         .target(
             name: "OmniAIAgent",
-            dependencies: ["OmniAILLMClient"],
+            dependencies: ["OmniAICore"],
             path: "Sources/OmniAIAgent",
             swiftSettings: [
                 .swiftLanguageMode(.v5),
@@ -192,7 +192,7 @@ let package = Package(
         ),
         .target(
             name: "OmniAIAttractor",
-            dependencies: ["OmniAILLMClient", "OmniAIAgent"],
+            dependencies: ["OmniAICore", "OmniAIAgent"],
             path: "Sources/OmniAIAttractor",
             swiftSettings: [
                 .swiftLanguageMode(.v5),
@@ -373,7 +373,7 @@ let package = Package(
         ),
         .testTarget(
             name: "OmniAIAgentTests",
-            dependencies: ["OmniAIAgent", "OmniAILLMClient"],
+            dependencies: ["OmniAIAgent", "OmniAICore"],
             swiftSettings: [
                 .swiftLanguageMode(.v5),
                 .unsafeFlags(["-warn-concurrency", "-strict-concurrency=minimal"]),
@@ -381,7 +381,7 @@ let package = Package(
         ),
         .testTarget(
             name: "OmniAIAttractorTests",
-            dependencies: ["OmniAIAttractor", "OmniAILLMClient", "OmniAIAgent"],
+            dependencies: ["OmniAIAttractor", "OmniAICore", "OmniAIAgent"],
             swiftSettings: [
                 .swiftLanguageMode(.v5),
                 .unsafeFlags(["-warn-concurrency", "-strict-concurrency=minimal"]),

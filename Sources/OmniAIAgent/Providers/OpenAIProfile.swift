@@ -1,5 +1,5 @@
 import Foundation
-import OmniAILLMClient
+import OmniAICore
 
 public final class OpenAIProfile: ProviderProfile, @unchecked Sendable {
     public let id = "openai"
@@ -182,7 +182,7 @@ public final class OpenAIProfile: ProviderProfile, @unchecked Sendable {
         return "Check with current date for recency"
     }
 
-    public func providerOptions() -> [String: [String: AnyCodable]]? {
+    public func providerOptions() -> [String: JSONValue]? {
         return nil
     }
 }

@@ -1,5 +1,5 @@
 import Foundation
-import OmniAILLMClient
+import OmniAICore
 
 public struct AgentToolDefinition: Sendable {
     public var name: String
@@ -12,8 +12,12 @@ public struct AgentToolDefinition: Sendable {
         self.parameters = parameters
     }
 
-    public func toLLMKitDefinition() -> ToolDefinition {
-        ToolDefinition(name: name, description: description, parameters: parameters)
+    public func toLLMKitDefinition() -> Tool {
+        do {
+            return try Tool(name: name, description: description, parameters: parameters)
+        } catch {
+            preconditionFailure("Invalid tool definition '\(name)': \(error)")
+        }
     }
 }
 
@@ -59,7 +63,7 @@ public final class ToolRegistry: @unchecked Sendable {
         return Array(tools.values.map { $0.definition })
     }
 
-    public func llmKitDefinitions() -> [ToolDefinition] {
+    public func llmKitDefinitions() -> [Tool] {
         definitions().map { $0.toLLMKitDefinition() }
     }
 

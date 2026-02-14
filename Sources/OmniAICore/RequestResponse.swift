@@ -10,6 +10,12 @@ public struct ResponseFormat: Sendable, Equatable {
         self.jsonSchema = jsonSchema
         self.strict = strict
     }
+
+    public static let text = ResponseFormat(type: "text")
+    public static let json = ResponseFormat(type: "json")
+    public static func jsonSchema(_ schema: JSONValue, strict: Bool = false) -> ResponseFormat {
+        ResponseFormat(type: "json_schema", jsonSchema: schema, strict: strict)
+    }
 }
 
 public struct FinishReason: Sendable, Equatable {
@@ -20,6 +26,13 @@ public struct FinishReason: Sendable, Equatable {
         self.reason = reason
         self.raw = raw
     }
+
+    public static let stop = FinishReason(reason: "stop")
+    public static let length = FinishReason(reason: "length")
+    public static let toolCalls = FinishReason(reason: "tool_calls")
+    public static let contentFilter = FinishReason(reason: "content_filter")
+    public static let error = FinishReason(reason: "error")
+    public static let other = FinishReason(reason: "other")
 }
 
 public struct Usage: Sendable, Equatable {
@@ -63,6 +76,8 @@ public struct Usage: Sendable, Equatable {
             raw: nil
         )
     }
+
+    public static let zero = Usage(inputTokens: 0, outputTokens: 0)
 }
 
 public struct Warning: Sendable, Equatable {
@@ -196,20 +211,9 @@ public struct Response: Sendable, Equatable {
 
     public var text: String { message.text }
 
-    public var toolCalls: [ToolCall] {
-        message.content.compactMap { part in
-            guard part.kind.rawValue == ContentKind.toolCall.rawValue else { return nil }
-            return part.toolCall
-        }
-    }
+    public var toolCalls: [ToolCall] { message.toolCalls }
 
-    public var reasoning: String? {
-        let parts: [String] = message.content.compactMap { (part: ContentPart) -> String? in
-            guard part.kind.rawValue == ContentKind.thinking.rawValue || part.kind.rawValue == ContentKind.redactedThinking.rawValue else { return nil }
-            return part.thinking?.text
-        }
-        return parts.isEmpty ? nil : parts.joined()
-    }
+    public var reasoning: String? { message.reasoning }
 }
 
 public struct ToolResult: Sendable, Equatable {

@@ -1,13 +1,13 @@
 import Foundation
-import OmniAILLMClient
+import OmniAICore
 
 // MARK: - LLMKit Backend
 
 public final class LLMKitBackend: CodergenBackend, @unchecked Sendable {
-    private let client: LLMClient
+    private let client: Client?
 
-    public init(client: LLMClient? = nil) {
-        self.client = client ?? LLMClient.fromEnv()
+    public init(client: Client? = nil) {
+        self.client = client
     }
 
     public func run(
@@ -17,6 +17,7 @@ public final class LLMKitBackend: CodergenBackend, @unchecked Sendable {
         reasoningEffort: String,
         context: PipelineContext
     ) async throws -> CodergenResult {
+        let resolvedClient = try (client ?? Client.fromEnv())
         let goal = context.getString("_graph_goal")
         let systemPrompt = buildSystemPrompt(goal: goal, context: context)
 
@@ -26,7 +27,7 @@ public final class LLMKitBackend: CodergenBackend, @unchecked Sendable {
             system: systemPrompt,
             reasoningEffort: reasoningEffort,
             provider: provider,
-            client: client
+            client: resolvedClient
         )
 
         let response = result.text
@@ -127,6 +128,5 @@ public final class LLMKitBackend: CodergenBackend, @unchecked Sendable {
         return nsText.substring(with: lastMatch.range(at: 1))
     }
 }
-
 
 

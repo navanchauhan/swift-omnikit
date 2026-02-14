@@ -1,5 +1,5 @@
 import Foundation
-import OmniAILLMClient
+import OmniAICore
 
 public struct GitContext: Sendable {
     public var branch: String?
@@ -15,7 +15,7 @@ public actor Session {
     public let eventEmitter: EventEmitter
     public var config: SessionConfig
     public private(set) var state: SessionState = .idle
-    public let llmClient: LLMClient
+    public let llmClient: Client
     private var steeringQueue: [String] = []
     private var followupQueue: [String] = []
     private var subagents: [String: SubAgentHandle] = [:]
@@ -26,10 +26,10 @@ public actor Session {
     public init(
         profile: ProviderProfile,
         environment: ExecutionEnvironment,
-        client: LLMClient? = nil,
+        client: Client? = nil,
         config: SessionConfig = SessionConfig(),
         depth: Int = 0
-    ) {
+    ) throws {
         self.id = UUID().uuidString
         self.providerProfile = profile
         self.executionEnv = environment
@@ -40,7 +40,7 @@ public actor Session {
         if let client = client {
             self.llmClient = client
         } else {
-            self.llmClient = LLMClient.fromEnv()
+            self.llmClient = try Client.fromEnv()
         }
     }
 
@@ -272,7 +272,7 @@ public actor Session {
                 sessionId: id,
                 data: ["call_id": toolCall.id, "error": errorMsg]
             ))
-            return ToolResult(toolCallId: toolCall.id, content: errorMsg, isError: true)
+            return ToolResult(toolCallId: toolCall.id, content: .string(errorMsg), isError: true)
         }
 
         // Validate arguments against tool parameter schema
@@ -282,11 +282,24 @@ public actor Session {
                 sessionId: id,
                 data: ["call_id": toolCall.id, "error": validationError]
             ))
-            return ToolResult(toolCallId: toolCall.id, content: validationError, isError: true)
+            return ToolResult(toolCallId: toolCall.id, content: .string(validationError), isError: true)
+        }
+
+        let foundationArguments: [String: Any]
+        do {
+            foundationArguments = try toolCall.arguments.mapValues { try $0.asFoundationObject() }
+        } catch {
+            let conversionError = "Invalid tool arguments for \(toolCall.name): \(error)"
+            await eventEmitter.emit(SessionEvent(
+                kind: .toolCallEnd,
+                sessionId: id,
+                data: ["call_id": toolCall.id, "error": conversionError]
+            ))
+            return ToolResult(toolCallId: toolCall.id, content: .string(conversionError), isError: true)
         }
 
         do {
-            let rawOutput = try await registered.executor(toolCall.arguments, executionEnv)
+            let rawOutput = try await registered.executor(foundationArguments, executionEnv)
             let truncatedOutput = truncateToolOutput(rawOutput, toolName: toolCall.name, config: config)
 
             await eventEmitter.emit(SessionEvent(
@@ -295,7 +308,7 @@ public actor Session {
                 data: ["call_id": toolCall.id, "output": rawOutput, "truncated": "\(rawOutput.count != truncatedOutput.count)"]
             ))
 
-            return ToolResult(toolCallId: toolCall.id, content: truncatedOutput, isError: false)
+            return ToolResult(toolCallId: toolCall.id, content: .string(truncatedOutput), isError: false)
         } catch {
             let errorMsg = "Tool error (\(toolCall.name)): \(error)"
             await eventEmitter.emit(SessionEvent(
@@ -303,7 +316,7 @@ public actor Session {
                 sessionId: id,
                 data: ["call_id": toolCall.id, "error": errorMsg]
             ))
-            return ToolResult(toolCallId: toolCall.id, content: errorMsg, isError: true)
+            return ToolResult(toolCallId: toolCall.id, content: .string(errorMsg), isError: true)
         }
     }
 
@@ -322,11 +335,7 @@ public actor Session {
                     parts.append(.text(t.content))
                 }
                 for tc in t.toolCalls {
-                    parts.append(.toolCall(ToolCallData(
-                        id: tc.id,
-                        name: tc.name,
-                        arguments: AnyCodable(tc.arguments)
-                    )))
+                    parts.append(.toolCall(tc))
                 }
                 if parts.isEmpty {
                     parts.append(.text(""))
@@ -336,7 +345,7 @@ public actor Session {
                 for result in t.results {
                     messages.append(.toolResult(
                         toolCallId: result.toolCallId,
-                        content: result.contentString,
+                        content: result.content,
                         isError: result.isError
                     ))
                 }
@@ -386,9 +395,9 @@ public actor Session {
         return signatures
     }
 
-    private func stableHash(_ dict: [String: Any]) -> String {
+    private func stableHash(_ dict: [String: JSONValue]) -> String {
         let sorted = dict.sorted(by: { $0.key < $1.key })
-        let desc = sorted.map { "\($0.key)=\($0.value)" }.joined(separator: ",")
+        let desc = sorted.map { "\($0.key)=\(stableValueDescription($0.value))" }.joined(separator: ",")
         var hasher = Hasher()
         hasher.combine(desc)
         return "\(hasher.finalize())"
@@ -396,7 +405,7 @@ public actor Session {
 
     // MARK: - Tool Argument Validation
 
-    private func validateToolArguments(_ args: [String: Any], against schema: [String: Any]) -> String? {
+    private func validateToolArguments(_ args: [String: JSONValue], against schema: [String: Any]) -> String? {
         // Check required fields
         if let required = schema["required"] as? [String] {
             for field in required {
@@ -413,26 +422,21 @@ public actor Session {
                    let expectedType = propSchema["type"] as? String {
                     switch expectedType {
                     case "string":
-                        if !(value is String) { return "Field '\(key)' must be string" }
+                        if value.stringValue == nil { return "Field '\(key)' must be string" }
                     case "integer":
-                        if !(value is Int) && !(value is Int64) && !(value is Int32) {
-                            // JSON numbers may come as Double; accept whole numbers
-                            if let d = value as? Double, d == d.rounded() {
-                                // acceptable integer value
-                            } else {
-                                return "Field '\(key)' must be integer"
-                            }
+                        guard let n = value.doubleValue, n.rounded() == n else {
+                            return "Field '\(key)' must be integer"
                         }
                     case "number":
-                        if !(value is Int) && !(value is Int64) && !(value is Double) && !(value is Float) {
+                        if value.doubleValue == nil {
                             return "Field '\(key)' must be number"
                         }
                     case "boolean":
-                        if !(value is Bool) { return "Field '\(key)' must be boolean" }
+                        if value.boolValue == nil { return "Field '\(key)' must be boolean" }
                     case "array":
-                        if !(value is [Any]) { return "Field '\(key)' must be array" }
+                        if value.arrayValue == nil { return "Field '\(key)' must be array" }
                     case "object":
-                        if !(value is [String: Any]) { return "Field '\(key)' must be object" }
+                        if value.objectValue == nil { return "Field '\(key)' must be object" }
                     default:
                         break
                     }
@@ -466,7 +470,7 @@ public actor Session {
             switch turn {
             case .user(let t): total += t.content.count
             case .assistant(let t): total += t.content.count + (t.reasoning?.count ?? 0)
-            case .toolResults(let t): total += t.results.reduce(0) { $0 + $1.contentString.count }
+            case .toolResults(let t): total += t.results.reduce(0) { $0 + stringifyJSONValue($1.content).count }
             case .system(let t): total += t.content.count
             case .steering(let t): total += t.content.count
             }
@@ -476,6 +480,33 @@ public actor Session {
 
     private func countTurns() -> Int {
         history.count
+    }
+
+    private func stableValueDescription(_ value: JSONValue) -> String {
+        switch value {
+        case .null:
+            return "null"
+        case .bool(let b):
+            return b ? "true" : "false"
+        case .number(let n):
+            return String(n)
+        case .string(let s):
+            return "\"\(s)\""
+        case .array(let arr):
+            return "[" + arr.map(stableValueDescription).joined(separator: ",") + "]"
+        case .object(let obj):
+            let parts = obj.keys.sorted().map { key in
+                "\(key):\(stableValueDescription(obj[key]!))"
+            }
+            return "{\(parts.joined(separator: ","))}"
+        }
+    }
+
+    private func stringifyJSONValue(_ value: JSONValue) -> String {
+        if case .string(let s) = value {
+            return s
+        }
+        return stableValueDescription(value)
     }
 
     // MARK: - Project Doc Discovery
