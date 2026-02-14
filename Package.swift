@@ -40,6 +40,18 @@ let package = Package(
             targets: ["OmniAICore"]
         ),
         .library(
+            name: "OmniAILLMClient",
+            targets: ["OmniAILLMClient"]
+        ),
+        .library(
+            name: "OmniAIAgent",
+            targets: ["OmniAIAgent"]
+        ),
+        .library(
+            name: "OmniAIAttractor",
+            targets: ["OmniAIAttractor"]
+        ),
+        .library(
             name: "OmniUICore",
             targets: ["OmniUICore"]
         ),
@@ -159,6 +171,32 @@ let package = Package(
             swiftSettings: [
                 .unsafeFlags(["-warn-concurrency", "-strict-concurrency=complete"]),
                 .unsafeFlags(["-enable-actor-data-race-checks"], .when(configuration: .debug)),
+            ]
+        ),
+        .target(
+            name: "OmniAILLMClient",
+            path: "Sources/OmniAILLMClient",
+            swiftSettings: [
+                .swiftLanguageMode(.v5),
+                .unsafeFlags(["-warn-concurrency", "-strict-concurrency=minimal"]),
+            ]
+        ),
+        .target(
+            name: "OmniAIAgent",
+            dependencies: ["OmniAILLMClient"],
+            path: "Sources/OmniAIAgent",
+            swiftSettings: [
+                .swiftLanguageMode(.v5),
+                .unsafeFlags(["-warn-concurrency", "-strict-concurrency=minimal"]),
+            ]
+        ),
+        .target(
+            name: "OmniAIAttractor",
+            dependencies: ["OmniAILLMClient", "OmniAIAgent"],
+            path: "Sources/OmniAIAttractor",
+            swiftSettings: [
+                .swiftLanguageMode(.v5),
+                .unsafeFlags(["-warn-concurrency", "-strict-concurrency=minimal"]),
             ]
         ),
         .target(
@@ -324,6 +362,30 @@ let package = Package(
         .testTarget(
             name: "OmniAICoreTests",
             dependencies: ["OmniAICore"]
+        ),
+        .testTarget(
+            name: "OmniAILLMClientTests",
+            dependencies: ["OmniAILLMClient"],
+            swiftSettings: [
+                .swiftLanguageMode(.v5),
+                .unsafeFlags(["-warn-concurrency", "-strict-concurrency=minimal"]),
+            ]
+        ),
+        .testTarget(
+            name: "OmniAIAgentTests",
+            dependencies: ["OmniAIAgent", "OmniAILLMClient"],
+            swiftSettings: [
+                .swiftLanguageMode(.v5),
+                .unsafeFlags(["-warn-concurrency", "-strict-concurrency=minimal"]),
+            ]
+        ),
+        .testTarget(
+            name: "OmniAIAttractorTests",
+            dependencies: ["OmniAIAttractor", "OmniAILLMClient", "OmniAIAgent"],
+            swiftSettings: [
+                .swiftLanguageMode(.v5),
+                .unsafeFlags(["-warn-concurrency", "-strict-concurrency=minimal"]),
+            ]
         ),
         .testTarget(
             name: "OmniUICoreTests",
