@@ -70,10 +70,11 @@ final class IntegrationSmokeTests: XCTestCase {
             if hasKey("OPENAI_API_KEY", env: dotEnv) { providers.append("openai") }
             if hasKey("ANTHROPIC_API_KEY", env: dotEnv) { providers.append("anthropic") }
             if hasKey("GEMINI_API_KEY", env: dotEnv) || hasKey("GOOGLE_API_KEY", env: dotEnv) { providers.append("gemini") }
+            if hasKey("CEREBRAS_API_KEY", env: dotEnv) { providers.append("cerebras") }
             if !providers.isEmpty { return providers }
         }
 
-        return ["openai", "anthropic", "gemini"]
+        return ["openai", "anthropic", "gemini", "cerebras"]
     }
 
     private func integrationModel(provider: String, client: Client, env: [String: String]) -> String? {
@@ -90,6 +91,17 @@ final class IntegrationSmokeTests: XCTestCase {
             return (env["ANTHROPIC_INTEGRATION_MODEL"]?.isEmpty == false ? env["ANTHROPIC_INTEGRATION_MODEL"] : nil) ?? "claude-haiku-4-5"
         case "gemini":
             return (env["GEMINI_INTEGRATION_MODEL"]?.isEmpty == false ? env["GEMINI_INTEGRATION_MODEL"] : nil) ?? "gemini-3-flash-preview"
+        case "cerebras":
+            return (env["CEREBRAS_INTEGRATION_MODEL"]?.isEmpty == false ? env["CEREBRAS_INTEGRATION_MODEL"] : nil) ?? "zai-glm-4.7"
+        default:
+            return nil
+        }
+    }
+
+    private func integrationProviderOptions(provider: String) -> [String: JSONValue]? {
+        switch provider {
+        case "cerebras":
+            return ["cerebras": .object(["disable_reasoning": .bool(true)])]
         default:
             return nil
         }
@@ -107,6 +119,7 @@ final class IntegrationSmokeTests: XCTestCase {
                 case "openai": return "OPENAI_API_KEY"
                 case "anthropic": return "ANTHROPIC_API_KEY"
                 case "gemini": return (hasKey("GEMINI_API_KEY", env: env) ? "GEMINI_API_KEY" : "GOOGLE_API_KEY")
+                case "cerebras": return "CEREBRAS_API_KEY"
                 default: return ""
                 }
             }()
@@ -125,6 +138,7 @@ final class IntegrationSmokeTests: XCTestCase {
                     maxTokens: 128,
                     reasoningEffort: provider == "openai" ? "low" : nil,
                     provider: provider,
+                    providerOptions: integrationProviderOptions(provider: provider),
                     maxRetries: 1,
                     client: client
                 )
@@ -162,6 +176,7 @@ final class IntegrationSmokeTests: XCTestCase {
                 case "openai": return "OPENAI_API_KEY"
                 case "anthropic": return "ANTHROPIC_API_KEY"
                 case "gemini": return (hasKey("GEMINI_API_KEY", env: env) ? "GEMINI_API_KEY" : "GOOGLE_API_KEY")
+                case "cerebras": return "CEREBRAS_API_KEY"
                 default: return ""
                 }
             }()
@@ -180,6 +195,7 @@ final class IntegrationSmokeTests: XCTestCase {
                     maxTokens: 128,
                     reasoningEffort: provider == "openai" ? "low" : nil,
                     provider: provider,
+                    providerOptions: integrationProviderOptions(provider: provider),
                     maxRetries: 1,
                     client: client
                 )
@@ -235,6 +251,7 @@ final class IntegrationSmokeTests: XCTestCase {
                 case "openai": return "OPENAI_API_KEY"
                 case "anthropic": return "ANTHROPIC_API_KEY"
                 case "gemini": return (hasKey("GEMINI_API_KEY", env: env) ? "GEMINI_API_KEY" : "GOOGLE_API_KEY")
+                case "cerebras": return "CEREBRAS_API_KEY"
                 default: return ""
                 }
             }()
@@ -256,6 +273,7 @@ final class IntegrationSmokeTests: XCTestCase {
                     maxTokens: 128,
                     reasoningEffort: provider == "openai" ? "low" : nil,
                     provider: provider,
+                    providerOptions: integrationProviderOptions(provider: provider),
                     // Live providers can return transient 5xx/429s; keep this smoke test resilient.
                     maxRetries: 1,
                     client: client
@@ -275,5 +293,40 @@ final class IntegrationSmokeTests: XCTestCase {
             XCTAssertTrue(result.steps.count >= 2, "provider=\(provider) model=\(model)")
             XCTAssertTrue(result.text.contains("4"), "provider=\(provider) model=\(model) text=\(result.text)")
         }
+    }
+
+    func testCerebrasReasoningMode() async throws {
+        try requireIntegration()
+
+        let env = integrationEnvironment()
+        guard hasKey("CEREBRAS_API_KEY", env: env) else {
+            throw XCTSkip("CEREBRAS_API_KEY not set, skipping Cerebras reasoning integration test.")
+        }
+
+        let client = try Client.fromEnv(environment: env)
+        guard let model = integrationModel(provider: "cerebras", client: client, env: env) else {
+            XCTFail("No integration model resolved for provider cerebras")
+            return
+        }
+
+        let result = try await generate(
+            model: model,
+            prompt: "Think through how to add 17 and 25, then answer with the final sum only.",
+            maxTokens: 128,
+            provider: "cerebras",
+            providerOptions: ["cerebras": .object(["disable_reasoning": .bool(false)])],
+            maxRetries: 1,
+            client: client
+        )
+
+        // In reasoning mode, some responses may only emit reasoning text and terminate by token budget.
+        XCTAssertTrue(
+            (result.usage.reasoningTokens ?? 0) > 0 || !(result.reasoning?.isEmpty ?? true),
+            "provider=cerebras model=\(model) expected reasoning tokens/text"
+        )
+        XCTAssertTrue(
+            ["stop", "length", "other"].contains(result.finishReason.reason),
+            "provider=cerebras model=\(model) finish=\(result.finishReason.reason)"
+        )
     }
 }

@@ -150,5 +150,39 @@ final class FromEnvTests: XCTestCase {
         let sent = try XCTUnwrap(sentOpt)
         XCTAssertTrue(sent.url.absoluteString.contains("key=google-test"))
     }
-}
 
+    func testFromEnvRegistersCerebras() async throws {
+        let responseJSON: JSONValue = .object([
+            "id": .string("chatcmpl_1"),
+            "model": .string("zai-glm-4.7"),
+            "choices": .array([
+                .object([
+                    "index": .number(0),
+                    "message": .object([
+                        "role": .string("assistant"),
+                        "content": .string("ok"),
+                    ]),
+                    "finish_reason": .string("stop"),
+                ]),
+            ]),
+            "usage": .object(["prompt_tokens": .number(1), "completion_tokens": .number(1)]),
+        ])
+
+        let transport = CapturingTransport(
+            response: HTTPResponse(statusCode: 200, headers: HTTPHeaders(), body: Array(try responseJSON.data()))
+        )
+
+        let client = try Client.fromEnv(
+            environment: ["CEREBRAS_API_KEY": "cerebras-test"],
+            transport: transport
+        )
+
+        let resp = try await client.complete(Request(model: "zai-glm-4.7", messages: [.user("hi")]))
+        XCTAssertEqual(resp.provider, "cerebras")
+
+        let sentOpt = await transport.lastSendRequest
+        let sent = try XCTUnwrap(sentOpt)
+        XCTAssertEqual(sent.headers.firstValue(for: "authorization"), "Bearer cerebras-test")
+        XCTAssertTrue(sent.url.absoluteString.contains("/chat/completions"))
+    }
+}

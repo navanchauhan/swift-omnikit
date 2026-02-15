@@ -97,6 +97,85 @@ public enum KnownModels {
             outputCostPerMillion: nil,
             aliases: ["gemini-3-flash", "latest-gemini"]
         ),
+
+        // Cerebras
+        ModelInfo(
+            id: "zai-glm-4.7",
+            provider: "cerebras",
+            displayName: "Z.AI GLM 4.7 (Preview)",
+            contextWindow: 131_072,
+            maxOutput: nil,
+            supportsTools: true,
+            supportsVision: true,
+            supportsReasoning: true,
+            inputCostPerMillion: nil,
+            outputCostPerMillion: nil,
+            aliases: ["glm-4.7", "latest-cerebras"]
+        ),
+        ModelInfo(
+            id: "qwen-3-235b-a22b-instruct-2507",
+            provider: "cerebras",
+            displayName: "Qwen 3 235B A22B Instruct 2507",
+            contextWindow: 131_072,
+            maxOutput: nil,
+            supportsTools: true,
+            supportsVision: true,
+            supportsReasoning: true,
+            inputCostPerMillion: nil,
+            outputCostPerMillion: nil,
+            aliases: ["qwen-3-235b"]
+        ),
+        ModelInfo(
+            id: "gpt-oss-120b",
+            provider: "cerebras",
+            displayName: "GPT-OSS 120B",
+            contextWindow: 131_072,
+            maxOutput: nil,
+            supportsTools: true,
+            supportsVision: true,
+            supportsReasoning: true,
+            inputCostPerMillion: nil,
+            outputCostPerMillion: nil,
+            aliases: ["gpt-oss", "oss-120b"]
+        ),
+        ModelInfo(
+            id: "qwen-3-32b",
+            provider: "cerebras",
+            displayName: "Qwen 3 32B",
+            contextWindow: 131_072,
+            maxOutput: nil,
+            supportsTools: true,
+            supportsVision: true,
+            supportsReasoning: true,
+            inputCostPerMillion: nil,
+            outputCostPerMillion: nil,
+            aliases: ["qwen-3", "qwen-32b"]
+        ),
+        ModelInfo(
+            id: "llama-3.3-70b",
+            provider: "cerebras",
+            displayName: "Llama 3.3 70B",
+            contextWindow: 131_072,
+            maxOutput: nil,
+            supportsTools: true,
+            supportsVision: true,
+            supportsReasoning: true,
+            inputCostPerMillion: nil,
+            outputCostPerMillion: nil,
+            aliases: ["llama-3.3", "llama-70b"]
+        ),
+        ModelInfo(
+            id: "llama3.1-8b",
+            provider: "cerebras",
+            displayName: "Llama 3.1 8B",
+            contextWindow: 131_072,
+            maxOutput: nil,
+            supportsTools: true,
+            supportsVision: true,
+            supportsReasoning: true,
+            inputCostPerMillion: nil,
+            outputCostPerMillion: nil,
+            aliases: ["llama-3.1", "llama-8b"]
+        ),
     ]
 }
-

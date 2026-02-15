@@ -783,6 +783,83 @@ final class ProviderAdapterTests: XCTestCase {
         XCTAssertNotNil(body["safetySettings"])
     }
 
+    func testCerebrasAdapterBuildsChatCompletionsRequestAndParsesUsage() async throws {
+        let responseJSON: JSONValue = .object([
+            "id": .string("chatcmpl_1"),
+            "model": .string("zai-glm-4.7"),
+            "choices": .array([
+                .object([
+                    "index": .number(0),
+                    "message": .object([
+                        "role": .string("assistant"),
+                        "content": .string("Hello"),
+                    ]),
+                    "finish_reason": .string("stop"),
+                ]),
+            ]),
+            "usage": .object([
+                "prompt_tokens": .number(5),
+                "completion_tokens": .number(7),
+                "completion_tokens_details": .object(["reasoning_tokens": .number(2)]),
+                "prompt_tokens_details": .object(["cached_tokens": .number(3)]),
+            ]),
+        ])
+
+        let transport = StubTransport(send: { _ in
+            HTTPResponse(statusCode: 200, headers: HTTPHeaders(), body: Array(try responseJSON.data()))
+        })
+
+        let adapter = CerebrasAdapter(apiKey: "cerebras-test", baseURL: "https://api.cerebras.ai/v1", transport: transport)
+
+        let schema: JSONValue = .object(["type": .string("object")])
+        let tool = try Tool(name: "t", description: "tool", parameters: schema)
+        let priorCall = ToolCall(id: "call_1", name: "add", arguments: ["a": .number(1), "b": .number(2)], rawArguments: #"{"a":1,"b":2}"#)
+
+        let req = Request(
+            model: "zai-glm-4.7",
+            messages: [
+                .system("sys"),
+                .developer("dev"),
+                .user("hi"),
+                Message(role: .assistant, content: [.text("calling tool"), .toolCall(priorCall)]),
+                .toolResult(toolCallId: "call_1", toolName: "add", content: .number(3), isError: false),
+            ],
+            tools: [tool],
+            toolChoice: ToolChoice(mode: .named, toolName: "t"),
+            maxTokens: 256,
+            providerOptions: ["cerebras": .object(["disable_reasoning": .bool(true)])]
+        )
+
+        let resp = try await adapter.complete(request: req)
+        XCTAssertEqual(resp.text, "Hello")
+        XCTAssertEqual(resp.usage.inputTokens, 5)
+        XCTAssertEqual(resp.usage.outputTokens, 7)
+        XCTAssertEqual(resp.usage.reasoningTokens, 2)
+        XCTAssertEqual(resp.usage.cacheReadTokens, 3)
+
+        let sentOpt = await transport.lastSendRequest
+        let sent = try XCTUnwrap(sentOpt)
+        XCTAssertTrue(sent.url.absoluteString.contains("/chat/completions"))
+        XCTAssertEqual(sent.headers.firstValue(for: "authorization"), "Bearer cerebras-test")
+
+        let body = try JSONValue.parse(bodyBytes(sent))
+        XCTAssertEqual(body["model"]?.stringValue, "zai-glm-4.7")
+        XCTAssertEqual(body["max_tokens"]?.doubleValue, 256)
+        XCTAssertEqual(body["disable_reasoning"]?.boolValue, true)
+        XCTAssertEqual(body["tool_choice"]?["type"]?.stringValue, "function")
+        XCTAssertEqual(body["tool_choice"]?["function"]?["name"]?.stringValue, "t")
+
+        let tools = body["tools"]?.arrayValue ?? []
+        XCTAssertEqual(tools.first?["type"]?.stringValue, "function")
+        XCTAssertEqual(tools.first?["function"]?["name"]?.stringValue, "t")
+
+        let messages = body["messages"]?.arrayValue ?? []
+        XCTAssertEqual(messages.first?["role"]?.stringValue, "system")
+        XCTAssertEqual(messages[1]["role"]?.stringValue, "system")
+        XCTAssertEqual(messages.last?["role"]?.stringValue, "tool")
+        XCTAssertEqual(messages.last?["tool_call_id"]?.stringValue, "call_1")
+    }
+
     func testOpenAIAdapterStreamingMapsTextEvents() async throws {
         let completedJSON: JSONValue = .object([
             "type": .string("response.completed"),
@@ -911,6 +988,64 @@ final class ProviderAdapterTests: XCTestCase {
 
         XCTAssertEqual(chunks.joined(), "hello")
         XCTAssertEqual(finish?.text, "hello")
+    }
+
+    func testCerebrasAdapterStreamingMapsTextAndToolCallEvents() async throws {
+        let sse = """
+        data: {\"id\":\"chatcmpl_1\",\"model\":\"zai-glm-4.7\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"he\"},\"finish_reason\":null}]}
+
+        data: {\"id\":\"chatcmpl_1\",\"model\":\"zai-glm-4.7\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"llo\"},\"finish_reason\":null}]}
+
+        data: {\"id\":\"chatcmpl_1\",\"model\":\"zai-glm-4.7\",\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call_1\",\"type\":\"function\",\"function\":{\"name\":\"add\",\"arguments\":\"{\\\"a\\\":1\"}}]},\"finish_reason\":null}]}
+
+        data: {\"id\":\"chatcmpl_1\",\"model\":\"zai-glm-4.7\",\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"function\":{\"arguments\":\",\\\"b\\\":2}\"}}]},\"finish_reason\":\"tool_calls\"}],\"usage\":{\"prompt_tokens\":5,\"completion_tokens\":7}}
+
+        data: [DONE]
+
+        """
+
+        let transport = StubTransport(stream: { _ in
+            HTTPStreamResponse(statusCode: 200, headers: HTTPHeaders(), body: streamFromSSE(sse))
+        })
+
+        let adapter = CerebrasAdapter(apiKey: "cerebras-test", transport: transport)
+        let stream = try await adapter.stream(request: Request(model: "zai-glm-4.7", messages: [.user("hi")]))
+
+        var chunks: [String] = []
+        var seenToolStart = false
+        var seenToolDelta = false
+        var seenToolEnd = false
+        var finish: Response?
+
+        for try await ev in stream {
+            if ev.type.rawValue == StreamEventType.textDelta.rawValue {
+                chunks.append(ev.delta ?? "")
+            }
+            if ev.type.rawValue == StreamEventType.toolCallStart.rawValue {
+                seenToolStart = true
+                XCTAssertEqual(ev.toolCall?.id, "call_1")
+                XCTAssertEqual(ev.toolCall?.name, "add")
+            }
+            if ev.type.rawValue == StreamEventType.toolCallDelta.rawValue {
+                seenToolDelta = true
+                XCTAssertTrue((ev.toolCall?.rawArguments ?? "").contains("\"a\""))
+            }
+            if ev.type.rawValue == StreamEventType.toolCallEnd.rawValue {
+                seenToolEnd = true
+                XCTAssertEqual(ev.toolCall?.arguments["a"]?.doubleValue, 1)
+                XCTAssertEqual(ev.toolCall?.arguments["b"]?.doubleValue, 2)
+            }
+            if ev.type.rawValue == StreamEventType.finish.rawValue {
+                finish = ev.response
+            }
+        }
+
+        XCTAssertEqual(chunks.joined(), "hello")
+        XCTAssertTrue(seenToolStart)
+        XCTAssertTrue(seenToolDelta)
+        XCTAssertTrue(seenToolEnd)
+        XCTAssertEqual(finish?.finishReason.reason, "tool_calls")
+        XCTAssertEqual(finish?.toolCalls.first?.name, "add")
     }
 
     func testOpenAIAdapterTranslatesAllRolesAndToolRoundTrip() async throws {
@@ -1233,6 +1368,52 @@ final class ProviderAdapterTests: XCTestCase {
             let allowed = body["toolConfig"]?["functionCallingConfig"]?["allowedFunctionNames"]?.arrayValue?.compactMap { $0.stringValue } ?? []
             XCTAssertEqual(allowed, ["t"])
         }
+
+        // Cerebras
+        do {
+            let responseJSON: JSONValue = .object([
+                "id": .string("chatcmpl_1"),
+                "model": .string("zai-glm-4.7"),
+                "choices": .array([
+                    .object([
+                        "index": .number(0),
+                        "message": .object([
+                            "role": .string("assistant"),
+                            "content": .string("ok"),
+                        ]),
+                        "finish_reason": .string("stop"),
+                    ]),
+                ]),
+                "usage": .object(["prompt_tokens": .number(1), "completion_tokens": .number(1)]),
+            ])
+            let transport = StubTransport(send: { _ in
+                HTTPResponse(statusCode: 200, headers: HTTPHeaders(), body: Array(try responseJSON.data()))
+            })
+            let adapter = CerebrasAdapter(apiKey: "cerebras-test", transport: transport)
+
+            func lastBody() async throws -> JSONValue {
+                let sentOpt = await transport.lastSendRequest
+                let sent = try XCTUnwrap(sentOpt)
+                return try JSONValue.parse(bodyBytes(sent))
+            }
+
+            _ = try await adapter.complete(request: Request(model: "zai-glm-4.7", messages: [.user("hi")], tools: [tool], toolChoice: ToolChoice(mode: .auto)))
+            var body = try await lastBody()
+            XCTAssertEqual(body["tool_choice"]?.stringValue, "auto")
+
+            _ = try await adapter.complete(request: Request(model: "zai-glm-4.7", messages: [.user("hi")], tools: [tool], toolChoice: ToolChoice(mode: .none)))
+            body = try await lastBody()
+            XCTAssertEqual(body["tool_choice"]?.stringValue, "none")
+
+            _ = try await adapter.complete(request: Request(model: "zai-glm-4.7", messages: [.user("hi")], tools: [tool], toolChoice: ToolChoice(mode: .required)))
+            body = try await lastBody()
+            XCTAssertEqual(body["tool_choice"]?.stringValue, "required")
+
+            _ = try await adapter.complete(request: Request(model: "zai-glm-4.7", messages: [.user("hi")], tools: [tool], toolChoice: ToolChoice(mode: .named, toolName: "t")))
+            body = try await lastBody()
+            XCTAssertEqual(body["tool_choice"]?["type"]?.stringValue, "function")
+            XCTAssertEqual(body["tool_choice"]?["function"]?["name"]?.stringValue, "t")
+        }
     }
 
     func testAdaptersGracefullyRejectAudioAndDocuments() async throws {
@@ -1248,6 +1429,7 @@ final class ProviderAdapterTests: XCTestCase {
             ("openai", { req in try await OpenAIAdapter(apiKey: "sk", transport: transport).complete(request: req) }),
             ("anthropic", { req in try await AnthropicAdapter(apiKey: "ak", transport: transport).complete(request: req) }),
             ("gemini", { req in try await GeminiAdapter(apiKey: "gk", transport: transport).complete(request: req) }),
+            ("cerebras", { req in try await CerebrasAdapter(apiKey: "ck", transport: transport).complete(request: req) }),
         ]
 
         for (name, complete) in adapters {
@@ -1267,7 +1449,7 @@ final class ProviderAdapterTests: XCTestCase {
         }
     }
 
-    func testRetryAfterIsParsedForAnthropicAndGeminiErrors() async throws {
+    func testRetryAfterIsParsedForAnthropicGeminiAndCerebrasErrors() async throws {
         let headers: HTTPHeaders = {
             var h = HTTPHeaders()
             h.set(name: "retry-after", value: "3")
@@ -1298,6 +1480,21 @@ final class ProviderAdapterTests: XCTestCase {
             let adapter = GeminiAdapter(apiKey: "gemini-test", transport: transport)
             do {
                 _ = try await adapter.complete(request: Request(model: "gemini-3-flash-preview", messages: [.user("hi")]))
+                XCTFail("Expected RateLimitError")
+            } catch let e as RateLimitError {
+                XCTAssertEqual(e.retryAfter, 3)
+            }
+        }
+
+        // Cerebras 429
+        do {
+            let errJSON: JSONValue = .object(["error": .object(["message": .string("rate limited"), "type": .string("rate_limit_error")])])
+            let transport = StubTransport(send: { _ in
+                HTTPResponse(statusCode: 429, headers: headers, body: Array(try errJSON.data()))
+            })
+            let adapter = CerebrasAdapter(apiKey: "cerebras-test", transport: transport)
+            do {
+                _ = try await adapter.complete(request: Request(model: "zai-glm-4.7", messages: [.user("hi")]))
                 XCTFail("Expected RateLimitError")
             } catch let e as RateLimitError {
                 XCTAssertEqual(e.retryAfter, 3)
