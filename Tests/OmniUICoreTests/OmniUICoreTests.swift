@@ -475,3 +475,110 @@ struct MenuGestureView: View {
     _ = s1
     #expect(box.taps == 1)
 }
+
+@Test func runtime_needsRender_tracks_dirty_state_and_size() async throws {
+    let runtime = _UIRuntime()
+    let size = _Size(width: 30, height: 6)
+
+    #expect(runtime.needsRender(size: size))
+
+    _ = runtime.render(CounterView(), size: size)
+    #expect(!runtime.needsRender(size: size))
+
+    let s0 = runtime.debugRender(CounterView(), size: size)
+    s0.click(x: 2, y: 3)
+    #expect(runtime.needsRender(size: size))
+
+    _ = runtime.render(CounterView(), size: size)
+    #expect(!runtime.needsRender(size: size))
+
+    #expect(runtime.needsRender(size: _Size(width: 31, height: 6)))
+}
+
+final class _BuildCountBox {
+    var left: Int = 0
+    var center: Int = 0
+    var right: Int = 0
+}
+
+struct _BuildProbe: View {
+    let label: String
+    let tick: () -> Void
+
+    var body: some View {
+        tick()
+        return Text(label)
+    }
+}
+
+struct _CenterCounterProbe: View {
+    let box: _BuildCountBox
+    @State private var value: Int = 0
+
+    var body: some View {
+        box.center += 1
+        return VStack(spacing: 1) {
+            Text("center: \(value)")
+            Button("Inc") { value += 1 }
+        }
+    }
+}
+
+struct _TargetedInvalidationProbeView: View {
+    let box: _BuildCountBox
+
+    var body: some View {
+        HStack(spacing: 2) {
+            _BuildProbe(label: "left") { box.left += 1 }
+            _CenterCounterProbe(box: box)
+            _BuildProbe(label: "right") { box.right += 1 }
+        }
+    }
+}
+
+private func _findButton(_ snap: DebugSnapshot, title: String, occurrence: Int = 0) -> (x: Int, y: Int)? {
+    var seen = 0
+    let needle = Array("[ \(title) ]")
+    for (y, line) in snap.lines.enumerated() {
+        let hay = Array(line)
+        guard hay.count >= needle.count else { continue }
+        for x0 in 0...(hay.count - needle.count) {
+            var ok = true
+            for i in 0..<needle.count where hay[x0 + i] != needle[i] {
+                ok = false
+                break
+            }
+            if ok {
+                if seen == occurrence {
+                    return (x: x0 + 2, y: y)
+                }
+                seen += 1
+                break
+            }
+        }
+    }
+    return nil
+}
+
+@Test func state_invalidation_rebuilds_only_affected_subtree() async throws {
+    let runtime = _UIRuntime()
+    let box = _BuildCountBox()
+    let size = _Size(width: 60, height: 8)
+
+    let s0 = runtime.debugRender(_TargetedInvalidationProbeView(box: box), size: size)
+    #expect(box.left == 1)
+    #expect(box.center == 1)
+    #expect(box.right == 1)
+
+    guard let p = _findButton(s0, title: "Inc") else {
+        #expect(Bool(false), "Could not find Inc button")
+        return
+    }
+    s0.click(x: p.x, y: p.y)
+
+    let s1 = runtime.debugRender(_TargetedInvalidationProbeView(box: box), size: size)
+    #expect(s1.text.contains("center: 1"))
+    #expect(box.center >= 2)
+    #expect(box.left == 1)
+    #expect(box.right == 1)
+}

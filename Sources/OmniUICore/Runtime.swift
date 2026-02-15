@@ -70,6 +70,39 @@ public final class _UIRuntime: @unchecked Sendable {
     }
     private var overlays: [_OverlayEntry] = []
 
+    private struct _ViewCacheEntry {
+        var node: _VNode
+        var typeID: ObjectIdentifier
+        var viewSignature: Int
+        var isPure: Bool
+        var subtreePathKeys: Set<String>
+    }
+
+    private struct _ActiveBuildRecord {
+        var path: [Int]
+        var pathKey: String
+        var subtreePathKeys: Set<String>
+        var sideEffectStart: Int
+    }
+
+    private var _viewCache: [String: _ViewCacheEntry] = [:]
+    private var _stateReaders: [String: Set<String>] = [:]
+    private var _viewStateDependencies: [String: Set<String>] = [:]
+
+    private var _pendingDirtyEverything: Bool = true
+    private var _pendingDirtyPaths: [[Int]] = []
+    private var _pendingDirtyPathKeys: Set<String> = []
+
+    private var _frameDirtyEverything: Bool = true
+    private var _frameDirtyPaths: [[Int]] = []
+    private var _frameAlivePathKeys: Set<String> = []
+    private var _activeBuildRecords: [_ActiveBuildRecord] = []
+    private var _buildSideEffectCount: Int = 0
+    private var _isBuildingFrame: Bool = false
+
+    private var _lastRenderedSize: _Size? = nil
+    private var _hasRenderedAtLeastOnce: Bool = false
+
     // Base environment at the root render call.
     var _baseEnvironment: EnvironmentValues = EnvironmentValues()
 
@@ -108,18 +141,296 @@ public final class _UIRuntime: @unchecked Sendable {
         return "\(prefix):\(p)"
     }
 
+    fileprivate func _viewPathKey(path: [Int]) -> String {
+        _pathKey(prefix: "view", path: path)
+    }
+
+    private func _pathFromKey(_ key: String, prefix: String) -> [Int]? {
+        let marker = "\(prefix):"
+        guard key.hasPrefix(marker) else { return nil }
+        let raw = String(key.dropFirst(marker.count))
+        if raw.isEmpty { return [] }
+        let comps = raw.split(separator: ".")
+        var out: [Int] = []
+        out.reserveCapacity(comps.count)
+        for c in comps {
+            guard let v = Int(c) else { return nil }
+            out.append(v)
+        }
+        return out
+    }
+
+    fileprivate func _viewSignature<V>(for view: V) -> Int {
+        var hasher = Hasher()
+        hasher.combine(ObjectIdentifier(V.self))
+        hasher.combine(String(reflecting: view))
+        return hasher.finalize()
+    }
+
+    private func _markDirty(path: [Int]? = nil) {
+        if let path {
+            let key = _viewPathKey(path: path)
+            if _pendingDirtyPathKeys.insert(key).inserted {
+                _pendingDirtyPaths.append(path)
+            }
+            return
+        }
+        _pendingDirtyEverything = true
+    }
+
+    private func _markDirty(paths: [[Int]]) {
+        for p in paths {
+            _markDirty(path: p)
+        }
+    }
+
+    private func _isPathDirtyThisFrame(_ path: [Int]) -> Bool {
+        if _frameDirtyEverything { return true }
+        guard !_frameDirtyPaths.isEmpty else { return false }
+        for dirty in _frameDirtyPaths {
+            if _isPrefix(path, of: dirty) || _isPrefix(dirty, of: path) {
+                return true
+            }
+        }
+        return false
+    }
+
+    private func _noteBuildSideEffect() {
+        guard _isBuildingFrame else { return }
+        _buildSideEffectCount += 1
+    }
+
+    private func _removeStateDependencies(forViewPathKey pathKey: String) {
+        guard let deps = _viewStateDependencies.removeValue(forKey: pathKey) else { return }
+        for stateKey in deps {
+            guard var readers = _stateReaders[stateKey] else { continue }
+            readers.remove(pathKey)
+            if readers.isEmpty {
+                _stateReaders.removeValue(forKey: stateKey)
+            } else {
+                _stateReaders[stateKey] = readers
+            }
+        }
+    }
+
+    private func _recordStateRead(stateKey: String, viewPath: [Int]) {
+        let pathKey = _viewPathKey(path: viewPath)
+        _stateReaders[stateKey, default: []].insert(pathKey)
+        _viewStateDependencies[pathKey, default: []].insert(stateKey)
+    }
+
+    private func _markDirtyForState(stateKey: String, ownerPath: [Int]) {
+        guard let readers = _stateReaders[stateKey], !readers.isEmpty else {
+            _markDirty(path: ownerPath)
+            return
+        }
+        var resolvedPaths: [[Int]] = []
+        resolvedPaths.reserveCapacity(readers.count)
+        for key in readers {
+            guard let path = _pathFromKey(key, prefix: "view") else { continue }
+            resolvedPaths.append(path)
+        }
+        if resolvedPaths.isEmpty {
+            _markDirty(path: ownerPath)
+            return
+        }
+        _markDirty(paths: resolvedPaths)
+    }
+
+    private func _beginFrameBuild(size: _Size) {
+        let sizeChanged = (_lastRenderedSize != size)
+        if sizeChanged {
+            _viewCache.removeAll(keepingCapacity: true)
+            _stateReaders.removeAll(keepingCapacity: true)
+            _viewStateDependencies.removeAll(keepingCapacity: true)
+        }
+
+        _frameDirtyEverything = _pendingDirtyEverything || sizeChanged || !_hasRenderedAtLeastOnce
+        _frameDirtyPaths = _pendingDirtyPaths
+
+        _pendingDirtyEverything = false
+        _pendingDirtyPaths.removeAll(keepingCapacity: true)
+        _pendingDirtyPathKeys.removeAll(keepingCapacity: true)
+
+        _frameAlivePathKeys.removeAll(keepingCapacity: true)
+        _activeBuildRecords.removeAll(keepingCapacity: true)
+        _buildSideEffectCount = 0
+        _isBuildingFrame = true
+    }
+
+    private func _finishFrameBuild(size: _Size) {
+        _isBuildingFrame = false
+
+        if _frameAlivePathKeys.isEmpty {
+            if !_viewCache.isEmpty {
+                for (_, entry) in _viewCache {
+                    for dead in entry.subtreePathKeys {
+                        _removeStateDependencies(forViewPathKey: dead)
+                    }
+                }
+                _viewCache.removeAll(keepingCapacity: true)
+            }
+        } else if !_viewCache.isEmpty {
+            var removeKeys: [String] = []
+            removeKeys.reserveCapacity(_viewCache.count)
+            for (key, entry) in _viewCache where !_frameAlivePathKeys.contains(key) {
+                removeKeys.append(key)
+                for dead in entry.subtreePathKeys {
+                    _removeStateDependencies(forViewPathKey: dead)
+                }
+            }
+            for key in removeKeys {
+                _viewCache.removeValue(forKey: key)
+            }
+        }
+
+        _frameDirtyEverything = false
+        _frameDirtyPaths.removeAll(keepingCapacity: true)
+        _frameAlivePathKeys.removeAll(keepingCapacity: true)
+        _activeBuildRecords.removeAll(keepingCapacity: true)
+
+        _lastRenderedSize = size
+        _hasRenderedAtLeastOnce = true
+    }
+
+    fileprivate func _beginPathBuild(path: [Int], pathKey: String) {
+        _frameAlivePathKeys.insert(pathKey)
+        _removeStateDependencies(forViewPathKey: pathKey)
+        let record = _ActiveBuildRecord(
+            path: path,
+            pathKey: pathKey,
+            subtreePathKeys: [pathKey],
+            sideEffectStart: _buildSideEffectCount
+        )
+        _activeBuildRecords.append(record)
+    }
+
+    fileprivate func _endPathBuild(typeID: ObjectIdentifier, viewSignature: Int, node: _VNode) {
+        guard let record = _activeBuildRecords.popLast() else { return }
+        let isPure = (_buildSideEffectCount == record.sideEffectStart)
+        _viewCache[record.pathKey] = _ViewCacheEntry(
+            node: node,
+            typeID: typeID,
+            viewSignature: viewSignature,
+            isPure: isPure,
+            subtreePathKeys: record.subtreePathKeys
+        )
+        if !_activeBuildRecords.isEmpty {
+            _activeBuildRecords[_activeBuildRecords.count - 1].subtreePathKeys.formUnion(record.subtreePathKeys)
+        }
+    }
+
+    fileprivate func _canReuseNode(path: [Int], pathKey: String, typeID: ObjectIdentifier, viewSignature: Int) -> Bool {
+        guard !_isPathDirtyThisFrame(path) else { return false }
+        guard let entry = _viewCache[pathKey] else { return false }
+        guard entry.typeID == typeID else { return false }
+        guard entry.viewSignature == viewSignature else { return false }
+        return entry.isPure
+    }
+
+    fileprivate func _reuseNode(pathKey: String) -> _VNode? {
+        guard let entry = _viewCache[pathKey] else { return nil }
+        _frameAlivePathKeys.formUnion(entry.subtreePathKeys)
+        if !_activeBuildRecords.isEmpty {
+            _activeBuildRecords[_activeBuildRecords.count - 1].subtreePathKeys.formUnion(entry.subtreePathKeys)
+        }
+        return entry.node
+    }
+
+    private func _prepareRuntimeRegistriesForFrame() {
+        nextActionID = 1
+        actions.removeAll(keepingCapacity: true)
+        textEditors.removeAll(keepingCapacity: true)
+        focusOrder.removeAll(keepingCapacity: true)
+        focusActivation.removeAll(keepingCapacity: true)
+        focusBoolBindings.removeAll(keepingCapacity: true)
+        submitHandlers.removeAll(keepingCapacity: true)
+        keyboardShortcuts.removeAll(keepingCapacity: true)
+        navStackRoots.removeAll(keepingCapacity: true)
+        overlays.removeAll(keepingCapacity: true)
+        tasksSeenThisFrame.removeAll(keepingCapacity: true)
+    }
+
+    private func _buildRootNode<V: View>(_ root: V, size: _Size) -> _VNode {
+        let runtime = self
+        let ctx = _BuildContext(runtime: runtime, path: [], nextChildIndex: 0)
+        let rootPath: [Int] = []
+        let rootPathKey = _viewPathKey(path: rootPath)
+        let rootTypeID = ObjectIdentifier(V.self)
+        let rootSignature = _viewSignature(for: root)
+
+        _beginPathBuild(path: rootPath, pathKey: rootPathKey)
+        let node = _UIRuntime.$_currentRenderSize.withValue(size) {
+            _BuildContext.withRuntime(runtime, path: rootPath) {
+                var local = ctx
+                return _makeNode(root, &local)
+            }
+        }
+        _endPathBuild(typeID: rootTypeID, viewSignature: rootSignature, node: node)
+        return node
+    }
+
+    private func _applyOverlays(to node: _VNode) -> _VNode {
+        guard !overlays.isEmpty else { return node }
+        var merged = node
+        var local = _BuildContext(runtime: self, path: [Int.min], nextChildIndex: 0)
+        let overlayNodes: [_VNode] = overlays.map { entry in
+            let current = _UIRuntime._currentEnvironment ?? _baseEnvironment
+            var next = current
+            next.dismiss = DismissAction(entry.dismiss)
+            let mode = PresentationMode(dismiss: entry.dismiss)
+            next.presentationMode = Binding(get: { mode }, set: { _ in })
+            return _UIRuntime.$_currentEnvironment.withValue(next) {
+                local.buildChild(entry.view)
+            }
+        }
+        merged = .zstack(children: [merged] + overlayNodes)
+        return merged
+    }
+
+    private func _finalizePostBuildState() {
+        // If a picker/menu was expanded in a view that no longer exists, clear the stale state.
+        if let expanded = expandedPickerPath {
+            let stillExists = focusOrder.contains(where: { _isPrefix(expanded, of: $0) })
+            if !stillExists {
+                expandedPickerPath = nil
+            }
+        }
+
+        // If nothing is focused yet, default focus to the first focusable control.
+        if focusedPath == nil, let first = focusOrder.first {
+            _setFocus(path: first)
+        }
+
+        _reconcileTasksAfterFrame()
+    }
+
+    public func needsRender(size: _Size) -> Bool {
+        if !_hasRenderedAtLeastOnce { return true }
+        if _lastRenderedSize != size { return true }
+        if _pendingDirtyEverything { return true }
+        return !_pendingDirtyPaths.isEmpty
+    }
+
     func _getScrollOffset(path: [Int]) -> Int {
         scrollOffsets[_pathKey(prefix: "scroll", path: path)] ?? 0
     }
 
     func _setScrollOffset(path: [Int], offset: Int) {
-        scrollOffsets[_pathKey(prefix: "scroll", path: path)] = max(0, offset)
+        let key = _pathKey(prefix: "scroll", path: path)
+        let clamped = max(0, offset)
+        if scrollOffsets[key] == clamped { return }
+        scrollOffsets[key] = clamped
+        _markDirty(path: path)
     }
 
     func _scroll(path: [Int], deltaY: Int, maxOffset: Int) {
         let key = _pathKey(prefix: "scroll", path: path)
         let current = scrollOffsets[key] ?? 0
-        scrollOffsets[key] = min(max(0, current + deltaY), max(0, maxOffset))
+        let next = min(max(0, current + deltaY), max(0, maxOffset))
+        if next == current { return }
+        scrollOffsets[key] = next
+        _markDirty(path: path)
     }
 
     func _navKey(stackPath: [Int]) -> String {
@@ -131,6 +442,7 @@ public final class _UIRuntime: @unchecked Sendable {
         var s = navStacks[key] ?? []
         s.append(view)
         navStacks[key] = s
+        _markDirty(path: stackPath)
     }
 
     func _navPop(stackPath: [Int]) {
@@ -138,6 +450,7 @@ public final class _UIRuntime: @unchecked Sendable {
         guard var s = navStacks[key], !s.isEmpty else { return }
         _ = s.popLast()
         navStacks[key] = s
+        _markDirty(path: stackPath)
     }
 
     func _navTop(stackPath: [Int]) -> AnyView? {
@@ -151,6 +464,7 @@ public final class _UIRuntime: @unchecked Sendable {
     }
 
     func _registerAction(_ action: @escaping () -> Void, path: [Int]) -> _ActionID {
+        _noteBuildSideEffect()
         let id = _ActionID(raw: nextActionID)
         nextActionID += 1
         // Capture the current environment so `@Environment` reads correctly inside actions.
@@ -169,6 +483,7 @@ public final class _UIRuntime: @unchecked Sendable {
     }
 
     func _setFocus(path: [Int]?) {
+        let old = focusedPath
         focusedPath = path
         // Update any `FocusState<Bool>` bindings.
         if !focusBoolBindings.isEmpty {
@@ -183,6 +498,11 @@ public final class _UIRuntime: @unchecked Sendable {
         } else if expandedPickerPath != nil, path == nil {
             expandedPickerPath = nil
         }
+        if old != path, !_isBuildingFrame {
+            if let old { _markDirty(path: old) }
+            if let path { _markDirty(path: path) }
+            if old == nil || path == nil { _markDirty() }
+        }
     }
 
     func _isFocused(path: [Int]) -> Bool {
@@ -190,10 +510,12 @@ public final class _UIRuntime: @unchecked Sendable {
     }
 
     func _registerTextEditor(path: [Int], _ editor: _TextEditor) {
+        _noteBuildSideEffect()
         textEditors[path] = editor
     }
 
     func _registerFocusable(path: [Int], activate: _ActionID) {
+        _noteBuildSideEffect()
         focusOrder.append(path)
         focusActivation[path] = activate
         if let captureID = _UIRuntime._currentFocusCaptureID, focusCaptureResults[captureID] == nil {
@@ -206,12 +528,15 @@ public final class _UIRuntime: @unchecked Sendable {
     }
 
     func _openPicker(path: [Int]) {
+        if expandedPickerPath == path { return }
         expandedPickerPath = path
+        _markDirty(path: path)
     }
 
     func _closePicker(path: [Int]) {
         if expandedPickerPath == path {
             expandedPickerPath = nil
+            _markDirty(path: path)
         }
     }
 
@@ -220,7 +545,9 @@ public final class _UIRuntime: @unchecked Sendable {
     }
 
     public func collapseExpandedPicker() {
+        guard let expanded = expandedPickerPath else { return }
         expandedPickerPath = nil
+        _markDirty(path: expanded)
     }
 
     public func focusNextWithinExpandedPicker() {
@@ -230,11 +557,13 @@ public final class _UIRuntime: @unchecked Sendable {
         }
         let candidates = focusOrder.filter { _isPrefix(expanded, of: $0) }
         guard !candidates.isEmpty else { return }
+        let next: [Int]
         if let f = focusedPath, let idx = candidates.firstIndex(of: f) {
-            focusedPath = candidates[(idx + 1) % candidates.count]
+            next = candidates[(idx + 1) % candidates.count]
         } else {
-            focusedPath = candidates[0]
+            next = candidates[0]
         }
+        _setFocus(path: next)
     }
 
     public func focusPrevWithinExpandedPicker() {
@@ -244,11 +573,13 @@ public final class _UIRuntime: @unchecked Sendable {
         }
         let candidates = focusOrder.filter { _isPrefix(expanded, of: $0) }
         guard !candidates.isEmpty else { return }
+        let next: [Int]
         if let f = focusedPath, let idx = candidates.firstIndex(of: f) {
-            focusedPath = candidates[(idx - 1 + candidates.count) % candidates.count]
+            next = candidates[(idx - 1 + candidates.count) % candidates.count]
         } else {
-            focusedPath = candidates[0]
+            next = candidates[0]
         }
+        _setFocus(path: next)
     }
 
     public func _handleKeyPress(_ codepoint: UInt32) {
@@ -260,6 +591,7 @@ public final class _UIRuntime: @unchecked Sendable {
         if expandedPickerPath != nil { return }
         guard let p = focusedPath, let editor = textEditors[p] else { return }
         editor.handle(ev)
+        _markDirty(path: p)
     }
 
     func _getTextCursor(path: [Int]) -> Int {
@@ -267,12 +599,16 @@ public final class _UIRuntime: @unchecked Sendable {
     }
 
     func _setTextCursor(path: [Int], _ v: Int) {
-        textEditorCursors[path] = max(0, v)
+        let next = max(0, v)
+        if textEditorCursors[path] == next { return }
+        textEditorCursors[path] = next
+        _markDirty(path: path)
     }
 
     func _ensureTextCursorAtEndIfUnset(path: [Int], text: String) {
         if textEditorCursors[path] == nil {
             textEditorCursors[path] = text.unicodeScalars.count
+            _markDirty(path: path)
         }
     }
 
@@ -284,21 +620,25 @@ public final class _UIRuntime: @unchecked Sendable {
     public func focusNext() {
         guard !focusOrder.isEmpty else { return }
         expandedPickerPath = nil
+        let next: [Int]
         if let f = focusedPath, let idx = focusOrder.firstIndex(of: f) {
-            focusedPath = focusOrder[(idx + 1) % focusOrder.count]
+            next = focusOrder[(idx + 1) % focusOrder.count]
         } else {
-            focusedPath = focusOrder[0]
+            next = focusOrder[0]
         }
+        _setFocus(path: next)
     }
 
     public func focusPrev() {
         guard !focusOrder.isEmpty else { return }
         expandedPickerPath = nil
+        let next: [Int]
         if let f = focusedPath, let idx = focusOrder.firstIndex(of: f) {
-            focusedPath = focusOrder[(idx - 1 + focusOrder.count) % focusOrder.count]
+            next = focusOrder[(idx - 1 + focusOrder.count) % focusOrder.count]
         } else {
-            focusedPath = focusOrder[0]
+            next = focusOrder[0]
         }
+        _setFocus(path: next)
     }
 
     public func activateFocused() {
@@ -312,6 +652,7 @@ public final class _UIRuntime: @unchecked Sendable {
     }
 
     func _registerKeyboardShortcut(_ shortcut: KeyboardShortcut, forFocusablePath path: [Int]) {
+        _noteBuildSideEffect()
         guard let id = focusActivation[path] else { return }
         keyboardShortcuts[shortcut] = id
     }
@@ -365,6 +706,7 @@ public final class _UIRuntime: @unchecked Sendable {
     }
 
     func _registerTask(path: [Int], action: @escaping () async -> Void) {
+        _noteBuildSideEffect()
         let key = _pathKey(prefix: "task", path: path)
         tasksSeenThisFrame.insert(key)
 
@@ -397,6 +739,9 @@ public final class _UIRuntime: @unchecked Sendable {
 
     func _getState<Value>(seed: _StateSeed, path: [Int], initial: () -> Value) -> Value {
         let key = _stateKey(seed: seed, path: path)
+        if _isBuildingFrame {
+            _recordStateRead(stateKey: key, viewPath: _UIRuntime._currentPath ?? path)
+        }
         if let existing = state[key] as? Value {
             return existing
         }
@@ -407,7 +752,20 @@ public final class _UIRuntime: @unchecked Sendable {
 
     func _setState<Value>(seed: _StateSeed, path: [Int], value: Value) {
         let key = _stateKey(seed: seed, path: path)
+        if let old = state[key] as? AnyHashable, let new = value as? AnyHashable, old == new {
+            return
+        }
         state[key] = value
+        _markDirtyForState(stateKey: key, ownerPath: path)
+    }
+
+    func _setState<Value: Equatable>(seed: _StateSeed, path: [Int], value: Value) {
+        let key = _stateKey(seed: seed, path: path)
+        if let existing = state[key] as? Value, existing == value {
+            return
+        }
+        state[key] = value
+        _markDirtyForState(stateKey: key, ownerPath: path)
     }
 
     private func _stateKey(seed: _StateSeed, path: [Int]) -> String {
@@ -418,64 +776,18 @@ public final class _UIRuntime: @unchecked Sendable {
 
     public func debugRender<V: View>(_ root: V, size: _Size, renderShapeGlyphs: Bool = true) -> DebugSnapshot {
         let runtime = self
-        // Rebuild-only registries (actions/editors) should not accumulate across frames.
-        runtime.nextActionID = 1
-        runtime.actions.removeAll(keepingCapacity: true)
-        runtime.textEditors.removeAll(keepingCapacity: true)
-        runtime.focusOrder.removeAll(keepingCapacity: true)
-        runtime.focusActivation.removeAll(keepingCapacity: true)
-        runtime.focusBoolBindings.removeAll(keepingCapacity: true)
-        runtime.submitHandlers.removeAll(keepingCapacity: true)
-        runtime.keyboardShortcuts.removeAll(keepingCapacity: true)
-        runtime.navStackRoots.removeAll(keepingCapacity: true)
-        runtime.overlays.removeAll(keepingCapacity: true)
-        runtime.tasksSeenThisFrame.removeAll(keepingCapacity: true)
-
-        let ctx = _BuildContext(runtime: runtime, path: [], nextChildIndex: 0)
-        var node = _UIRuntime.$_currentRenderSize.withValue(size) {
-            _BuildContext.withRuntime(runtime, path: []) {
-                var local = ctx
-                return _makeNode(root, &local)
-            }
-        }
-
-        if !runtime.overlays.isEmpty {
-            // Overlays are always above the root.
-            var local = ctx
-            let overlayNodes: [_VNode] = runtime.overlays.map { entry in
-                let current = _UIRuntime._currentEnvironment ?? runtime._baseEnvironment
-                var next = current
-                next.dismiss = DismissAction(entry.dismiss)
-                let mode = PresentationMode(dismiss: entry.dismiss)
-                next.presentationMode = Binding(get: { mode }, set: { _ in })
-                return _UIRuntime.$_currentEnvironment.withValue(next) {
-                    local.buildChild(entry.view)
-                }
-            }
-            node = .zstack(children: [node] + overlayNodes)
-        }
-
-        // If a picker/menu was expanded in a view that no longer exists, clear the stale state.
-        if let expanded = runtime.expandedPickerPath {
-            let stillExists = runtime.focusOrder.contains(where: { _isPrefix(expanded, of: $0) })
-            if !stillExists {
-                runtime.expandedPickerPath = nil
-            }
-        }
-
-        // If nothing is focused yet, default focus to the first focusable control.
-        // This prevents "no focus highlight until interaction" and makes keyboard UX predictable.
-        if runtime.focusedPath == nil, let first = runtime.focusOrder.first {
-            runtime._setFocus(path: first)
-        }
-
-        runtime._reconcileTasksAfterFrame()
+        runtime._prepareRuntimeRegistriesForFrame()
+        runtime._beginFrameBuild(size: size)
+        var node = runtime._buildRootNode(root, size: size)
+        node = runtime._applyOverlays(to: node)
+        runtime._finalizePostBuildState()
 
         let laidOut = _DebugLayout.layout(
             node: node,
             in: _Rect(origin: _Point(x: 0, y: 0), size: size),
             renderShapeGlyphs: renderShapeGlyphs
         )
+        runtime._finishFrameBuild(size: size)
         let focusedRect: _Rect? = {
             guard let raw = focusedActionRawID() else { return nil }
             return laidOut.hitRegions.last(where: { $0.1.raw == raw })?.0
@@ -496,14 +808,17 @@ public final class _UIRuntime: @unchecked Sendable {
 
 extension _UIRuntime {
     func _registerOverlay(view: AnyView, dismiss: @escaping () -> Void) {
+        _noteBuildSideEffect()
         overlays.append(_OverlayEntry(view: view, dismiss: dismiss))
     }
 
     func _registerFocusBoolBinding(path: [Int], set: @escaping (Bool) -> Void) {
+        _noteBuildSideEffect()
         focusBoolBindings[path] = set
     }
 
     func _registerSubmitHandler(controlPath: [Int], actionScopePath: [Int], action: @escaping () -> Void) {
+        _noteBuildSideEffect()
         // Capture the current environment so `@Environment` reads correctly inside submit handlers.
         let env = _UIRuntime._currentEnvironment ?? _baseEnvironment
         submitHandlers[controlPath] = (path: actionScopePath, env: env, action: action)
@@ -523,55 +838,14 @@ extension _UIRuntime {
     public func render<V: View>(_ root: V, size: _Size) -> RenderSnapshot {
         let runtime = self
 
-        runtime.nextActionID = 1
-        runtime.actions.removeAll(keepingCapacity: true)
-        runtime.textEditors.removeAll(keepingCapacity: true)
-        runtime.focusOrder.removeAll(keepingCapacity: true)
-        runtime.focusActivation.removeAll(keepingCapacity: true)
-        runtime.focusBoolBindings.removeAll(keepingCapacity: true)
-        runtime.submitHandlers.removeAll(keepingCapacity: true)
-        runtime.keyboardShortcuts.removeAll(keepingCapacity: true)
-        runtime.navStackRoots.removeAll(keepingCapacity: true)
-        runtime.overlays.removeAll(keepingCapacity: true)
-        runtime.tasksSeenThisFrame.removeAll(keepingCapacity: true)
-
-        let ctx = _BuildContext(runtime: runtime, path: [], nextChildIndex: 0)
-        var node = _UIRuntime.$_currentRenderSize.withValue(size) {
-            _BuildContext.withRuntime(runtime, path: []) {
-                var local = ctx
-                return _makeNode(root, &local)
-            }
-        }
-
-        if !runtime.overlays.isEmpty {
-            var local = ctx
-            let overlayNodes: [_VNode] = runtime.overlays.map { entry in
-                let current = _UIRuntime._currentEnvironment ?? runtime._baseEnvironment
-                var next = current
-                next.dismiss = DismissAction(entry.dismiss)
-                let mode = PresentationMode(dismiss: entry.dismiss)
-                next.presentationMode = Binding(get: { mode }, set: { _ in })
-                return _UIRuntime.$_currentEnvironment.withValue(next) {
-                    local.buildChild(entry.view)
-                }
-            }
-            node = .zstack(children: [node] + overlayNodes)
-        }
-
-        if let expanded = runtime.expandedPickerPath {
-            let stillExists = runtime.focusOrder.contains(where: { _isPrefix(expanded, of: $0) })
-            if !stillExists {
-                runtime.expandedPickerPath = nil
-            }
-        }
-
-        if runtime.focusedPath == nil, let first = runtime.focusOrder.first {
-            runtime._setFocus(path: first)
-        }
-
-        runtime._reconcileTasksAfterFrame()
+        runtime._prepareRuntimeRegistriesForFrame()
+        runtime._beginFrameBuild(size: size)
+        var node = runtime._buildRootNode(root, size: size)
+        node = runtime._applyOverlays(to: node)
+        runtime._finalizePostBuildState()
 
         let laidOut = _RenderLayout.layout(node: node, size: size)
+        runtime._finishFrameBuild(size: size)
         let focusedRect: _Rect? = {
             guard let raw = focusedActionRawID() else { return nil }
             return laidOut.hitRegions.last(where: { $0.1.raw == raw })?.0
@@ -590,6 +864,7 @@ extension _UIRuntime {
 
 extension _UIRuntime {
     func _registerNavStackRoot(path: [Int]) {
+        _noteBuildSideEffect()
         navStackRoots.insert(path)
     }
 
@@ -762,10 +1037,22 @@ struct _BuildContext {
     mutating func buildChild<V: View>(_ view: V) -> _VNode {
         let index = nextChildIndex
         nextChildIndex += 1
+        let childPath = path + [index]
+        let childPathKey = runtime._viewPathKey(path: childPath)
+        let childTypeID = ObjectIdentifier(V.self)
+        let childSignature = runtime._viewSignature(for: view)
 
-        var child = _BuildContext(runtime: runtime, path: path + [index], nextChildIndex: 0)
-        return _BuildContext.withRuntime(runtime, path: child.path) {
+        if runtime._canReuseNode(path: childPath, pathKey: childPathKey, typeID: childTypeID, viewSignature: childSignature),
+           let cached = runtime._reuseNode(pathKey: childPathKey) {
+            return cached
+        }
+
+        runtime._beginPathBuild(path: childPath, pathKey: childPathKey)
+        var child = _BuildContext(runtime: runtime, path: childPath, nextChildIndex: 0)
+        let node = _BuildContext.withRuntime(runtime, path: child.path) {
             _makeNode(view, &child)
         }
+        runtime._endPathBuild(typeID: childTypeID, viewSignature: childSignature, node: node)
+        return node
     }
 }

@@ -84,6 +84,7 @@ public struct NotcursesApp<V: View> {
 
         let runtime = _UIRuntime()
         var prev: [_NCCell]? = nil
+        var lastSnapshot: RenderSnapshot? = nil
         let forceNoPixels = (getenv("TMUX") != nil) // tmux generally won't support Kitty graphics passthrough
         var didRenderAtLeastOneFullFrame = false
         var shapePlanes: [Int: _NCShapePlaneEntry] = [:]
@@ -145,7 +146,10 @@ public struct NotcursesApp<V: View> {
             let height = Int(rows)
             let width = Int(cols)
 
-            let snapshot = runtime.render(root(), size: _Size(width: width, height: height))
+            let renderSize = _Size(width: width, height: height)
+            if runtime.needsRender(size: renderSize) || lastSnapshot == nil {
+                let snapshot = runtime.render(root(), size: renderSize)
+                lastSnapshot = snapshot
 
             let baseFG = _NCRGB(r: 0xD8, g: 0xDB, b: 0xE2)
             let baseBG = _NCRGB(r: 0x0B, g: 0x10, b: 0x20)
@@ -435,6 +439,12 @@ public struct NotcursesApp<V: View> {
             if rr != 0 {
                 exitNote = "notcurses_render() failed (\(rr))"
                 return
+            }
+            }
+
+            guard let snapshot = lastSnapshot else {
+                try await Task.sleep(nanoseconds: 16_000_000)
+                continue
             }
 
             // Drain any queued inputs.

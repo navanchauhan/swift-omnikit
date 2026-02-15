@@ -33,10 +33,13 @@ public struct TerminalApp<V: View> {
         defer { term.restore() }
 
         var prev: [_Cell]? = nil
+        var lastSnapshot: RenderSnapshot? = nil
 
         while !Task.isCancelled {
             let size = _terminalSize()
-            let snapshot = runtime.render(root(), size: size)
+            if runtime.needsRender(size: size) || lastSnapshot == nil {
+                let snapshot = runtime.render(root(), size: size)
+                lastSnapshot = snapshot
 
             let baseFG = _RGB(r: 0xD8, g: 0xDB, b: 0xE2)
             let baseBG = _RGB(r: 0x0B, g: 0x10, b: 0x20)
@@ -206,6 +209,12 @@ public struct TerminalApp<V: View> {
             }
 
             prev = curr
+            }
+
+            guard let snapshot = lastSnapshot else {
+                try await Task.sleep(nanoseconds: 16_000_000)
+                continue
+            }
 
             // Drain input.
             while let ev = term.pollEvent() {
