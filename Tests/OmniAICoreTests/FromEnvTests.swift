@@ -185,4 +185,39 @@ final class FromEnvTests: XCTestCase {
         XCTAssertEqual(sent.headers.firstValue(for: "authorization"), "Bearer cerebras-test")
         XCTAssertTrue(sent.url.absoluteString.contains("/chat/completions"))
     }
+
+    func testFromEnvRegistersGroq() async throws {
+        let responseJSON: JSONValue = .object([
+            "id": .string("chatcmpl_1"),
+            "model": .string("llama-3.1-8b-instant"),
+            "choices": .array([
+                .object([
+                    "index": .number(0),
+                    "message": .object([
+                        "role": .string("assistant"),
+                        "content": .string("ok"),
+                    ]),
+                    "finish_reason": .string("stop"),
+                ]),
+            ]),
+            "usage": .object(["prompt_tokens": .number(1), "completion_tokens": .number(1)]),
+        ])
+
+        let transport = CapturingTransport(
+            response: HTTPResponse(statusCode: 200, headers: HTTPHeaders(), body: Array(try responseJSON.data()))
+        )
+
+        let client = try Client.fromEnv(
+            environment: ["GROQ_API_KEY": "groq-test"],
+            transport: transport
+        )
+
+        let resp = try await client.complete(Request(model: "llama-3.1-8b-instant", messages: [.user("hi")]))
+        XCTAssertEqual(resp.provider, "groq")
+
+        let sentOpt = await transport.lastSendRequest
+        let sent = try XCTUnwrap(sentOpt)
+        XCTAssertEqual(sent.headers.firstValue(for: "authorization"), "Bearer groq-test")
+        XCTAssertTrue(sent.url.absoluteString.contains("/chat/completions"))
+    }
 }

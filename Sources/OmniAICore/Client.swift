@@ -143,9 +143,12 @@ public final class Client: @unchecked Sendable {
         if let key = env["CEREBRAS_API_KEY"], !key.isEmpty {
             providers["cerebras"] = CerebrasAdapter(apiKey: key, baseURL: env["CEREBRAS_BASE_URL"], transport: transport)
         }
+        if let key = env["GROQ_API_KEY"], !key.isEmpty {
+            providers["groq"] = GroqAdapter(apiKey: key, baseURL: env["GROQ_BASE_URL"], transport: transport)
+        }
 
         if providers.isEmpty && !allowEmptyProviders {
-            throw ConfigurationError(message: "No providers configured. Set OPENAI_API_KEY and/or ANTHROPIC_API_KEY and/or GEMINI_API_KEY and/or CEREBRAS_API_KEY.")
+            throw ConfigurationError(message: "No providers configured. Set OPENAI_API_KEY and/or ANTHROPIC_API_KEY and/or GEMINI_API_KEY and/or CEREBRAS_API_KEY and/or GROQ_API_KEY.")
         }
 
         return try Client(

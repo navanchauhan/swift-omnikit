@@ -7,6 +7,7 @@ final class ModelCatalogTests: XCTestCase {
         let catalog = ModelCatalog.default
         XCTAssertNotNil(catalog.getModelInfo("gpt-5.2"))
         XCTAssertNotNil(catalog.getModelInfo("opus"))
+        XCTAssertNotNil(catalog.getModelInfo("latest-groq"))
     }
 
     func testModelCatalogListAndLatest() {
@@ -18,4 +19,3 @@ final class ModelCatalogTests: XCTestCase {
         XCTAssertEqual(latest?.provider, "anthropic")
     }
 }
-

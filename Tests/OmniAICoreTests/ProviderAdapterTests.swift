@@ -860,6 +860,168 @@ final class ProviderAdapterTests: XCTestCase {
         XCTAssertEqual(messages.last?["tool_call_id"]?.stringValue, "call_1")
     }
 
+    func testGroqAdapterBuildsChatCompletionsRequestAndParsesUsage() async throws {
+        let responseJSON: JSONValue = .object([
+            "id": .string("chatcmpl_1"),
+            "model": .string("openai/gpt-oss-20b"),
+            "choices": .array([
+                .object([
+                    "index": .number(0),
+                    "message": .object([
+                        "role": .string("assistant"),
+                        "content": .string("Hello"),
+                        "reasoning": .string("Thinking..."),
+                    ]),
+                    "finish_reason": .string("stop"),
+                ]),
+            ]),
+            "usage": .object([
+                "prompt_tokens": .number(5),
+                "completion_tokens": .number(7),
+                "completion_tokens_details": .object(["reasoning_tokens": .number(2)]),
+                "prompt_tokens_details": .object(["cached_tokens": .number(3)]),
+            ]),
+        ])
+
+        let transport = StubTransport(send: { _ in
+            HTTPResponse(statusCode: 200, headers: HTTPHeaders(), body: Array(try responseJSON.data()))
+        })
+
+        let adapter = GroqAdapter(apiKey: "groq-test", baseURL: "https://api.groq.com/openai/v1", transport: transport)
+
+        let schema: JSONValue = .object(["type": .string("object")])
+        let tool = try Tool(name: "t", description: "tool", parameters: schema)
+        let priorCall = ToolCall(id: "call_1", name: "add", arguments: ["a": .number(1), "b": .number(2)], rawArguments: #"{"a":1,"b":2}"#)
+
+        let req = Request(
+            model: "openai/gpt-oss-20b",
+            messages: [
+                .system("sys"),
+                .developer("dev"),
+                .user("hi"),
+                Message(role: .assistant, content: [.text("calling tool"), .toolCall(priorCall)]),
+                .toolResult(toolCallId: "call_1", toolName: "add", content: .number(3), isError: false),
+            ],
+            tools: [tool],
+            toolChoice: ToolChoice(mode: .named, toolName: "t"),
+            maxTokens: 256,
+            reasoningEffort: "default",
+            providerOptions: ["groq": .object(["service_tier": .string("on_demand")])]
+        )
+
+        let resp = try await adapter.complete(request: req)
+        XCTAssertEqual(resp.text, "Hello")
+        XCTAssertEqual(resp.reasoning, "Thinking...")
+        XCTAssertEqual(resp.usage.inputTokens, 5)
+        XCTAssertEqual(resp.usage.outputTokens, 7)
+        XCTAssertEqual(resp.usage.reasoningTokens, 2)
+        XCTAssertEqual(resp.usage.cacheReadTokens, 3)
+
+        let sentOpt = await transport.lastSendRequest
+        let sent = try XCTUnwrap(sentOpt)
+        XCTAssertTrue(sent.url.absoluteString.contains("/chat/completions"))
+        XCTAssertEqual(sent.headers.firstValue(for: "authorization"), "Bearer groq-test")
+
+        let body = try JSONValue.parse(bodyBytes(sent))
+        XCTAssertEqual(body["model"]?.stringValue, "openai/gpt-oss-20b")
+        XCTAssertEqual(body["max_tokens"]?.doubleValue, 256)
+        XCTAssertEqual(body["reasoning_effort"]?.stringValue, "medium")
+        XCTAssertEqual(body["include_reasoning"]?.boolValue, true)
+        XCTAssertEqual(body["service_tier"]?.stringValue, "on_demand")
+        XCTAssertEqual(body["tool_choice"]?["type"]?.stringValue, "function")
+        XCTAssertEqual(body["tool_choice"]?["function"]?["name"]?.stringValue, "t")
+
+        let tools = body["tools"]?.arrayValue ?? []
+        XCTAssertEqual(tools.first?["type"]?.stringValue, "function")
+        XCTAssertEqual(tools.first?["function"]?["name"]?.stringValue, "t")
+
+        let messages = body["messages"]?.arrayValue ?? []
+        XCTAssertEqual(messages.first?["role"]?.stringValue, "system")
+        XCTAssertEqual(messages[1]["role"]?.stringValue, "system")
+        XCTAssertEqual(messages.last?["role"]?.stringValue, "tool")
+        XCTAssertEqual(messages.last?["tool_call_id"]?.stringValue, "call_1")
+    }
+
+    func testGroqAdapterTranscriptionBuildsMultipartAndParsesText() async throws {
+        let responseJSON: JSONValue = .object([
+            "text": .string("hello world"),
+        ])
+
+        let transport = StubTransport(send: { _ in
+            HTTPResponse(statusCode: 200, headers: HTTPHeaders(), body: Array(try responseJSON.data()))
+        })
+
+        let adapter = GroqAdapter(apiKey: "groq-test", transport: transport)
+        let req = Request(
+            model: "whisper-large-v3",
+            messages: [
+                Message(
+                    role: .user,
+                    content: [
+                        .text("transcribe literally"),
+                        ContentPart(kind: .standard(.audio), audio: AudioData(data: [0x52, 0x49, 0x46, 0x46], mediaType: "audio/wav")),
+                    ]
+                ),
+            ],
+            providerOptions: ["groq": .object(["language": .string("en"), "response_format": .string("json")])]
+        )
+
+        let resp = try await adapter.complete(request: req)
+        XCTAssertEqual(resp.text, "hello world")
+        XCTAssertEqual(resp.provider, "groq")
+
+        let sentOpt = await transport.lastSendRequest
+        let sent = try XCTUnwrap(sentOpt)
+        XCTAssertTrue(sent.url.absoluteString.contains("/audio/transcriptions"))
+        XCTAssertEqual(sent.headers.firstValue(for: "authorization"), "Bearer groq-test")
+        XCTAssertTrue((sent.headers.firstValue(for: "content-type") ?? "").contains("multipart/form-data"))
+
+        let bodyString = String(decoding: bodyBytes(sent), as: UTF8.self)
+        XCTAssertTrue(bodyString.contains("name=\"model\""))
+        XCTAssertTrue(bodyString.contains("whisper-large-v3"))
+        XCTAssertTrue(bodyString.contains("name=\"file\"; filename=\"audio.wav\""))
+        XCTAssertTrue(bodyString.contains("name=\"prompt\""))
+        XCTAssertTrue(bodyString.contains("transcribe literally"))
+        XCTAssertTrue(bodyString.contains("name=\"language\""))
+        XCTAssertTrue(bodyString.contains("name=\"response_format\""))
+    }
+
+    func testGroqAdapterSpeechParsesAudioResponse() async throws {
+        let responseHeaders: HTTPHeaders = {
+            var h = HTTPHeaders()
+            h.set(name: "content-type", value: "audio/wav")
+            return h
+        }()
+
+        let transport = StubTransport(send: { _ in
+            HTTPResponse(statusCode: 200, headers: responseHeaders, body: [0x52, 0x49, 0x46, 0x46])
+        })
+
+        let adapter = GroqAdapter(apiKey: "groq-test", transport: transport)
+        let req = Request(
+            model: "canopylabs/orpheus-v1-english",
+            messages: [.user("hello there")],
+            providerOptions: ["groq": .object(["voice": .string("tara"), "response_format": .string("wav")])]
+        )
+
+        let resp = try await adapter.complete(request: req)
+        XCTAssertEqual(resp.provider, "groq")
+        let audioPart = resp.message.content.first(where: { $0.kind.rawValue == ContentKind.audio.rawValue })
+        XCTAssertEqual(audioPart?.audio?.mediaType, "audio/wav")
+        XCTAssertEqual(audioPart?.audio?.data ?? [], [0x52, 0x49, 0x46, 0x46])
+
+        let sentOpt = await transport.lastSendRequest
+        let sent = try XCTUnwrap(sentOpt)
+        XCTAssertTrue(sent.url.absoluteString.contains("/audio/speech"))
+        XCTAssertEqual(sent.headers.firstValue(for: "authorization"), "Bearer groq-test")
+
+        let body = try JSONValue.parse(bodyBytes(sent))
+        XCTAssertEqual(body["model"]?.stringValue, "canopylabs/orpheus-v1-english")
+        XCTAssertEqual(body["input"]?.stringValue, "hello there")
+        XCTAssertEqual(body["voice"]?.stringValue, "tara")
+        XCTAssertEqual(body["response_format"]?.stringValue, "wav")
+    }
+
     func testOpenAIAdapterStreamingMapsTextEvents() async throws {
         let completedJSON: JSONValue = .object([
             "type": .string("response.completed"),
@@ -1045,6 +1207,74 @@ final class ProviderAdapterTests: XCTestCase {
         XCTAssertTrue(seenToolDelta)
         XCTAssertTrue(seenToolEnd)
         XCTAssertEqual(finish?.finishReason.reason, "tool_calls")
+        XCTAssertEqual(finish?.toolCalls.first?.name, "add")
+    }
+
+    func testGroqAdapterStreamingMapsTextReasoningAndToolCallEvents() async throws {
+        let sse = """
+        data: {\"id\":\"chatcmpl_1\",\"model\":\"openai/gpt-oss-20b\",\"choices\":[{\"index\":0,\"delta\":{\"reasoning\":\"User \"},\"finish_reason\":null}]}
+
+        data: {\"id\":\"chatcmpl_1\",\"model\":\"openai/gpt-oss-20b\",\"choices\":[{\"index\":0,\"delta\":{\"reasoning\":\"asks.\"},\"finish_reason\":null}]}
+
+        data: {\"id\":\"chatcmpl_1\",\"model\":\"openai/gpt-oss-20b\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"he\"},\"finish_reason\":null}]}
+
+        data: {\"id\":\"chatcmpl_1\",\"model\":\"openai/gpt-oss-20b\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"llo\"},\"finish_reason\":null}]}
+
+        data: {\"id\":\"chatcmpl_1\",\"model\":\"openai/gpt-oss-20b\",\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call_1\",\"type\":\"function\",\"function\":{\"name\":\"add\",\"arguments\":\"{\\\"a\\\":1\"}}]},\"finish_reason\":null}]}
+
+        data: {\"id\":\"chatcmpl_1\",\"model\":\"openai/gpt-oss-20b\",\"choices\":[{\"index\":0,\"delta\":{\"tool_calls\":[{\"index\":0,\"function\":{\"arguments\":\",\\\"b\\\":2}\"}}]},\"finish_reason\":\"tool_calls\"}],\"x_groq\":{\"usage\":{\"prompt_tokens\":5,\"completion_tokens\":7,\"completion_tokens_details\":{\"reasoning_tokens\":2}}}}
+
+        data: [DONE]
+
+        """
+
+        let transport = StubTransport(stream: { _ in
+            HTTPStreamResponse(statusCode: 200, headers: HTTPHeaders(), body: streamFromSSE(sse))
+        })
+
+        let adapter = GroqAdapter(apiKey: "groq-test", transport: transport)
+        let stream = try await adapter.stream(request: Request(model: "openai/gpt-oss-20b", messages: [.user("hi")]))
+
+        var chunks: [String] = []
+        var reasoningChunks: [String] = []
+        var seenToolStart = false
+        var seenToolDelta = false
+        var seenToolEnd = false
+        var finish: Response?
+
+        for try await ev in stream {
+            if ev.type.rawValue == StreamEventType.textDelta.rawValue {
+                chunks.append(ev.delta ?? "")
+            }
+            if ev.type.rawValue == StreamEventType.reasoningDelta.rawValue {
+                reasoningChunks.append(ev.reasoningDelta ?? "")
+            }
+            if ev.type.rawValue == StreamEventType.toolCallStart.rawValue {
+                seenToolStart = true
+                XCTAssertEqual(ev.toolCall?.id, "call_1")
+                XCTAssertEqual(ev.toolCall?.name, "add")
+            }
+            if ev.type.rawValue == StreamEventType.toolCallDelta.rawValue {
+                seenToolDelta = true
+                XCTAssertTrue((ev.toolCall?.rawArguments ?? "").contains("\"a\""))
+            }
+            if ev.type.rawValue == StreamEventType.toolCallEnd.rawValue {
+                seenToolEnd = true
+                XCTAssertEqual(ev.toolCall?.arguments["a"]?.doubleValue, 1)
+                XCTAssertEqual(ev.toolCall?.arguments["b"]?.doubleValue, 2)
+            }
+            if ev.type.rawValue == StreamEventType.finish.rawValue {
+                finish = ev.response
+            }
+        }
+
+        XCTAssertEqual(chunks.joined(), "hello")
+        XCTAssertEqual(reasoningChunks.joined(), "User asks.")
+        XCTAssertTrue(seenToolStart)
+        XCTAssertTrue(seenToolDelta)
+        XCTAssertTrue(seenToolEnd)
+        XCTAssertEqual(finish?.finishReason.reason, "tool_calls")
+        XCTAssertEqual(finish?.usage.reasoningTokens, 2)
         XCTAssertEqual(finish?.toolCalls.first?.name, "add")
     }
 
@@ -1414,6 +1644,52 @@ final class ProviderAdapterTests: XCTestCase {
             XCTAssertEqual(body["tool_choice"]?["type"]?.stringValue, "function")
             XCTAssertEqual(body["tool_choice"]?["function"]?["name"]?.stringValue, "t")
         }
+
+        // Groq
+        do {
+            let responseJSON: JSONValue = .object([
+                "id": .string("chatcmpl_1"),
+                "model": .string("openai/gpt-oss-20b"),
+                "choices": .array([
+                    .object([
+                        "index": .number(0),
+                        "message": .object([
+                            "role": .string("assistant"),
+                            "content": .string("ok"),
+                        ]),
+                        "finish_reason": .string("stop"),
+                    ]),
+                ]),
+                "usage": .object(["prompt_tokens": .number(1), "completion_tokens": .number(1)]),
+            ])
+            let transport = StubTransport(send: { _ in
+                HTTPResponse(statusCode: 200, headers: HTTPHeaders(), body: Array(try responseJSON.data()))
+            })
+            let adapter = GroqAdapter(apiKey: "groq-test", transport: transport)
+
+            func lastBody() async throws -> JSONValue {
+                let sentOpt = await transport.lastSendRequest
+                let sent = try XCTUnwrap(sentOpt)
+                return try JSONValue.parse(bodyBytes(sent))
+            }
+
+            _ = try await adapter.complete(request: Request(model: "openai/gpt-oss-20b", messages: [.user("hi")], tools: [tool], toolChoice: ToolChoice(mode: .auto)))
+            var body = try await lastBody()
+            XCTAssertEqual(body["tool_choice"]?.stringValue, "auto")
+
+            _ = try await adapter.complete(request: Request(model: "openai/gpt-oss-20b", messages: [.user("hi")], tools: [tool], toolChoice: ToolChoice(mode: .none)))
+            body = try await lastBody()
+            XCTAssertEqual(body["tool_choice"]?.stringValue, "none")
+
+            _ = try await adapter.complete(request: Request(model: "openai/gpt-oss-20b", messages: [.user("hi")], tools: [tool], toolChoice: ToolChoice(mode: .required)))
+            body = try await lastBody()
+            XCTAssertEqual(body["tool_choice"]?.stringValue, "required")
+
+            _ = try await adapter.complete(request: Request(model: "openai/gpt-oss-20b", messages: [.user("hi")], tools: [tool], toolChoice: ToolChoice(mode: .named, toolName: "t")))
+            body = try await lastBody()
+            XCTAssertEqual(body["tool_choice"]?["type"]?.stringValue, "function")
+            XCTAssertEqual(body["tool_choice"]?["function"]?["name"]?.stringValue, "t")
+        }
     }
 
     func testAdaptersGracefullyRejectAudioAndDocuments() async throws {
@@ -1430,6 +1706,7 @@ final class ProviderAdapterTests: XCTestCase {
             ("anthropic", { req in try await AnthropicAdapter(apiKey: "ak", transport: transport).complete(request: req) }),
             ("gemini", { req in try await GeminiAdapter(apiKey: "gk", transport: transport).complete(request: req) }),
             ("cerebras", { req in try await CerebrasAdapter(apiKey: "ck", transport: transport).complete(request: req) }),
+            ("groq", { req in try await GroqAdapter(apiKey: "groq-test", transport: transport).complete(request: req) }),
         ]
 
         for (name, complete) in adapters {
@@ -1449,7 +1726,7 @@ final class ProviderAdapterTests: XCTestCase {
         }
     }
 
-    func testRetryAfterIsParsedForAnthropicGeminiAndCerebrasErrors() async throws {
+    func testRetryAfterIsParsedForAnthropicGeminiCerebrasAndGroqErrors() async throws {
         let headers: HTTPHeaders = {
             var h = HTTPHeaders()
             h.set(name: "retry-after", value: "3")
@@ -1495,6 +1772,21 @@ final class ProviderAdapterTests: XCTestCase {
             let adapter = CerebrasAdapter(apiKey: "cerebras-test", transport: transport)
             do {
                 _ = try await adapter.complete(request: Request(model: "zai-glm-4.7", messages: [.user("hi")]))
+                XCTFail("Expected RateLimitError")
+            } catch let e as RateLimitError {
+                XCTAssertEqual(e.retryAfter, 3)
+            }
+        }
+
+        // Groq 429
+        do {
+            let errJSON: JSONValue = .object(["error": .object(["message": .string("rate limited"), "type": .string("rate_limit_error")])])
+            let transport = StubTransport(send: { _ in
+                HTTPResponse(statusCode: 429, headers: headers, body: Array(try errJSON.data()))
+            })
+            let adapter = GroqAdapter(apiKey: "groq-test", transport: transport)
+            do {
+                _ = try await adapter.complete(request: Request(model: "llama-3.1-8b-instant", messages: [.user("hi")]))
                 XCTFail("Expected RateLimitError")
             } catch let e as RateLimitError {
                 XCTAssertEqual(e.retryAfter, 3)

@@ -71,10 +71,11 @@ final class IntegrationSmokeTests: XCTestCase {
             if hasKey("ANTHROPIC_API_KEY", env: dotEnv) { providers.append("anthropic") }
             if hasKey("GEMINI_API_KEY", env: dotEnv) || hasKey("GOOGLE_API_KEY", env: dotEnv) { providers.append("gemini") }
             if hasKey("CEREBRAS_API_KEY", env: dotEnv) { providers.append("cerebras") }
+            if hasKey("GROQ_API_KEY", env: dotEnv) { providers.append("groq") }
             if !providers.isEmpty { return providers }
         }
 
-        return ["openai", "anthropic", "gemini", "cerebras"]
+        return ["openai", "anthropic", "gemini", "cerebras", "groq"]
     }
 
     private func integrationModel(provider: String, client: Client, env: [String: String]) -> String? {
@@ -93,6 +94,8 @@ final class IntegrationSmokeTests: XCTestCase {
             return (env["GEMINI_INTEGRATION_MODEL"]?.isEmpty == false ? env["GEMINI_INTEGRATION_MODEL"] : nil) ?? "gemini-3-flash-preview"
         case "cerebras":
             return (env["CEREBRAS_INTEGRATION_MODEL"]?.isEmpty == false ? env["CEREBRAS_INTEGRATION_MODEL"] : nil) ?? "zai-glm-4.7"
+        case "groq":
+            return (env["GROQ_INTEGRATION_MODEL"]?.isEmpty == false ? env["GROQ_INTEGRATION_MODEL"] : nil) ?? "openai/gpt-oss-20b"
         default:
             return nil
         }
@@ -120,6 +123,7 @@ final class IntegrationSmokeTests: XCTestCase {
                 case "anthropic": return "ANTHROPIC_API_KEY"
                 case "gemini": return (hasKey("GEMINI_API_KEY", env: env) ? "GEMINI_API_KEY" : "GOOGLE_API_KEY")
                 case "cerebras": return "CEREBRAS_API_KEY"
+                case "groq": return "GROQ_API_KEY"
                 default: return ""
                 }
             }()
@@ -177,6 +181,7 @@ final class IntegrationSmokeTests: XCTestCase {
                 case "anthropic": return "ANTHROPIC_API_KEY"
                 case "gemini": return (hasKey("GEMINI_API_KEY", env: env) ? "GEMINI_API_KEY" : "GOOGLE_API_KEY")
                 case "cerebras": return "CEREBRAS_API_KEY"
+                case "groq": return "GROQ_API_KEY"
                 default: return ""
                 }
             }()
@@ -252,6 +257,7 @@ final class IntegrationSmokeTests: XCTestCase {
                 case "anthropic": return "ANTHROPIC_API_KEY"
                 case "gemini": return (hasKey("GEMINI_API_KEY", env: env) ? "GEMINI_API_KEY" : "GOOGLE_API_KEY")
                 case "cerebras": return "CEREBRAS_API_KEY"
+                case "groq": return "GROQ_API_KEY"
                 default: return ""
                 }
             }()
@@ -327,6 +333,38 @@ final class IntegrationSmokeTests: XCTestCase {
         XCTAssertTrue(
             ["stop", "length", "other"].contains(result.finishReason.reason),
             "provider=cerebras model=\(model) finish=\(result.finishReason.reason)"
+        )
+    }
+
+    func testGroqReasoningMode() async throws {
+        try requireIntegration()
+
+        let env = integrationEnvironment()
+        guard hasKey("GROQ_API_KEY", env: env) else {
+            throw XCTSkip("GROQ_API_KEY not set, skipping Groq reasoning integration test.")
+        }
+
+        let client = try Client.fromEnv(environment: env)
+        let model = (env["GROQ_REASONING_INTEGRATION_MODEL"]?.isEmpty == false ? env["GROQ_REASONING_INTEGRATION_MODEL"] : nil) ?? "openai/gpt-oss-20b"
+
+        let result = try await generate(
+            model: model,
+            prompt: "Think through how to add 17 and 25, then answer with the final sum only.",
+            maxTokens: 128,
+            reasoningEffort: "low",
+            provider: "groq",
+            providerOptions: ["groq": .object(["include_reasoning": .bool(true)])],
+            maxRetries: 1,
+            client: client
+        )
+
+        XCTAssertTrue(
+            (result.usage.reasoningTokens ?? 0) > 0 || !(result.reasoning?.isEmpty ?? true),
+            "provider=groq model=\(model) expected reasoning tokens/text"
+        )
+        XCTAssertTrue(
+            ["stop", "length", "other"].contains(result.finishReason.reason),
+            "provider=groq model=\(model) finish=\(result.finishReason.reason)"
         )
     }
 }
