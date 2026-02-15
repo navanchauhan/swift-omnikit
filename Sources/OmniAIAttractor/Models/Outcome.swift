@@ -16,7 +16,7 @@ public struct Outcome: Sendable {
     public var status: OutcomeStatus
     public var preferredLabel: String
     public var suggestedNextIds: [String]
-    public var contextUpdates: [String: Any]
+    public var contextUpdates: [String: String]
     public var notes: String
     public var failureReason: String
 
@@ -24,7 +24,7 @@ public struct Outcome: Sendable {
         status: OutcomeStatus,
         preferredLabel: String = "",
         suggestedNextIds: [String] = [],
-        contextUpdates: [String: Any] = [:],
+        contextUpdates: [String: String] = [:],
         notes: String = "",
         failureReason: String = ""
     ) {
@@ -38,7 +38,7 @@ public struct Outcome: Sendable {
 
     public static func success(
         preferredLabel: String = "",
-        contextUpdates: [String: Any] = [:],
+        contextUpdates: [String: String] = [:],
         notes: String = ""
     ) -> Outcome {
         Outcome(status: .success, preferredLabel: preferredLabel, contextUpdates: contextUpdates, notes: notes)
@@ -47,14 +47,14 @@ public struct Outcome: Sendable {
     public static func fail(
         reason: String,
         preferredLabel: String = "",
-        contextUpdates: [String: Any] = [:]
+        contextUpdates: [String: String] = [:]
     ) -> Outcome {
         Outcome(status: .fail, preferredLabel: preferredLabel, contextUpdates: contextUpdates, failureReason: reason)
     }
 
     public static func retry(
         reason: String = "",
-        contextUpdates: [String: Any] = [:]
+        contextUpdates: [String: String] = [:]
     ) -> Outcome {
         Outcome(status: .retry, contextUpdates: contextUpdates, notes: reason)
     }
@@ -65,11 +65,7 @@ public struct Outcome: Sendable {
         if !preferredLabel.isEmpty { dict["preferred_next_label"] = preferredLabel }
         if !suggestedNextIds.isEmpty { dict["suggested_next_ids"] = suggestedNextIds }
         if !contextUpdates.isEmpty {
-            var updates: [String: String] = [:]
-            for (k, v) in contextUpdates {
-                updates[k] = String(describing: v)
-            }
-            dict["context_updates"] = updates
+            dict["context_updates"] = contextUpdates
         }
         if !notes.isEmpty { dict["notes"] = notes }
         if !failureReason.isEmpty { dict["failure_reason"] = failureReason }

@@ -4,12 +4,16 @@ import OmniAICore
 public struct AgentToolDefinition: Sendable {
     public var name: String
     public var description: String
-    public var parameters: [String: Any]
+    public var parameters: JSONValue
 
     public init(name: String, description: String, parameters: [String: Any]) {
         self.name = name
         self.description = description
-        self.parameters = parameters
+        do {
+            self.parameters = try JSONValue(parameters)
+        } catch {
+            preconditionFailure("Invalid JSON schema for tool '\(name)': \(error)")
+        }
     }
 
     public func toLLMKitDefinition() -> Tool {

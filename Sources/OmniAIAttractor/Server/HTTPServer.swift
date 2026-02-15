@@ -108,18 +108,13 @@ public final class PipelineRunState: @unchecked Sendable {
 
 public final class HTTPServerInterviewer: @unchecked Sendable, Interviewer {
     private let runState: PipelineRunState
-    private var questionCounter = 0
-    private let lock = NSLock()
 
     public init(runState: PipelineRunState) {
         self.runState = runState
     }
 
     public func ask(_ question: InterviewQuestion) async -> InterviewAnswer {
-        lock.lock()
-        questionCounter += 1
-        let qid = "q\(questionCounter)"
-        lock.unlock()
+        let qid = "q-\(UUID().uuidString.lowercased())"
 
         let pending = PipelineRunState.PendingQuestion(
             id: qid,
@@ -391,5 +386,4 @@ public struct HTTPResponse: Sendable {
         self.contentType = contentType
     }
 }
-
 

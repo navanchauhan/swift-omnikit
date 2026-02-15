@@ -1587,11 +1587,14 @@ final class RecordingMockBackend: CodergenBackend, @unchecked Sendable {
         reasoningEffort: String,
         context: PipelineContext
     ) async throws -> CodergenResult {
+        record(prompt: prompt, model: model)
+        return resultToReturn
+    }
+
+    private func record(prompt: String, model: String) {
         lock.lock()
         _prompts.append(prompt)
         _models.append(model)
         lock.unlock()
-        return resultToReturn
     }
 }
-

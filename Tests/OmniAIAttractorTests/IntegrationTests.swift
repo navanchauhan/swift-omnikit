@@ -938,14 +938,18 @@ private final class MockIntBackend: CodergenBackend, @unchecked Sendable {
     }
 
     func run(prompt: String, model: String, provider: String, reasoningEffort: String, context: PipelineContext) async throws -> CodergenResult {
-        lock.lock()
-        _callCount += 1
-        lock.unlock()
+        incrementCallCount()
         return CodergenResult(
             response: "Mock response for: \(String(prompt.prefix(50)))",
             status: .success,
             notes: "mock"
         )
+    }
+
+    private func incrementCallCount() {
+        lock.lock()
+        _callCount += 1
+        lock.unlock()
     }
 }
 
@@ -959,6 +963,10 @@ private final class SequentialIntBackend: CodergenBackend, @unchecked Sendable {
     }
 
     func run(prompt: String, model: String, provider: String, reasoningEffort: String, context: PipelineContext) async throws -> CodergenResult {
+        nextResult()
+    }
+
+    private func nextResult() -> CodergenResult {
         lock.lock()
         defer { lock.unlock() }
         if index < results.count {
@@ -987,10 +995,14 @@ private final class TrackingIntBackend: CodergenBackend, @unchecked Sendable {
     }
 
     func run(prompt: String, model: String, provider: String, reasoningEffort: String, context: PipelineContext) async throws -> CodergenResult {
+        appendCall(prompt: prompt, model: model, provider: provider)
+        return CodergenResult(response: "tracked", status: .success)
+    }
+
+    private func appendCall(prompt: String, model: String, provider: String) {
         lock.lock()
         _calls.append(Call(prompt: prompt, model: model, provider: provider))
         lock.unlock()
-        return CodergenResult(response: "tracked", status: .success)
     }
 }
 

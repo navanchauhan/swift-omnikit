@@ -78,6 +78,14 @@ public final class PipelineContext: @unchecked Sendable {
         }
     }
 
+    public func applyUpdates(_ updates: [String: String]) {
+        lock.lock()
+        defer { lock.unlock() }
+        for (key, value) in updates {
+            store[key] = value
+        }
+    }
+
     public func remove(_ key: String) {
         lock.lock()
         defer { lock.unlock() }

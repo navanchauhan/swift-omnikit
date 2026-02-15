@@ -112,7 +112,10 @@ public final class LocalExecutionEnvironment: ExecutionEnvironment, @unchecked S
         let startTime = Date()
 
         let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/bin/bash")
+        // Prefer bash for compatibility with common developer workflows, but fall back
+        // to /bin/sh for minimal Linux environments where bash may be absent.
+        let shellPath = fileManager.isExecutableFile(atPath: "/bin/bash") ? "/bin/bash" : "/bin/sh"
+        process.executableURL = URL(fileURLWithPath: shellPath)
         process.arguments = ["-c", command]
         process.currentDirectoryURL = URL(fileURLWithPath: resolvedWorkingDir)
 
@@ -135,56 +138,37 @@ public final class LocalExecutionEnvironment: ExecutionEnvironment, @unchecked S
         let pid = process.processIdentifier
 
         // Place the child in its own process group so kill(-pid, SIGTERM) works
-        setpgid(pid, pid)
+        _ = setpgid(pid, pid)
+
+        // Read output concurrently so long-running commands cannot deadlock on full pipes.
+        let stdoutReadTask = Task.detached(priority: .userInitiated) {
+            stdoutPipe.fileHandleForReading.readDataToEndOfFile()
+        }
+        let stderrReadTask = Task.detached(priority: .userInitiated) {
+            stderrPipe.fileHandleForReading.readDataToEndOfFile()
+        }
 
         // Timeout task
-        var timedOut = false
-        let timeoutTask = Task {
+        let timeoutFlag = TimeoutFlag()
+        let timeoutTask = Task.detached(priority: .userInitiated) {
             try await Task.sleep(nanoseconds: UInt64(timeoutMs) * 1_000_000)
-            timedOut = true
+            timeoutFlag.markTimedOut()
             // SIGTERM to process group
-            kill(-pid, SIGTERM)
+            self.terminateProcess(pid: pid, signal: SIGTERM)
             try await Task.sleep(nanoseconds: 2_000_000_000) // 2 seconds
             if process.isRunning {
-                kill(-pid, SIGKILL)
+                self.terminateProcess(pid: pid, signal: SIGKILL)
             }
         }
 
-        // Read output asynchronously to avoid deadlock when pipe buffers fill
-        var stdoutData = Data()
-        var stderrData = Data()
-        let stdoutLock = NSLock()
-        let stderrLock = NSLock()
-
-        stdoutPipe.fileHandleForReading.readabilityHandler = { handle in
-            let data = handle.availableData
-            if !data.isEmpty {
-                stdoutLock.lock()
-                stdoutData.append(data)
-                stdoutLock.unlock()
-            }
+        let waitTask = Task.detached(priority: .userInitiated) {
+            process.waitUntilExit()
         }
-        stderrPipe.fileHandleForReading.readabilityHandler = { handle in
-            let data = handle.availableData
-            if !data.isEmpty {
-                stderrLock.lock()
-                stderrData.append(data)
-                stderrLock.unlock()
-            }
-        }
-
-        process.waitUntilExit()
+        await waitTask.value
         timeoutTask.cancel()
 
-        // Stop handlers and read any remaining data
-        stdoutPipe.fileHandleForReading.readabilityHandler = nil
-        stderrPipe.fileHandleForReading.readabilityHandler = nil
-        stdoutLock.lock()
-        stdoutData.append(stdoutPipe.fileHandleForReading.readDataToEndOfFile())
-        stdoutLock.unlock()
-        stderrLock.lock()
-        stderrData.append(stderrPipe.fileHandleForReading.readDataToEndOfFile())
-        stderrLock.unlock()
+        let stdoutData = await stdoutReadTask.value
+        let stderrData = await stderrReadTask.value
 
         let stdout = String(data: stdoutData, encoding: .utf8) ?? ""
         let stderr = String(data: stderrData, encoding: .utf8) ?? ""
@@ -194,7 +178,7 @@ public final class LocalExecutionEnvironment: ExecutionEnvironment, @unchecked S
             stdout: stdout,
             stderr: stderr,
             exitCode: process.terminationStatus,
-            timedOut: timedOut,
+            timedOut: timeoutFlag.isTimedOut(),
             durationMs: durationMs
         )
     }
@@ -332,6 +316,31 @@ public final class LocalExecutionEnvironment: ExecutionEnvironment, @unchecked S
             }
         }
         return filtered
+    }
+
+    private func terminateProcess(pid: Int32, signal: Int32) {
+        // Prefer terminating the process group first. If the child was not moved
+        // into its own group, fall back to the single process.
+        if kill(-pid, signal) != 0 {
+            _ = kill(pid, signal)
+        }
+    }
+}
+
+private final class TimeoutFlag: @unchecked Sendable {
+    private let lock = NSLock()
+    private var timedOut = false
+
+    func markTimedOut() {
+        lock.lock()
+        timedOut = true
+        lock.unlock()
+    }
+
+    func isTimedOut() -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return timedOut
     }
 }
 

@@ -62,7 +62,7 @@ public final class ParallelHandler: NodeHandler, @unchecked Sendable {
         context.set("parallel.results", branchResults)
 
         // Merge context updates from all branches
-        var mergedUpdates: [String: Any] = [:]
+        var mergedUpdates: [String: String] = [:]
         for (_, outcome) in results {
             for (key, value) in outcome.contextUpdates {
                 mergedUpdates[key] = value

@@ -213,6 +213,10 @@ public final class QueueInterviewer: @unchecked Sendable, Interviewer {
     }
 
     public func ask(_ question: InterviewQuestion) async -> InterviewAnswer {
+        nextAnswer(for: question)
+    }
+
+    private func nextAnswer(for question: InterviewQuestion) -> InterviewAnswer {
         lock.lock()
         defer { lock.unlock() }
         askedQuestions.append(question)
@@ -236,15 +240,18 @@ public final class RecordingInterviewer: @unchecked Sendable, Interviewer {
 
     public func ask(_ question: InterviewQuestion) async -> InterviewAnswer {
         let answer = await inner.ask(question)
+        record(question, answer)
+        return answer
+    }
+
+    private func record(_ question: InterviewQuestion, _ answer: InterviewAnswer) {
         lock.lock()
         recordings.append((question, answer))
         lock.unlock()
-        return answer
     }
 
     public func inform(_ message: String, stage: String) async {
         await inner.inform(message, stage: stage)
     }
 }
-
 

@@ -405,46 +405,13 @@ public actor Session {
 
     // MARK: - Tool Argument Validation
 
-    private func validateToolArguments(_ args: [String: JSONValue], against schema: [String: Any]) -> String? {
-        // Check required fields
-        if let required = schema["required"] as? [String] {
-            for field in required {
-                if args[field] == nil {
-                    return "Missing required field: \(field)"
-                }
-            }
+    private func validateToolArguments(_ args: [String: JSONValue], against schema: JSONValue) -> String? {
+        do {
+            try JSONSchema(schema).validate(.object(args))
+            return nil
+        } catch {
+            return "Invalid tool arguments: \(error)"
         }
-
-        // Check type constraints for properties
-        if let properties = schema["properties"] as? [String: Any] {
-            for (key, value) in args {
-                if let propSchema = properties[key] as? [String: Any],
-                   let expectedType = propSchema["type"] as? String {
-                    switch expectedType {
-                    case "string":
-                        if value.stringValue == nil { return "Field '\(key)' must be string" }
-                    case "integer":
-                        guard let n = value.doubleValue, n.rounded() == n else {
-                            return "Field '\(key)' must be integer"
-                        }
-                    case "number":
-                        if value.doubleValue == nil {
-                            return "Field '\(key)' must be number"
-                        }
-                    case "boolean":
-                        if value.boolValue == nil { return "Field '\(key)' must be boolean" }
-                    case "array":
-                        if value.arrayValue == nil { return "Field '\(key)' must be array" }
-                    case "object":
-                        if value.objectValue == nil { return "Field '\(key)' must be object" }
-                    default:
-                        break
-                    }
-                }
-            }
-        }
-
-        return nil // valid
     }
 
     // MARK: - Context Window Awareness
