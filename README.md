@@ -11,7 +11,6 @@ Personal Swift package (Swift 6 language mode, strict concurrency).
   - OpenAI: Responses API (`/v1/responses`)
   - Anthropic: Messages API (`/v1/messages`)
   - Gemini: GenerateContent / StreamGenerateContent (`/v1beta/...:generateContent`)
-- `OmniAILLMClient`: reference-parity implementation ported from `unified-llm-client`.
 - `OmniAIAgent`: coding-agent loop implementation ported from `coding-agent-loop`.
 - `OmniAIAttractor`: graph/DOT pipeline engine ported from `attractor`.
 
@@ -22,6 +21,8 @@ Personal Swift package (Swift 6 language mode, strict concurrency).
 - `OPENAI_API_KEY` (optional: `OPENAI_ORG_ID`, `OPENAI_PROJECT_ID`)
 - `ANTHROPIC_API_KEY`
 - `GEMINI_API_KEY` (or `GOOGLE_API_KEY`)
+- `CEREBRAS_API_KEY`
+- `GROQ_API_KEY`
 
 ### Quickstart
 
@@ -88,8 +89,8 @@ print(result.text)
 - Unit tests: `swift test`
 - Live integration smoke tests (reads `.env` if present):
   - `RUN_OMNIAI_INTEGRATION_TESTS=1 swift test --filter IntegrationSmokeTests`
-  - Select providers: `OMNIAI_INTEGRATION_PROVIDERS=openai,anthropic`
-  - Override models: `OPENAI_INTEGRATION_MODEL`, `ANTHROPIC_INTEGRATION_MODEL`, `GEMINI_INTEGRATION_MODEL`
+  - Select providers: `OMNIAI_INTEGRATION_PROVIDERS=openai,anthropic,gemini,cerebras,groq`
+  - Override models: `OPENAI_INTEGRATION_MODEL`, `ANTHROPIC_INTEGRATION_MODEL`, `GEMINI_INTEGRATION_MODEL`, `CEREBRAS_INTEGRATION_MODEL`, `GROQ_INTEGRATION_MODEL`
   - Use catalog "latest": `OMNIAI_INTEGRATION_USE_LATEST=1`
 - Unified OmniAI E2E across all three providers:
   - `RUN_OMNIAI_E2E_TESTS=1 OPENAI_API_KEY=... ANTHROPIC_API_KEY=... GEMINI_API_KEY=... swift test --filter testUnifiedE2EAllProviders`
