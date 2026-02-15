@@ -1,4 +1,4 @@
-// Compile-only stubs for iOS/macOS 26 "Liquid Glass" APIs used by iGopherBrowser.
+// Compile-only stubs for iOS/macOS 26 "Liquid Glass" APIs.
 
 import Foundation
 

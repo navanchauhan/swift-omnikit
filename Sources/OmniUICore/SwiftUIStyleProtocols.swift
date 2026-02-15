@@ -35,7 +35,7 @@ public struct BorderedProminentButtonStyle: ButtonStyle, Hashable, Sendable {
     public func makeBody(configuration: Configuration) -> some View { configuration.label }
 }
 
-/// iGopherBrowser uses this style name on non-macOS platforms in `WhatsNew.swift`.
+/// Kept for source compatibility with code that uses this style name.
 public struct PrimaryFillButtonStyle: ButtonStyle, Hashable, Sendable {
     public init() {}
     public func makeBody(configuration: Configuration) -> some View { configuration.label }

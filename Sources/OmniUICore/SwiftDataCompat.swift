@@ -1,7 +1,7 @@
 import Foundation
 
 // A small, portable SwiftData-like surface. The goal is not full persistence, just enough API
-// for iGopherBrowser's `Schema`/`ModelContainer`/`ModelContext`/`@Query` usage to compile and be usable.
+// for common `Schema`/`ModelContainer`/`ModelContext`/`@Query` usage to compile and be usable.
 
 public enum SortOrder: Sendable {
     case forward
@@ -120,4 +120,3 @@ public struct Query<Element: AnyObject> {
         return items
     }
 }
-

@@ -363,7 +363,7 @@ private struct _TerminalSession {
 
 private func _resolveColor(_ c: Color?) -> _RGB? {
     guard let c, c.alpha > 0 else { return nil }
-    // Very small palette; good enough for iGopherBrowser-style `.primary/.secondary` and basic colors.
+    // Very small palette; good enough for `.primary/.secondary` and basic colors.
     switch c.name {
     case "primary":
         return _RGB(r: 0xD8, g: 0xDB, b: 0xE2)

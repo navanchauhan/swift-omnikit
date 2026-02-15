@@ -1,8 +1,7 @@
 import Foundation
 
 // SwiftUI on Apple platforms provides bridging initializers between `Color` and UIKit/AppKit colors.
-// iGopherBrowser uses those APIs in a few `#if os(macOS) ... #else ...` blocks which compile on Linux too,
-// so we provide lightweight stubs when UIKit/AppKit are unavailable.
+// We provide lightweight stubs when UIKit/AppKit are unavailable so cross-platform sources compile.
 
 // MARK: - UIKit
 
@@ -31,8 +30,8 @@ public extension UIKit.UIColor {
 
 /// Minimal stand-in for UIKit's `UIColor` to keep iOS-only call sites compiling on non-UIKit platforms.
 ///
-/// This is intentionally tiny, but conforms to `NSSecureCoding` so iGopherBrowser's `Color: RawRepresentable`
-/// extension can archive/unarchive it via `NSKeyedArchiver`.
+/// This is intentionally tiny, but conforms to `NSSecureCoding` so color bridging code can archive/unarchive
+/// it via `NSKeyedArchiver`.
 public final class UIColor: NSObject, NSSecureCoding, @unchecked Sendable {
     public static var supportsSecureCoding: Bool { true }
 
@@ -60,7 +59,7 @@ public final class UIColor: NSObject, NSSecureCoding, @unchecked Sendable {
         coder.encode(Double(alpha), forKey: "alpha")
     }
 
-    // Common system colors referenced by iGopherBrowser.
+    // Common system colors.
     public static let white = UIColor("white")
     public static let black = UIColor("black")
     public static let blue = UIColor("blue")
