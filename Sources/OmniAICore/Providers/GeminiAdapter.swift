@@ -70,10 +70,17 @@ public final class GeminiAdapter: ProviderAdapter, @unchecked Sendable {
         headers.set(name: "accept", value: "text/event-stream")
 
         let timeout = request.timeout?.asConfig.total
-        let res = try await transport.openStream(
-            HTTPRequest(method: .post, url: url, headers: headers, body: .bytes(body)),
-            timeout: timeout
-        )
+        let res: HTTPStreamResponse
+        do {
+            res = try await transport.openStream(
+                HTTPRequest(method: .post, url: url, headers: headers, body: .bytes(body)),
+                timeout: timeout
+            )
+        } catch {
+            // Linux FoundationNetworking does not currently support URLSession streaming.
+            // Fallback to non-stream complete and synthesize stream events.
+            return try await fallbackStreamViaComplete(request: request)
+        }
 
         if !(200..<300).contains(res.statusCode) {
             var bytes: [UInt8] = []
@@ -425,5 +432,41 @@ public final class GeminiAdapter: ProviderAdapter, @unchecked Sendable {
             cacheWriteTokens: nil,
             raw: usage
         )
+    }
+
+    private func fallbackStreamViaComplete(request: Request) async throws -> AsyncThrowingStream<StreamEvent, Error> {
+        let response = try await complete(request: request)
+
+        return AsyncThrowingStream { continuation in
+            continuation.yield(StreamEvent(type: .standard(.streamStart)))
+
+            if !response.text.isEmpty {
+                let textId = "text_0"
+                continuation.yield(StreamEvent(type: .standard(.textStart), textId: textId))
+                continuation.yield(StreamEvent(type: .standard(.textDelta), delta: response.text, textId: textId))
+                continuation.yield(StreamEvent(type: .standard(.textEnd), textId: textId))
+            }
+
+            if let reasoning = response.reasoning, !reasoning.isEmpty {
+                continuation.yield(StreamEvent(type: .standard(.reasoningStart)))
+                continuation.yield(StreamEvent(type: .standard(.reasoningDelta), reasoningDelta: reasoning))
+                continuation.yield(StreamEvent(type: .standard(.reasoningEnd)))
+            }
+
+            for call in response.toolCalls {
+                continuation.yield(StreamEvent(type: .standard(.toolCallStart), toolCall: ToolCall(id: call.id, name: call.name, arguments: [:], rawArguments: call.rawArguments)))
+                continuation.yield(StreamEvent(type: .standard(.toolCallEnd), toolCall: call))
+            }
+
+            continuation.yield(
+                StreamEvent(
+                    type: .standard(.finish),
+                    finishReason: response.finishReason,
+                    usage: response.usage,
+                    response: response
+                )
+            )
+            continuation.finish()
+        }
     }
 }

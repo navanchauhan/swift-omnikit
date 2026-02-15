@@ -1152,6 +1152,55 @@ final class ProviderAdapterTests: XCTestCase {
         XCTAssertEqual(finish?.text, "hello")
     }
 
+    func testGeminiAdapterStreamingFallsBackToCompleteWhenStreamingUnavailable() async throws {
+        let responseJSON: JSONValue = .object([
+            "candidates": .array([
+                .object([
+                    "finishReason": .string("STOP"),
+                    "content": .object([
+                        "parts": .array([
+                            .object(["text": .string("hello")]),
+                        ]),
+                    ]),
+                ]),
+            ]),
+            "usageMetadata": .object([
+                "promptTokenCount": .number(5),
+                "candidatesTokenCount": .number(7),
+            ]),
+        ])
+
+        let transport = StubTransport(
+            send: { _ in
+                HTTPResponse(statusCode: 200, headers: HTTPHeaders(), body: Array(try responseJSON.data()))
+            },
+            stream: { _ in
+                throw OmniHTTPError.streamingNotSupported
+            }
+        )
+
+        let adapter = GeminiAdapter(apiKey: "gemini-test", transport: transport)
+        let stream = try await adapter.stream(request: Request(model: "gemini-3-flash-preview", messages: [.user("hi")]))
+
+        var chunks: [String] = []
+        var finish: Response?
+        for try await ev in stream {
+            if ev.type.rawValue == StreamEventType.textDelta.rawValue {
+                chunks.append(ev.delta ?? "")
+            }
+            if ev.type.rawValue == StreamEventType.finish.rawValue {
+                finish = ev.response
+            }
+        }
+
+        XCTAssertEqual(chunks.joined(), "hello")
+        XCTAssertEqual(finish?.text, "hello")
+        let streamRequest = await transport.lastStreamRequest
+        let sendRequest = await transport.lastSendRequest
+        XCTAssertNotNil(streamRequest)
+        XCTAssertNotNil(sendRequest)
+    }
+
     func testCerebrasAdapterStreamingMapsTextAndToolCallEvents() async throws {
         let sse = """
         data: {\"id\":\"chatcmpl_1\",\"model\":\"zai-glm-4.7\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"he\"},\"finish_reason\":null}]}

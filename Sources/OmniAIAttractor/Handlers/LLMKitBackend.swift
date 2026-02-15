@@ -20,6 +20,7 @@ public final class LLMKitBackend: CodergenBackend, @unchecked Sendable {
         let resolvedClient = try (client ?? Client.fromEnv())
         let goal = context.getString("_graph_goal")
         let systemPrompt = buildSystemPrompt(goal: goal, context: context)
+        let timeout = resolveTimeout(from: context)
 
         let result = try await generate(
             model: model,
@@ -27,6 +28,7 @@ public final class LLMKitBackend: CodergenBackend, @unchecked Sendable {
             system: systemPrompt,
             reasoningEffort: reasoningEffort,
             provider: provider,
+            timeout: timeout,
             client: resolvedClient
         )
 
@@ -68,6 +70,18 @@ public final class LLMKitBackend: CodergenBackend, @unchecked Sendable {
         """)
 
         return parts.joined(separator: "\n\n")
+    }
+
+    private func resolveTimeout(from context: PipelineContext) -> Timeout {
+        if let nodeTimeoutSeconds = Double(context.getString("_current_node_timeout")),
+           nodeTimeoutSeconds > 0
+        {
+            return .seconds(nodeTimeoutSeconds)
+        }
+
+        // URLSession's default request timeout can be too short for reasoning-heavy LLM calls.
+        // Use a conservative default for attractor codergen stages unless overridden per-node.
+        return .seconds(300)
     }
 
     private func parseResponse(_ response: String) throws -> CodergenResult {
@@ -128,5 +142,4 @@ public final class LLMKitBackend: CodergenBackend, @unchecked Sendable {
         return nsText.substring(with: lastMatch.range(at: 1))
     }
 }
-
 
