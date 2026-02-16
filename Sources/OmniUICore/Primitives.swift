@@ -993,6 +993,8 @@ private func _collectTaggedPickerOptions<T: Hashable>(node: _VNode, valueType: T
         switch n {
         case .text(let s):
             return s
+        case .textStyled(_, let child):
+            return labelText(child)
         case .style(_, _, let child):
             return labelText(child)
         case .contentShapeRect(let child):
@@ -1048,6 +1050,8 @@ private func _collectTaggedPickerOptions<T: Hashable>(node: _VNode, valueType: T
         case .overlay(let child, let ov):
             walk(child)
             walk(ov)
+        case .textStyled(_, let child):
+            walk(child)
         case .style(_, _, let child):
             walk(child)
         default:
@@ -1101,6 +1105,8 @@ private func _menuLabelText(from node: _VNode) -> String {
         case .image:
             // Ignore icon-only nodes; the renderers already handle images.
             break
+        case .textStyled(_, let child):
+            walk(child)
         case .style(_, _, let child):
             walk(child)
         case .contentShapeRect(let child):

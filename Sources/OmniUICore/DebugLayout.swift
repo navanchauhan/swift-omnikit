@@ -127,6 +127,16 @@ enum _DebugLayout {
         case .empty:
             return _Size(width: 0, height: 0)
 
+        case .textStyled(_, let child):
+            // Text styles don't affect the debug layout — just recurse.
+            return draw(
+                node: child, origin: origin, maxSize: maxSize,
+                canvas: &canvas, hitRegions: &hitRegions,
+                scrollRegions: &scrollRegions, shapeRegions: &shapeRegions,
+                renderShapeGlyphs: renderShapeGlyphs,
+                overlays: &overlays, style: style
+            )
+
         case .style(_, _, let child):
             // Merge local style into the inherited style.
             // We model bg as a simple rect fill across the current available area.
@@ -531,6 +541,8 @@ enum _DebugLayout {
 	                switch node {
 	                case .empty:
 	                    return _Size(width: 0, height: 0)
+	                case .textStyled(_, let child):
+	                    return measure(child, maxSize)
 	                case .style(_, _, let child):
 	                    return measure(child, maxSize)
 	                case .contentShapeRect(let child):
@@ -894,6 +906,8 @@ enum _DebugLayout {
                     guard maxSize.width > 0, maxSize.height > 0 else { return _Size(width: 0, height: 0) }
 	                    switch node {
 	                    case .empty: return _Size(width: 0, height: 0)
+	                    case .textStyled(_, let child):
+	                        return m(child, maxSize)
 	                    case .style(_, _, let child):
 	                        return m(child, maxSize)
 	                    case .contentShapeRect(let child):

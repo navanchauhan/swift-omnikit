@@ -482,6 +482,12 @@ public final class _UIRuntime: @unchecked Sendable {
         }
     }
 
+    /// Public entry point for invoking an action by its raw integer ID.
+    /// Used by renderers that need to fire actions from native widgets.
+    public func invokeActionByRawID(_ rawID: Int) {
+        _invokeAction(_ActionID(raw: rawID))
+    }
+
     func _setFocus(path: [Int]?) {
         let old = focusedPath
         focusedPath = path
@@ -855,6 +861,10 @@ extension _UIRuntime {
             ops: laidOut.ops,
             focusedRect: focusedRect,
             shapeRegions: laidOut.shapeRegions,
+            cursorPosition: laidOut.cursorPosition,
+            activeMenu: laidOut.activeMenu,
+            activePicker: laidOut.activePicker,
+            activeTextField: laidOut.activeTextField,
             hitRegions: laidOut.hitRegions,
             scrollRegions: laidOut.scrollRegions,
             runtime: runtime
@@ -938,10 +948,10 @@ public struct StyledCell: Hashable, Sendable {
     }
 }
 
-struct _ScrollRegion: Sendable {
-    let rect: _Rect
-    let path: [Int]
-    let maxOffsetY: Int
+public struct _ScrollRegion: Sendable {
+    public let rect: _Rect
+    public let path: [Int]
+    public let maxOffsetY: Int
 }
 
 public struct DebugSnapshot: Sendable {

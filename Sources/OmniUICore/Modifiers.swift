@@ -5,9 +5,15 @@ public extension View {
     func foregroundStyle(_ color: Color) -> some View { _Style(content: AnyView(self), fg: color, bg: nil) }
     func foregroundColor(_ color: Color) -> some View { _Style(content: AnyView(self), fg: color, bg: nil) }
     func fontWeight(_ weight: Font.Weight?) -> some View {
-        _ = weight
-        return _Passthrough(self)
+        if weight == .bold || weight == .heavy || weight == .black || weight == .semibold {
+            return AnyView(_TextStyleModifier(content: AnyView(self), style: .bold))
+        }
+        return AnyView(_Passthrough(self))
     }
+    func bold() -> some View { _TextStyleModifier(content: AnyView(self), style: .bold) }
+    func italic() -> some View { _TextStyleModifier(content: AnyView(self), style: .italic) }
+    func underline() -> some View { _TextStyleModifier(content: AnyView(self), style: .underline) }
+    func strikethrough() -> some View { _TextStyleModifier(content: AnyView(self), style: .struck) }
     func multilineTextAlignment(_ alignment: TextAlignment) -> some View { _Passthrough(self) }
     func lineLimit(_ limit: Int?) -> some View { _Passthrough(self) }
     func monospacedDigit() -> some View { _Passthrough(self) }
@@ -658,6 +664,16 @@ private struct _Style: View, _PrimitiveView {
 
     func _makeNode(_ ctx: inout _BuildContext) -> _VNode {
         .style(fg: fg, bg: bg, child: ctx.buildChild(content))
+    }
+}
+
+private struct _TextStyleModifier: View, _PrimitiveView {
+    typealias Body = Never
+    let content: AnyView
+    let style: TextStyle
+
+    func _makeNode(_ ctx: inout _BuildContext) -> _VNode {
+        .textStyled(style: style, child: ctx.buildChild(content))
     }
 }
 

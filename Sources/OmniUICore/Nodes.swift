@@ -40,6 +40,7 @@ indirect enum _VNode {
     case text(String)
     case image(String)
     case style(fg: Color?, bg: Color?, child: _VNode)
+    case textStyled(style: TextStyle, child: _VNode)
     case contentShapeRect(child: _VNode)
     case clip(kind: _ShapeKind, child: _VNode)
     case shadow(child: _VNode, color: Color, radius: Int, x: Int, y: Int)

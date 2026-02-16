@@ -12,10 +12,12 @@ public struct RenderOp: Hashable, Sendable {
 
     public var zIndex: Int
     public var kind: Kind
+    public var textStyle: TextStyle
 
-    public init(zIndex: Int = 0, kind: Kind) {
+    public init(zIndex: Int = 0, kind: Kind, textStyle: TextStyle = .none) {
         self.zIndex = zIndex
         self.kind = kind
+        self.textStyle = textStyle
     }
 }
 
@@ -24,9 +26,13 @@ public struct RenderSnapshot: Sendable {
     public let ops: [RenderOp]
     public let focusedRect: _Rect?
     public let shapeRegions: [(_Rect, _ShapeNode)]
+    public let cursorPosition: _Point?
+    public let activeMenu: _MenuInfo?
+    public let activePicker: _PickerInfo?
+    public let activeTextField: _TextFieldInfo?
 
     let hitRegions: [(_Rect, _ActionID)]
-    let scrollRegions: [_ScrollRegion]
+    public let scrollRegions: [_ScrollRegion]
     let runtime: _UIRuntime
 
     public func click(x: Int, y: Int) {
@@ -52,17 +58,47 @@ public struct RenderSnapshot: Sendable {
     }
 }
 
+/// Metadata about an expanded menu, exposed to the renderer for native widget integration.
+public struct _MenuInfo: Sendable {
+    public let origin: _Point
+    public let title: String
+    public let items: [(label: String, actionID: Int)]
+    public let selectedIndex: Int?
+}
+
+/// Metadata about an expanded picker, exposed to the renderer for native widget integration.
+public struct _PickerInfo: Sendable {
+    public let origin: _Point
+    public let title: String
+    public let options: [(label: String, actionID: Int)]
+    public let selectedIndex: Int?
+}
+
+/// Metadata about a focused text field, exposed to the renderer for native widget integration.
+public struct _TextFieldInfo: Sendable {
+    public let origin: _Point
+    public let width: Int
+    public let text: String
+    public let cursorOffset: Int
+    public let actionID: Int
+}
+
 enum _RenderLayout {
     struct Result {
         var ops: [RenderOp]
         var hitRegions: [(_Rect, _ActionID)]
         var scrollRegions: [_ScrollRegion]
         var shapeRegions: [(_Rect, _ShapeNode)]
+        var cursorPosition: _Point?
+        var activeMenu: _MenuInfo?
+        var activePicker: _PickerInfo?
+        var activeTextField: _TextFieldInfo?
     }
 
     private struct _Style {
         var fg: Color?
         var bg: Color?
+        var textStyle: TextStyle = .none
     }
 
     private struct _Ctx {
@@ -76,6 +112,10 @@ enum _RenderLayout {
         var hits: [(_Rect, _ActionID)] = []
         var scrolls: [_ScrollRegion] = []
         var shapes: [(_Rect, _ShapeNode)] = []
+        var cursorPos: _Point? = nil
+        var activeMenu: _MenuInfo? = nil
+        var activePicker: _PickerInfo? = nil
+        var activeTextField: _TextFieldInfo? = nil
         var ctx = _Ctx(size: size, style: _Style(fg: nil, bg: nil), z: 0)
         _ = draw(
             node: node,
@@ -85,7 +125,11 @@ enum _RenderLayout {
             ops: &ops,
             hitRegions: &hits,
             scrollRegions: &scrolls,
-            shapeRegions: &shapes
+            shapeRegions: &shapes,
+            cursorPosition: &cursorPos,
+            activeMenu: &activeMenu,
+            activePicker: &activePicker,
+            activeTextField: &activeTextField
         )
 
         // Coalesce adjacent glyphs into text runs to reduce op count, without reordering.
@@ -111,6 +155,7 @@ enum _RenderLayout {
             while j < ops.count {
                 let next = ops[j]
                 if next.zIndex != op.zIndex { break }
+                if next.textStyle != op.textStyle { break }
                 guard case .glyph(let nx, let ny, let negc, let nfg, let nbg) = next.kind else { break }
                 if ny != y0 { break }
                 if nx != x + 1 { break }
@@ -121,7 +166,7 @@ enum _RenderLayout {
                 j += 1
             }
             if text.count >= 2 {
-                out.append(RenderOp(zIndex: op.zIndex, kind: .textRun(x: x0, y: y0, text: text, fg: fg0, bg: bg0)))
+                out.append(RenderOp(zIndex: op.zIndex, kind: .textRun(x: x0, y: y0, text: text, fg: fg0, bg: bg0), textStyle: op.textStyle))
                 i = j
             } else {
                 out.append(op)
@@ -129,7 +174,7 @@ enum _RenderLayout {
             }
         }
 
-        return Result(ops: out, hitRegions: hits, scrollRegions: scrolls, shapeRegions: shapes)
+        return Result(ops: out, hitRegions: hits, scrollRegions: scrolls, shapeRegions: shapes, cursorPosition: cursorPos, activeMenu: activeMenu, activePicker: activePicker, activeTextField: activeTextField)
     }
 
     private static func draw(
@@ -140,14 +185,18 @@ enum _RenderLayout {
         ops: inout [RenderOp],
         hitRegions: inout [(_Rect, _ActionID)],
         scrollRegions: inout [_ScrollRegion],
-        shapeRegions: inout [(_Rect, _ShapeNode)]
+        shapeRegions: inout [(_Rect, _ShapeNode)],
+        cursorPosition: inout _Point?,
+        activeMenu: inout _MenuInfo?,
+        activePicker: inout _PickerInfo?,
+        activeTextField: inout _TextFieldInfo?
     ) -> _Size {
         guard maxSize.width > 0, maxSize.height > 0 else { return _Size(width: 0, height: 0) }
 
         func emitGlyph(_ s: String, at p: _Point) {
             guard p.x >= 0, p.y >= 0, p.x < ctx.size.width, p.y < ctx.size.height else { return }
             let egc = _sanitizeCell(s)
-            ops.append(RenderOp(zIndex: ctx.z, kind: .glyph(x: p.x, y: p.y, egc: egc, fg: ctx.style.fg, bg: ctx.style.bg)))
+            ops.append(RenderOp(zIndex: ctx.z, kind: .glyph(x: p.x, y: p.y, egc: egc, fg: ctx.style.fg, bg: ctx.style.bg), textStyle: ctx.style.textStyle))
         }
 
         func emitText(_ text: String, at p: _Point) {
@@ -174,24 +223,30 @@ enum _RenderLayout {
             if let bg = ctx.style.bg {
                 emitFillRect(_Rect(origin: origin, size: maxSize), bg)
             }
-            return draw(node: child, origin: origin, maxSize: maxSize, ctx: &ctx, ops: &ops, hitRegions: &hitRegions, scrollRegions: &scrollRegions, shapeRegions: &shapeRegions)
+            return draw(node: child, origin: origin, maxSize: maxSize, ctx: &ctx, ops: &ops, hitRegions: &hitRegions, scrollRegions: &scrollRegions, shapeRegions: &shapeRegions, cursorPosition: &cursorPosition, activeMenu: &activeMenu, activePicker: &activePicker, activeTextField: &activeTextField)
+
+        case .textStyled(let style, let child):
+            let prev = ctx.style.textStyle
+            ctx.style.textStyle = prev.union(style)
+            defer { ctx.style.textStyle = prev }
+            return draw(node: child, origin: origin, maxSize: maxSize, ctx: &ctx, ops: &ops, hitRegions: &hitRegions, scrollRegions: &scrollRegions, shapeRegions: &shapeRegions, cursorPosition: &cursorPosition, activeMenu: &activeMenu, activePicker: &activePicker, activeTextField: &activeTextField)
 
         case .contentShapeRect(let child):
             // Rendering is unaffected; this node only influences hit-testing.
-            return draw(node: child, origin: origin, maxSize: maxSize, ctx: &ctx, ops: &ops, hitRegions: &hitRegions, scrollRegions: &scrollRegions, shapeRegions: &shapeRegions)
+            return draw(node: child, origin: origin, maxSize: maxSize, ctx: &ctx, ops: &ops, hitRegions: &hitRegions, scrollRegions: &scrollRegions, shapeRegions: &shapeRegions, cursorPosition: &cursorPosition, activeMenu: &activeMenu, activePicker: &activePicker, activeTextField: &activeTextField)
 
         case .clip(_, let child):
             let sz = measure(child, maxSize)
             let rect = _Rect(origin: origin, size: sz)
             ops.append(RenderOp(zIndex: ctx.z, kind: .pushClip(rect: rect)))
-            _ = draw(node: child, origin: origin, maxSize: sz, ctx: &ctx, ops: &ops, hitRegions: &hitRegions, scrollRegions: &scrollRegions, shapeRegions: &shapeRegions)
+            _ = draw(node: child, origin: origin, maxSize: sz, ctx: &ctx, ops: &ops, hitRegions: &hitRegions, scrollRegions: &scrollRegions, shapeRegions: &shapeRegions, cursorPosition: &cursorPosition, activeMenu: &activeMenu, activePicker: &activePicker, activeTextField: &activeTextField)
             ops.append(RenderOp(zIndex: ctx.z, kind: .popClip))
             return sz
 
         case .shadow(let child, let color, let radius, let x, let y):
             // Simple, terminal-friendly shadow/glow: draw the glyphs behind the child at a few offsets.
             guard color.alpha > 0, (radius > 0 || x != 0 || y != 0) else {
-                return draw(node: child, origin: origin, maxSize: maxSize, ctx: &ctx, ops: &ops, hitRegions: &hitRegions, scrollRegions: &scrollRegions, shapeRegions: &shapeRegions)
+                return draw(node: child, origin: origin, maxSize: maxSize, ctx: &ctx, ops: &ops, hitRegions: &hitRegions, scrollRegions: &scrollRegions, shapeRegions: &shapeRegions, cursorPosition: &cursorPosition, activeMenu: &activeMenu, activePicker: &activePicker, activeTextField: &activeTextField)
             }
 
             let shadowZ = ctx.z - 1
@@ -217,6 +272,10 @@ enum _RenderLayout {
                 var dummyHits: [(_Rect, _ActionID)] = []
                 var dummyScrolls: [_ScrollRegion] = []
                 var dummyShapes: [(_Rect, _ShapeNode)] = []
+                var dummyCursor: _Point? = nil
+                var dummyMenu: _MenuInfo? = nil
+                var dummyPicker: _PickerInfo? = nil
+                var dummyTextField: _TextFieldInfo? = nil
 
                 for o in offsets {
                     var shadowCtx = ctx
@@ -229,7 +288,11 @@ enum _RenderLayout {
                         ops: &shadowOps,
                         hitRegions: &dummyHits,
                         scrollRegions: &dummyScrolls,
-                        shapeRegions: &dummyShapes
+                        shapeRegions: &dummyShapes,
+                        cursorPosition: &dummyCursor,
+                        activeMenu: &dummyMenu,
+                        activePicker: &dummyPicker,
+                        activeTextField: &dummyTextField
                     )
                 }
 
@@ -237,28 +300,28 @@ enum _RenderLayout {
                 for op in shadowOps {
                     switch op.kind {
                     case .glyph(let x, let y, let egc, _, _):
-                        ops.append(RenderOp(zIndex: shadowZ, kind: .glyph(x: x, y: y, egc: egc, fg: color, bg: nil)))
+                        ops.append(RenderOp(zIndex: shadowZ, kind: .glyph(x: x, y: y, egc: egc, fg: color, bg: nil), textStyle: op.textStyle))
                     case .textRun(let x, let y, let text, _, _):
-                        ops.append(RenderOp(zIndex: shadowZ, kind: .textRun(x: x, y: y, text: text, fg: color, bg: nil)))
+                        ops.append(RenderOp(zIndex: shadowZ, kind: .textRun(x: x, y: y, text: text, fg: color, bg: nil), textStyle: op.textStyle))
                     default:
                         break
                     }
                 }
             }
 
-            return draw(node: child, origin: origin, maxSize: maxSize, ctx: &ctx, ops: &ops, hitRegions: &hitRegions, scrollRegions: &scrollRegions, shapeRegions: &shapeRegions)
+            return draw(node: child, origin: origin, maxSize: maxSize, ctx: &ctx, ops: &ops, hitRegions: &hitRegions, scrollRegions: &scrollRegions, shapeRegions: &shapeRegions, cursorPosition: &cursorPosition, activeMenu: &activeMenu, activePicker: &activePicker, activeTextField: &activeTextField)
 
         case .background(let child, let background):
             let sz = measure(child, maxSize)
-            _ = draw(node: background, origin: origin, maxSize: sz, ctx: &ctx, ops: &ops, hitRegions: &hitRegions, scrollRegions: &scrollRegions, shapeRegions: &shapeRegions)
-            _ = draw(node: child, origin: origin, maxSize: sz, ctx: &ctx, ops: &ops, hitRegions: &hitRegions, scrollRegions: &scrollRegions, shapeRegions: &shapeRegions)
+            _ = draw(node: background, origin: origin, maxSize: sz, ctx: &ctx, ops: &ops, hitRegions: &hitRegions, scrollRegions: &scrollRegions, shapeRegions: &shapeRegions, cursorPosition: &cursorPosition, activeMenu: &activeMenu, activePicker: &activePicker, activeTextField: &activeTextField)
+            _ = draw(node: child, origin: origin, maxSize: sz, ctx: &ctx, ops: &ops, hitRegions: &hitRegions, scrollRegions: &scrollRegions, shapeRegions: &shapeRegions, cursorPosition: &cursorPosition, activeMenu: &activeMenu, activePicker: &activePicker, activeTextField: &activeTextField)
             return sz
 
         case .overlay(let child, let overlay):
-            let sz = draw(node: child, origin: origin, maxSize: maxSize, ctx: &ctx, ops: &ops, hitRegions: &hitRegions, scrollRegions: &scrollRegions, shapeRegions: &shapeRegions)
+            let sz = draw(node: child, origin: origin, maxSize: maxSize, ctx: &ctx, ops: &ops, hitRegions: &hitRegions, scrollRegions: &scrollRegions, shapeRegions: &shapeRegions, cursorPosition: &cursorPosition, activeMenu: &activeMenu, activePicker: &activePicker, activeTextField: &activeTextField)
             let prevZ = ctx.z
             ctx.z = prevZ + 1000
-            _ = draw(node: overlay, origin: origin, maxSize: sz, ctx: &ctx, ops: &ops, hitRegions: &hitRegions, scrollRegions: &scrollRegions, shapeRegions: &shapeRegions)
+            _ = draw(node: overlay, origin: origin, maxSize: sz, ctx: &ctx, ops: &ops, hitRegions: &hitRegions, scrollRegions: &scrollRegions, shapeRegions: &shapeRegions, cursorPosition: &cursorPosition, activeMenu: &activeMenu, activePicker: &activePicker, activeTextField: &activeTextField)
             ctx.z = prevZ
             return sz
 
@@ -283,7 +346,7 @@ enum _RenderLayout {
                 return maxSize.height
             }()
             let innerMax = _Size(width: targetW, height: targetH)
-            let s = draw(node: child, origin: origin, maxSize: innerMax, ctx: &ctx, ops: &ops, hitRegions: &hitRegions, scrollRegions: &scrollRegions, shapeRegions: &shapeRegions)
+            let s = draw(node: child, origin: origin, maxSize: innerMax, ctx: &ctx, ops: &ops, hitRegions: &hitRegions, scrollRegions: &scrollRegions, shapeRegions: &shapeRegions, cursorPosition: &cursorPosition, activeMenu: &activeMenu, activePicker: &activePicker, activeTextField: &activeTextField)
             let outW = max(minWidth ?? 0, min(s.width, maxSize.width))
             let outH = max(minHeight ?? 0, min(s.height, maxSize.height))
             return _Size(width: outW, height: outH)
@@ -293,16 +356,16 @@ enum _RenderLayout {
                 origin: _Point(x: origin.x + leading, y: origin.y + top),
                 size: _Size(width: max(0, maxSize.width - leading - trailing), height: max(0, maxSize.height - top - bottom))
             )
-            let s = draw(node: child, origin: inner.origin, maxSize: inner.size, ctx: &ctx, ops: &ops, hitRegions: &hitRegions, scrollRegions: &scrollRegions, shapeRegions: &shapeRegions)
+            let s = draw(node: child, origin: inner.origin, maxSize: inner.size, ctx: &ctx, ops: &ops, hitRegions: &hitRegions, scrollRegions: &scrollRegions, shapeRegions: &shapeRegions, cursorPosition: &cursorPosition, activeMenu: &activeMenu, activePicker: &activePicker, activeTextField: &activeTextField)
             return _Size(width: min(maxSize.width, s.width + leading + trailing), height: min(maxSize.height, s.height + top + bottom))
 
         case .tagged(_, let label):
-            return draw(node: label, origin: origin, maxSize: maxSize, ctx: &ctx, ops: &ops, hitRegions: &hitRegions, scrollRegions: &scrollRegions, shapeRegions: &shapeRegions)
+            return draw(node: label, origin: origin, maxSize: maxSize, ctx: &ctx, ops: &ops, hitRegions: &hitRegions, scrollRegions: &scrollRegions, shapeRegions: &shapeRegions, cursorPosition: &cursorPosition, activeMenu: &activeMenu, activePicker: &activePicker, activeTextField: &activeTextField)
 
         case .group(let nodes):
             var used = _Size(width: 0, height: 0)
             for n in nodes {
-                let s = draw(node: n, origin: origin, maxSize: maxSize, ctx: &ctx, ops: &ops, hitRegions: &hitRegions, scrollRegions: &scrollRegions, shapeRegions: &shapeRegions)
+                let s = draw(node: n, origin: origin, maxSize: maxSize, ctx: &ctx, ops: &ops, hitRegions: &hitRegions, scrollRegions: &scrollRegions, shapeRegions: &shapeRegions, cursorPosition: &cursorPosition, activeMenu: &activeMenu, activePicker: &activePicker, activeTextField: &activeTextField)
                 used.width = max(used.width, s.width)
                 used.height = max(used.height, s.height)
             }
@@ -311,7 +374,7 @@ enum _RenderLayout {
         case .zstack(let children):
             var used = _Size(width: 0, height: 0)
             for n in children {
-                let s = draw(node: n, origin: origin, maxSize: maxSize, ctx: &ctx, ops: &ops, hitRegions: &hitRegions, scrollRegions: &scrollRegions, shapeRegions: &shapeRegions)
+                let s = draw(node: n, origin: origin, maxSize: maxSize, ctx: &ctx, ops: &ops, hitRegions: &hitRegions, scrollRegions: &scrollRegions, shapeRegions: &shapeRegions, cursorPosition: &cursorPosition, activeMenu: &activeMenu, activePicker: &activePicker, activeTextField: &activeTextField)
                 used.width = max(used.width, s.width)
                 used.height = max(used.height, s.height)
             }
@@ -353,6 +416,8 @@ enum _RenderLayout {
                 case .contentShapeRect(let child):
                     return isFlexibleCandidate(child)
                 case .clip(_, let child):
+                    return isFlexibleCandidate(child)
+                case .textStyled(_, let child):
                     return isFlexibleCandidate(child)
                 case .shadow(let child, _, _, _, _):
                     return isFlexibleCandidate(child)
@@ -434,7 +499,11 @@ enum _RenderLayout {
                             ops: &ops,
                             hitRegions: &hitRegions,
                             scrollRegions: &scrollRegions,
-                            shapeRegions: &shapeRegions
+                            shapeRegions: &shapeRegions,
+                            cursorPosition: &cursorPosition,
+                            activeMenu: &activeMenu,
+                            activePicker: &activePicker,
+                            activeTextField: &activeTextField
                         )
                     }
                 } else {
@@ -446,7 +515,11 @@ enum _RenderLayout {
                         ops: &ops,
                         hitRegions: &hitRegions,
                         scrollRegions: &scrollRegions,
-                        shapeRegions: &shapeRegions
+                        shapeRegions: &shapeRegions,
+                        cursorPosition: &cursorPosition,
+                        activeMenu: &activeMenu,
+                        activePicker: &activePicker,
+                        activeTextField: &activeTextField
                     )
                 }
 
@@ -475,7 +548,7 @@ enum _RenderLayout {
             emitGlyph("[", at: _Point(x: x0, y: origin.y))
             let labelOrigin = _Point(x: x0 + 2, y: origin.y)
             let labelMax = _Size(width: max(0, maxSize.width - (isFocused ? 5 : 4)), height: 1)
-            let labelSize = draw(node: label, origin: labelOrigin, maxSize: labelMax, ctx: &ctx, ops: &ops, hitRegions: &hitRegions, scrollRegions: &scrollRegions, shapeRegions: &shapeRegions)
+            let labelSize = draw(node: label, origin: labelOrigin, maxSize: labelMax, ctx: &ctx, ops: &ops, hitRegions: &hitRegions, scrollRegions: &scrollRegions, shapeRegions: &shapeRegions, cursorPosition: &cursorPosition, activeMenu: &activeMenu, activePicker: &activePicker, activeTextField: &activeTextField)
             emitGlyph("]", at: _Point(x: x0 + 1 + labelSize.width + 2, y: origin.y))
             let buttonWidth = min(maxSize.width, (isFocused ? 1 : 0) + 4 + labelSize.width)
             let hitWidth = wantsFullHitRect ? maxSize.width : buttonWidth
@@ -485,7 +558,7 @@ enum _RenderLayout {
 
         case .tapTarget(let id, let child):
             let wantsFullHitRect = hasContentShapeRect(child)
-            let s = draw(node: child, origin: origin, maxSize: maxSize, ctx: &ctx, ops: &ops, hitRegions: &hitRegions, scrollRegions: &scrollRegions, shapeRegions: &shapeRegions)
+            let s = draw(node: child, origin: origin, maxSize: maxSize, ctx: &ctx, ops: &ops, hitRegions: &hitRegions, scrollRegions: &scrollRegions, shapeRegions: &shapeRegions, cursorPosition: &cursorPosition, activeMenu: &activeMenu, activePicker: &activePicker, activeTextField: &activeTextField)
             let w = min(maxSize.width, max(1, s.width))
             let h = min(maxSize.height, max(1, s.height))
             let hitWidth = wantsFullHitRect ? maxSize.width : w
@@ -500,7 +573,7 @@ enum _RenderLayout {
             emitText(box, at: _Point(x: x0, y: origin.y))
             let labelOrigin = _Point(x: x0 + box.count, y: origin.y)
             let labelMax = _Size(width: max(0, maxSize.width - box.count - (isFocused ? 1 : 0)), height: 1)
-            let labelSize = draw(node: label, origin: labelOrigin, maxSize: labelMax, ctx: &ctx, ops: &ops, hitRegions: &hitRegions, scrollRegions: &scrollRegions, shapeRegions: &shapeRegions)
+            let labelSize = draw(node: label, origin: labelOrigin, maxSize: labelMax, ctx: &ctx, ops: &ops, hitRegions: &hitRegions, scrollRegions: &scrollRegions, shapeRegions: &shapeRegions, cursorPosition: &cursorPosition, activeMenu: &activeMenu, activePicker: &activePicker, activeTextField: &activeTextField)
             let width = min(maxSize.width, (isFocused ? 1 : 0) + box.count + labelSize.width)
             let rect = _Rect(origin: origin, size: _Size(width: width, height: 1))
             hitRegions.append((rect, id))
@@ -518,6 +591,20 @@ enum _RenderLayout {
             }()
             let s = prefix + "[" + withCursor + "]"
             emitText(String(s.prefix(maxSize.width)), at: origin)
+            // Track hardware cursor position: prefix + "[" + chars before cursor pipe.
+            if isFocused {
+                let cursorX = origin.x + prefix.count + 1 + cpos
+                if cursorX < origin.x + maxSize.width {
+                    cursorPosition = _Point(x: cursorX, y: origin.y)
+                }
+                activeTextField = _TextFieldInfo(
+                    origin: _Point(x: origin.x + prefix.count + 1, y: origin.y),
+                    width: max(0, maxSize.width - prefix.count - 2),
+                    text: text,
+                    cursorOffset: cpos,
+                    actionID: id.raw
+                )
+            }
             let rect = _Rect(origin: origin, size: _Size(width: min(maxSize.width, s.count), height: 1))
             hitRegions.append((rect, id))
             return _Size(width: min(maxSize.width, s.count), height: 1)
@@ -552,7 +639,11 @@ enum _RenderLayout {
                 ops: &ops,
                 hitRegions: &hitRegions,
                 scrollRegions: &scrollRegions,
-                shapeRegions: &shapeRegions
+                shapeRegions: &shapeRegions,
+                cursorPosition: &cursorPosition,
+                activeMenu: &activeMenu,
+                activePicker: &activePicker,
+                activeTextField: &activeTextField
             )
             ops.append(RenderOp(zIndex: ctx.z, kind: .popClip))
 
@@ -575,6 +666,27 @@ enum _RenderLayout {
 
             if !isExpanded || items.isEmpty || maxSize.height < 3 {
                 return _Size(width: headWidth, height: 1)
+            }
+
+            // Expose expanded menu metadata for native widget integration.
+            // Pickers have a selected item; plain menus do not.
+            let selectedIdx = items.firstIndex(where: { $0.isSelected })
+            if selectedIdx != nil {
+                // Picker: expose as activePicker for ncselector integration.
+                activePicker = _PickerInfo(
+                    origin: _Point(x: x0, y: origin.y),
+                    title: title,
+                    options: items.map { (label: $0.label, actionID: $0.id.raw) },
+                    selectedIndex: selectedIdx
+                )
+            } else {
+                // Plain menu: expose as activeMenu for ncmenu integration.
+                activeMenu = _MenuInfo(
+                    origin: _Point(x: x0, y: origin.y),
+                    title: title,
+                    items: items.map { (label: $0.label, actionID: $0.id.raw) },
+                    selectedIndex: nil
+                )
             }
 
             // Dropdown overlay above later content.
@@ -643,6 +755,8 @@ enum _RenderLayout {
             return hasContentShapeRect(child)
         case .tagged(_, let label):
             return hasContentShapeRect(label)
+        case .textStyled(_, let child):
+            return hasContentShapeRect(child)
         case .shadow(let child, _, _, _, _):
             return hasContentShapeRect(child)
         case .clip(_, let child):
@@ -664,6 +778,8 @@ enum _RenderLayout {
         case .empty:
             return _Size(width: 0, height: 0)
         case .style(_, _, let child):
+            return measure(child, maxSize)
+        case .textStyled(_, let child):
             return measure(child, maxSize)
         case .contentShapeRect(let child):
             return measure(child, maxSize)

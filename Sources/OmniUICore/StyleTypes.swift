@@ -34,9 +34,17 @@ public struct Color: Hashable, Sendable {
     public static let white = Color("white")
     public static let gray = Color("gray")
     public static let red = Color("red")
-    public static let green = Color("green")
-    public static let blue = Color("blue")
+    public static let orange = Color("orange")
     public static let yellow = Color("yellow")
+    public static let green = Color("green")
+    public static let mint = Color("mint")
+    public static let teal = Color("teal")
+    public static let cyan = Color("cyan")
+    public static let blue = Color("blue")
+    public static let indigo = Color("indigo")
+    public static let purple = Color("purple")
+    public static let pink = Color("pink")
+    public static let brown = Color("brown")
 }
 
 extension Color: RawRepresentable {

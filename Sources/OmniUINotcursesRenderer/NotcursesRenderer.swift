@@ -15,6 +15,14 @@ public enum OmniUINotcursesRendererError: Error {
     case notcursesUnavailable
 }
 
+private struct _TermCaps {
+    var supportedStyles: UInt32
+    var canBraille: Bool
+    var canTruecolor: Bool
+    var canHalfblock: Bool
+    var canFade: Bool
+}
+
 private struct _NCShapePlaneEntry {
     var plane: OpaquePointer
     var rect: _Rect
@@ -84,12 +92,27 @@ public struct NotcursesApp<V: View> {
 
         let runtime = _UIRuntime()
         var prev: [_NCCell]? = nil
+        var prevOverlay: [_NCCell]? = nil
         var lastSnapshot: RenderSnapshot? = nil
         let forceNoPixels = (getenv("TMUX") != nil) // tmux generally won't support Kitty graphics passthrough
         var didRenderAtLeastOneFullFrame = false
         var shapePlanes: [Int: _NCShapePlaneEntry] = [:]
+        var overlayPlane: OpaquePointer? = nil
+        var overlayRect: _Rect? = nil
+        var scrollPlanes: [_Rect: OpaquePointer] = [:]
+        var activeNCMenu: OpaquePointer? = nil
+        var menuItemActionIDs: [Int] = []
+        var activeNCSel: OpaquePointer? = nil
+        var selectorItemActionIDs: [Int] = []
+        var activeNCReader: OpaquePointer? = nil
 
         defer {
+            if let r = activeNCReader { omni_ncreader_destroy(r) }
+            if let s = activeNCSel { omni_ncselector_destroy(s) }
+            if let m = activeNCMenu { omni_ncmenu_destroy(m) }
+            if let op = overlayPlane { ncplane_destroy(op) }
+            for (_, plane) in scrollPlanes { ncplane_destroy(plane) }
+            scrollPlanes.removeAll()
             for (_, e) in shapePlanes {
                 ncplane_destroy(e.plane)
             }
@@ -108,14 +131,33 @@ public struct NotcursesApp<V: View> {
         let end: UInt32 = omni_nckey_end()
         let del: UInt32 = omni_nckey_delete()
         let button1: UInt32 = omni_nckey_button1()
+        let button2: UInt32 = omni_nckey_button2()
+        let button3: UInt32 = omni_nckey_button3()
         let scrollUp: UInt32 = omni_nckey_scroll_up()
         let scrollDown: UInt32 = omni_nckey_scroll_down()
+        let resize: UInt32 = omni_nckey_resize()
+        let pgup: UInt32 = omni_nckey_pgup()
+        let pgdown: UInt32 = omni_nckey_pgdown()
+        let tabKey: UInt32 = omni_nckey_tab()
+        let fKeyRange = omni_nckey_f01()...omni_nckey_f12()
+
+        // Query terminal capabilities once at init.
+        let termCaps = _TermCaps(
+            supportedStyles: omni_notcurses_supported_styles(nc),
+            canBraille: omni_notcurses_canbraille(nc) != 0,
+            canTruecolor: omni_notcurses_cantruecolor(nc) != 0,
+            canHalfblock: omni_notcurses_canhalfblock(nc) != 0,
+            canFade: omni_notcurses_canfade(nc) != 0
+        )
+        _ = termCaps // Used below for style-aware rendering.
 
         func eventModifiers(_ ni: inout ncinput) -> EventModifiers {
             var mods: EventModifiers = []
             if omni_ncinput_shift(&ni) != 0 { mods.insert(.shift) }
             if omni_ncinput_ctrl(&ni) != 0 { mods.insert(.control) }
             if omni_ncinput_alt(&ni) != 0 { mods.insert(.option) }
+            if omni_ncinput_meta(&ni) != 0 { mods.insert(.command) }
+            if omni_ncinput_super(&ni) != 0 { mods.insert(.command) }
             return mods
         }
 
@@ -166,9 +208,11 @@ public struct NotcursesApp<V: View> {
             // we explicitly set every cell at least once.
             if !didRenderAtLeastOneFullFrame || (prev != nil && prev!.count != width * height) {
                 prev = nil
+                prevOverlay = nil
                 didRenderAtLeastOneFullFrame = true
                 ncplane_home(stdplane)
                 ncplane_erase(stdplane)
+                if let op = overlayPlane { ncplane_erase(op) }
             }
 
             // Prefer sprixels/pixels for shapes/paths; fall back to braille rasterization if pixels aren't supported.
@@ -182,16 +226,35 @@ public struct NotcursesApp<V: View> {
 
             var curr = Array(repeating: _NCCell(ch: " ", fg: baseFG, bg: baseBG), count: width * height)
             var zbuf = Array(repeating: Int.min, count: width * height)
-            func setCell(_ x: Int, _ y: Int, _ egc: String, _ fg: _NCRGB?, _ bg: _NCRGB?, z: Int) {
+            // Overlay buffers for ops with z >= 1000 (rendered on a separate ncplane).
+            var overlayCurr = Array(repeating: _NCCell(ch: " ", fg: baseFG, bg: baseBG), count: width * height)
+            var overlayZbuf = Array(repeating: Int.min, count: width * height)
+            var hasOverlayOps = false
+
+            func setCell(_ x: Int, _ y: Int, _ egc: String, _ fg: _NCRGB?, _ bg: _NCRGB?, z: Int, style: UInt16 = 0) {
                 guard x >= 0, y >= 0, x < width, y < height else { return }
                 let idx = y * width + x
-                if z < zbuf[idx] { return }
-                var c = curr[idx]
-                c.ch = egc
-                if let fg { c.fg = fg }
-                if let bg { c.bg = bg }
-                curr[idx] = c
-                zbuf[idx] = z
+                if z >= 1000 {
+                    // Overlay content goes to the overlay buffer.
+                    if z < overlayZbuf[idx] { return }
+                    hasOverlayOps = true
+                    var c = overlayCurr[idx]
+                    c.ch = egc
+                    if let fg { c.fg = fg }
+                    if let bg { c.bg = bg }
+                    if style != 0 { c.styles = style }
+                    overlayCurr[idx] = c
+                    overlayZbuf[idx] = z
+                } else {
+                    if z < zbuf[idx] { return }
+                    var c = curr[idx]
+                    c.ch = egc
+                    if let fg { c.fg = fg }
+                    if let bg { c.bg = bg }
+                    if style != 0 { c.styles = style }
+                    curr[idx] = c
+                    zbuf[idx] = z
+                }
             }
 
             func intersect(_ a: _Rect, _ b: _Rect) -> _Rect? {
@@ -216,6 +279,7 @@ public struct NotcursesApp<V: View> {
             var shapesByClip: [_Rect: [(_Rect, _ShapeNode, Int)]] = [:]
 
             for op in snapshot.ops {
+                let opStyle = op.textStyle.rawValue
                 switch op.kind {
                 case .glyph(let x, let y, let egc, let fg, let bg):
                     if !inClip(x, y) { break }
@@ -223,8 +287,8 @@ public struct NotcursesApp<V: View> {
                     var outFG = _resolveColorNC(fg) ?? baseFG
                     let outBG = _resolveColorNC(bg) ?? baseBG
                     if mapped == "*" { outFG = accentFG }
-                    if _isBorderGlyph(mapped) { outFG = borderFG }
-                    setCell(x, y, egc, outFG, outBG, z: op.zIndex)
+                    if _isBorderGlyphShared(mapped) { outFG = borderFG }
+                    setCell(x, y, egc, outFG, outBG, z: op.zIndex, style: opStyle)
                 case .textRun(let x, let y, let text, let fg, let bg):
                     let outFG = _resolveColorNC(fg) ?? baseFG
                     let outBG = _resolveColorNC(bg) ?? baseBG
@@ -233,8 +297,8 @@ public struct NotcursesApp<V: View> {
                         if inClip(xx, y) {
                         var fg2 = outFG
                         if ch == "*" { fg2 = accentFG }
-                        if _isBorderGlyph(ch) { fg2 = borderFG }
-                        setCell(xx, y, String(ch), fg2, outBG, z: op.zIndex)
+                        if _isBorderGlyphShared(ch) { fg2 = borderFG }
+                        setCell(xx, y, String(ch), fg2, outBG, z: op.zIndex, style: opStyle)
                         }
                         xx += 1
                         if xx >= width { break }
@@ -387,7 +451,7 @@ public struct NotcursesApp<V: View> {
             }
 
             if let fr = focusRect {
-                // Focus highlight over cells.
+                // Focus highlight over cells (applied to whichever layer the cell belongs to).
                 let y0 = max(0, fr.origin.y)
                 let x0 = max(0, fr.origin.x)
                 let y1 = min(height, fr.origin.y + fr.size.height)
@@ -396,14 +460,69 @@ public struct NotcursesApp<V: View> {
                     for y in y0..<y1 {
                         for x in x0..<x1 {
                             let idx = y * width + x
-                            curr[idx].fg = focusFG
-                            curr[idx].bg = focusBG
+                            if overlayZbuf[idx] > Int.min {
+                                overlayCurr[idx].fg = focusFG
+                                overlayCurr[idx].bg = focusBG
+                            } else {
+                                curr[idx].fg = focusFG
+                                curr[idx].bg = focusBG
+                            }
                         }
                     }
                 }
             }
 
-            // Differential paint (cell-level). This avoids full repaint when only a few cells change.
+            // ── Scroll plane management ──
+            // Create/update child ncplanes for scroll regions.
+            let currentScrollRects = Set(snapshot.scrollRegions.map { $0.rect })
+            // Destroy planes for scroll regions that no longer exist.
+            for (rect, plane) in scrollPlanes where !currentScrollRects.contains(rect) {
+                ncplane_destroy(plane)
+                scrollPlanes[rect] = nil
+            }
+            // Create planes for new scroll regions.
+            for sr in snapshot.scrollRegions {
+                if scrollPlanes[sr.rect] == nil {
+                    var popts = ncplane_options()
+                    popts.y = Int32(sr.rect.origin.y)
+                    popts.x = Int32(sr.rect.origin.x)
+                    popts.rows = UInt32(sr.rect.size.height)
+                    popts.cols = UInt32(sr.rect.size.width)
+                    popts.name = nil
+                    popts.userptr = nil
+                    popts.resizecb = nil
+                    popts.flags = omni_ncplane_option_vscroll()
+                    popts.margin_b = 0
+                    popts.margin_r = 0
+                    if let sp = ncplane_create(stdplane, &popts) {
+                        _ = ncplane_move_above(sp, stdplane)
+                        scrollPlanes[sr.rect] = sp
+                    }
+                } else if let sp = scrollPlanes[sr.rect] {
+                    // Ensure plane is positioned correctly.
+                    ncplane_move_yx(sp, Int32(sr.rect.origin.y), Int32(sr.rect.origin.x))
+                    // Resize if dimensions changed (shouldn't happen with rect-keyed lookup, but defensive).
+                    var curRows: UInt32 = 0
+                    var curCols: UInt32 = 0
+                    ncplane_dim_yx(sp, &curRows, &curCols)
+                    if curRows != UInt32(sr.rect.size.height) || curCols != UInt32(sr.rect.size.width) {
+                        _ = ncplane_resize_simple(sp, UInt32(sr.rect.size.height), UInt32(sr.rect.size.width))
+                    }
+                }
+            }
+
+            // Build a lookup: for each cell, which scroll plane (if any) owns it.
+            // Only non-overlay cells (z < 1000) are routed to scroll planes.
+            func scrollPlaneFor(x: Int, y: Int) -> OpaquePointer? {
+                for sr in snapshot.scrollRegions {
+                    if sr.rect.contains(_Point(x: x, y: y)) {
+                        return scrollPlanes[sr.rect]
+                    }
+                }
+                return nil
+            }
+
+            // Differential paint (cell-level). Route cells to scroll planes where applicable.
             let toPaint: [(Int, _NCCell)]
             if let prev {
                 toPaint = curr.enumerated().compactMap { idx, c in prev[idx] == c ? nil : (idx, c) }
@@ -411,29 +530,278 @@ public struct NotcursesApp<V: View> {
                 toPaint = curr.enumerated().map { ($0.offset, $0.element) }
             }
 
-            // Track ncplane style state to avoid redundant setters.
+            // Track ncplane style state per plane to avoid redundant setters.
             var lastFG: _NCRGB? = nil
             var lastBG: _NCRGB? = nil
+            var lastStyles: UInt16 = 0
+            // Erase scroll planes before painting.
+            for (_, sp) in scrollPlanes { ncplane_erase(sp) }
 
             for (idx, cell) in toPaint {
                 let y = idx / width
                 let x = idx % width
+                let target: OpaquePointer
+                if let sp = scrollPlaneFor(x: x, y: y) {
+                    target = sp
+                    // Paint relative to the scroll plane's origin.
+                    let relY = y - Int(ncplane_y(sp))
+                    let relX = x - Int(ncplane_x(sp))
+                    _ = ncplane_set_fg_rgb8(sp, UInt32(cell.fg.r), UInt32(cell.fg.g), UInt32(cell.fg.b))
+                    _ = ncplane_set_bg_rgb8(sp, UInt32(cell.bg.r), UInt32(cell.bg.g), UInt32(cell.bg.b))
+                    if cell.styles != 0 { omni_ncplane_set_styles(sp, UInt32(cell.styles)) }
+                    cell.ch.utf8CString.withUnsafeBufferPointer { buf in
+                        if let p = buf.baseAddress {
+                            _ = ncplane_putegc_yx(sp, Int32(relY), Int32(relX), p, nil)
+                        }
+                    }
+                    if cell.styles != 0 { omni_ncplane_set_styles(sp, 0) }
+                    continue
+                } else {
+                    target = stdplane
+                }
                 if lastFG == nil || lastFG! != cell.fg {
-                    _ = ncplane_set_fg_rgb8(stdplane, UInt32(cell.fg.r), UInt32(cell.fg.g), UInt32(cell.fg.b))
+                    _ = ncplane_set_fg_rgb8(target, UInt32(cell.fg.r), UInt32(cell.fg.g), UInt32(cell.fg.b))
                     lastFG = cell.fg
                 }
                 if lastBG == nil || lastBG! != cell.bg {
-                    _ = ncplane_set_bg_rgb8(stdplane, UInt32(cell.bg.r), UInt32(cell.bg.g), UInt32(cell.bg.b))
+                    _ = ncplane_set_bg_rgb8(target, UInt32(cell.bg.r), UInt32(cell.bg.g), UInt32(cell.bg.b))
                     lastBG = cell.bg
+                }
+                if cell.styles != lastStyles {
+                    omni_ncplane_set_styles(target, UInt32(cell.styles))
+                    lastStyles = cell.styles
                 }
                 cell.ch.utf8CString.withUnsafeBufferPointer { buf in
                     if let p = buf.baseAddress {
-                        _ = ncplane_putegc_yx(stdplane, Int32(y), Int32(x), p, nil)
+                        _ = ncplane_putegc_yx(target, Int32(y), Int32(x), p, nil)
                     }
                 }
             }
+            // Reset styles after painting to avoid leaking into next frame.
+            if lastStyles != 0 {
+                omni_ncplane_set_styles(stdplane, 0)
+            }
 
             prev = curr
+
+            // ── Overlay plane management ──
+            // Overlay ops (z >= 1000) are painted on a separate ncplane above stdplane.
+            if hasOverlayOps {
+                let isNewOverlay = (overlayPlane == nil)
+                // Create overlay plane if it doesn't exist or dimensions changed.
+                if overlayPlane == nil || overlayRect?.size != _Size(width: width, height: height) {
+                    if let op = overlayPlane { ncplane_destroy(op) }
+                    var popts = ncplane_options()
+                    popts.y = 0
+                    popts.x = 0
+                    popts.rows = UInt32(height)
+                    popts.cols = UInt32(width)
+                    popts.name = nil
+                    popts.userptr = nil
+                    popts.resizecb = nil
+                    popts.flags = 0
+                    popts.margin_b = 0
+                    popts.margin_r = 0
+                    overlayPlane = ncplane_create(stdplane, &popts)
+                    if let op = overlayPlane {
+                        _ = ncplane_move_above(op, stdplane)
+                        _ = omni_ncplane_set_base_transparent(op)
+                    }
+                    overlayRect = _Rect(origin: _Point(x: 0, y: 0), size: _Size(width: width, height: height))
+                    prevOverlay = nil
+                }
+
+                if let op = overlayPlane {
+                    // Differential paint for overlay cells.
+                    let overlayToPaint: [(Int, _NCCell)]
+                    if let po = prevOverlay {
+                        overlayToPaint = overlayCurr.enumerated().compactMap { idx, c in
+                            let wasOverlay = (po.count > idx && overlayZbuf[idx] > Int.min)
+                            if wasOverlay, po[idx] == c { return nil }
+                            if overlayZbuf[idx] == Int.min { return nil }
+                            return (idx, c)
+                        }
+                    } else {
+                        // First frame or after resize: erase and paint all overlay cells.
+                        ncplane_erase(op)
+                        overlayToPaint = overlayCurr.enumerated().compactMap { idx, c in
+                            overlayZbuf[idx] > Int.min ? (idx, c) : nil
+                        }
+                    }
+
+                    var oLastFG: _NCRGB? = nil
+                    var oLastBG: _NCRGB? = nil
+                    var oLastStyles: UInt16 = 0
+
+                    for (idx, cell) in overlayToPaint {
+                        let y = idx / width
+                        let x = idx % width
+                        if oLastFG == nil || oLastFG! != cell.fg {
+                            _ = ncplane_set_fg_rgb8(op, UInt32(cell.fg.r), UInt32(cell.fg.g), UInt32(cell.fg.b))
+                            oLastFG = cell.fg
+                        }
+                        if oLastBG == nil || oLastBG! != cell.bg {
+                            _ = ncplane_set_bg_rgb8(op, UInt32(cell.bg.r), UInt32(cell.bg.g), UInt32(cell.bg.b))
+                            oLastBG = cell.bg
+                        }
+                        if cell.styles != oLastStyles {
+                            omni_ncplane_set_styles(op, UInt32(cell.styles))
+                            oLastStyles = cell.styles
+                        }
+                        cell.ch.utf8CString.withUnsafeBufferPointer { buf in
+                            if let p = buf.baseAddress {
+                                _ = ncplane_putegc_yx(op, Int32(y), Int32(x), p, nil)
+                            }
+                        }
+                    }
+                    if oLastStyles != 0 {
+                        omni_ncplane_set_styles(op, 0)
+                    }
+
+                    // Fade-in when overlay first appears (if terminal supports it).
+                    if isNewOverlay, termCaps.canFade {
+                        // Render the base frame first so the fade composites correctly.
+                        _ = notcurses_render(nc)
+                        _ = omni_ncplane_fadein(op, 100)
+                    }
+                }
+                prevOverlay = overlayCurr
+            } else {
+                // No overlay ops: fade out and destroy the overlay plane if it exists.
+                if let op = overlayPlane {
+                    if termCaps.canFade {
+                        _ = notcurses_render(nc)
+                        _ = omni_ncplane_fadeout(op, 100)
+                    }
+                    ncplane_destroy(op)
+                    overlayPlane = nil
+                    overlayRect = nil
+                    prevOverlay = nil
+                }
+            }
+
+            // ── ncmenu management ──
+            // Create/destroy native ncmenu when menus expand/collapse.
+            if let menuInfo = snapshot.activeMenu {
+                if activeNCMenu == nil {
+                    // Create a new ncmenu with the menu items.
+                    let labels = menuInfo.items.map { $0.label }
+                    menuItemActionIDs = menuInfo.items.map { $0.actionID }
+                    let cLabels = labels.map { strdup($0) }
+                    defer { cLabels.forEach { free($0) } }
+                    var ptrs: [UnsafePointer<CChar>?] = cLabels.map { UnsafePointer($0) }
+                    activeNCMenu = ptrs.withUnsafeMutableBufferPointer { buf -> OpaquePointer? in
+                        guard let base = buf.baseAddress else { return nil }
+                        return omni_ncmenu_create_flat(
+                            stdplane,
+                            menuInfo.title,
+                            base,
+                            Int32(labels.count),
+                            0
+                        )
+                    }
+                    if let m = activeNCMenu {
+                        _ = omni_ncmenu_unroll(m, 0)
+                    }
+                }
+            } else {
+                // No active menu: destroy the ncmenu if it exists.
+                if let m = activeNCMenu {
+                    omni_ncmenu_destroy(m)
+                    activeNCMenu = nil
+                    menuItemActionIDs = []
+                }
+            }
+
+            // ── ncselector management ──
+            // Create/destroy ncselector for picker-style dropdowns (uses activePicker).
+            if let pickerInfo = snapshot.activePicker {
+                if activeNCSel == nil {
+                    let options = pickerInfo.options.map { $0.label }
+                    selectorItemActionIDs = pickerInfo.options.map { $0.actionID }
+                    let defIdx = UInt32(pickerInfo.selectedIndex ?? 0)
+                    let cOpts = options.map { strdup($0) }
+                    let cDescs = options.map { _ in strdup("") }
+                    defer {
+                        cOpts.forEach { free($0) }
+                        cDescs.forEach { free($0) }
+                    }
+                    var optPtrs: [UnsafePointer<CChar>?] = cOpts.map { UnsafePointer($0) }
+                    var descPtrs: [UnsafePointer<CChar>?] = cDescs.map { UnsafePointer($0) }
+                    activeNCSel = optPtrs.withUnsafeMutableBufferPointer { optBuf -> OpaquePointer? in
+                        descPtrs.withUnsafeMutableBufferPointer { descBuf -> OpaquePointer? in
+                            guard let optBase = optBuf.baseAddress,
+                                  let descBase = descBuf.baseAddress else { return nil }
+                            return omni_ncselector_create(
+                                stdplane,
+                                optBase,
+                                descBase,
+                                Int32(options.count),
+                                defIdx,
+                                UInt32(min(options.count, 8)),
+                                pickerInfo.title,
+                                nil
+                            )
+                        }
+                    }
+                }
+            } else {
+                if let s = activeNCSel {
+                    omni_ncselector_destroy(s)
+                    activeNCSel = nil
+                    selectorItemActionIDs = []
+                }
+            }
+
+            // ── ncreader management ──
+            // Create/destroy ncreader for focused text fields (uses activeTextField).
+            // The runtime remains the source of truth for text content; the ncreader
+            // provides native horizontal scrolling and cursor rendering on its plane.
+            // Each frame we sync the runtime's text into the ncreader via clear + re-feed.
+            if let tfInfo = snapshot.activeTextField {
+                let needsCreate = (activeNCReader == nil)
+                if needsCreate {
+                    var popts = ncplane_options()
+                    popts.y = Int32(tfInfo.origin.y)
+                    popts.x = Int32(tfInfo.origin.x)
+                    popts.rows = 1
+                    popts.cols = UInt32(max(1, tfInfo.width))
+                    popts.name = nil
+                    popts.userptr = nil
+                    popts.resizecb = nil
+                    popts.flags = 0
+                    popts.margin_b = 0
+                    popts.margin_r = 0
+                    let flags = omni_ncreader_option_horscroll() | omni_ncreader_option_cursor()
+                    if let rPlane = ncplane_create(stdplane, &popts) {
+                        _ = ncplane_move_above(rPlane, stdplane)
+                        activeNCReader = omni_ncreader_create(rPlane, flags)
+                    }
+                }
+                // Sync the runtime's current text into the ncreader each frame.
+                if let r = activeNCReader {
+                    _ = omni_ncreader_clear(r)
+                    // Feed each character of the current text into the ncreader.
+                    for scalar in tfInfo.text.unicodeScalars {
+                        var feedNi = ncinput()
+                        feedNi.id = scalar.value
+                        feedNi.evtype = NCTYPE_PRESS
+                        _ = omni_ncreader_offer_input(r, &feedNi)
+                    }
+                }
+            } else {
+                if let r = activeNCReader {
+                    omni_ncreader_destroy(r)
+                    activeNCReader = nil
+                }
+            }
+
+            // Hardware cursor: enable at the focused text field's cursor position, disable otherwise.
+            if let cp = snapshot.cursorPosition {
+                _ = omni_notcurses_cursor_enable(nc, Int32(cp.y), Int32(cp.x))
+            } else {
+                _ = omni_notcurses_cursor_disable(nc)
+            }
 
             let rr = notcurses_render(nc)
             if rr != 0 {
@@ -443,141 +811,209 @@ public struct NotcursesApp<V: View> {
             }
 
             guard let snapshot = lastSnapshot else {
-                try await Task.sleep(nanoseconds: 16_000_000)
+                // No snapshot yet; block briefly to avoid a tight spin.
+                var ni = ncinput()
+                _ = omni_notcurses_get(nc, 16, &ni)
                 continue
             }
 
-            // Drain any queued inputs.
+            // Block up to 16ms waiting for input (replaces notcurses_get_nblock + Task.sleep).
+            // This yields the run loop to notcurses and wakes immediately on input.
             var ni = ncinput()
-            while true {
-                let id = notcurses_get_nblock(nc, &ni)
-                if id == 0 {
-                    break
-                }
-                if id == UInt32.max {
-                    exitNote = "notcurses_get_nblock() error"
-                    return
-                }
+            let id = omni_notcurses_get(nc, 16, &ni)
 
-                // notcurses might report keypresses with limited classification. Treat all non-RELEASE
-                // events as "press-like" to avoid dropping keyboard input, while still preventing
-                // double-firing on RELEASE.
-                if ni.evtype != NCTYPE_RELEASE {
-                    let mods = eventModifiers(&ni)
+            // Yield to Swift concurrency so async tasks can make progress.
+            await Task.yield()
 
-                    if id == q {
-                        userRequestedExit = true
-                        return
+            if id == UInt32.max {
+                exitNote = "notcurses_get() error"
+                return
+            }
+            if id == 0 {
+                // Timeout expired, no input. Loop back to re-render if needed.
+                continue
+            }
+
+            // Handle NCKEY_RESIZE before anything else.
+            if id == resize {
+                var newRows: UInt32 = 0
+                var newCols: UInt32 = 0
+                _ = omni_notcurses_refresh(nc, &newRows, &newCols)
+                // Force full repaint on next frame.
+                prev = nil
+                continue
+            }
+
+            // Route input to active ncmenu if present.
+            if let m = activeNCMenu {
+                if omni_ncmenu_offer_input(m, &ni) {
+                    // Check if an item was selected.
+                    var selNi = ncinput()
+                    if let sel = omni_ncmenu_selected(m, &selNi) {
+                        let selStr = String(cString: sel)
+                        // Find the action ID for this label and fire it.
+                        if let matchIdx = lastSnapshot?.activeMenu?.items.firstIndex(where: { $0.label == selStr }),
+                           matchIdx < menuItemActionIDs.count {
+                            runtime.invokeActionByRawID(menuItemActionIDs[matchIdx])
+                        }
                     }
-
-                    if id == esc {
-                        if runtime.hasExpandedPicker() {
-                            runtime.collapseExpandedPicker()
-                            continue
-                        }
-                        if runtime.invokeKeyboardShortcut(.escape, modifiers: mods) {
-                            continue
-                        }
-                        if runtime.canPopNavigation() {
-                            runtime.popNavigation()
-                        }
-                        continue
-                    }
-
-                    if id == button1 {
-                        snapshot.click(x: Int(ni.x), y: Int(ni.y))
-                        continue
-                    } else if id == scrollUp {
-                        snapshot.scroll(x: Int(ni.x), y: Int(ni.y), deltaY: -1)
-                        continue
-                    } else if id == scrollDown {
-                        snapshot.scroll(x: Int(ni.x), y: Int(ni.y), deltaY: 1)
-                        continue
-                    }
-
-                    if id == 9 { // Tab
-                        let isShift = omni_ncinput_shift(&ni) != 0
-                        if isShift {
-                            if runtime.hasExpandedPicker() {
-                                runtime.focusPrevWithinExpandedPicker()
-                            } else {
-                                runtime.focusPrev()
-                            }
-                        } else {
-                            if runtime.hasExpandedPicker() {
-                                runtime.focusNextWithinExpandedPicker()
-                            } else {
-                                runtime.focusNext()
-                            }
-                        }
-                    } else if id == up {
-                        if runtime.hasExpandedPicker() {
-                            runtime.focusPrevWithinExpandedPicker()
-                        } else {
-                            runtime.focusPrev()
-                        }
-                    } else if id == down {
-                        if runtime.hasExpandedPicker() {
-                            runtime.focusNextWithinExpandedPicker()
-                        } else {
-                            runtime.focusNext()
-                        }
-                    } else if id == enter || id == 10 || id == 13 { // Enter/Return
-                        if runtime.hasExpandedPicker() {
-                            runtime.activateFocused()
-                            continue
-                        }
-                        if runtime.invokeKeyboardShortcut(.return, modifiers: mods) {
-                            continue
-                        }
-                        if runtime.isTextEditingFocused() { runtime.submitFocusedTextEditor() }
-                        else { runtime.activateFocused() }
-                    } else if id == 32 { // Space
-                        if runtime.isTextEditingFocused() {
-                            runtime._handleKey(.char(32))
-                        } else {
-                            runtime.activateFocused()
-                        }
-                    } else if id == backspace || id == 127 { // Backspace/Delete (ASCII DEL on macOS)
-                        if runtime.isTextEditingFocused() {
-                            runtime._handleKey(.backspace)
-                        } else if runtime.canPopNavigation() {
-                            runtime.popNavigation()
-                        }
-                    } else if id == del {
-                        if runtime.isTextEditingFocused() {
-                            runtime._handleKey(.delete)
-                        }
-                    } else if id == left {
-                        if runtime.isTextEditingFocused() { runtime._handleKey(.left) }
-                    } else if id == right {
-                        if runtime.isTextEditingFocused() { runtime._handleKey(.right) }
-                    } else if id == home {
-                        if runtime.isTextEditingFocused() { runtime._handleKey(.home) }
-                    } else if id == end {
-                        if runtime.isTextEditingFocused() { runtime._handleKey(.end) }
-                    } else if id < 0x110000 {
-                        if mods.contains(.control), id >= 1, id <= 26 {
-                            let v = UInt32(UInt8(ascii: "a")) + (id - 1)
-                            if let letter = UnicodeScalar(v) {
-                                let key = KeyEquivalent(stringLiteral: String(letter))
-                                if runtime.invokeKeyboardShortcut(key, modifiers: mods) {
-                                    continue
-                                }
-                            }
-                        }
-                        if !mods.isEmpty, let scalar = UnicodeScalar(id) {
-                            let key = KeyEquivalent(stringLiteral: String(scalar))
-                            if runtime.invokeKeyboardShortcut(key, modifiers: mods) {
-                                continue
-                            }
-                        }
-                        runtime._handleKey(.char(id))
-                    }
+                    continue
                 }
             }
 
-            try await Task.sleep(nanoseconds: 16_000_000) // ~60Hz
+            // Route input to active ncselector if present.
+            if let s = activeNCSel {
+                if omni_ncselector_offer_input(s, &ni) {
+                    // Check which option is now selected.
+                    if let sel = omni_ncselector_selected(s) {
+                        let selStr = String(cString: sel)
+                        if let matchIdx = lastSnapshot?.activePicker?.options.firstIndex(where: { $0.label == selStr }),
+                           matchIdx < selectorItemActionIDs.count {
+                            runtime.invokeActionByRawID(selectorItemActionIDs[matchIdx])
+                        }
+                    }
+                    continue
+                }
+            }
+
+            // Note: ncreader is used for visual display only (horizontal scroll, cursor).
+            // Text input is handled by the runtime via _handleKey; ncreader content is
+            // synced from the runtime each frame (see ncreader management above).
+
+            // Treat all non-RELEASE events as "press-like" to avoid dropping keyboard input,
+            // while still preventing double-firing on RELEASE.
+            guard ni.evtype != NCTYPE_RELEASE else { continue }
+
+            let mods = eventModifiers(&ni)
+
+            if id == q {
+                userRequestedExit = true
+                return
+            }
+
+            if id == esc {
+                if runtime.hasExpandedPicker() {
+                    runtime.collapseExpandedPicker()
+                    continue
+                }
+                if runtime.invokeKeyboardShortcut(.escape, modifiers: mods) {
+                    continue
+                }
+                if runtime.canPopNavigation() {
+                    runtime.popNavigation()
+                }
+                continue
+            }
+
+            // Mouse buttons.
+            if id == button1 {
+                snapshot.click(x: Int(ni.x), y: Int(ni.y))
+                continue
+            } else if id == button2 || id == button3 {
+                // Right/middle click - treat as click for now.
+                snapshot.click(x: Int(ni.x), y: Int(ni.y))
+                continue
+            } else if id == scrollUp {
+                snapshot.scroll(x: Int(ni.x), y: Int(ni.y), deltaY: -1)
+                continue
+            } else if id == scrollDown {
+                snapshot.scroll(x: Int(ni.x), y: Int(ni.y), deltaY: 1)
+                continue
+            }
+
+            // Tab / Shift-Tab navigation.
+            if id == 9 || id == tabKey {
+                let isShift = omni_ncinput_shift(&ni) != 0
+                if isShift {
+                    if runtime.hasExpandedPicker() {
+                        runtime.focusPrevWithinExpandedPicker()
+                    } else {
+                        runtime.focusPrev()
+                    }
+                } else {
+                    if runtime.hasExpandedPicker() {
+                        runtime.focusNextWithinExpandedPicker()
+                    } else {
+                        runtime.focusNext()
+                    }
+                }
+            } else if id == up {
+                if runtime.hasExpandedPicker() {
+                    runtime.focusPrevWithinExpandedPicker()
+                } else {
+                    runtime.focusPrev()
+                }
+            } else if id == down {
+                if runtime.hasExpandedPicker() {
+                    runtime.focusNextWithinExpandedPicker()
+                } else {
+                    runtime.focusNext()
+                }
+            } else if id == pgup {
+                // Page Up: scroll up by a larger amount.
+                if let snap = lastSnapshot {
+                    snap.scroll(x: 0, y: 0, deltaY: -10)
+                }
+            } else if id == pgdown {
+                // Page Down: scroll down by a larger amount.
+                if let snap = lastSnapshot {
+                    snap.scroll(x: 0, y: 0, deltaY: 10)
+                }
+            } else if id == enter || id == 10 || id == 13 {
+                if runtime.hasExpandedPicker() {
+                    runtime.activateFocused()
+                    continue
+                }
+                if runtime.invokeKeyboardShortcut(.return, modifiers: mods) {
+                    continue
+                }
+                if runtime.isTextEditingFocused() { runtime.submitFocusedTextEditor() }
+                else { runtime.activateFocused() }
+            } else if id == 32 { // Space
+                if runtime.isTextEditingFocused() {
+                    runtime._handleKey(.char(32))
+                } else {
+                    runtime.activateFocused()
+                }
+            } else if id == backspace || id == 127 {
+                if runtime.isTextEditingFocused() {
+                    runtime._handleKey(.backspace)
+                } else if runtime.canPopNavigation() {
+                    runtime.popNavigation()
+                }
+            } else if id == del {
+                if runtime.isTextEditingFocused() {
+                    runtime._handleKey(.delete)
+                }
+            } else if id == left {
+                if runtime.isTextEditingFocused() { runtime._handleKey(.left) }
+            } else if id == right {
+                if runtime.isTextEditingFocused() { runtime._handleKey(.right) }
+            } else if id == home {
+                if runtime.isTextEditingFocused() { runtime._handleKey(.home) }
+            } else if id == end {
+                if runtime.isTextEditingFocused() { runtime._handleKey(.end) }
+            } else if fKeyRange.contains(id) {
+                // F1-F12: currently no-op, reserved for future key bindings.
+                break
+            } else if id < 0x110000 {
+                if mods.contains(.control), id >= 1, id <= 26 {
+                    let v = UInt32(UInt8(ascii: "a")) + (id - 1)
+                    if let letter = UnicodeScalar(v) {
+                        let key = KeyEquivalent(stringLiteral: String(letter))
+                        if runtime.invokeKeyboardShortcut(key, modifiers: mods) {
+                            continue
+                        }
+                    }
+                }
+                if !mods.isEmpty, let scalar = UnicodeScalar(id) {
+                    let key = KeyEquivalent(stringLiteral: String(scalar))
+                    if runtime.invokeKeyboardShortcut(key, modifiers: mods) {
+                        continue
+                    }
+                }
+                runtime._handleKey(.char(id))
+            }
         }
         if Task.isCancelled {
             exitNote = "task cancelled"
@@ -598,29 +1034,7 @@ private struct _CellPix {
 }
 
 private func _resolveColorNC(_ c: Color?) -> _NCRGB? {
-    guard let c, c.alpha > 0 else { return nil }
-    switch c.name {
-    case "primary":
-        return _NCRGB(r: 0xD8, g: 0xDB, b: 0xE2)
-    case "secondary":
-        return _NCRGB(r: 0xA5, g: 0xAC, b: 0xB8)
-    case "tertiary":
-        return _NCRGB(r: 0x7D, g: 0x86, b: 0x96)
-    case "white":
-        return _NCRGB(r: 0xFF, g: 0xFF, b: 0xFF)
-    case "gray":
-        return _NCRGB(r: 0x99, g: 0xA1, b: 0xAE)
-    case "yellow":
-        return _NCRGB(r: 0xFA, g: 0xD3, b: 0x5D)
-    case "accentColor":
-        return _NCRGB(r: 0x34, g: 0xD3, b: 0x99)
-    case "black":
-        return _NCRGB(r: 0x00, g: 0x00, b: 0x00)
-    case "clear":
-        return nil
-    default:
-        return nil
-    }
+    _resolveColorToRGB(c)
 }
 
 private func _ncCellPix(_ nc: OpaquePointer) -> _CellPix? {
@@ -1277,56 +1691,11 @@ private extension Array {
     }
 }
 
-private struct _NCRGB: Equatable {
-    var r: UInt8
-    var g: UInt8
-    var b: UInt8
-}
+private typealias _NCRGB = _RGB
 
 private struct _NCCell: Equatable {
     var ch: String
     var fg: _NCRGB
     var bg: _NCRGB
-}
-
-private func _isBorderGlyph(_ c: Character) -> Bool {
-    switch c {
-    case "┌", "┐", "└", "┘", "┬", "┴", "├", "┤", "┼", "─", "│",
-         "╭", "╮", "╰", "╯", "═", "║", "╬", "╦", "╩", "╠", "╣":
-        return true
-    default:
-        return false
-    }
-}
-
-private func _boxify(_ c: Character, left: Character?, right: Character?, up: Character?, down: Character?) -> Character {
-    // Convert ASCII box drawing used by the debug snapshot into Unicode box drawing.
-    switch c {
-    case "|":
-        return "│"
-    case "-":
-        return "─"
-    case "+":
-        let l = (left == "-" || left == "+")
-        let r = (right == "-" || right == "+")
-        let u = (up == "|" || up == "+")
-        let d = (down == "|" || down == "+")
-        // Corners
-        if r && d && !l && !u { return "┌" }
-        if l && d && !r && !u { return "┐" }
-        if r && u && !l && !d { return "└" }
-        if l && u && !r && !d { return "┘" }
-        // Tee junctions
-        if l && r && d && !u { return "┬" }
-        if l && r && u && !d { return "┴" }
-        if u && d && r && !l { return "├" }
-        if u && d && l && !r { return "┤" }
-        // Cross/lines
-        if (l || r) && (u || d) { return "┼" }
-        if l || r { return "─" }
-        if u || d { return "│" }
-        return "┼"
-    default:
-        return c
-    }
+    var styles: UInt16 = 0
 }

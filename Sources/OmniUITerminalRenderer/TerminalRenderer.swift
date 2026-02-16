@@ -51,7 +51,7 @@ public struct TerminalApp<V: View> {
             var curr = Array(repeating: _Cell(ch: " ", fg: baseFG, bg: baseBG), count: size.width * size.height)
             var zbuf = Array(repeating: Int.min, count: size.width * size.height)
             // Rasterize typed ops into a cell buffer.
-            func setCell(_ x: Int, _ y: Int, _ egc: String, _ fg: _RGB?, _ bg: _RGB?, z: Int) {
+            func setCell(_ x: Int, _ y: Int, _ egc: String, _ fg: _RGB?, _ bg: _RGB?, z: Int, style: UInt16 = 0) {
                 guard x >= 0, y >= 0, x < size.width, y < size.height else { return }
                 let idx = y * size.width + x
                 if z < zbuf[idx] { return }
@@ -59,6 +59,7 @@ public struct TerminalApp<V: View> {
                 c.ch = egc
                 if let fg { c.fg = fg }
                 if let bg { c.bg = bg }
+                if style != 0 { c.styles = style }
                 curr[idx] = c
                 zbuf[idx] = z
             }
@@ -81,6 +82,7 @@ public struct TerminalApp<V: View> {
             var shapesByClip: [_Rect: [(_Rect, _ShapeNode, Int)]] = [:]
 
             for op in snapshot.ops {
+                let opStyle = op.textStyle.rawValue
                 switch op.kind {
                 case .glyph(let x, let y, let egc, let fg, let bg):
                     if !inClip(x, y) { break }
@@ -90,23 +92,20 @@ public struct TerminalApp<V: View> {
                     var outFG = rfg ?? baseFG
                     let outBG = rbg ?? baseBG
                     if mapped == "*" { outFG = accentFG }
-                    if _isBorderGlyph(mapped) { outFG = borderFG }
-                    setCell(x, y, egc, outFG, outBG, z: op.zIndex)
+                    if _isBorderGlyphShared(mapped) { outFG = borderFG }
+                    setCell(x, y, egc, outFG, outBG, z: op.zIndex, style: opStyle)
                 case .textRun(let x, let y, let text, let fg, let bg):
                     let rfg = _resolveColor(fg)
                     let rbg = _resolveColor(bg)
                     let outFG = rfg ?? baseFG
                     let outBG = rbg ?? baseBG
-                    // Per-run specials aren't ideal, but this keeps legacy "border glyph" tinting working.
-                    // We apply it per-character.
                     var xx = x
                     for ch in text {
                         if inClip(xx, y) {
-                        let mapped = ch
                         var fg2 = outFG
-                        if mapped == "*" { fg2 = accentFG }
-                        if _isBorderGlyph(mapped) { fg2 = borderFG }
-                        setCell(xx, y, String(ch), fg2, outBG, z: op.zIndex)
+                        if ch == "*" { fg2 = accentFG }
+                        if _isBorderGlyphShared(ch) { fg2 = borderFG }
+                        setCell(xx, y, String(ch), fg2, outBG, z: op.zIndex, style: opStyle)
                         }
                         xx += 1
                         if xx >= size.width { break }
@@ -186,6 +185,7 @@ public struct TerminalApp<V: View> {
 
             var penFG: _RGB? = nil
             var penBG: _RGB? = nil
+            var penStyles: UInt16 = 0
             var penX = 0
             var penY = 0
             for (idx, cell) in changed {
@@ -204,8 +204,16 @@ public struct TerminalApp<V: View> {
                     term.write(_bg(cell.bg))
                     penBG = cell.bg
                 }
+                if cell.styles != penStyles {
+                    term.write(_styleSeq(cell.styles))
+                    penStyles = cell.styles
+                }
                 term.write(cell.ch)
                 penX += 1
+            }
+            // Reset styles after painting.
+            if penStyles != 0 {
+                term.write(_styleSeq(0))
             }
 
             prev = curr
@@ -371,28 +379,7 @@ private struct _TerminalSession {
 }
 
 private func _resolveColor(_ c: Color?) -> _RGB? {
-    guard let c, c.alpha > 0 else { return nil }
-    // Very small palette; good enough for `.primary/.secondary` and basic colors.
-    switch c.name {
-    case "primary":
-        return _RGB(r: 0xD8, g: 0xDB, b: 0xE2)
-    case "secondary":
-        return _RGB(r: 0xA5, g: 0xAC, b: 0xB8)
-    case "tertiary":
-        return _RGB(r: 0x7D, g: 0x86, b: 0x96)
-    case "white":
-        return _RGB(r: 0xFF, g: 0xFF, b: 0xFF)
-    case "gray":
-        return _RGB(r: 0x99, g: 0xA1, b: 0xAE)
-    case "yellow":
-        return _RGB(r: 0xFA, g: 0xD3, b: 0x5D)
-    case "accentColor":
-        return _RGB(r: 0x34, g: 0xD3, b: 0x99)
-    case "black":
-        return _RGB(r: 0x00, g: 0x00, b: 0x00)
-    default:
-        return nil
-    }
+    _resolveColorToRGB(c)
 }
 
 private enum _MouseKind {
@@ -608,16 +595,11 @@ private func _parseSGRMouse(_ bytes: inout [UInt8]) -> (Int, Int, Int, Bool)? {
     return nil
 }
 
-private struct _RGB: Equatable {
-    var r: UInt8
-    var g: UInt8
-    var b: UInt8
-}
-
 private struct _Cell: Equatable {
     var ch: String
     var fg: _RGB
     var bg: _RGB
+    var styles: UInt16 = 0
 }
 
 private func _fg(_ c: _RGB) -> String { "\u{001B}[38;2;\(c.r);\(c.g);\(c.b)m" }
@@ -668,40 +650,12 @@ private extension Array {
     }
 }
 
-private func _isBorderGlyph(_ c: Character) -> Bool {
-    switch c {
-    case "┌", "┐", "└", "┘", "┬", "┴", "├", "┤", "┼", "─", "│",
-         "╭", "╮", "╰", "╯", "═", "║", "╬", "╦", "╩", "╠", "╣":
-        return true
-    default:
-        return false
-    }
-}
-
-private func _boxify(_ c: Character, left: Character?, right: Character?, up: Character?, down: Character?) -> Character {
-    switch c {
-    case "|":
-        return "│"
-    case "-":
-        return "─"
-    case "+":
-        let l = (left == "-" || left == "+")
-        let r = (right == "-" || right == "+")
-        let u = (up == "|" || up == "+")
-        let d = (down == "|" || down == "+")
-        if r && d && !l && !u { return "┌" }
-        if l && d && !r && !u { return "┐" }
-        if r && u && !l && !d { return "└" }
-        if l && u && !r && !d { return "┘" }
-        if l && r && d && !u { return "┬" }
-        if l && r && u && !d { return "┴" }
-        if u && d && r && !l { return "├" }
-        if u && d && l && !r { return "┤" }
-        if (l || r) && (u || d) { return "┼" }
-        if l || r { return "─" }
-        if u || d { return "│" }
-        return "┼"
-    default:
-        return c
-    }
+private func _styleSeq(_ styles: UInt16) -> String {
+    // Reset all relevant styles, then enable desired ones.
+    var codes: [Int] = [22, 23, 24, 29] // not-bold, not-italic, not-underline, not-struck
+    if styles & TextStyle.bold.rawValue != 0 { codes[0] = 1 }
+    if styles & TextStyle.italic.rawValue != 0 { codes[1] = 3 }
+    if styles & TextStyle.underline.rawValue != 0 { codes[2] = 4 }
+    if styles & TextStyle.struck.rawValue != 0 { codes[3] = 9 }
+    return "\u{001B}[\(codes.map(String.init).joined(separator: ";"))m"
 }
