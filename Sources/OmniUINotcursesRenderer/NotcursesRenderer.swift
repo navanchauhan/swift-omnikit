@@ -99,7 +99,6 @@ public struct NotcursesApp<V: View> {
         var shapePlanes: [Int: _NCShapePlaneEntry] = [:]
         var overlayPlane: OpaquePointer? = nil
         var overlayRect: _Rect? = nil
-        var scrollPlanes: [_Rect: OpaquePointer] = [:]
         var activeNCMenu: OpaquePointer? = nil
         var menuItemActionIDs: [Int] = []
         var activeNCSel: OpaquePointer? = nil
@@ -111,8 +110,6 @@ public struct NotcursesApp<V: View> {
             if let s = activeNCSel { omni_ncselector_destroy(s) }
             if let m = activeNCMenu { omni_ncmenu_destroy(m) }
             if let op = overlayPlane { ncplane_destroy(op) }
-            for (_, plane) in scrollPlanes { ncplane_destroy(plane) }
-            scrollPlanes.removeAll()
             for (_, e) in shapePlanes {
                 ncplane_destroy(e.plane)
             }
@@ -472,57 +469,9 @@ public struct NotcursesApp<V: View> {
                 }
             }
 
-            // ── Scroll plane management ──
-            // Create/update child ncplanes for scroll regions.
-            let currentScrollRects = Set(snapshot.scrollRegions.map { $0.rect })
-            // Destroy planes for scroll regions that no longer exist.
-            for (rect, plane) in scrollPlanes where !currentScrollRects.contains(rect) {
-                ncplane_destroy(plane)
-                scrollPlanes[rect] = nil
-            }
-            // Create planes for new scroll regions.
-            for sr in snapshot.scrollRegions {
-                if scrollPlanes[sr.rect] == nil {
-                    var popts = ncplane_options()
-                    popts.y = Int32(sr.rect.origin.y)
-                    popts.x = Int32(sr.rect.origin.x)
-                    popts.rows = UInt32(sr.rect.size.height)
-                    popts.cols = UInt32(sr.rect.size.width)
-                    popts.name = nil
-                    popts.userptr = nil
-                    popts.resizecb = nil
-                    popts.flags = omni_ncplane_option_vscroll()
-                    popts.margin_b = 0
-                    popts.margin_r = 0
-                    if let sp = ncplane_create(stdplane, &popts) {
-                        _ = ncplane_move_above(sp, stdplane)
-                        scrollPlanes[sr.rect] = sp
-                    }
-                } else if let sp = scrollPlanes[sr.rect] {
-                    // Ensure plane is positioned correctly.
-                    ncplane_move_yx(sp, Int32(sr.rect.origin.y), Int32(sr.rect.origin.x))
-                    // Resize if dimensions changed (shouldn't happen with rect-keyed lookup, but defensive).
-                    var curRows: UInt32 = 0
-                    var curCols: UInt32 = 0
-                    ncplane_dim_yx(sp, &curRows, &curCols)
-                    if curRows != UInt32(sr.rect.size.height) || curCols != UInt32(sr.rect.size.width) {
-                        _ = ncplane_resize_simple(sp, UInt32(sr.rect.size.height), UInt32(sr.rect.size.width))
-                    }
-                }
-            }
-
-            // Build a lookup: for each cell, which scroll plane (if any) owns it.
-            // Only non-overlay cells (z < 1000) are routed to scroll planes.
-            func scrollPlaneFor(x: Int, y: Int) -> OpaquePointer? {
-                for sr in snapshot.scrollRegions {
-                    if sr.rect.contains(_Point(x: x, y: y)) {
-                        return scrollPlanes[sr.rect]
-                    }
-                }
-                return nil
-            }
-
-            // Differential paint (cell-level). Route cells to scroll planes where applicable.
+            // Differential paint (cell-level) on stdplane.
+            // Scroll regions are handled by the layout system (scroll offset adjusts which ops
+            // are visible); painting all cells to stdplane avoids stale-plane artifacts.
             let toPaint: [(Int, _NCCell)]
             if let prev {
                 toPaint = curr.enumerated().compactMap { idx, c in prev[idx] == c ? nil : (idx, c) }
@@ -530,50 +479,28 @@ public struct NotcursesApp<V: View> {
                 toPaint = curr.enumerated().map { ($0.offset, $0.element) }
             }
 
-            // Track ncplane style state per plane to avoid redundant setters.
             var lastFG: _NCRGB? = nil
             var lastBG: _NCRGB? = nil
             var lastStyles: UInt16 = 0
-            // Erase scroll planes before painting.
-            for (_, sp) in scrollPlanes { ncplane_erase(sp) }
 
             for (idx, cell) in toPaint {
                 let y = idx / width
                 let x = idx % width
-                let target: OpaquePointer
-                if let sp = scrollPlaneFor(x: x, y: y) {
-                    target = sp
-                    // Paint relative to the scroll plane's origin.
-                    let relY = y - Int(ncplane_y(sp))
-                    let relX = x - Int(ncplane_x(sp))
-                    _ = ncplane_set_fg_rgb8(sp, UInt32(cell.fg.r), UInt32(cell.fg.g), UInt32(cell.fg.b))
-                    _ = ncplane_set_bg_rgb8(sp, UInt32(cell.bg.r), UInt32(cell.bg.g), UInt32(cell.bg.b))
-                    if cell.styles != 0 { omni_ncplane_set_styles(sp, UInt32(cell.styles)) }
-                    cell.ch.utf8CString.withUnsafeBufferPointer { buf in
-                        if let p = buf.baseAddress {
-                            _ = ncplane_putegc_yx(sp, Int32(relY), Int32(relX), p, nil)
-                        }
-                    }
-                    if cell.styles != 0 { omni_ncplane_set_styles(sp, 0) }
-                    continue
-                } else {
-                    target = stdplane
-                }
                 if lastFG == nil || lastFG! != cell.fg {
-                    _ = ncplane_set_fg_rgb8(target, UInt32(cell.fg.r), UInt32(cell.fg.g), UInt32(cell.fg.b))
+                    _ = ncplane_set_fg_rgb8(stdplane, UInt32(cell.fg.r), UInt32(cell.fg.g), UInt32(cell.fg.b))
                     lastFG = cell.fg
                 }
                 if lastBG == nil || lastBG! != cell.bg {
-                    _ = ncplane_set_bg_rgb8(target, UInt32(cell.bg.r), UInt32(cell.bg.g), UInt32(cell.bg.b))
+                    _ = ncplane_set_bg_rgb8(stdplane, UInt32(cell.bg.r), UInt32(cell.bg.g), UInt32(cell.bg.b))
                     lastBG = cell.bg
                 }
                 if cell.styles != lastStyles {
-                    omni_ncplane_set_styles(target, UInt32(cell.styles))
+                    omni_ncplane_set_styles(stdplane, UInt32(cell.styles))
                     lastStyles = cell.styles
                 }
                 cell.ch.utf8CString.withUnsafeBufferPointer { buf in
                     if let p = buf.baseAddress {
-                        _ = ncplane_putegc_yx(target, Int32(y), Int32(x), p, nil)
+                        _ = ncplane_putegc_yx(stdplane, Int32(y), Int32(x), p, nil)
                     }
                 }
             }
