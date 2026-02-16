@@ -99,8 +99,36 @@ public struct NotcursesApp<V: View> {
         var shapePlanes: [Int: _NCShapePlaneEntry] = [:]
         var overlayPlane: OpaquePointer? = nil
         var overlayRect: _Rect? = nil
+        var activeNCMenu: (widget: OpaquePointer, rect: _Rect, itemIDs: [Int])? = nil
+        var activeNCSelector: (widget: OpaquePointer, rect: _Rect, itemIDs: [Int])? = nil
+        var activeNCReader: (widget: OpaquePointer, rect: _Rect, fieldID: Int)? = nil
+
+        func destroyActiveNCMenu() {
+            guard let menu = activeNCMenu else { return }
+            omni_ncmenu_destroy(menu.widget)
+            activeNCMenu = nil
+        }
+
+        func destroyActiveNCSelector() {
+            guard let selector = activeNCSelector else { return }
+            omni_ncselector_destroy(selector.widget)
+            activeNCSelector = nil
+        }
+
+        func destroyActiveNCReader() {
+            guard let reader = activeNCReader else { return }
+            omni_ncreader_destroy(reader.widget)
+            activeNCReader = nil
+        }
+
+        func destroyAllNativeWidgets() {
+            destroyActiveNCReader()
+            destroyActiveNCSelector()
+            destroyActiveNCMenu()
+        }
 
         defer {
+            destroyAllNativeWidgets()
             if let op = overlayPlane { ncplane_destroy(op) }
             for (_, e) in shapePlanes {
                 ncplane_destroy(e.plane)
@@ -460,6 +488,25 @@ public struct NotcursesApp<V: View> {
                 }
             }
 
+            var widgetRects: [_Rect] = []
+            if let m = activeNCMenu, snapshot.activeMenu?.boundingRect == m.rect {
+                widgetRects.append(m.rect)
+            }
+            if let s = activeNCSelector, snapshot.activePicker?.boundingRect == s.rect {
+                widgetRects.append(s.rect)
+            }
+            if let r = activeNCReader,
+               let tf = snapshot.activeTextField,
+               tf.boundingRect == r.rect,
+               tf.actionID == r.fieldID {
+                widgetRects.append(r.rect)
+            }
+
+            func isInWidgetRect(_ x: Int, _ y: Int) -> Bool {
+                let p = _Point(x: x, y: y)
+                return widgetRects.contains { $0.contains(p) }
+            }
+
             // Differential paint (cell-level) on stdplane.
             // Scroll regions are handled by the layout system (scroll offset adjusts which ops
             // are visible); painting all cells to stdplane avoids stale-plane artifacts.
@@ -477,6 +524,7 @@ public struct NotcursesApp<V: View> {
             for (idx, cell) in toPaint {
                 let y = idx / width
                 let x = idx % width
+                if isInWidgetRect(x, y) { continue }
                 if lastFG == nil || lastFG! != cell.fg {
                     _ = ncplane_set_fg_rgb8(stdplane, UInt32(cell.fg.r), UInt32(cell.fg.g), UInt32(cell.fg.b))
                     lastFG = cell.fg
@@ -543,6 +591,7 @@ public struct NotcursesApp<V: View> {
                         guard overlayZbuf[idx] > Int.min else { continue }
                         let y = idx / width
                         let x = idx % width
+                        if isInWidgetRect(x, y) { continue }
                         if oLastFG == nil || oLastFG! != cell.fg {
                             _ = ncplane_set_fg_rgb8(op, UInt32(cell.fg.r), UInt32(cell.fg.g), UInt32(cell.fg.b))
                             oLastFG = cell.fg
@@ -584,10 +633,213 @@ public struct NotcursesApp<V: View> {
                     }
             }
 
-            // NOTE: Native widget planes (ncmenu, ncselector, ncreader) are disabled.
-            // They create opaque child planes above stdplane that block cell-based rendering.
-            // The C shim infrastructure and metadata (activeMenu/activePicker/activeTextField)
-            // remain available for future integration with proper plane coordination.
+            // ── Native widget lifecycle ──
+            var widgetStateChanged = false
+
+            if let menuInfo = snapshot.activeMenu {
+                let itemIDs = menuInfo.items.map { $0.actionID }
+                let needsRecreate: Bool = {
+                    guard let menu = activeNCMenu else { return true }
+                    return menu.rect != menuInfo.boundingRect || menu.itemIDs != itemIDs
+                }()
+                if needsRecreate {
+                    if activeNCMenu != nil {
+                        destroyActiveNCMenu()
+                        widgetStateChanged = true
+                    }
+                    if !menuInfo.items.isEmpty {
+                        let labels = menuInfo.items.map { $0.label }
+                        let cLabels = labels.map { strdup($0) }
+                        defer { cLabels.forEach { free($0) } }
+                        if !cLabels.contains(where: { $0 == nil }) {
+                            var ptrs: [UnsafePointer<CChar>?] = cLabels.map { UnsafePointer($0) }
+                            let menuWidget = ptrs.withUnsafeMutableBufferPointer { buf -> OpaquePointer? in
+                                guard let base = buf.baseAddress else { return nil }
+                                return menuInfo.title.withCString { titlePtr in
+                                    omni_ncmenu_create_flat(stdplane, titlePtr, base, Int32(labels.count), 0)
+                                }
+                            }
+                            if let widget = menuWidget {
+                                _ = omni_ncmenu_unroll(widget, 0)
+                                activeNCMenu = (widget: widget, rect: menuInfo.boundingRect, itemIDs: itemIDs)
+                                widgetStateChanged = true
+                            }
+                        }
+                    }
+                }
+            } else if activeNCMenu != nil {
+                destroyActiveNCMenu()
+                widgetStateChanged = true
+            }
+
+            if let pickerInfo = snapshot.activePicker {
+                let itemIDs = pickerInfo.options.map { $0.actionID }
+                let needsRecreate: Bool = {
+                    guard let selector = activeNCSelector else { return true }
+                    return selector.rect != pickerInfo.boundingRect || selector.itemIDs != itemIDs
+                }()
+                if needsRecreate {
+                    if activeNCSelector != nil {
+                        destroyActiveNCSelector()
+                        widgetStateChanged = true
+                    }
+                    if !pickerInfo.options.isEmpty {
+                        var popts = ncplane_options()
+                        popts.y = Int32(pickerInfo.boundingRect.origin.y)
+                        popts.x = Int32(pickerInfo.boundingRect.origin.x)
+                        popts.rows = UInt32(max(1, pickerInfo.boundingRect.size.height))
+                        popts.cols = UInt32(max(1, pickerInfo.boundingRect.size.width))
+                        popts.name = nil
+                        popts.userptr = nil
+                        popts.resizecb = nil
+                        popts.flags = 0
+                        popts.margin_b = 0
+                        popts.margin_r = 0
+
+                        if let selectorPlane = ncplane_create(stdplane, &popts) {
+                            if let op = overlayPlane {
+                                _ = ncplane_move_above(selectorPlane, op)
+                            } else {
+                                _ = ncplane_move_above(selectorPlane, stdplane)
+                            }
+
+                            let options = pickerInfo.options.map { $0.label }
+                            let cOpts = options.map { strdup($0) }
+                            let cDescs = options.map { _ in strdup("") }
+                            defer {
+                                cOpts.forEach { free($0) }
+                                cDescs.forEach { free($0) }
+                            }
+
+                            if !cOpts.contains(where: { $0 == nil }) && !cDescs.contains(where: { $0 == nil }) {
+                                var optPtrs: [UnsafePointer<CChar>?] = cOpts.map { UnsafePointer($0) }
+                                var descPtrs: [UnsafePointer<CChar>?] = cDescs.map { UnsafePointer($0) }
+                                let defaultIndex = UInt32(min(max(0, pickerInfo.selectedIndex ?? 0), max(0, options.count - 1)))
+                                let maxDisplay = UInt32(max(1, min(options.count, max(1, pickerInfo.boundingRect.size.height - 2))))
+                                let selectorWidget = optPtrs.withUnsafeMutableBufferPointer { optBuf -> OpaquePointer? in
+                                    descPtrs.withUnsafeMutableBufferPointer { descBuf -> OpaquePointer? in
+                                        guard let optBase = optBuf.baseAddress,
+                                              let descBase = descBuf.baseAddress else { return nil }
+                                        return pickerInfo.title.withCString { titlePtr in
+                                            omni_ncselector_create(
+                                                selectorPlane,
+                                                optBase,
+                                                descBase,
+                                                Int32(options.count),
+                                                defaultIndex,
+                                                maxDisplay,
+                                                titlePtr,
+                                                nil
+                                            )
+                                        }
+                                    }
+                                }
+
+                                if let widget = selectorWidget {
+                                    activeNCSelector = (widget: widget, rect: pickerInfo.boundingRect, itemIDs: itemIDs)
+                                    widgetStateChanged = true
+                                } else {
+                                    ncplane_destroy(selectorPlane)
+                                }
+                            } else {
+                                ncplane_destroy(selectorPlane)
+                            }
+                        }
+                    }
+                }
+            } else if activeNCSelector != nil {
+                destroyActiveNCSelector()
+                widgetStateChanged = true
+            }
+
+            if let tfInfo = snapshot.activeTextField {
+                let needsRecreate: Bool = {
+                    guard let reader = activeNCReader else { return true }
+                    return reader.rect != tfInfo.boundingRect || reader.fieldID != tfInfo.actionID
+                }()
+                if needsRecreate {
+                    if activeNCReader != nil {
+                        destroyActiveNCReader()
+                        widgetStateChanged = true
+                    }
+
+                    var popts = ncplane_options()
+                    popts.y = Int32(tfInfo.boundingRect.origin.y)
+                    popts.x = Int32(tfInfo.boundingRect.origin.x)
+                    popts.rows = UInt32(max(1, tfInfo.boundingRect.size.height))
+                    popts.cols = UInt32(max(1, tfInfo.boundingRect.size.width))
+                    popts.name = nil
+                    popts.userptr = nil
+                    popts.resizecb = nil
+                    popts.flags = 0
+                    popts.margin_b = 0
+                    popts.margin_r = 0
+                    if let readerPlane = ncplane_create(stdplane, &popts) {
+                        if let op = overlayPlane {
+                            _ = ncplane_move_above(readerPlane, op)
+                        } else {
+                            _ = ncplane_move_above(readerPlane, stdplane)
+                        }
+                        let flags = omni_ncreader_option_horscroll() | omni_ncreader_option_cursor() | omni_ncreader_option_nocmdkeys()
+                        if let widget = omni_ncreader_create(readerPlane, flags) {
+                            activeNCReader = (widget: widget, rect: tfInfo.boundingRect, fieldID: tfInfo.actionID)
+                            widgetStateChanged = true
+                        } else {
+                            ncplane_destroy(readerPlane)
+                        }
+                    }
+                }
+
+                if let reader = activeNCReader?.widget {
+                    _ = omni_ncreader_clear(reader)
+                    for scalar in tfInfo.text.unicodeScalars {
+                        var feedNi = ncinput()
+                        feedNi.id = scalar.value
+                        feedNi.evtype = NCTYPE_PRESS
+                        _ = omni_ncreader_offer_input(reader, &feedNi)
+                    }
+                    let scalarCount = tfInfo.text.unicodeScalars.count
+                    let cursorOffset = min(max(0, tfInfo.cursorOffset), scalarCount)
+                    let trailing = max(0, scalarCount - cursorOffset)
+                    if trailing > 0 {
+                        for _ in 0..<trailing {
+                            var moveNi = ncinput()
+                            moveNi.id = left
+                            moveNi.evtype = NCTYPE_PRESS
+                            _ = omni_ncreader_offer_input(reader, &moveNi)
+                        }
+                    }
+                }
+            } else if activeNCReader != nil {
+                destroyActiveNCReader()
+                widgetStateChanged = true
+            }
+
+            if let menuPlane = activeNCMenu.flatMap({ omni_ncmenu_plane($0.widget) }) {
+                if let op = overlayPlane {
+                    _ = ncplane_move_above(menuPlane, op)
+                } else {
+                    _ = ncplane_move_above(menuPlane, stdplane)
+                }
+            }
+            if let selectorPlane = activeNCSelector.flatMap({ omni_ncselector_plane($0.widget) }) {
+                if let op = overlayPlane {
+                    _ = ncplane_move_above(selectorPlane, op)
+                } else {
+                    _ = ncplane_move_above(selectorPlane, stdplane)
+                }
+            }
+            if let readerPlane = activeNCReader.flatMap({ omni_ncreader_plane($0.widget) }) {
+                if let op = overlayPlane {
+                    _ = ncplane_move_above(readerPlane, op)
+                } else {
+                    _ = ncplane_move_above(readerPlane, stdplane)
+                }
+            }
+
+            if widgetStateChanged {
+                prev = nil
+            }
 
             // Hardware cursor: enable at the focused text field's cursor position, disable otherwise.
             if let cp = snapshot.cursorPosition {
@@ -632,9 +884,43 @@ public struct NotcursesApp<V: View> {
                 var newRows: UInt32 = 0
                 var newCols: UInt32 = 0
                 _ = omni_notcurses_refresh(nc, &newRows, &newCols)
+                destroyAllNativeWidgets()
                 // Force full repaint on next frame.
                 prev = nil
                 continue
+            }
+
+            if let menu = activeNCMenu {
+                if omni_ncmenu_offer_input(menu.widget, &ni) {
+                    var selNi = ncinput()
+                    if let sel = omni_ncmenu_selected(menu.widget, &selNi) {
+                        let selected = String(cString: sel)
+                        if let idx = snapshot.activeMenu?.items.firstIndex(where: { $0.label == selected }),
+                           idx < menu.itemIDs.count {
+                            runtime.invokeActionByRawID(menu.itemIDs[idx])
+                        }
+                    }
+                    continue
+                }
+            }
+
+            if let selector = activeNCSelector {
+                if omni_ncselector_offer_input(selector.widget, &ni) {
+                    if id == enter || id == 10 || id == 13 {
+                        if let sel = omni_ncselector_selected(selector.widget) {
+                            let selected = String(cString: sel)
+                            if let idx = snapshot.activePicker?.options.firstIndex(where: { $0.label == selected }),
+                               idx < selector.itemIDs.count {
+                                runtime.invokeActionByRawID(selector.itemIDs[idx])
+                            }
+                        }
+                    }
+                    continue
+                }
+            }
+
+            if let reader = activeNCReader {
+                _ = omni_ncreader_offer_input(reader.widget, &ni)
             }
 
             // Treat all non-RELEASE events as "press-like" to avoid dropping keyboard input,

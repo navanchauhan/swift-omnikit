@@ -61,6 +61,7 @@ public struct RenderSnapshot: Sendable {
 /// Metadata about an expanded menu, exposed to the renderer for native widget integration.
 public struct _MenuInfo: Sendable {
     public let origin: _Point
+    public let boundingRect: _Rect
     public let title: String
     public let items: [(label: String, actionID: Int)]
     public let selectedIndex: Int?
@@ -69,6 +70,7 @@ public struct _MenuInfo: Sendable {
 /// Metadata about an expanded picker, exposed to the renderer for native widget integration.
 public struct _PickerInfo: Sendable {
     public let origin: _Point
+    public let boundingRect: _Rect
     public let title: String
     public let options: [(label: String, actionID: Int)]
     public let selectedIndex: Int?
@@ -77,6 +79,7 @@ public struct _PickerInfo: Sendable {
 /// Metadata about a focused text field, exposed to the renderer for native widget integration.
 public struct _TextFieldInfo: Sendable {
     public let origin: _Point
+    public let boundingRect: _Rect
     public let width: Int
     public let text: String
     public let cursorOffset: Int
@@ -590,6 +593,8 @@ enum _RenderLayout {
                 return String(String.UnicodeScalarView(scalars))
             }()
             let s = prefix + "[" + withCursor + "]"
+            let renderedWidth = min(maxSize.width, s.count)
+            let rect = _Rect(origin: origin, size: _Size(width: renderedWidth, height: 1))
             emitText(String(s.prefix(maxSize.width)), at: origin)
             // Track hardware cursor position: prefix + "[" + chars before cursor pipe.
             if isFocused {
@@ -599,15 +604,15 @@ enum _RenderLayout {
                 }
                 activeTextField = _TextFieldInfo(
                     origin: _Point(x: origin.x + prefix.count + 1, y: origin.y),
+                    boundingRect: rect,
                     width: max(0, maxSize.width - prefix.count - 2),
                     text: text,
                     cursorOffset: cpos,
                     actionID: id.raw
                 )
             }
-            let rect = _Rect(origin: origin, size: _Size(width: min(maxSize.width, s.count), height: 1))
             hitRegions.append((rect, id))
-            return _Size(width: min(maxSize.width, s.count), height: 1)
+            return _Size(width: renderedWidth, height: 1)
 
         case .scrollView(let id, let path, let isFocused, let axis, let offset, let content):
             // Measure content height in a bounded way (same approach as DebugLayout).
@@ -662,31 +667,11 @@ enum _RenderLayout {
             let closeX = min(origin.x + maxSize.width - 1, x0 + 1 + innerClipped.count)
             emitGlyph("]", at: _Point(x: closeX, y: origin.y))
             let headWidth = min(maxSize.width, (isFocused ? 1 : 0) + 2 + innerClipped.count)
-            hitRegions.append((_Rect(origin: origin, size: _Size(width: headWidth, height: 1)), id))
+            let headerRect = _Rect(origin: origin, size: _Size(width: headWidth, height: 1))
+            hitRegions.append((headerRect, id))
 
             if !isExpanded || items.isEmpty || maxSize.height < 3 {
                 return _Size(width: headWidth, height: 1)
-            }
-
-            // Expose expanded menu metadata for native widget integration.
-            // Pickers have a selected item; plain menus do not.
-            let selectedIdx = items.firstIndex(where: { $0.isSelected })
-            if selectedIdx != nil {
-                // Picker: expose as activePicker for ncselector integration.
-                activePicker = _PickerInfo(
-                    origin: _Point(x: x0, y: origin.y),
-                    title: title,
-                    options: items.map { (label: $0.label, actionID: $0.id.raw) },
-                    selectedIndex: selectedIdx
-                )
-            } else {
-                // Plain menu: expose as activeMenu for ncmenu integration.
-                activeMenu = _MenuInfo(
-                    origin: _Point(x: x0, y: origin.y),
-                    title: title,
-                    items: items.map { (label: $0.label, actionID: $0.id.raw) },
-                    selectedIndex: nil
-                )
             }
 
             // Dropdown overlay above later content.
@@ -694,6 +679,17 @@ enum _RenderLayout {
             let maxLabel = items.map { $0.label.count }.max() ?? 0
             let boxInnerWidth = min(max(8, maxLabel + 4), max(0, maxSize.width - 2))
             let boxWidth = boxInnerWidth + 2
+            let maxVisibleItems = max(0, maxSize.height - 3)
+            let visibleItems = min(items.count, maxVisibleItems)
+            let dropdownHeight = visibleItems + 2
+            let dropdownRect = _Rect(origin: overlayOrigin, size: _Size(width: boxWidth, height: dropdownHeight))
+            let boundX0 = min(headerRect.origin.x, dropdownRect.origin.x)
+            let boundX1 = max(headerRect.origin.x + headerRect.size.width, dropdownRect.origin.x + dropdownRect.size.width)
+            let boundY1 = max(headerRect.origin.y + headerRect.size.height, dropdownRect.origin.y + dropdownRect.size.height)
+            let boundingRect = _Rect(
+                origin: _Point(x: boundX0, y: headerRect.origin.y),
+                size: _Size(width: max(0, boundX1 - boundX0), height: max(0, boundY1 - headerRect.origin.y))
+            )
 
             let prevZ = ctx.z
             ctx.z = prevZ + 1000
@@ -702,10 +698,8 @@ enum _RenderLayout {
             for i in 0..<boxInnerWidth { emitGlyph("-", at: _Point(x: overlayOrigin.x + 1 + i, y: overlayOrigin.y)) }
             emitGlyph("+", at: _Point(x: overlayOrigin.x + boxInnerWidth + 1, y: overlayOrigin.y))
 
-            var usedHeight = 1
-            for (i, item) in items.enumerated() {
+            for (i, item) in items.prefix(visibleItems).enumerated() {
                 let y = overlayOrigin.y + 1 + i
-                if y >= origin.y + maxSize.height - 1 { break }
                 emitGlyph("|", at: _Point(x: overlayOrigin.x, y: y))
                 for x in 0..<boxInnerWidth { emitGlyph(" ", at: _Point(x: overlayOrigin.x + 1 + x, y: y)) }
                 emitGlyph("|", at: _Point(x: overlayOrigin.x + boxInnerWidth + 1, y: y))
@@ -719,16 +713,38 @@ enum _RenderLayout {
 
                 let optRect = _Rect(origin: _Point(x: overlayOrigin.x, y: y), size: _Size(width: boxWidth, height: 1))
                 hitRegions.append((optRect, item.id))
-                usedHeight += 1
             }
 
-            let bottomY = overlayOrigin.y + usedHeight
+            let bottomY = overlayOrigin.y + visibleItems + 1
             if bottomY < origin.y + maxSize.height {
                 emitGlyph("+", at: _Point(x: overlayOrigin.x, y: bottomY))
                 for i in 0..<boxInnerWidth { emitGlyph("-", at: _Point(x: overlayOrigin.x + 1 + i, y: bottomY)) }
                 emitGlyph("+", at: _Point(x: overlayOrigin.x + boxInnerWidth + 1, y: bottomY))
             }
             ctx.z = prevZ
+
+            // Expose expanded menu metadata for native widget integration.
+            // Pickers have a selected item; plain menus do not.
+            let selectedIdx = items.firstIndex(where: { $0.isSelected })
+            if selectedIdx != nil {
+                // Picker: expose as activePicker for ncselector integration.
+                activePicker = _PickerInfo(
+                    origin: _Point(x: x0, y: origin.y),
+                    boundingRect: boundingRect,
+                    title: title,
+                    options: items.map { (label: $0.label, actionID: $0.id.raw) },
+                    selectedIndex: selectedIdx
+                )
+            } else {
+                // Plain menu: expose as activeMenu for ncmenu integration.
+                activeMenu = _MenuInfo(
+                    origin: _Point(x: x0, y: origin.y),
+                    boundingRect: boundingRect,
+                    title: title,
+                    items: items.map { (label: $0.label, actionID: $0.id.raw) },
+                    selectedIndex: nil
+                )
+            }
 
             return _Size(width: headWidth, height: 1)
 
