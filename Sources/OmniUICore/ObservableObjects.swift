@@ -17,9 +17,14 @@ public struct ObservedObject<ObjectType: ObservableObject> {
     public var projectedValue: ObservedObject<ObjectType> { self }
 
     public subscript<Value>(dynamicMember keyPath: ReferenceWritableKeyPath<ObjectType, Value>) -> Binding<Value> {
-        Binding(
+        let runtime = _UIRuntime._current
+        let path = _UIRuntime._currentPath
+        return Binding(
             get: { wrappedValue[keyPath: keyPath] },
-            set: { wrappedValue[keyPath: keyPath] = $0 }
+            set: { newValue in
+                wrappedValue[keyPath: keyPath] = newValue
+                if let runtime, let path { runtime._markDirtyFromBinding(path: path) }
+            }
         )
     }
 }
@@ -47,9 +52,14 @@ public struct StateObject<ObjectType: ObservableObject> {
     public var projectedValue: StateObject<ObjectType> { self }
 
     public subscript<Value>(dynamicMember keyPath: ReferenceWritableKeyPath<ObjectType, Value>) -> Binding<Value> {
-        Binding(
+        let runtime = _UIRuntime._current
+        let path = _UIRuntime._currentPath
+        return Binding(
             get: { wrappedValue[keyPath: keyPath] },
-            set: { wrappedValue[keyPath: keyPath] = $0 }
+            set: { newValue in
+                wrappedValue[keyPath: keyPath] = newValue
+                if let runtime, let path { runtime._markDirtyFromBinding(path: path) }
+            }
         )
     }
 }
@@ -83,9 +93,14 @@ public struct EnvironmentObject<ObjectType: ObservableObject> {
     public subscript<Value>(dynamicMember keyPath: ReferenceWritableKeyPath<ObjectType, Value>) -> Binding<Value> {
         // Capture the object now so later event contexts (keypresses, clicks) don't need TaskLocal environment.
         let object = wrappedValue
+        let runtime = _UIRuntime._current
+        let path = _UIRuntime._currentPath
         return Binding(
             get: { object[keyPath: keyPath] },
-            set: { object[keyPath: keyPath] = $0 }
+            set: { newValue in
+                object[keyPath: keyPath] = newValue
+                if let runtime, let path { runtime._markDirtyFromBinding(path: path) }
+            }
         )
     }
 }
@@ -104,9 +119,14 @@ public struct Bindable<ObjectType: AnyObject> {
     public var projectedValue: Bindable<ObjectType> { self }
 
     public subscript<Value>(dynamicMember keyPath: ReferenceWritableKeyPath<ObjectType, Value>) -> Binding<Value> {
-        Binding(
+        let runtime = _UIRuntime._current
+        let path = _UIRuntime._currentPath
+        return Binding(
             get: { wrappedValue[keyPath: keyPath] },
-            set: { wrappedValue[keyPath: keyPath] = $0 }
+            set: { newValue in
+                wrappedValue[keyPath: keyPath] = newValue
+                if let runtime, let path { runtime._markDirtyFromBinding(path: path) }
+            }
         )
     }
 }

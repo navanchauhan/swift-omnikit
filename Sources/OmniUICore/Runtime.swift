@@ -178,6 +178,12 @@ public final class _UIRuntime: @unchecked Sendable {
         _pendingDirtyEverything = true
     }
 
+    /// Called by ObservableObject/StateObject/EnvironmentObject bindings to mark
+    /// the owning view path dirty when a property is mutated via a binding.
+    public func _markDirtyFromBinding(path: [Int]) {
+        _markDirty(path: path)
+    }
+
     private func _markDirty(paths: [[Int]]) {
         for p in paths {
             _markDirty(path: p)
@@ -480,6 +486,9 @@ public final class _UIRuntime: @unchecked Sendable {
                 entry.action()
             }
         }
+        // Actions typically mutate state (ObservableObject properties, navigation, etc.).
+        // Mark the action's owning subtree dirty so the change is reflected on the next frame.
+        _markDirty(path: entry.path)
     }
 
     /// Public entry point for invoking an action by its raw integer ID.

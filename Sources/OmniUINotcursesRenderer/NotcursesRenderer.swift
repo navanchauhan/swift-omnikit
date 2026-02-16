@@ -92,23 +92,15 @@ public struct NotcursesApp<V: View> {
 
         let runtime = _UIRuntime()
         var prev: [_NCCell]? = nil
-        var prevOverlay: [_NCCell]? = nil
+        // (overlay plane is always erased + full-painted each frame; no prev tracking needed)
         var lastSnapshot: RenderSnapshot? = nil
         let forceNoPixels = (getenv("TMUX") != nil) // tmux generally won't support Kitty graphics passthrough
         var didRenderAtLeastOneFullFrame = false
         var shapePlanes: [Int: _NCShapePlaneEntry] = [:]
         var overlayPlane: OpaquePointer? = nil
         var overlayRect: _Rect? = nil
-        var activeNCMenu: OpaquePointer? = nil
-        var menuItemActionIDs: [Int] = []
-        var activeNCSel: OpaquePointer? = nil
-        var selectorItemActionIDs: [Int] = []
-        var activeNCReader: OpaquePointer? = nil
 
         defer {
-            if let r = activeNCReader { omni_ncreader_destroy(r) }
-            if let s = activeNCSel { omni_ncselector_destroy(s) }
-            if let m = activeNCMenu { omni_ncmenu_destroy(m) }
             if let op = overlayPlane { ncplane_destroy(op) }
             for (_, e) in shapePlanes {
                 ncplane_destroy(e.plane)
@@ -205,7 +197,6 @@ public struct NotcursesApp<V: View> {
             // we explicitly set every cell at least once.
             if !didRenderAtLeastOneFullFrame || (prev != nil && prev!.count != width * height) {
                 prev = nil
-                prevOverlay = nil
                 didRenderAtLeastOneFullFrame = true
                 ncplane_home(stdplane)
                 ncplane_erase(stdplane)
@@ -535,32 +526,21 @@ public struct NotcursesApp<V: View> {
                         _ = omni_ncplane_set_base_transparent(op)
                     }
                     overlayRect = _Rect(origin: _Point(x: 0, y: 0), size: _Size(width: width, height: height))
-                    prevOverlay = nil
-                }
+                    }
 
                 if let op = overlayPlane {
-                    // Differential paint for overlay cells.
-                    let overlayToPaint: [(Int, _NCCell)]
-                    if let po = prevOverlay {
-                        overlayToPaint = overlayCurr.enumerated().compactMap { idx, c in
-                            let wasOverlay = (po.count > idx && overlayZbuf[idx] > Int.min)
-                            if wasOverlay, po[idx] == c { return nil }
-                            if overlayZbuf[idx] == Int.min { return nil }
-                            return (idx, c)
-                        }
-                    } else {
-                        // First frame or after resize: erase and paint all overlay cells.
-                        ncplane_erase(op)
-                        overlayToPaint = overlayCurr.enumerated().compactMap { idx, c in
-                            overlayZbuf[idx] > Int.min ? (idx, c) : nil
-                        }
-                    }
+                    // Always erase and full-paint the overlay plane each frame.
+                    // Overlay content is typically small (dropdown menus, alerts) so
+                    // differential painting isn't needed, and erasing prevents stale
+                    // cells from persisting when overlay content changes shape.
+                    ncplane_erase(op)
 
                     var oLastFG: _NCRGB? = nil
                     var oLastBG: _NCRGB? = nil
                     var oLastStyles: UInt16 = 0
 
-                    for (idx, cell) in overlayToPaint {
+                    for (idx, cell) in overlayCurr.enumerated() {
+                        guard overlayZbuf[idx] > Int.min else { continue }
                         let y = idx / width
                         let x = idx % width
                         if oLastFG == nil || oLastFG! != cell.fg {
@@ -587,12 +567,10 @@ public struct NotcursesApp<V: View> {
 
                     // Fade-in when overlay first appears (if terminal supports it).
                     if isNewOverlay, termCaps.canFade {
-                        // Render the base frame first so the fade composites correctly.
                         _ = notcurses_render(nc)
                         _ = omni_ncplane_fadein(op, 100)
                     }
                 }
-                prevOverlay = overlayCurr
             } else {
                 // No overlay ops: fade out and destroy the overlay plane if it exists.
                 if let op = overlayPlane {
@@ -603,125 +581,13 @@ public struct NotcursesApp<V: View> {
                     ncplane_destroy(op)
                     overlayPlane = nil
                     overlayRect = nil
-                    prevOverlay = nil
-                }
+                    }
             }
 
-            // ── ncmenu management ──
-            // Create/destroy native ncmenu when menus expand/collapse.
-            if let menuInfo = snapshot.activeMenu {
-                if activeNCMenu == nil {
-                    // Create a new ncmenu with the menu items.
-                    let labels = menuInfo.items.map { $0.label }
-                    menuItemActionIDs = menuInfo.items.map { $0.actionID }
-                    let cLabels = labels.map { strdup($0) }
-                    defer { cLabels.forEach { free($0) } }
-                    var ptrs: [UnsafePointer<CChar>?] = cLabels.map { UnsafePointer($0) }
-                    activeNCMenu = ptrs.withUnsafeMutableBufferPointer { buf -> OpaquePointer? in
-                        guard let base = buf.baseAddress else { return nil }
-                        return omni_ncmenu_create_flat(
-                            stdplane,
-                            menuInfo.title,
-                            base,
-                            Int32(labels.count),
-                            0
-                        )
-                    }
-                    if let m = activeNCMenu {
-                        _ = omni_ncmenu_unroll(m, 0)
-                    }
-                }
-            } else {
-                // No active menu: destroy the ncmenu if it exists.
-                if let m = activeNCMenu {
-                    omni_ncmenu_destroy(m)
-                    activeNCMenu = nil
-                    menuItemActionIDs = []
-                }
-            }
-
-            // ── ncselector management ──
-            // Create/destroy ncselector for picker-style dropdowns (uses activePicker).
-            if let pickerInfo = snapshot.activePicker {
-                if activeNCSel == nil {
-                    let options = pickerInfo.options.map { $0.label }
-                    selectorItemActionIDs = pickerInfo.options.map { $0.actionID }
-                    let defIdx = UInt32(pickerInfo.selectedIndex ?? 0)
-                    let cOpts = options.map { strdup($0) }
-                    let cDescs = options.map { _ in strdup("") }
-                    defer {
-                        cOpts.forEach { free($0) }
-                        cDescs.forEach { free($0) }
-                    }
-                    var optPtrs: [UnsafePointer<CChar>?] = cOpts.map { UnsafePointer($0) }
-                    var descPtrs: [UnsafePointer<CChar>?] = cDescs.map { UnsafePointer($0) }
-                    activeNCSel = optPtrs.withUnsafeMutableBufferPointer { optBuf -> OpaquePointer? in
-                        descPtrs.withUnsafeMutableBufferPointer { descBuf -> OpaquePointer? in
-                            guard let optBase = optBuf.baseAddress,
-                                  let descBase = descBuf.baseAddress else { return nil }
-                            return omni_ncselector_create(
-                                stdplane,
-                                optBase,
-                                descBase,
-                                Int32(options.count),
-                                defIdx,
-                                UInt32(min(options.count, 8)),
-                                pickerInfo.title,
-                                nil
-                            )
-                        }
-                    }
-                }
-            } else {
-                if let s = activeNCSel {
-                    omni_ncselector_destroy(s)
-                    activeNCSel = nil
-                    selectorItemActionIDs = []
-                }
-            }
-
-            // ── ncreader management ──
-            // Create/destroy ncreader for focused text fields (uses activeTextField).
-            // The runtime remains the source of truth for text content; the ncreader
-            // provides native horizontal scrolling and cursor rendering on its plane.
-            // Each frame we sync the runtime's text into the ncreader via clear + re-feed.
-            if let tfInfo = snapshot.activeTextField {
-                let needsCreate = (activeNCReader == nil)
-                if needsCreate {
-                    var popts = ncplane_options()
-                    popts.y = Int32(tfInfo.origin.y)
-                    popts.x = Int32(tfInfo.origin.x)
-                    popts.rows = 1
-                    popts.cols = UInt32(max(1, tfInfo.width))
-                    popts.name = nil
-                    popts.userptr = nil
-                    popts.resizecb = nil
-                    popts.flags = 0
-                    popts.margin_b = 0
-                    popts.margin_r = 0
-                    let flags = omni_ncreader_option_horscroll() | omni_ncreader_option_cursor()
-                    if let rPlane = ncplane_create(stdplane, &popts) {
-                        _ = ncplane_move_above(rPlane, stdplane)
-                        activeNCReader = omni_ncreader_create(rPlane, flags)
-                    }
-                }
-                // Sync the runtime's current text into the ncreader each frame.
-                if let r = activeNCReader {
-                    _ = omni_ncreader_clear(r)
-                    // Feed each character of the current text into the ncreader.
-                    for scalar in tfInfo.text.unicodeScalars {
-                        var feedNi = ncinput()
-                        feedNi.id = scalar.value
-                        feedNi.evtype = NCTYPE_PRESS
-                        _ = omni_ncreader_offer_input(r, &feedNi)
-                    }
-                }
-            } else {
-                if let r = activeNCReader {
-                    omni_ncreader_destroy(r)
-                    activeNCReader = nil
-                }
-            }
+            // NOTE: Native widget planes (ncmenu, ncselector, ncreader) are disabled.
+            // They create opaque child planes above stdplane that block cell-based rendering.
+            // The C shim infrastructure and metadata (activeMenu/activePicker/activeTextField)
+            // remain available for future integration with proper plane coordination.
 
             // Hardware cursor: enable at the focused text field's cursor position, disable otherwise.
             if let cp = snapshot.cursorPosition {
@@ -770,42 +636,6 @@ public struct NotcursesApp<V: View> {
                 prev = nil
                 continue
             }
-
-            // Route input to active ncmenu if present.
-            if let m = activeNCMenu {
-                if omni_ncmenu_offer_input(m, &ni) {
-                    // Check if an item was selected.
-                    var selNi = ncinput()
-                    if let sel = omni_ncmenu_selected(m, &selNi) {
-                        let selStr = String(cString: sel)
-                        // Find the action ID for this label and fire it.
-                        if let matchIdx = lastSnapshot?.activeMenu?.items.firstIndex(where: { $0.label == selStr }),
-                           matchIdx < menuItemActionIDs.count {
-                            runtime.invokeActionByRawID(menuItemActionIDs[matchIdx])
-                        }
-                    }
-                    continue
-                }
-            }
-
-            // Route input to active ncselector if present.
-            if let s = activeNCSel {
-                if omni_ncselector_offer_input(s, &ni) {
-                    // Check which option is now selected.
-                    if let sel = omni_ncselector_selected(s) {
-                        let selStr = String(cString: sel)
-                        if let matchIdx = lastSnapshot?.activePicker?.options.firstIndex(where: { $0.label == selStr }),
-                           matchIdx < selectorItemActionIDs.count {
-                            runtime.invokeActionByRawID(selectorItemActionIDs[matchIdx])
-                        }
-                    }
-                    continue
-                }
-            }
-
-            // Note: ncreader is used for visual display only (horizontal scroll, cursor).
-            // Text input is handled by the runtime via _handleKey; ncreader content is
-            // synced from the runtime each frame (see ncreader management above).
 
             // Treat all non-RELEASE events as "press-like" to avoid dropping keyboard input,
             // while still preventing double-firing on RELEASE.
