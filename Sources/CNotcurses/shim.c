@@ -78,8 +78,13 @@ uint32_t omni_ncinput_super(const struct ncinput* ni){
 uint32_t omni_notcurses_get(struct notcurses* nc, unsigned timeout_ms, struct ncinput* ni){
   if(!nc || !ni) return UINT32_MAX;
   struct timespec ts;
-  ts.tv_sec  = (time_t)(timeout_ms / 1000u);
-  ts.tv_nsec = (long)(timeout_ms % 1000u) * 1000000L;
+  clock_gettime(CLOCK_REALTIME, &ts);
+  ts.tv_sec  += (time_t)(timeout_ms / 1000u);
+  ts.tv_nsec += (long)(timeout_ms % 1000u) * 1000000L;
+  if(ts.tv_nsec >= 1000000000L){
+    ts.tv_sec  += 1;
+    ts.tv_nsec -= 1000000000L;
+  }
   return notcurses_get(nc, &ts, ni);
 }
 
@@ -344,6 +349,7 @@ int omni_notcurses_cellpix(struct notcurses* nc, unsigned* cdimy, unsigned* cdim
     return -1;
   }
   ncvgeom geom;
+  memset(&geom, 0, sizeof(geom));
   if(ncvisual_geom(nc, NULL, NULL, &geom)){
     return -1;
   }

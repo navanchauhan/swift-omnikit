@@ -102,6 +102,7 @@ public struct NotcursesApp<V: View> {
         var activeNCMenu: (widget: OpaquePointer, rect: _Rect, itemIDs: [Int])? = nil
         var activeNCSelector: (widget: OpaquePointer, rect: _Rect, itemIDs: [Int])? = nil
         var activeNCReader: (widget: OpaquePointer, rect: _Rect, fieldID: Int)? = nil
+        var cursorCurrentlyEnabled = false
 
         func destroyActiveNCMenu() {
             guard let menu = activeNCMenu else { return }
@@ -237,7 +238,10 @@ public struct NotcursesApp<V: View> {
                 if forceNoPixels { return false }
                 guard let cellpix else { return false }
                 if notcurses_check_pixel_support(nc) == NCPIXEL_NONE { return false }
-                return cellpix.cdimx > 0 && cellpix.cdimy > 0 && cellpix.maxpixelx > 0 && cellpix.maxpixely > 0
+                // Only require valid cell pixel dimensions; maxpixel{x,y} may be 0
+                // on terminals like Ghostty that support Kitty graphics but don't
+                // report maximum image dimensions via ncvisual_geom.
+                return cellpix.cdimx > 0 && cellpix.cdimy > 0
             }()
 
             var curr = Array(repeating: _NCCell(ch: " ", fg: baseFG, bg: baseBG), count: width * height)
@@ -395,8 +399,9 @@ public struct NotcursesApp<V: View> {
                         popts.margin_b = 0
                         popts.margin_r = 0
                         if let p = ncplane_create(stdplane, &popts) {
-                            // Ensure shapes are behind the standard plane (text).
-                            _ = ncplane_move_above(p, nil)
+                            // Place shape planes above stdplane so pixel content is visible.
+                            _ = ncplane_move_above(p, stdplane)
+                            // Don't set transparent base; pixel blitting replaces the cell content.
                             shapePlanes[idx] = _NCShapePlaneEntry(plane: p, rect: r, sig: Int.min)
                         } else {
                             // If we can't create planes, fall back to braille for this frame.
@@ -842,10 +847,14 @@ public struct NotcursesApp<V: View> {
             }
 
             // Hardware cursor: enable at the focused text field's cursor position, disable otherwise.
+            // Guard with cursorCurrentlyEnabled to avoid calling disable when already disabled
+            // (notcurses documents this as an error condition).
             if let cp = snapshot.cursorPosition {
                 _ = omni_notcurses_cursor_enable(nc, Int32(cp.y), Int32(cp.x))
-            } else {
+                cursorCurrentlyEnabled = true
+            } else if cursorCurrentlyEnabled {
                 _ = omni_notcurses_cursor_disable(nc)
+                cursorCurrentlyEnabled = false
             }
 
             let rr = notcurses_render(nc)
@@ -856,16 +865,22 @@ public struct NotcursesApp<V: View> {
             }
 
             guard let snapshot = lastSnapshot else {
-                // No snapshot yet; block briefly to avoid a tight spin.
-                var ni = ncinput()
-                _ = omni_notcurses_get(nc, 16, &ni)
+                // No snapshot yet; sleep briefly to avoid a tight spin.
+                try await Task.sleep(nanoseconds: 16_000_000)
                 continue
             }
 
-            // Block up to 16ms waiting for input (replaces notcurses_get_nblock + Task.sleep).
-            // This yields the run loop to notcurses and wakes immediately on input.
+            // Non-blocking input check. We avoid the blocking omni_notcurses_get here
+            // because this runs on @MainActor — a blocking C call would prevent Swift
+            // concurrency from making progress and can cause deadlocks.
             var ni = ncinput()
-            let id = omni_notcurses_get(nc, 16, &ni)
+            let id = notcurses_get_nblock(nc, &ni)
+
+            // If no input and no pending render, sleep to avoid tight-spinning.
+            if id == 0 && !runtime.needsRender(size: renderSize) {
+                try await Task.sleep(nanoseconds: 16_000_000)
+                continue
+            }
 
             // Yield to Swift concurrency so async tasks can make progress.
             await Task.yield()
@@ -1387,13 +1402,19 @@ private func _renderSprixels(
         let pixelW = r.size.width * cellpix.cdimx
         let pixelH = r.size.height * cellpix.cdimy
         if pixelW <= 0 || pixelH <= 0 { continue }
-        if pixelW > cellpix.maxpixelx || pixelH > cellpix.maxpixely { continue }
+        // Only enforce maxpixel bounds when the terminal actually reports them;
+        // some terminals (Ghostty) report 0 via ncvisual_geom but still support blitting.
+        if cellpix.maxpixelx > 0 && pixelW > cellpix.maxpixelx { continue }
+        if cellpix.maxpixely > 0 && pixelH > cellpix.maxpixely { continue }
 
-        let fillEnabled = (s.fillStyle != nil)
+        // Default to filled when no explicit style is set (matches SwiftUI behavior
+        // where bare shapes like `Circle()` render as filled with foreground color).
+        let hasNoStyle = s.fillStyle == nil && s.strokeStyle == nil
+        let fillEnabled = s.fillStyle != nil || hasNoStyle
         let eoFill = s.fillStyle?.isEOFilled ?? false
         let aa = s.fillStyle?.antialiased ?? true
         let strokeWidthPx: Double = {
-            guard let st = s.strokeStyle else { return 0.0 }
+            guard let st = s.strokeStyle else { return hasNoStyle ? 1.0 : 0.0 }
             // Treat `lineWidth` as "terminal points" and map to pixels conservatively.
             return max(1.0, Double(st.lineWidth))
         }()
@@ -1449,15 +1470,15 @@ private func _renderSprixels(
 
             var vopts = ncvisual_options()
             vopts.n = plane
-            vopts.scaling = NCSCALE_NONE
-            vopts.y = Int32(r.origin.y)
-            vopts.x = Int32(r.origin.x)
+            vopts.scaling = NCSCALE_STRETCH
+            vopts.y = 0
+            vopts.x = 0
             vopts.begy = 0
             vopts.begx = 0
             vopts.leny = 0
             vopts.lenx = 0
             vopts.blitter = ncblitter_e(rawValue: omni_ncblit_pixel())
-            vopts.flags = omni_ncvisual_option_blend() | omni_ncvisual_option_nodegrade()
+            vopts.flags = 0
             vopts.transcolor = 0
             vopts.pxoffy = 0
             vopts.pxoffx = 0
