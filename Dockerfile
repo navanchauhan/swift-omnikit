@@ -59,6 +59,12 @@ RUN ARCH="$(dpkg --print-architecture)" \
     && curl -fsSL "https://github.com/charmbracelet/vhs/releases/download/v0.8.0/vhs_0.8.0_Linux_${ARCH}.tar.gz" \
         | tar xz --strip-components=1 -C /usr/local/bin "vhs_0.8.0_Linux_${ARCH}/vhs"
 
+# ── Install ttyd (required by VHS) ────────────────────────────────────────────
+RUN ARCH="$(uname -m)" \
+    && curl -fsSL "https://github.com/tsl0922/ttyd/releases/download/1.7.7/ttyd.${ARCH}" \
+        -o /usr/local/bin/ttyd \
+    && chmod +x /usr/local/bin/ttyd
+
 # ── Install odiff for pixel comparison ───────────────────────────────────────
 RUN npm install -g odiff-bin 2>/dev/null || true
 
