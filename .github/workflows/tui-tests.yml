@@ -1,0 +1,81 @@
+name: TUI Tests
+
+on:
+  push:
+    branches: [master]
+    paths:
+      - 'Sources/OmniUI*/**'
+      - 'Sources/CNotcurses/**'
+      - 'Sources/KitchenSink/**'
+      - 'Tests/tui/**'
+      - 'Dockerfile'
+      - 'docker-compose.yml'
+  pull_request:
+    paths:
+      - 'Sources/OmniUI*/**'
+      - 'Sources/CNotcurses/**'
+      - 'Sources/KitchenSink/**'
+      - 'Tests/tui/**'
+      - 'Dockerfile'
+      - 'docker-compose.yml'
+
+jobs:
+  tui-smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          lfs: true
+
+      - name: Build Docker image
+        run: docker compose build tui-test
+
+      - name: Run smoke test
+        run: docker compose run -e TUI_TEST_MODE=smoke tui-test
+
+  tui-pixel-tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    needs: tui-smoke
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          lfs: true
+
+      - name: Build Docker image
+        run: docker compose build tui-test
+
+      - name: Run Kitty pixel tests
+        run: docker compose run -e TUI_TEST_MODE=kitty tui-test
+
+      - name: Upload test artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: tui-pixel-output
+          path: Tests/tui/output/
+          retention-days: 14
+
+  tui-vhs-tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    needs: tui-smoke
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          lfs: true
+
+      - name: Build Docker image
+        run: docker compose build tui-test
+
+      - name: Run VHS tests
+        run: docker compose run -e TUI_TEST_MODE=vhs tui-test
+
+      - name: Upload VHS recordings
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: vhs-recordings
+          path: Tests/tui/output/*.gif
+          retention-days: 14

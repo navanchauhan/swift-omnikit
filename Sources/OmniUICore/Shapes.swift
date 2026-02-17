@@ -4,6 +4,29 @@
 
 import Foundation
 
+// On Linux, CGPoint/CGSize/CGRect from swift-corelibs-foundation don't
+// conform to Hashable. Provide conformance so Path.Element can derive it.
+#if !canImport(CoreGraphics)
+extension CGPoint: @retroactive Hashable {
+    public func hash(into hasher: inout Hasher) {
+        hasher.combine(x)
+        hasher.combine(y)
+    }
+}
+extension CGSize: @retroactive Hashable {
+    public func hash(into hasher: inout Hasher) {
+        hasher.combine(width)
+        hasher.combine(height)
+    }
+}
+extension CGRect: @retroactive Hashable {
+    public func hash(into hasher: inout Hasher) {
+        hasher.combine(origin)
+        hasher.combine(size)
+    }
+}
+#endif
+
 public enum RoundedCornerStyle: Hashable, Sendable {
     case circular
     case continuous
