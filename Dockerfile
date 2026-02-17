@@ -13,6 +13,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libdbus-1-3 libxcursor1 libxrandr2 libxi6 libxinerama1 \
     libfontconfig1 libharfbuzz0b libpng16-16 liblcms2-2 \
     librsync2 libxxhash0 libcrypt1 \
+    dbus \
     # Terminal multiplexer (fallback tests)
     tmux \
     # Video recording
@@ -24,12 +25,13 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     # For odiff
     nodejs npm \
     # Misc
-    curl ca-certificates git \
+    curl ca-certificates git python3 \
     && rm -rf /var/lib/apt/lists/*
 
 # ── Generate machine-id for DBUS (needed by kitty) ───────────────────────────
-RUN dbus-uuidgen > /var/lib/dbus/machine-id 2>/dev/null || true \
-    && cat /var/lib/dbus/machine-id > /etc/machine-id 2>/dev/null || true
+RUN mkdir -p /var/lib/dbus \
+    && dbus-uuidgen --ensure=/var/lib/dbus/machine-id \
+    && cp /var/lib/dbus/machine-id /etc/machine-id
 
 # ── Build notcurses 3.x from source ─────────────────────────────────────────
 # The apt package on Ubuntu 22.04 is too old for our APIs (NCTYPE_PRESS, etc.)
@@ -66,12 +68,15 @@ COPY Package.swift Package.resolved ./
 COPY Sources/ Sources/
 COPY Tests/ Tests/
 
-# Build KitchenSink (caches SPM deps in image layer)
-RUN swift build --product KitchenSink 2>&1 | tail -5
+# Build KitchenSink — use || true since emit-module warnings look like errors
+# but the binary still links successfully
+RUN swift build --product KitchenSink 2>&1; \
+    test -f "$(swift build --show-bin-path 2>/dev/null)/KitchenSink" \
+    && echo "KitchenSink built OK" \
+    || (echo "FATAL: KitchenSink binary not found" && exit 1)
 
 # Copy test infrastructure (after build to leverage caching)
 COPY scripts/ scripts/
-# TUI test files live under Tests/tui/ (alongside SPM test targets)
 COPY Tests/tui/ Tests/tui/
 
 RUN chmod +x scripts/*.sh

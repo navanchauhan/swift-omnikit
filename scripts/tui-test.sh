@@ -39,9 +39,19 @@ fail() { echo -e "  ${RED}FAIL${RESET}: $*"; FAILURES=$((FAILURES + 1)); }
 skip() { echo -e "  ${YELLOW}SKIP${RESET}: $*"; SKIPS=$((SKIPS + 1)); }
 
 # ── Build ─────────────────────────────────────────────────────────────────────
-log "Building KitchenSink..."
-swift build --product KitchenSink 2>&1 | tail -3
-KITCHEN_SINK="$(swift build --show-bin-path)/KitchenSink"
+BIN_PATH="$(swift build --show-bin-path 2>/dev/null)"
+KITCHEN_SINK="${BIN_PATH}/KitchenSink"
+
+if [ ! -f "$KITCHEN_SINK" ]; then
+    log "KitchenSink not found at $KITCHEN_SINK, building..."
+    swift build --product KitchenSink 2>&1 | tail -5
+    KITCHEN_SINK="$(swift build --show-bin-path)/KitchenSink"
+fi
+
+if [ ! -f "$KITCHEN_SINK" ]; then
+    log "FATAL: KitchenSink binary not found"
+    exit 1
+fi
 log "Binary: $KITCHEN_SINK"
 
 # ── Xvfb management ──────────────────────────────────────────────────────────
