@@ -6,6 +6,8 @@
 #   TUI_TEST_MODE            all|smoke|kitty|vhs (default: all)
 #   TUI_TEST_UPDATE_BASELINES  1 to capture new baselines (default: 0)
 #   OMNIUI_SMOKE_SECONDS     Smoke timeout in seconds (default: 5)
+#   TUI_VHS_TIMEOUT_SECONDS  Per-tape timeout for VHS runs (default: 120)
+#   OMNIUI_VHS_SMOKE_SECONDS Auto-exit timeout injected into VHS app runs (default: 12)
 #   DISPLAY                  X display for Xvfb (default: :99)
 
 set -euo pipefail
@@ -20,6 +22,8 @@ BASELINE_DIR="Tests/tui/baselines"
 OUTPUT_DIR="Tests/tui/output"
 DISPLAY="${DISPLAY:-:99}"
 SMOKE_SECONDS="${OMNIUI_SMOKE_SECONDS:-5}"
+VHS_TIMEOUT_SECONDS="${TUI_VHS_TIMEOUT_SECONDS:-120}"
+VHS_SMOKE_SECONDS="${OMNIUI_VHS_SMOKE_SECONDS:-12}"
 DEMO_ANIM="${OMNIUI_DEMO_ANIM:-0}"
 FAILURES=0
 PASSES=0
@@ -365,12 +369,22 @@ run_vhs_tests() {
         [ -f "$tape" ] || continue
         found=1
         local name
+        local rc
+        local log_file
         name="$(basename "$tape" .tape)"
+        log_file="$OUTPUT_DIR/vhs_${name}.log"
         log "  Running tape: $name"
-        if VHS_NO_SANDBOX=1 vhs "$tape" 2>&1 | tail -3; then
+        if OMNIUI_SMOKE_SECONDS="$VHS_SMOKE_SECONDS" VHS_NO_SANDBOX=1 timeout "$VHS_TIMEOUT_SECONDS" vhs "$tape" >"$log_file" 2>&1; then
+            tail -3 "$log_file" || true
             pass "vhs/$name"
         else
-            fail "vhs/$name"
+            rc=$?
+            tail -40 "$log_file" || true
+            if [ "$rc" -eq 124 ]; then
+                fail "vhs/$name — timed out after ${VHS_TIMEOUT_SECONDS}s"
+            else
+                fail "vhs/$name (rc=$rc)"
+            fi
         fi
     done
 
