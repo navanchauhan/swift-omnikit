@@ -943,6 +943,7 @@ public enum _KeyEvent: Sendable {
     case right
     case home
     case end
+    case killToEnd
 }
 
 public struct StyledCell: Hashable, Sendable {

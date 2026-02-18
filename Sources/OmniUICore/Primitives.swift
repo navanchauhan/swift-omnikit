@@ -775,6 +775,10 @@ public struct TextField: View, _PrimitiveView {
             case .end:
                 cursor = scalars.count
                 runtime._setTextCursor(path: controlPath, cursor)
+            case .killToEnd:
+                guard cursor < scalars.count else { return }
+                scalars.removeSubrange(cursor..<scalars.count)
+                save()
             case .backspace:
                 guard cursor > 0, !scalars.isEmpty else { return }
                 scalars.remove(at: cursor - 1)

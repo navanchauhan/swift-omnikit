@@ -12,8 +12,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libgl1-mesa-dri libgl1-mesa-glx libegl1-mesa libgles2-mesa \
     libdbus-1-3 libxcursor1 libxrandr2 libxi6 libxinerama1 \
     libfontconfig1 libharfbuzz0b libpng16-16 liblcms2-2 \
+    libatk1.0-0 libatk-bridge2.0-0 libgtk-3-0 \
+    libxcomposite1 libxdamage1 libxfixes3 libpango-1.0-0 libcairo2 \
+    libcups2 libasound2 \
+    libnss3 \
     librsync2 libxxhash0 libcrypt1 \
-    dbus \
+    dbus dbus-x11 \
     # Terminal multiplexer (fallback tests)
     tmux \
     # Video recording
@@ -55,13 +59,23 @@ RUN curl -fsSL https://sw.kovidgoyal.net/kitty/installer.sh | sh /dev/stdin laun
     && ln -sf ~/.local/kitty.app/bin/kitten /usr/local/bin/kitten
 
 # ── Install VHS (charmbracelet) ──────────────────────────────────────────────
-RUN ARCH="$(dpkg --print-architecture)" \
-    && curl -fsSL "https://github.com/charmbracelet/vhs/releases/download/v0.8.0/vhs_0.8.0_Linux_${ARCH}.tar.gz" \
-        | tar xz --strip-components=1 -C /usr/local/bin "vhs_0.8.0_Linux_${ARCH}/vhs"
+RUN ARCH="$(uname -m)" \
+    && case "$ARCH" in \
+        x86_64|amd64) VHS_ARCH="x86_64" ;; \
+        aarch64|arm64) VHS_ARCH="arm64" ;; \
+        *) echo "Unsupported arch for VHS: $ARCH" >&2; exit 1 ;; \
+       esac \
+    && curl -fsSL "https://github.com/charmbracelet/vhs/releases/download/v0.8.0/vhs_0.8.0_Linux_${VHS_ARCH}.tar.gz" \
+        | tar xz --strip-components=1 -C /usr/local/bin "vhs_0.8.0_Linux_${VHS_ARCH}/vhs"
 
 # ── Install ttyd (required by VHS) ────────────────────────────────────────────
 RUN ARCH="$(uname -m)" \
-    && curl -fsSL "https://github.com/tsl0922/ttyd/releases/download/1.7.7/ttyd.${ARCH}" \
+    && case "$ARCH" in \
+        x86_64|amd64) TTYD_ARCH="x86_64" ;; \
+        aarch64|arm64) TTYD_ARCH="aarch64" ;; \
+        *) echo "Unsupported arch for ttyd: $ARCH" >&2; exit 1 ;; \
+       esac \
+    && curl -fsSL "https://github.com/tsl0922/ttyd/releases/download/1.7.7/ttyd.${TTYD_ARCH}" \
         -o /usr/local/bin/ttyd \
     && chmod +x /usr/local/bin/ttyd
 

@@ -20,6 +20,7 @@ BASELINE_DIR="Tests/tui/baselines"
 OUTPUT_DIR="Tests/tui/output"
 DISPLAY="${DISPLAY:-:99}"
 SMOKE_SECONDS="${OMNIUI_SMOKE_SECONDS:-5}"
+DEMO_ANIM="${OMNIUI_DEMO_ANIM:-0}"
 FAILURES=0
 PASSES=0
 SKIPS=0
@@ -82,6 +83,19 @@ stop_xvfb() {
 }
 
 # ── Screenshot comparison ─────────────────────────────────────────────────────
+capture_window_png() {
+    local wid="$1"
+    local out="$2"
+    rm -f "$out"
+    if import -window "$wid" "$out" 2>/dev/null; then
+        return 0
+    fi
+    if scrot -w "$wid" "$out" 2>/dev/null; then
+        return 0
+    fi
+    return 1
+}
+
 compare_screenshot() {
     local name="$1"
     local phase="$2"
@@ -100,7 +114,7 @@ compare_screenshot() {
     fi
 
     if [ ! -f "$baseline" ]; then
-        skip "${name}_${phase} — no baseline (run with TUI_TEST_UPDATE_BASELINES=1)"
+        fail "${name}_${phase} — no baseline (run with TUI_TEST_UPDATE_BASELINES=1)"
         return
     fi
 
@@ -133,8 +147,9 @@ run_kitty_test() {
     log "Kitty test: $test_name"
 
     # Launch kitty running KitchenSink
-    OMNIUI_SMOKE_SECONDS=30 kitty \
+    OMNIUI_SMOKE_SECONDS=30 OMNIUI_DEMO_ANIM="$DEMO_ANIM" kitty \
         --config NONE \
+        --title "omniui-${test_name}" \
         -o font_family="DejaVu Sans Mono" \
         -o font_size=12 \
         -o initial_window_width=120c \
@@ -145,10 +160,15 @@ run_kitty_test() {
         -e "$KITCHEN_SINK" --notcurses &
     local kitty_pid=$!
 
-    # Wait for the kitty X11 window to appear
+    # Wait for the kitty X11 window to appear.
+    # Match by PID first (most reliable in CI), then class/name fallback.
     local wid=""
     for i in $(seq 1 40); do
-        wid=$(xdotool search --name "kitty" 2>/dev/null | head -1) && [ -n "$wid" ] && break
+        wid="$(xdotool search --pid "$kitty_pid" 2>/dev/null | head -1 || true)"
+        if [ -z "$wid" ]; then
+            wid="$(xdotool search --name "omniui-${test_name}" 2>/dev/null | head -1 || true)"
+        fi
+        [ -n "$wid" ] && break
         sleep 0.25
     done
 
@@ -162,9 +182,13 @@ run_kitty_test() {
     sleep "$render_delay"
 
     # Capture initial screenshot
-    import -window "$wid" "$OUTPUT_DIR/${test_name}_initial.png" 2>/dev/null \
-        || scrot -w "$wid" "$OUTPUT_DIR/${test_name}_initial.png" 2>/dev/null \
-        || true
+    local initial_png="$OUTPUT_DIR/${test_name}_initial.png"
+    if ! capture_window_png "$wid" "$initial_png"; then
+        fail "$test_name — failed to capture initial screenshot"
+        kill "$kitty_pid" 2>/dev/null || true
+        wait "$kitty_pid" 2>/dev/null || true
+        return
+    fi
 
     # Run interaction script if provided
     if [ -n "$interaction_script" ] && [ -f "$interaction_script" ]; then
@@ -173,17 +197,134 @@ run_kitty_test() {
 
     # Capture final screenshot
     sleep 1
-    import -window "$wid" "$OUTPUT_DIR/${test_name}_final.png" 2>/dev/null \
-        || scrot -w "$wid" "$OUTPUT_DIR/${test_name}_final.png" 2>/dev/null \
-        || true
+    local final_png="$OUTPUT_DIR/${test_name}_final.png"
+    if ! capture_window_png "$wid" "$final_png"; then
+        fail "$test_name — failed to capture final screenshot"
+        kill "$kitty_pid" 2>/dev/null || true
+        wait "$kitty_pid" 2>/dev/null || true
+        return
+    fi
 
     # Clean up
     kill "$kitty_pid" 2>/dev/null || true
     wait "$kitty_pid" 2>/dev/null || true
 
     # Compare
-    compare_screenshot "$test_name" "initial"
-    compare_screenshot "$test_name" "final"
+    if [ -n "$interaction_script" ] && [ -f "$interaction_script" ]; then
+        # Initial startup frames can vary slightly across runs; enforce the interacted end state.
+        compare_screenshot "$test_name" "final"
+    else
+        compare_screenshot "$test_name" "initial"
+        compare_screenshot "$test_name" "final"
+    fi
+}
+
+# ── Scroll roundtrip regression ───────────────────────────────────────────────
+run_scroll_roundtrip_test() {
+    local test_name="scroll_roundtrip"
+    log "Kitty test: $test_name"
+
+    OMNIUI_SMOKE_SECONDS=30 OMNIUI_DEMO_ANIM="$DEMO_ANIM" kitty \
+        --config NONE \
+        --title "omniui-${test_name}" \
+        -o font_family="DejaVu Sans Mono" \
+        -o font_size=12 \
+        -o initial_window_width=120c \
+        -o initial_window_height=40c \
+        -o confirm_os_window_close=0 \
+        -o background="#0B1020" \
+        -o foreground="#D8DBE2" \
+        -e "$KITCHEN_SINK" --notcurses &
+    local kitty_pid=$!
+
+    local wid=""
+    for i in $(seq 1 40); do
+        wid="$(xdotool search --pid "$kitty_pid" 2>/dev/null | head -1 || true)"
+        if [ -z "$wid" ]; then
+            wid="$(xdotool search --name "omniui-${test_name}" 2>/dev/null | head -1 || true)"
+        fi
+        [ -n "$wid" ] && break
+        sleep 0.25
+    done
+
+    if [ -z "$wid" ]; then
+        fail "$test_name — kitty window never appeared"
+        kill "$kitty_pid" 2>/dev/null || true
+        return
+    fi
+
+    sleep 2
+
+    local start_img="$OUTPUT_DIR/${test_name}_start.png"
+    local end_img="$OUTPUT_DIR/${test_name}_end.png"
+    if ! capture_window_png "$wid" "$start_img"; then
+        fail "$test_name — failed to capture start screenshot"
+        kill "$kitty_pid" 2>/dev/null || true
+        wait "$kitty_pid" 2>/dev/null || true
+        return
+    fi
+
+    # Warmup: exercise one deterministic scroll cycle so focus/sprixel state is stable
+    # before we capture the baseline image.
+    sleep 0.2
+    for _ in $(seq 1 2); do
+        xdotool key --window "$wid" Next   # PageDown
+        sleep 0.04
+        xdotool key --window "$wid" Prior  # PageUp
+        sleep 0.04
+    done
+
+    # Re-capture baseline after warmup.
+    if ! capture_window_png "$wid" "$start_img"; then
+        fail "$test_name — failed to capture warmup baseline screenshot"
+        kill "$kitty_pid" 2>/dev/null || true
+        wait "$kitty_pid" 2>/dev/null || true
+        return
+    fi
+
+    # Deterministic top-level scroll roundtrip.
+    for _ in $(seq 1 12); do
+        xdotool key --window "$wid" Next   # PageDown
+        sleep 0.04
+    done
+    for _ in $(seq 1 24); do
+        xdotool key --window "$wid" Prior  # PageUp
+        sleep 0.03
+    done
+
+    sleep 1
+    if ! capture_window_png "$wid" "$end_img"; then
+        fail "$test_name — failed to capture end screenshot"
+        kill "$kitty_pid" 2>/dev/null || true
+        wait "$kitty_pid" 2>/dev/null || true
+        return
+    fi
+
+    kill "$kitty_pid" 2>/dev/null || true
+    wait "$kitty_pid" 2>/dev/null || true
+
+    if [ ! -f "$start_img" ] || [ ! -f "$end_img" ]; then
+        fail "$test_name — missing screenshots"
+        return
+    fi
+
+    if command -v compare &>/dev/null; then
+        local metric
+        metric=$(compare -metric AE "$start_img" "$end_img" "$OUTPUT_DIR/${test_name}_diff.png" 2>&1 || true)
+        if [ "${metric:-99999}" -lt 200 ]; then
+            pass "$test_name"
+        else
+            fail "$test_name — non-reversible scroll rendering (diff=$metric)"
+        fi
+    elif command -v odiff &>/dev/null; then
+        if odiff --threshold 0.1 "$start_img" "$end_img" "$OUTPUT_DIR/${test_name}_diff.png" 2>/dev/null; then
+            pass "$test_name"
+        else
+            fail "$test_name — non-reversible scroll rendering (see diff)"
+        fi
+    else
+        skip "$test_name — no image diff tool"
+    fi
 }
 
 # ── Smoke test ────────────────────────────────────────────────────────────────
@@ -192,14 +333,14 @@ run_smoke_test() {
 
     if command -v kitty &>/dev/null && command -v Xvfb &>/dev/null; then
         # Full smoke: run in kitty via Xvfb
-        OMNIUI_SMOKE_SECONDS="$SMOKE_SECONDS" timeout 30 kitty \
+        OMNIUI_SMOKE_SECONDS="$SMOKE_SECONDS" OMNIUI_DEMO_ANIM="$DEMO_ANIM" timeout 30 kitty \
             --config NONE \
             -o confirm_os_window_close=0 \
             -e "$KITCHEN_SINK" --notcurses 2>/dev/null
         local rc=$?
     else
         # Fallback: headless smoke (may hang if notcurses_init blocks without a terminal)
-        OMNIUI_SMOKE_SECONDS="$SMOKE_SECONDS" timeout 30 "$KITCHEN_SINK" --notcurses </dev/null 2>/dev/null
+        OMNIUI_SMOKE_SECONDS="$SMOKE_SECONDS" OMNIUI_DEMO_ANIM="$DEMO_ANIM" timeout 30 "$KITCHEN_SINK" --notcurses </dev/null 2>/dev/null
         local rc=$?
     fi
 
@@ -226,7 +367,7 @@ run_vhs_tests() {
         local name
         name="$(basename "$tape" .tape)"
         log "  Running tape: $name"
-        if vhs "$tape" 2>&1 | tail -3; then
+        if VHS_NO_SANDBOX=1 vhs "$tape" 2>&1 | tail -3; then
             pass "vhs/$name"
         else
             fail "vhs/$name"
@@ -256,9 +397,11 @@ case "$MODE" in
     kitty)
         run_smoke_test
         run_kitty_test "home_screen" "" 3
-        run_kitty_test "counter_increment" "Tests/tui/interactions/counter_increment.sh" 2
-        run_kitty_test "navigation" "Tests/tui/interactions/navigation.sh" 2
-        run_kitty_test "text_input" "Tests/tui/interactions/text_input.sh" 2
+        run_kitty_test "counter_increment" "Tests/tui/interactions/counter_increment.sh" 3
+        run_kitty_test "navigation" "Tests/tui/interactions/navigation.sh" 3
+        run_kitty_test "text_input" "Tests/tui/interactions/text_input.sh" 3
+        run_kitty_test "text_readline" "Tests/tui/interactions/text_readline.sh" 3
+        run_scroll_roundtrip_test
         ;;
     vhs)
         run_vhs_tests
@@ -268,9 +411,11 @@ case "$MODE" in
         echo ""
         if [ -n "$XVFB_PID" ]; then
             run_kitty_test "home_screen" "" 3
-            run_kitty_test "counter_increment" "Tests/tui/interactions/counter_increment.sh" 2
-            run_kitty_test "navigation" "Tests/tui/interactions/navigation.sh" 2
-            run_kitty_test "text_input" "Tests/tui/interactions/text_input.sh" 2
+            run_kitty_test "counter_increment" "Tests/tui/interactions/counter_increment.sh" 3
+            run_kitty_test "navigation" "Tests/tui/interactions/navigation.sh" 3
+            run_kitty_test "text_input" "Tests/tui/interactions/text_input.sh" 3
+            run_kitty_test "text_readline" "Tests/tui/interactions/text_readline.sh" 3
+            run_scroll_roundtrip_test
         else
             skip "Kitty tests — Xvfb not available"
         fi

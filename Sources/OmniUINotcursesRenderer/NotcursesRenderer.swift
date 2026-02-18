@@ -101,7 +101,7 @@ public struct NotcursesApp<V: View> {
         var overlayRect: _Rect? = nil
         var activeNCMenu: (widget: OpaquePointer, rect: _Rect, itemIDs: [Int])? = nil
         var activeNCSelector: (widget: OpaquePointer, rect: _Rect, itemIDs: [Int])? = nil
-        var activeNCReader: (widget: OpaquePointer, rect: _Rect, fieldID: Int)? = nil
+        var activeNCReader: (widget: OpaquePointer, sourceRect: _Rect, visibleRect: _Rect, fieldID: Int)? = nil
         var cursorCurrentlyEnabled = false
 
         func destroyActiveNCMenu() {
@@ -232,7 +232,7 @@ public struct NotcursesApp<V: View> {
                 if let op = overlayPlane { ncplane_erase(op) }
             }
 
-            // Prefer sprixels/pixels for shapes/paths; fall back to braille rasterization if pixels aren't supported.
+            // Render shapes/paths using sprixels/pixels.
             let cellpix = _ncCellPix(nc)
             let canSprixel: Bool = {
                 if forceNoPixels { return false }
@@ -293,10 +293,10 @@ public struct NotcursesApp<V: View> {
                 return c.contains(_Point(x: x, y: y))
             }
 
-            // Shapes either go to sprixels (full-screen / unclipped only) or to braille (clipped fallback).
-            var shapesForSprixel: [(_Rect, _ShapeNode)] = []
+            // Shapes are rendered via sprixels. We clip at cell granularity and blit only
+            // the visible subregion from each shape visual.
+            var shapesForSprixel: [(sourceRect: _Rect, visibleRect: _Rect, shape: _ShapeNode)] = []
             shapesForSprixel.reserveCapacity(16)
-            var shapesByClip: [_Rect: [(_Rect, _ShapeNode, Int)]] = [:]
 
             for op in snapshot.ops {
                 let opStyle = op.textStyle.rawValue
@@ -345,11 +345,11 @@ public struct NotcursesApp<V: View> {
                 case .popClip:
                     if clipStack.count > 1 { _ = clipStack.popLast() }
                 case .shape(let rect, let shape):
-                    if canSprixel, clipStack.last == fullClip {
-                        shapesForSprixel.append((rect, shape))
-                    } else if let top = clipStack.last, let rr = intersect(rect, top) {
-                        shapesByClip[rr, default: []].append((rect, shape, op.zIndex))
-                    }
+                    guard canSprixel else { continue }
+                    guard let top = clipStack.last,
+                          let clippedToOp = intersect(rect, top),
+                          let visible = intersect(clippedToOp, fullClip) else { continue }
+                    shapesForSprixel.append((sourceRect: rect, visibleRect: visible, shape: shape))
                 }
             }
 
@@ -360,9 +360,9 @@ public struct NotcursesApp<V: View> {
                 // ghost artifacts — the Kitty protocol stores images separately
                 // from the cell grid, so ncplane_erase/destroy alone doesn't
                 // clean up stale pixel placements.
-                let positionsChanged = shapesForSprixel.enumerated().contains { (idx, pair) in
+                let positionsChanged = shapesForSprixel.enumerated().contains { (idx, entry) in
                     guard let existing = shapePlanes[idx] else { return false }
-                    return existing.rect.origin != pair.0.origin
+                    return existing.rect.origin != entry.visibleRect.origin
                 } || shapesForSprixel.count != shapePlanes.count
                 if positionsChanged && !shapePlanes.isEmpty {
                     for (_, e) in shapePlanes { ncplane_destroy(e.plane) }
@@ -372,15 +372,20 @@ public struct NotcursesApp<V: View> {
                 var alive: Set<Int> = []
                 alive.reserveCapacity(shapesForSprixel.count)
 
-                for (idx, (r, s)) in shapesForSprixel.enumerated() {
+                for (idx, entry) in shapesForSprixel.enumerated() {
                     alive.insert(idx)
+
+                    let sourceRect = entry.sourceRect
+                    let visibleRect = entry.visibleRect
+                    let s = entry.shape
 
                     var hasher = Hasher()
                     hasher.combine(width)
                     hasher.combine(height)
                     hasher.combine(cellpix.cdimx)
                     hasher.combine(cellpix.cdimy)
-                    hasher.combine(r)
+                    hasher.combine(sourceRect)
+                    hasher.combine(visibleRect)
                     hasher.combine(s.kind)
                     hasher.combine(s.fillStyle)
                     hasher.combine(s.strokeStyle)
@@ -392,7 +397,7 @@ public struct NotcursesApp<V: View> {
 
                     let needsNewPlane: Bool = {
                         guard let existing = shapePlanes[idx] else { return true }
-                        if existing.rect.size != r.size { return true }
+                        if existing.rect.size != visibleRect.size { return true }
                         return false
                     }()
 
@@ -402,10 +407,10 @@ public struct NotcursesApp<V: View> {
                             shapePlanes[idx] = nil
                         }
                         var popts = ncplane_options()
-                        popts.y = Int32(r.origin.y)
-                        popts.x = Int32(r.origin.x)
-                        popts.rows = UInt32(r.size.height)
-                        popts.cols = UInt32(r.size.width)
+                        popts.y = Int32(visibleRect.origin.y)
+                        popts.x = Int32(visibleRect.origin.x)
+                        popts.rows = UInt32(visibleRect.size.height)
+                        popts.cols = UInt32(visibleRect.size.width)
                         popts.name = nil
                         popts.userptr = nil
                         popts.resizecb = nil
@@ -416,41 +421,48 @@ public struct NotcursesApp<V: View> {
                             // Place shape planes above stdplane so pixel content is visible.
                             _ = ncplane_move_above(p, stdplane)
                             // Don't set transparent base; pixel blitting replaces the cell content.
-                            shapePlanes[idx] = _NCShapePlaneEntry(plane: p, rect: r, sig: Int.min)
+                            shapePlanes[idx] = _NCShapePlaneEntry(plane: p, rect: visibleRect, sig: Int.min)
                         } else {
-                            // If we can't create planes, fall back to braille for this frame.
+                            // If we can't create shape planes, clear and retry next frame.
                             for (_, e) in shapePlanes { ncplane_destroy(e.plane) }
                             shapePlanes.removeAll()
                             break
                         }
-                    } else if let existing = shapePlanes[idx], existing.rect.origin != r.origin {
+                    } else if let existing = shapePlanes[idx], existing.rect.origin != visibleRect.origin {
                         // Shape moved (e.g. scroll). Erase old Kitty graphics placement,
                         // move the plane, and invalidate sig to force re-blit at new position.
                         ncplane_erase(existing.plane)
-                        ncplane_move_yx(existing.plane, Int32(r.origin.y), Int32(r.origin.x))
-                        shapePlanes[idx]?.rect = r
+                        ncplane_move_yx(existing.plane, Int32(visibleRect.origin.y), Int32(visibleRect.origin.x))
+                        shapePlanes[idx]?.rect = visibleRect
                         shapePlanes[idx]?.sig = Int.min
                     }
 
-                    guard var entry = shapePlanes[idx] else { continue }
-                    if entry.sig == sig { continue }
+                    guard var planeEntry = shapePlanes[idx] else { continue }
+                    if planeEntry.sig == sig { continue }
 
-                    ncplane_erase(entry.plane)
+                    let shapeLocalRect = _Rect(
+                        origin: _Point(
+                            x: sourceRect.origin.x - visibleRect.origin.x,
+                            y: sourceRect.origin.y - visibleRect.origin.y
+                        ),
+                        size: sourceRect.size
+                    )
+                    ncplane_erase(planeEntry.plane)
                     let ok = _renderSprixels(
                         nc: nc,
-                        plane: entry.plane,
-                        termSize: _Size(width: width, height: height),
+                        plane: planeEntry.plane,
+                        termSize: visibleRect.size,
                         cellpix: cellpix,
-                        shapes: [(_Rect(origin: _Point(x: 0, y: 0), size: r.size), s)],
+                        shapes: [(shapeLocalRect, s)],
                         fill: shapeFillBG,
                         stroke: borderFG
                     )
                     if ok {
-                        entry.sig = sig
-                        entry.rect = r
-                        shapePlanes[idx] = entry
+                        planeEntry.sig = sig
+                        planeEntry.rect = visibleRect
+                        shapePlanes[idx] = planeEntry
                     } else {
-                        // Pixel blit failed; destroy all planes so we can cleanly fall back.
+                        // Pixel blit failed; clear all planes and retry next frame.
                         for (_, e) in shapePlanes { ncplane_destroy(e.plane) }
                         shapePlanes.removeAll()
                         break
@@ -471,25 +483,6 @@ public struct NotcursesApp<V: View> {
                 // No pixel support; tear down any existing sprixel planes so they can't leave artifacts.
                 for (_, e) in shapePlanes { ncplane_destroy(e.plane) }
                 shapePlanes.removeAll()
-            }
-
-            // Braille fallback: rasterize clipped/unsupported shapes into braille characters, but only
-            // over empty cells so overlay text isn't clobbered.
-            if !shapesByClip.isEmpty {
-                for (clip, shapeRegions) in shapesByClip {
-                    for (r, s, z) in shapeRegions {
-                        BrailleRaster.render(
-                            termSize: _Size(width: width, height: height),
-                            shapes: [(r, s)],
-                            clip: clip,
-                            fillBG: shapeFillBG,
-                            strokeFG: borderFG,
-                            baseBG: baseBG,
-                            isEmpty: { x, y in curr[y * width + x].ch == " " },
-                            set: { x, y, ch, fg, bg in setCell(x, y, ch, fg, bg, z: z) }
-                        )
-                    }
-                }
             }
 
             if let fr = focusRect {
@@ -523,9 +516,9 @@ public struct NotcursesApp<V: View> {
             }
             if let r = activeNCReader,
                let tf = snapshot.activeTextField,
-               tf.boundingRect == r.rect,
+               tf.boundingRect == r.sourceRect,
                tf.actionID == r.fieldID {
-                widgetRects.append(r.rect)
+                widgetRects.append(r.visibleRect)
             }
 
             func isInWidgetRect(_ x: Int, _ y: Int) -> Bool {
@@ -809,7 +802,7 @@ public struct NotcursesApp<V: View> {
             if let tfInfo = snapshot.activeTextField {
                 let needsRecreate: Bool = {
                     guard let reader = activeNCReader else { return true }
-                    return reader.rect != tfInfo.boundingRect || reader.fieldID != tfInfo.actionID
+                    return reader.sourceRect != tfInfo.boundingRect || reader.fieldID != tfInfo.actionID
                 }()
                 if needsRecreate {
                     if activeNCReader != nil {
@@ -817,29 +810,38 @@ public struct NotcursesApp<V: View> {
                         widgetStateChanged = true
                     }
 
-                    var popts = ncplane_options()
-                    popts.y = Int32(tfInfo.boundingRect.origin.y)
-                    popts.x = Int32(tfInfo.boundingRect.origin.x)
-                    popts.rows = UInt32(max(1, tfInfo.boundingRect.size.height))
-                    popts.cols = UInt32(max(1, tfInfo.boundingRect.size.width))
-                    popts.name = nil
-                    popts.userptr = nil
-                    popts.resizecb = nil
-                    popts.flags = 0
-                    popts.margin_b = 0
-                    popts.margin_r = 0
-                    if let readerPlane = ncplane_create(stdplane, &popts) {
-                        if let op = overlayPlane {
-                            _ = ncplane_move_above(readerPlane, op)
-                        } else {
-                            _ = ncplane_move_above(readerPlane, stdplane)
-                        }
-                        let flags = omni_ncreader_option_horscroll() | omni_ncreader_option_cursor() | omni_ncreader_option_nocmdkeys()
-                        if let widget = omni_ncreader_create(readerPlane, flags) {
-                            activeNCReader = (widget: widget, rect: tfInfo.boundingRect, fieldID: tfInfo.actionID)
-                            widgetStateChanged = true
-                        } else {
-                            ncplane_destroy(readerPlane)
+                    if let visibleRect = intersect(tfInfo.boundingRect, fullClip),
+                       visibleRect.size.width > 0,
+                       visibleRect.size.height > 0 {
+                        var popts = ncplane_options()
+                        popts.y = Int32(visibleRect.origin.y)
+                        popts.x = Int32(visibleRect.origin.x)
+                        popts.rows = UInt32(max(1, visibleRect.size.height))
+                        popts.cols = UInt32(max(1, visibleRect.size.width))
+                        popts.name = nil
+                        popts.userptr = nil
+                        popts.resizecb = nil
+                        popts.flags = 0
+                        popts.margin_b = 0
+                        popts.margin_r = 0
+                        if let readerPlane = ncplane_create(stdplane, &popts) {
+                            if let op = overlayPlane {
+                                _ = ncplane_move_above(readerPlane, op)
+                            } else {
+                                _ = ncplane_move_above(readerPlane, stdplane)
+                            }
+                            let flags = omni_ncreader_option_horscroll() | omni_ncreader_option_cursor() | omni_ncreader_option_nocmdkeys()
+                            if let widget = omni_ncreader_create(readerPlane, flags) {
+                                activeNCReader = (
+                                    widget: widget,
+                                    sourceRect: tfInfo.boundingRect,
+                                    visibleRect: visibleRect,
+                                    fieldID: tfInfo.actionID
+                                )
+                                widgetStateChanged = true
+                            } else {
+                                ncplane_destroy(readerPlane)
+                            }
                         }
                     }
                 }
@@ -901,7 +903,9 @@ public struct NotcursesApp<V: View> {
             // Hardware cursor: enable at the focused text field's cursor position, disable otherwise.
             // Guard with cursorCurrentlyEnabled to avoid calling disable when already disabled
             // (notcurses documents this as an error condition).
-            if let cp = snapshot.cursorPosition {
+            if let cp = snapshot.cursorPosition,
+               cp.x >= 0, cp.y >= 0,
+               cp.x < width, cp.y < height {
                 _ = omni_notcurses_cursor_enable(nc, Int32(cp.y), Int32(cp.x))
                 cursorCurrentlyEnabled = true
             } else if cursorCurrentlyEnabled {
@@ -1029,6 +1033,24 @@ public struct NotcursesApp<V: View> {
             } else if id == scrollDown {
                 snapshot.scroll(x: Int(ni.x), y: Int(ni.y), deltaY: 1)
                 continue
+            }
+
+            if runtime.isTextEditingFocused() {
+                let ctrlA = id == 1 || (mods.contains(.control) && (id == UInt32(UInt8(ascii: "a")) || id == UInt32(UInt8(ascii: "A"))))
+                let ctrlE = id == 5 || (mods.contains(.control) && (id == UInt32(UInt8(ascii: "e")) || id == UInt32(UInt8(ascii: "E"))))
+                let ctrlK = id == 11 || (mods.contains(.control) && (id == UInt32(UInt8(ascii: "k")) || id == UInt32(UInt8(ascii: "K"))))
+                if ctrlA {
+                    runtime._handleKey(.home)
+                    continue
+                }
+                if ctrlE {
+                    runtime._handleKey(.end)
+                    continue
+                }
+                if ctrlK {
+                    runtime._handleKey(.killToEnd)
+                    continue
+                }
             }
 
             // Tab / Shift-Tab navigation.
@@ -1444,12 +1466,28 @@ private func _renderSprixels(
         return buf
     }
 
+    func intersect(_ a: _Rect, _ b: _Rect) -> _Rect? {
+        let x0 = max(a.origin.x, b.origin.x)
+        let y0 = max(a.origin.y, b.origin.y)
+        let x1 = min(a.origin.x + a.size.width, b.origin.x + b.size.width)
+        let y1 = min(a.origin.y + a.size.height, b.origin.y + b.size.height)
+        if x1 <= x0 || y1 <= y0 { return nil }
+        return _Rect(origin: _Point(x: x0, y: y0), size: _Size(width: x1 - x0, height: y1 - y0))
+    }
+
+    let planeRect = _Rect(origin: _Point(x: 0, y: 0), size: termSize)
+
     var ok = true
     for (r, s) in shapes {
         guard r.size.width > 0, r.size.height > 0 else { continue }
-        if r.origin.x < 0 || r.origin.y < 0 { continue }
-        if r.origin.x + r.size.width > termSize.width { continue }
-        if r.origin.y + r.size.height > termSize.height { continue }
+        guard let visible = intersect(r, planeRect) else { continue }
+        guard visible.size.width > 0, visible.size.height > 0 else { continue }
+
+        let subBegX = visible.origin.x - r.origin.x
+        let subBegY = visible.origin.y - r.origin.y
+        let subLenX = visible.size.width
+        let subLenY = visible.size.height
+        if subBegX < 0 || subBegY < 0 || subLenX <= 0 || subLenY <= 0 { continue }
 
         let pixelW = r.size.width * cellpix.cdimx
         let pixelH = r.size.height * cellpix.cdimy
@@ -1522,13 +1560,13 @@ private func _renderSprixels(
 
             var vopts = ncvisual_options()
             vopts.n = plane
-            vopts.scaling = NCSCALE_STRETCH
-            vopts.y = 0
-            vopts.x = 0
-            vopts.begy = 0
-            vopts.begx = 0
-            vopts.leny = 0
-            vopts.lenx = 0
+            vopts.scaling = NCSCALE_NONE
+            vopts.y = Int32(visible.origin.y)
+            vopts.x = Int32(visible.origin.x)
+            vopts.begy = UInt32(subBegY)
+            vopts.begx = UInt32(subBegX)
+            vopts.leny = UInt32(subLenY)
+            vopts.lenx = UInt32(subLenX)
             vopts.blitter = ncblitter_e(rawValue: omni_ncblit_pixel())
             vopts.flags = 0
             vopts.transcolor = 0

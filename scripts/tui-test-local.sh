@@ -19,7 +19,7 @@ BIN="$(swift build --show-bin-path)/KitchenSink"
 
 echo ""
 echo -e "${CYAN}=== Smoke test ===${RESET}"
-if OMNIUI_SMOKE_SECONDS=3 timeout 15 "$BIN" --notcurses 2>/dev/null; then
+if OMNIUI_SMOKE_SECONDS=3 OMNIUI_DEMO_ANIM=0 timeout 15 "$BIN" --notcurses 2>/dev/null; then
     echo -e "  ${GREEN}PASS${RESET}: smoke test (exited cleanly)"
 else
     echo -e "  ${RED}FAIL${RESET}: smoke test (rc=$?)"
@@ -32,7 +32,7 @@ if command -v vhs &>/dev/null; then
         [ -f "$tape" ] || continue
         name="$(basename "$tape" .tape)"
         echo -e "  Running tape: ${name}"
-        vhs "$tape" 2>&1 | tail -3
+        VHS_NO_SANDBOX=1 vhs "$tape" 2>&1 | tail -3
     done
 else
     echo -e "  ${YELLOW}SKIP${RESET}: vhs not installed (brew install vhs)"

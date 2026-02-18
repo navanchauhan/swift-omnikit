@@ -1,7 +1,7 @@
+import Foundation
 import OmniUI
 import OmniUICore
 import OmniUINotcursesRenderer
-import OmniUITerminalRenderer
 #if os(Linux)
 import Glibc
 #else
@@ -44,6 +44,7 @@ struct KitchenSinkHome: View {
     @State private var name: String = ""
     @State private var flavor: Flavor = .vanilla
     @State private var pickedRow: Int = 0
+    @State private var demoTick: Int = 0
     @StateObject private var model = DemoModel()
     @StateObject private var appEnv = AppEnvironment()
 
@@ -53,12 +54,42 @@ struct KitchenSinkHome: View {
         case strawberry = "Strawberry"
     }
 
+    private var demoAnimationsEnabled: Bool {
+        ProcessInfo.processInfo.environment["OMNIUI_DEMO_ANIM"] != "0"
+    }
+
+    private var pulseColor: Color {
+        let palette: [Color] = [.cyan, .mint, .green, .yellow, .orange, .pink]
+        return palette[demoTick % palette.count]
+    }
+
+    private var spinner: String {
+        let frames = ["|", "/", "-", "\\"]
+        return frames[demoTick % frames.count]
+    }
+
+    private var bannerText: String {
+        let phases = ["NATIVE WIDGETS", "SMOOTH SCROLL", "COLOR + MOTION"]
+        return phases[(demoTick / 8) % phases.count]
+    }
+
     var body: some View {
         ScrollView {
             VStack(spacing: 1) {
                 Label("OmniUI KitchenSink", systemImage: "sparkles")
+                    .bold()
+                    .foregroundStyle(pulseColor)
 
-                Section(header: Text("State / Binding")) {
+                HStack(spacing: 1) {
+                    Text("[\(spinner)] \(bannerText)")
+                        .foregroundStyle(.secondary)
+                    Spacer()
+                    Text("tick \(demoTick)")
+                        .foregroundStyle(.tertiary)
+                }
+                .background(Color.blue.opacity(0.12))
+
+                Section(header: Text("State / Binding").foregroundStyle(.cyan).bold()) {
                     HStack(spacing: 1) {
                         Text("Count: \(count)")
                         Spacer()
@@ -70,13 +101,15 @@ struct KitchenSinkHome: View {
                         Toggle("CRT", isOn: $crtMode)
                         Spacer()
                         Text(crtMode ? "ON" : "OFF")
+                            .foregroundStyle(crtMode ? .green : .secondary)
                     }
 
                     TextField("Type your name", text: $name)
                     Text("Hello, \(name.isEmpty ? "anonymous" : name)")
+                        .foregroundStyle(name.isEmpty ? .secondary : .mint)
                 }
 
-                Section(header: Text("Picker")) {
+                Section(header: Text("Picker").foregroundStyle(.cyan).bold()) {
                     Picker(
                         "Flavor",
                         selection: $flavor,
@@ -88,47 +121,59 @@ struct KitchenSinkHome: View {
                     )
                 }
 
-                Section(header: Text("Shapes")) {
+                Section(header: Text("Shapes").foregroundStyle(.cyan).bold()) {
                     HStack(spacing: 1) {
                         Rectangle()
+                            .foregroundStyle(.teal)
                         RoundedRectangle(cornerRadius: 3)
+                            .foregroundStyle(.cyan)
                         Circle()
+                            .foregroundStyle(.mint)
                         Ellipse()
+                            .foregroundStyle(.yellow)
                         Capsule()
+                            .foregroundStyle(.orange)
                     }
                     Text("Clipped")
+                        .foregroundStyle(.blue)
                         .clipShape(RoundedRectangle(cornerRadius: 2))
                 }
 
-                Section(header: Text("ZStack")) {
+                Section(header: Text("ZStack").foregroundStyle(.cyan).bold()) {
                     ZStack {
                         Text("Background text")
+                            .foregroundStyle(.tertiary)
                         Text("Overlay (shifted)")
+                            .foregroundStyle(.white)
+                            .background(Color.indigo.opacity(0.35))
                             .padding(1)
                     }
                 }
 
-                Section(header: Text("List / ForEach (picked: \(pickedRow))")) {
+                Section(header: Text("List / ForEach (picked: \(pickedRow))").foregroundStyle(.cyan).bold()) {
                     List(0..<2, id: \.self) { i in
                         HStack(spacing: 1) {
                             Text("Row \(i)")
+                                .foregroundStyle(i == pickedRow ? .green : .primary)
                             Spacer()
                             Button("Pick") { pickedRow = i }
                         }
                     }
                 }
 
-                Section(header: Text("Table")) {
+                Section(header: Text("Table").foregroundStyle(.cyan).bold()) {
                     Table(0..<3, id: \.self) { i in
                         HStack(spacing: 1) {
                             Text("Cell \(i)")
+                                .foregroundStyle(.blue)
                             Spacer()
                             Text("Value \(i * 10)")
+                                .foregroundStyle(.secondary)
                         }
                     }
                 }
 
-                Section(header: Text("StateObject / ObservedObject")) {
+                Section(header: Text("StateObject / ObservedObject").foregroundStyle(.cyan).bold()) {
                     Text("Model.count: \(model.count)")
                     HStack(spacing: 1) {
                         Button("Model +1") { model.count += 1 }
@@ -138,28 +183,38 @@ struct KitchenSinkHome: View {
                     ObservedModelView(model: model)
                 }
 
-                Section(header: Text("EnvironmentObject")) {
+                Section(header: Text("EnvironmentObject").foregroundStyle(.cyan).bold()) {
                     EnvironmentBannerView()
                         .environmentObject(appEnv)
                 }
 
-                Section(header: Text("Navigation")) {
+                Section(header: Text("Navigation").foregroundStyle(.cyan).bold()) {
                     NavigationLink("Open details") { KitchenSinkDetail() }
                 }
 
-                Section(header: Text("ScrollView (wheel over it)")) {
+                Section(header: Text("ScrollView (wheel over it)").foregroundStyle(.cyan).bold()) {
                     ScrollView {
                         VStack(spacing: 0) {
                             ForEach(0..<20, id: \.self) { i in
                                 Text("Item \(i)")
+                                    .foregroundStyle(i % 2 == 0 ? .cyan : .secondary)
                             }
                         }
                     }
                 }
 
-                Text("Tip: `--notcurses` for the notcurses renderer.")
+                Text("Renderer: native notcurses widgets.")
+                    .foregroundStyle(.mint)
             }
             .padding(1)
+            .background(Color.indigo.opacity(0.08))
+        }
+        .task {
+            guard demoAnimationsEnabled else { return }
+            while true {
+                try? await Task.sleep(nanoseconds: 120_000_000)
+                demoTick = (demoTick + 1) % 1_000_000
+            }
         }
     }
 }
@@ -209,23 +264,12 @@ struct KitchenSinkDetail: View {
 @main
 enum KitchenSinkMain {
     static func main() async throws {
-        if CommandLine.arguments.contains("--notcurses") {
-            do {
-                try await NotcursesApp { KitchenSinkRoot() }.run()
-                return
-            } catch {
-                // Don't crash the whole demo if the terminal doesn't support notcurses/terminfo.
-                _writeToStderr("Notcurses renderer failed: \(error)\nFalling back to debug renderer.\n")
-            }
-        }
-
-        if CommandLine.arguments.contains("--ansi") {
-            do {
-                try await TerminalApp { KitchenSinkRoot() }.run()
-                return
-            } catch {
-                _writeToStderr("ANSI renderer failed: \(error)\nFalling back to debug renderer.\n")
-            }
+        do {
+            try await NotcursesApp { KitchenSinkRoot() }.run()
+            return
+        } catch {
+            // Don't crash the whole demo if the terminal doesn't support notcurses/terminfo.
+            _writeToStderr("Notcurses renderer failed: \(error)\nFalling back to debug renderer.\n")
         }
 
         // Debug renderer interactive loop (works without notcurses).

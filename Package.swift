@@ -59,10 +59,6 @@ let package = Package(
             name: "OmniUINotcursesRenderer",
             targets: ["OmniUINotcursesRenderer"]
         ),
-        .library(
-            name: "OmniUITerminalRenderer",
-            targets: ["OmniUITerminalRenderer"]
-        ),
         .executable(
             name: "KitchenSink",
             targets: ["KitchenSink"]
@@ -233,17 +229,9 @@ let package = Package(
                 .unsafeFlags(["-L/usr/local/lib"], .when(platforms: [.macOS])),
             ]
         ),
-        .target(
-            name: "OmniUITerminalRenderer",
-            dependencies: ["OmniUICore"],
-            swiftSettings: [
-                .unsafeFlags(["-warn-concurrency", "-strict-concurrency=complete"]),
-                .unsafeFlags(["-enable-actor-data-race-checks"], .when(configuration: .debug)),
-            ]
-        ),
         .executableTarget(
             name: "KitchenSink",
-            dependencies: ["OmniUI", "OmniUINotcursesRenderer", "OmniUITerminalRenderer"],
+            dependencies: ["OmniUI", "OmniUINotcursesRenderer"],
             swiftSettings: [
                 .unsafeFlags(["-warn-concurrency", "-strict-concurrency=complete"]),
                 .unsafeFlags(["-enable-actor-data-race-checks"], .when(configuration: .debug)),

@@ -52,6 +52,26 @@ struct TextFieldView: View {
     #expect(s1.text.contains("Value: abc"))
 }
 
+@Test func debugSnapshot_textField_readline_key_events_work() async throws {
+    let runtime = _UIRuntime()
+    let size = _Size(width: 40, height: 4)
+
+    let s0 = runtime.debugRender(TextFieldView(), size: size)
+    s0.click(x: 1, y: 0)
+    s0.type("abcdef")
+
+    runtime._handleKey(.left)
+    runtime._handleKey(.left)
+    runtime._handleKey(.killToEnd)
+    runtime._handleKey(.home)
+    runtime._handleKey(.char("X".unicodeScalars.first!.value))
+    runtime._handleKey(.end)
+    runtime._handleKey(.char("Z".unicodeScalars.first!.value))
+
+    let s1 = runtime.debugRender(TextFieldView(), size: size)
+    #expect(s1.text.contains("Value: XabcdZ"))
+}
+
 struct SimplePickerView: View {
     enum Choice: String, Hashable {
         case a = "A"

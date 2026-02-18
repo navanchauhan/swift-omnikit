@@ -11,7 +11,7 @@ services:
       - TUI_TEST_MODE=${TUI_TEST_MODE:-all}
       - TUI_TEST_UPDATE_BASELINES=${TUI_TEST_UPDATE_BASELINES:-0}
     volumes:
-      - ./tests/tui/baselines:/app/tests/tui/baselines
-      - ./tests/tui/output:/app/tests/tui/output
+      - ./Tests/tui/baselines:/app/Tests/tui/baselines
+      - ./Tests/tui/output:/app/Tests/tui/output
     security_opt:
       - seccomp:unconfined

@@ -17,7 +17,7 @@ tmux kill-session -t "$SESSION" >/dev/null 2>&1 || true
 
 # Run in tmux, capture stderr to a file, and keep the shell alive long enough
 # for capture-pane to work even after the app exits.
-tmux new-session -d -x 120 -y 40 -s "$SESSION" -c "$(pwd)" "bash -lc 'echo \"pwd=$(pwd)\" >\"$LOG_FILE\"; echo start >>\"$LOG_FILE\"; OMNIUI_SMOKE_SECONDS=3 swift run KitchenSink -- --notcurses 2>\"$ERR_FILE\"; rc=\\\$?; echo \"rc=\\\$rc\" >>\"$LOG_FILE\"; echo \\\$rc >\"$STATUS_FILE\"; sleep 0.5'"
+tmux new-session -d -x 120 -y 40 -s "$SESSION" -c "$(pwd)" "bash -lc 'echo \"pwd=$(pwd)\" >\"$LOG_FILE\"; echo start >>\"$LOG_FILE\"; OMNIUI_SMOKE_SECONDS=3 OMNIUI_DEMO_ANIM=0 swift run KitchenSink -- --notcurses 2>\"$ERR_FILE\"; rc=\\\$?; echo \"rc=\\\$rc\" >>\"$LOG_FILE\"; echo \\\$rc >\"$STATUS_FILE\"; sleep 0.5'"
 
 # Wait for status (up to ~30s including first-time build).
 for _ in {1..20}; do

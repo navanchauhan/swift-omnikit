@@ -1,4 +1,4 @@
-// Shared renderer utilities used by both NotcursesRenderer and TerminalRenderer.
+// Shared renderer utilities used by notcurses rendering paths.
 // Extracted to avoid duplicating color resolution, border detection, and other logic.
 
 import Foundation
@@ -21,7 +21,7 @@ public struct TextStyle: OptionSet, Hashable, Sendable {
 
 // MARK: - Shared RGB
 
-/// 24-bit RGB value used by both renderers.
+/// 24-bit RGB value used by renderer implementations.
 public struct _RGB: Equatable, Hashable, Sendable {
     public var r: UInt8
     public var g: UInt8
@@ -120,7 +120,7 @@ public func _boxifyShared(_ c: Character, left: Character?, right: Character?, u
 
 // MARK: - Renderer theme
 
-/// Shared theme constants used by both renderers.
+/// Shared theme constants used by renderer implementations.
 public struct RendererTheme: Sendable {
     public var baseFG: _RGB
     public var baseBG: _RGB
@@ -161,7 +161,7 @@ public struct _RendererCell: Equatable, Sendable {
 // MARK: - Cell buffer rasterization
 
 /// Rasterize a list of `RenderOp`s into a cell buffer and z-buffer.
-/// This is the shared logic used by both renderers for converting typed ops into paintable cells.
+/// This is shared logic for converting typed ops into paintable cells.
 public func _rasterizeOps(
     ops: [RenderOp],
     size: _Size,
