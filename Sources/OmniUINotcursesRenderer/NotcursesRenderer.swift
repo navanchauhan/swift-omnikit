@@ -689,38 +689,44 @@ public struct NotcursesApp<V: View> {
                         widgetStateChanged = true
                     }
                     if !pickerInfo.options.isEmpty {
-                        var popts = ncplane_options()
-                        popts.y = Int32(pickerInfo.boundingRect.origin.y)
-                        popts.x = Int32(pickerInfo.boundingRect.origin.x)
-                        popts.rows = UInt32(max(1, pickerInfo.boundingRect.size.height))
-                        popts.cols = UInt32(max(1, pickerInfo.boundingRect.size.width))
-                        popts.name = nil
-                        popts.userptr = nil
-                        popts.resizecb = nil
-                        popts.flags = 0
-                        popts.margin_b = 0
-                        popts.margin_r = 0
+                        let options = pickerInfo.options.map { $0.label }
+                        let cOpts = options.map { strdup($0) }
+                        let cDescs = options.map { _ in strdup("") }
+                        defer {
+                            cOpts.forEach { free($0) }
+                            cDescs.forEach { free($0) }
+                        }
 
-                        if let selectorPlane = ncplane_create(stdplane, &popts) {
-                            if let op = overlayPlane {
-                                _ = ncplane_move_above(selectorPlane, op)
-                            } else {
-                                _ = ncplane_move_above(selectorPlane, stdplane)
-                            }
+                        if !cOpts.contains(where: { $0 == nil }) && !cDescs.contains(where: { $0 == nil }) {
+                            // Create a child plane large enough for the ncselector.
+                            // ncselector renders at (0,0) of its plane, so the plane
+                            // position determines where the dropdown appears.
+                            let maxLabelWidth = options.map { $0.count }.max() ?? 10
+                            let selectorWidth = max(40, maxLabelWidth + 16)
+                            let selectorHeight = max(options.count + 4, 6)
 
-                            let options = pickerInfo.options.map { $0.label }
-                            let cOpts = options.map { strdup($0) }
-                            let cDescs = options.map { _ in strdup("") }
-                            defer {
-                                cOpts.forEach { free($0) }
-                                cDescs.forEach { free($0) }
-                            }
+                            let dropY = pickerInfo.boundingRect.origin.y
+                            let dropX = pickerInfo.boundingRect.origin.x
+                            let clampedY = max(0, min(dropY, height - selectorHeight))
+                            let clampedX = max(0, min(dropX, width - selectorWidth))
 
-                            if !cOpts.contains(where: { $0 == nil }) && !cDescs.contains(where: { $0 == nil }) {
+                            var popts = ncplane_options()
+                            popts.y = Int32(clampedY)
+                            popts.x = Int32(clampedX)
+                            popts.rows = UInt32(min(selectorHeight, height - clampedY))
+                            popts.cols = UInt32(min(selectorWidth, width - clampedX))
+                            popts.name = nil
+                            popts.userptr = nil
+                            popts.resizecb = nil
+                            popts.flags = 0
+                            popts.margin_b = 0
+                            popts.margin_r = 0
+
+                            if let selectorPlane = ncplane_create(stdplane, &popts) {
                                 var optPtrs: [UnsafePointer<CChar>?] = cOpts.map { UnsafePointer($0) }
                                 var descPtrs: [UnsafePointer<CChar>?] = cDescs.map { UnsafePointer($0) }
                                 let defaultIndex = UInt32(min(max(0, pickerInfo.selectedIndex ?? 0), max(0, options.count - 1)))
-                                let maxDisplay = UInt32(max(1, min(options.count, max(1, pickerInfo.boundingRect.size.height - 2))))
+                                let maxDisplay = UInt32(max(1, min(options.count, selectorHeight - 2)))
                                 let selectorWidget = optPtrs.withUnsafeMutableBufferPointer { optBuf -> OpaquePointer? in
                                     descPtrs.withUnsafeMutableBufferPointer { descBuf -> OpaquePointer? in
                                         guard let optBase = optBuf.baseAddress,
@@ -741,13 +747,32 @@ public struct NotcursesApp<V: View> {
                                 }
 
                                 if let widget = selectorWidget {
-                                    activeNCSelector = (widget: widget, rect: pickerInfo.boundingRect, itemIDs: itemIDs)
+                                    // Query the ncselector's actual plane for the widget rect.
+                                    let selPlane = omni_ncselector_plane(widget)
+                                    var selRows: UInt32 = 0; var selCols: UInt32 = 0
+                                    var selY: Int32 = 0; var selX: Int32 = 0
+                                    if let sp = selPlane {
+                                        ncplane_dim_yx(sp, &selRows, &selCols)
+                                        ncplane_yx(sp, &selY, &selX)
+                                        // Ensure selector is above overlay and shape planes.
+                                        if let op = overlayPlane {
+                                            _ = ncplane_move_above(sp, op)
+                                        }
+                                        for (_, e) in shapePlanes {
+                                            _ = ncplane_move_above(sp, e.plane)
+                                        }
+                                    }
+                                    let widgetRect = _Rect(
+                                        origin: _Point(x: Int(selY > 0 ? selX : Int32(clampedX)),
+                                                       y: Int(selY > 0 ? selY : Int32(clampedY))),
+                                        size: _Size(width: max(Int(selCols), selectorWidth),
+                                                    height: max(Int(selRows), selectorHeight))
+                                    )
+                                    activeNCSelector = (widget: widget, rect: widgetRect, itemIDs: itemIDs)
                                     widgetStateChanged = true
                                 } else {
                                     ncplane_destroy(selectorPlane)
                                 }
-                            } else {
-                                ncplane_destroy(selectorPlane)
                             }
                         }
                     }
@@ -832,6 +857,9 @@ public struct NotcursesApp<V: View> {
                     _ = ncplane_move_above(selectorPlane, op)
                 } else {
                     _ = ncplane_move_above(selectorPlane, stdplane)
+                }
+                for (_, e) in shapePlanes {
+                    _ = ncplane_move_above(selectorPlane, e.plane)
                 }
             }
             if let readerPlane = activeNCReader.flatMap({ omni_ncreader_plane($0.widget) }) {

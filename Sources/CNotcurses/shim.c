@@ -385,6 +385,24 @@ int omni_signal_received(void){
 }
 
 void omni_restore_terminal(void){
-  const char* seq = "\x1b_Ga=d\x1b\\\x1b[0m\x1b[?25h\x1b[?1049l\x1b[?2004l";
+  // Clean up terminal state after notcurses exits:
+  //   1. Delete all kitty graphics placements and images
+  //   2. Reset SGR attributes
+  //   3. Show cursor
+  //   4. Exit alternate screen buffer
+  //   5. Disable bracketed paste
+  //   6. Disable mouse reporting
+  //   7. Reset kitty keyboard protocol
+  const char* seq =
+    "\x1b_Ga=d\x1b\\"             /* kitty: delete all images */
+    "\x1b_Ga=d,d=A\x1b\\"         /* kitty: delete all placements */
+    "\x1b[0m"                      /* reset SGR */
+    "\x1b[?25h"                    /* show cursor */
+    "\x1b[?1049l"                  /* exit alt screen */
+    "\x1b[?2004l"                  /* disable bracketed paste */
+    "\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1006l" /* disable mouse modes */
+    "\x1b[>0u"                     /* reset kitty keyboard protocol */
+    "\x1b" "c"                     /* full terminal reset (RIS) */
+    ;
   (void)write(STDOUT_FILENO, seq, strlen(seq));
 }
