@@ -355,6 +355,20 @@ public struct NotcursesApp<V: View> {
 
             // Update per-shape sprixel planes after collecting shapes for this frame.
             if canSprixel, let cellpix {
+                // If any shape position changed (scroll, resize, layout shift),
+                // destroy all planes and rebuild. This prevents Kitty graphics
+                // ghost artifacts — the Kitty protocol stores images separately
+                // from the cell grid, so ncplane_erase/destroy alone doesn't
+                // clean up stale pixel placements.
+                let positionsChanged = shapesForSprixel.enumerated().contains { (idx, pair) in
+                    guard let existing = shapePlanes[idx] else { return false }
+                    return existing.rect.origin != pair.0.origin
+                } || shapesForSprixel.count != shapePlanes.count
+                if positionsChanged && !shapePlanes.isEmpty {
+                    for (_, e) in shapePlanes { ncplane_destroy(e.plane) }
+                    shapePlanes.removeAll()
+                }
+
                 var alive: Set<Int> = []
                 alive.reserveCapacity(shapesForSprixel.count)
 
@@ -410,8 +424,12 @@ public struct NotcursesApp<V: View> {
                             break
                         }
                     } else if let existing = shapePlanes[idx], existing.rect.origin != r.origin {
+                        // Shape moved (e.g. scroll). Erase old Kitty graphics placement,
+                        // move the plane, and invalidate sig to force re-blit at new position.
+                        ncplane_erase(existing.plane)
                         ncplane_move_yx(existing.plane, Int32(r.origin.y), Int32(r.origin.x))
                         shapePlanes[idx]?.rect = r
+                        shapePlanes[idx]?.sig = Int.min
                     }
 
                     guard var entry = shapePlanes[idx] else { continue }
@@ -440,8 +458,11 @@ public struct NotcursesApp<V: View> {
                 }
 
                 // Delete planes for shapes that no longer exist.
+                // Erase before destroy to clear any Kitty graphics placements
+                // that would otherwise leave pixel artifacts on screen.
                 if !shapePlanes.isEmpty {
                     for (idx, e) in shapePlanes where !alive.contains(idx) {
+                        ncplane_erase(e.plane)
                         ncplane_destroy(e.plane)
                         shapePlanes[idx] = nil
                     }
