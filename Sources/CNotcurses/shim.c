@@ -262,12 +262,15 @@ struct ncselector* omni_ncselector_create(struct ncplane* n,
                                           const char* footer){
   if(!n || !options || count <= 0) return NULL;
 
-  struct ncselector_item* items = calloc((size_t)count, sizeof(struct ncselector_item));
+  // Allocate count+1 items; the last entry must have option=NULL to
+  // terminate the list (ncselector_create reads until NULL sentinel).
+  struct ncselector_item* items = calloc((size_t)(count + 1), sizeof(struct ncselector_item));
   if(!items) return NULL;
   for(int i = 0; i < count; i++){
     items[i].option = options[i];
     items[i].desc = descs ? descs[i] : "";
   }
+  // items[count] is already zeroed by calloc (option=NULL sentinel).
 
   ncselector_options opts;
   memset(&opts, 0, sizeof(opts));

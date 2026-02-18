@@ -701,9 +701,12 @@ public struct NotcursesApp<V: View> {
                             // Create a child plane large enough for the ncselector.
                             // ncselector renders at (0,0) of its plane, so the plane
                             // position determines where the dropdown appears.
+                            // The ncselector creates its content as a child plane. Give it
+                            // a parent plane sized to accommodate options + borders + title.
                             let maxLabelWidth = options.map { $0.count }.max() ?? 10
-                            let selectorWidth = max(40, maxLabelWidth + 16)
-                            let selectorHeight = max(options.count + 4, 6)
+                            // ncselector layout: border(1) + option(N) + " " + desc(N) + border(1)
+                            let selectorWidth = max(maxLabelWidth + 6, 30)
+                            let selectorHeight = min(max(options.count + 4, 6), height / 2)
 
                             let dropY = pickerInfo.boundingRect.origin.y
                             let dropX = pickerInfo.boundingRect.origin.x
