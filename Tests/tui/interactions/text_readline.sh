@@ -21,3 +21,7 @@ xdotool key --window "$WID" --clearmodifiers Right; sleep 0.05
 xdotool key --window "$WID" --clearmodifiers Right; sleep 0.05
 xdotool key --window "$WID" --clearmodifiers Right; sleep 0.05
 xdotool key --window "$WID" --clearmodifiers ctrl+k; sleep 0.4
+
+# Move focus away from the text field before final capture so cursor blink timing
+# doesn't introduce screenshot noise.
+xdotool key --window "$WID" --clearmodifiers Tab; sleep 0.2
