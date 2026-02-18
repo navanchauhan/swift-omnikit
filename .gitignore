@@ -8,3 +8,4 @@ DerivedData/
 .netrc
 references/
 Tests/tui/output/
+.artifacts/
