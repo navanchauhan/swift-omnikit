@@ -108,6 +108,21 @@ public extension ListStyle where Self == SidebarListStyle {
     static var sidebar: SidebarListStyle { SidebarListStyle() }
 }
 
+// MARK: - FormStyle
+
+public protocol FormStyle {}
+
+public struct AutomaticFormStyle: FormStyle, Hashable, Sendable { public init() {} }
+public struct GroupedFormStyle: FormStyle, Hashable, Sendable { public init() {} }
+
+public extension FormStyle where Self == AutomaticFormStyle {
+    static var automatic: AutomaticFormStyle { AutomaticFormStyle() }
+}
+
+public extension FormStyle where Self == GroupedFormStyle {
+    static var grouped: GroupedFormStyle { GroupedFormStyle() }
+}
+
 // MARK: - LabelStyle
 
 public struct LabelStyleConfiguration {

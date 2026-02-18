@@ -132,13 +132,95 @@ public struct GeometryReader<Content: View>: View, _PrimitiveView {
     }
 }
 
+public struct ProgressView: View, _PrimitiveView {
+    public typealias Body = Never
+
+    let label: String?
+    let value: Double?
+    let total: Double
+
+    public init() {
+        self.label = nil
+        self.value = nil
+        self.total = 1.0
+    }
+
+    public init(_ title: String) {
+        self.label = title
+        self.value = nil
+        self.total = 1.0
+    }
+
+    public init(value: Double?, total: Double = 1.0) {
+        self.label = nil
+        self.value = value
+        self.total = total
+    }
+
+    func _makeNode(_ ctx: inout _BuildContext) -> _VNode {
+        _ = ctx
+        if let value {
+            let denom = total == 0 ? 1 : total
+            let pct = Swift.max(0, Swift.min(1, value / denom))
+            let filled = Int((pct * 10).rounded())
+            let bar = String(repeating: "#", count: filled) + String(repeating: "-", count: Swift.max(0, 10 - filled))
+            return .text("[\(bar)] \(Int((pct * 100).rounded()))%")
+        }
+
+        let glyphs = ["-", "\\", "|", "/"]
+        let tick = Int(Date().timeIntervalSinceReferenceDate * 8)
+        let spinner = glyphs[tick % glyphs.count]
+        let title = label ?? "Loading"
+        return .text("\(spinner) \(title)")
+    }
+}
+
+private struct _AnySelectionAdapter {
+    let get: () -> AnyHashable?
+    let set: (AnyHashable) -> Void
+}
+
 public struct List<Content: View>: View, _PrimitiveView {
     public typealias Body = Never
 
-    let content: Content
+    private let content: Content
+    private let selection: _AnySelectionAdapter?
+    private let actionScopePath: [Int]
 
     public init(@ViewBuilder content: () -> Content) {
         self.content = content()
+        self.selection = nil
+        self.actionScopePath = _UIRuntime._currentPath ?? []
+    }
+
+    public init<SelectionValue: Hashable>(
+        selection: Binding<SelectionValue>,
+        @ViewBuilder content: () -> Content
+    ) {
+        self.content = content()
+        self.selection = _AnySelectionAdapter(
+            get: { AnyHashable(selection.wrappedValue) },
+            set: { any in
+                if let typed = any.base as? SelectionValue {
+                    selection.wrappedValue = typed
+                }
+            }
+        )
+        self.actionScopePath = _UIRuntime._currentPath ?? []
+    }
+
+    public init<SelectionValue: Hashable>(
+        selection: Binding<SelectionValue?>,
+        @ViewBuilder content: () -> Content
+    ) {
+        self.content = content()
+        self.selection = _AnySelectionAdapter(
+            get: { selection.wrappedValue.map(AnyHashable.init) },
+            set: { any in
+                selection.wrappedValue = any.base as? SelectionValue
+            }
+        )
+        self.actionScopePath = _UIRuntime._currentPath ?? []
     }
 
     public init<Data: RandomAccessCollection, ID: Hashable, RowContent: View>(
@@ -147,6 +229,8 @@ public struct List<Content: View>: View, _PrimitiveView {
         @ViewBuilder rowContent: @escaping (Data.Element) -> RowContent
     ) where Content == ForEach<Data, ID, RowContent> {
         self.content = ForEach(data, id: id, content: rowContent)
+        self.selection = nil
+        self.actionScopePath = _UIRuntime._currentPath ?? []
     }
 
     public init<Data: RandomAccessCollection, RowContent: View>(
@@ -154,6 +238,8 @@ public struct List<Content: View>: View, _PrimitiveView {
         @ViewBuilder rowContent: @escaping (Data.Element) -> RowContent
     ) where Data.Element: Identifiable, Content == ForEach<Data, Data.Element.ID, RowContent> {
         self.content = ForEach(data, content: rowContent)
+        self.selection = nil
+        self.actionScopePath = _UIRuntime._currentPath ?? []
     }
 
     public init<Data: RandomAccessCollection, RowContent: View>(
@@ -164,14 +250,50 @@ public struct List<Content: View>: View, _PrimitiveView {
         _ = children
         // Stub: hierarchical list rendering not implemented yet; render only the root nodes.
         self.content = ForEach(data, content: rowContent)
+        self.selection = nil
+        self.actionScopePath = _UIRuntime._currentPath ?? []
     }
 
     func _makeNode(_ ctx: inout _BuildContext) -> _VNode {
-        // Minimal: List is a ScrollView + VStack.
-        ctx.buildChild(
-            ScrollView {
-                VStack(spacing: 0) { content }
+        let runtime = ctx.runtime
+        let controlPath = ctx.path
+        let isFocused = runtime._isFocused(path: controlPath)
+        let id = runtime._registerAction({}, path: actionScopePath)
+        let offset = runtime._getScrollOffset(path: controlPath)
+
+        let rows = _flatten(ctx.buildChild(content))
+        let selected = selection?.get()
+        var rowIndex = 0
+
+        let renderedRows: [_VNode] = rows.map { row in
+            guard
+                let selection,
+                case .tagged(let value, let label) = row
+            else { return row }
+
+            let path = controlPath + [10_000 + rowIndex]
+            rowIndex += 1
+            let actionID = runtime._registerAction({
+                runtime._setFocus(path: path)
+                selection.set(value)
+            }, path: actionScopePath)
+            runtime._registerFocusable(path: path, activate: actionID)
+
+            var rowLabel = label
+            if selected == value {
+                let tint = (_UIRuntime._currentEnvironment ?? runtime._baseEnvironment).tint ?? .accentColor
+                rowLabel = .style(fg: tint, bg: nil, child: rowLabel)
             }
+            return .button(id: actionID, isFocused: runtime._isFocused(path: path), label: rowLabel)
+        }
+
+        return .scrollView(
+            id: id,
+            path: controlPath,
+            isFocused: isFocused,
+            axis: .vertical,
+            offset: offset,
+            content: .stack(axis: .vertical, spacing: 0, children: renderedRows)
         )
     }
 }
@@ -186,13 +308,102 @@ public struct Form<Content: View>: View, _PrimitiveView {
     }
 
     func _makeNode(_ ctx: inout _BuildContext) -> _VNode {
-        // Approximate SwiftUI's Form as a scrollable vertical stack.
-        ctx.buildChild(
+        let env = _UIRuntime._currentEnvironment ?? ctx.runtime._baseEnvironment
+        let isGrouped = env.formStyleKind == .grouped
+
+        if isGrouped {
+            return ctx.buildChild(
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 1) { content }
+                        .padding(1)
+                        .background(Color.gray.opacity(0.08))
+                }
+            )
+        }
+
+        return ctx.buildChild(
             ScrollView {
-                VStack(alignment: .leading, spacing: 1) { content }
+                VStack(alignment: .leading, spacing: 0) { content }
                     .padding(1)
             }
         )
+    }
+}
+
+public struct GridItem: Hashable, Sendable {
+    public enum Size: Hashable, Sendable {
+        case fixed(CGFloat)
+        case flexible(minimum: CGFloat = 10, maximum: CGFloat = .infinity)
+        case adaptive(minimum: CGFloat, maximum: CGFloat = .infinity)
+    }
+
+    public var size: Size
+    public var spacing: CGFloat?
+
+    public init(_ size: Size, spacing: CGFloat? = nil) {
+        self.size = size
+        self.spacing = spacing
+    }
+}
+
+public struct LazyVGrid<Content: View>: View, _PrimitiveView {
+    public typealias Body = Never
+
+    let columns: [GridItem]
+    let alignment: HorizontalAlignment
+    let spacing: CGFloat?
+    let content: Content
+
+    public init(
+        columns: [GridItem],
+        alignment: HorizontalAlignment = .center,
+        spacing: CGFloat? = nil,
+        @ViewBuilder content: () -> Content
+    ) {
+        self.columns = columns
+        self.alignment = alignment
+        self.spacing = spacing
+        self.content = content()
+    }
+
+    func _makeNode(_ ctx: inout _BuildContext) -> _VNode {
+        _ = alignment
+        let items = _flatten(ctx.buildChild(content))
+        guard !items.isEmpty else { return .empty }
+
+        let gap = Swift.max(0, Int((spacing ?? 1).rounded()))
+        let availableWidth = (_UIRuntime._currentRenderSize ?? _Size(width: 80, height: 0)).width
+        let columnsCount = _gridColumnCount(columns, availableWidth: availableWidth, spacing: gap)
+
+        guard columnsCount > 1 else {
+            return .stack(axis: .vertical, spacing: gap, children: items)
+        }
+
+        var rows: [_VNode] = []
+        rows.reserveCapacity((items.count + columnsCount - 1) / columnsCount)
+
+        var index = 0
+        while index < items.count {
+            let end = Swift.min(index + columnsCount, items.count)
+            let row = Array(items[index..<end])
+            rows.append(.stack(axis: .horizontal, spacing: gap, children: row))
+            index = end
+        }
+
+        return .stack(axis: .vertical, spacing: gap, children: rows)
+    }
+}
+
+private func _gridColumnCount(_ columns: [GridItem], availableWidth: Int, spacing: Int) -> Int {
+    guard let first = columns.first else { return 1 }
+
+    switch first.size {
+    case .adaptive(let minimum, _):
+        let minCell = Swift.max(1, Int((minimum / 8).rounded()))
+        let stride = Swift.max(1, minCell + spacing)
+        return Swift.max(1, availableWidth / stride)
+    default:
+        return Swift.max(1, columns.count)
     }
 }
 
@@ -365,14 +576,170 @@ public struct NavigationSplitView<Sidebar: View, Detail: View>: View {
             detail
         default:
             HStack(spacing: 1) {
-                // Keep sidebar narrow so detail still receives space.
-                sidebar.frame(width: 28)
+                sidebar
                 detail
             }
         }
     }
 
     public var body: AnyView { AnyView(composed) }
+}
+
+private struct _TabItemLabelTag: Hashable {
+    let text: String
+}
+
+private struct _TabEntry {
+    let value: AnyHashable?
+    let label: String
+    let content: _VNode
+}
+
+public struct TabView<Content: View>: View, _PrimitiveView {
+    public typealias Body = Never
+
+    private let content: Content
+    private let selection: _AnySelectionAdapter?
+    private let actionScopePath: [Int]
+    @State private var localSelectionIndex: Int = 0
+
+    public init(@ViewBuilder content: () -> Content) {
+        self.content = content()
+        self.selection = nil
+        self.actionScopePath = _UIRuntime._currentPath ?? []
+    }
+
+    public init<SelectionValue: Hashable>(selection: Binding<SelectionValue>, @ViewBuilder content: () -> Content) {
+        self.content = content()
+        self.selection = _AnySelectionAdapter(
+            get: { AnyHashable(selection.wrappedValue) },
+            set: { any in
+                if let typed = any.base as? SelectionValue {
+                    selection.wrappedValue = typed
+                }
+            }
+        )
+        self.actionScopePath = _UIRuntime._currentPath ?? []
+    }
+
+    public init<SelectionValue: Hashable>(selection: Binding<SelectionValue?>, @ViewBuilder content: () -> Content) {
+        self.content = content()
+        self.selection = _AnySelectionAdapter(
+            get: { selection.wrappedValue.map(AnyHashable.init) },
+            set: { any in
+                selection.wrappedValue = any.base as? SelectionValue
+            }
+        )
+        self.actionScopePath = _UIRuntime._currentPath ?? []
+    }
+
+    func _makeNode(_ ctx: inout _BuildContext) -> _VNode {
+        let runtime = ctx.runtime
+        let source = ctx.buildChild(content)
+        let tabs = _collectTabEntries(from: source)
+        guard !tabs.isEmpty else { return source }
+
+        let selectedValue = selection?.get()
+        let resolvedIndex: Int = {
+            if let selectedValue, let idx = tabs.firstIndex(where: { $0.value == selectedValue }) {
+                return idx
+            }
+            return Swift.min(Swift.max(0, localSelectionIndex), tabs.count - 1)
+        }()
+
+        if let selectedValue = tabs[resolvedIndex].value, selection?.get() != selectedValue {
+            selection?.set(selectedValue)
+        }
+
+        var tabButtons: [_VNode] = []
+        tabButtons.reserveCapacity(tabs.count)
+        let tint = (_UIRuntime._currentEnvironment ?? runtime._baseEnvironment).tint ?? .accentColor
+
+        for (idx, tab) in tabs.enumerated() {
+            let path = ctx.path + [20_000 + idx]
+            let actionID = runtime._registerAction({
+                runtime._setFocus(path: path)
+                if let value = tab.value {
+                    selection?.set(value)
+                } else {
+                    localSelectionIndex = idx
+                }
+            }, path: actionScopePath)
+            runtime._registerFocusable(path: path, activate: actionID)
+
+            let title = idx == resolvedIndex ? "[\(tab.label)]" : tab.label
+            let labelNode: _VNode = idx == resolvedIndex
+                ? .style(fg: tint, bg: nil, child: .text(title))
+                : .text(title)
+            tabButtons.append(.button(id: actionID, isFocused: runtime._isFocused(path: path), label: labelNode))
+        }
+
+        return .stack(axis: .vertical, spacing: 1, children: [
+            .stack(axis: .horizontal, spacing: 1, children: tabButtons),
+            tabs[resolvedIndex].content,
+        ])
+    }
+}
+
+private func _collectTabEntries(from node: _VNode) -> [_TabEntry] {
+    let topLevel = _flatten(node)
+    var entries: [_TabEntry] = []
+    entries.reserveCapacity(topLevel.count)
+
+    for child in topLevel {
+        if case .tagged(let value, let labelNode) = child {
+            let extracted = _stripTabItemLabel(from: labelNode)
+            entries.append(_TabEntry(
+                value: value,
+                label: extracted.label ?? String(describing: value),
+                content: extracted.content
+            ))
+            continue
+        }
+
+        let extracted = _stripTabItemLabel(from: child)
+        if let label = extracted.label {
+            entries.append(_TabEntry(value: nil, label: label, content: extracted.content))
+        } else {
+            entries.append(_TabEntry(value: nil, label: "Tab", content: child))
+        }
+    }
+
+    return entries
+}
+
+private func _stripTabItemLabel(from node: _VNode) -> (content: _VNode, label: String?) {
+    switch node {
+    case .overlay(let child, let overlay):
+        if case .tagged(let v, _) = overlay, let tag = v.base as? _TabItemLabelTag {
+            return (child, tag.text)
+        }
+        return (node, nil)
+    default:
+        return (node, nil)
+    }
+}
+
+public extension View {
+    func tabItem<Label: View>(@ViewBuilder _ label: () -> Label) -> some View {
+        _TabItem(content: AnyView(self), label: AnyView(label()))
+    }
+}
+
+private struct _TabItem: View, _PrimitiveView {
+    typealias Body = Never
+
+    let content: AnyView
+    let label: AnyView
+
+    func _makeNode(_ ctx: inout _BuildContext) -> _VNode {
+        let childNode = ctx.buildChild(content)
+        let labelText = _menuLabelText(from: ctx.buildChild(label))
+        return .overlay(
+            child: childNode,
+            overlay: .tagged(value: AnyHashable(_TabItemLabelTag(text: labelText)), label: .empty)
+        )
+    }
 }
 
 public struct ZStack<Content: View>: View, _PrimitiveView {
@@ -621,22 +988,44 @@ public struct HStack<Content: View>: View, _PrimitiveView {
     }
 }
 
+public enum ButtonRole: Hashable, Sendable {
+    case destructive
+    case cancel
+}
+
 public struct Button<Label: View>: View, _PrimitiveView {
     public typealias Body = Never
 
     let action: () -> Void
     let actionScopePath: [Int]
+    let role: ButtonRole?
     let label: Label
 
     public init(action: @escaping () -> Void, @ViewBuilder label: () -> Label) {
         self.action = action
         self.actionScopePath = _UIRuntime._currentPath ?? []
+        self.role = nil
+        self.label = label()
+    }
+
+    public init(role: ButtonRole?, action: @escaping () -> Void, @ViewBuilder label: () -> Label) {
+        self.action = action
+        self.actionScopePath = _UIRuntime._currentPath ?? []
+        self.role = role
         self.label = label()
     }
 
     public init(_ title: String, action: @escaping () -> Void) where Label == Text {
         self.action = action
         self.actionScopePath = _UIRuntime._currentPath ?? []
+        self.role = nil
+        self.label = Text(title)
+    }
+
+    public init(_ title: String, role: ButtonRole?, action: @escaping () -> Void) where Label == Text {
+        self.action = action
+        self.actionScopePath = _UIRuntime._currentPath ?? []
+        self.role = role
         self.label = Text(title)
     }
 
@@ -664,7 +1053,10 @@ public struct Button<Label: View>: View, _PrimitiveView {
             action()
         }, path: actionScopePath)
         runtime._registerFocusable(path: controlPath, activate: id)
-        let labelNode = ctx.buildChild(label)
+        var labelNode = ctx.buildChild(label)
+        if role == .destructive {
+            labelNode = .style(fg: .red, bg: nil, child: labelNode)
+        }
         return .button(id: id, isFocused: isFocused, label: labelNode)
     }
 }
@@ -738,6 +1130,12 @@ public struct TextField: View, _PrimitiveView {
         self.actionScopePath = _UIRuntime._currentPath ?? []
     }
 
+    public init(_ placeholder: String, text: Binding<String>, prompt: Text?) {
+        self.placeholder = prompt?.content ?? placeholder
+        self.text = text
+        self.actionScopePath = _UIRuntime._currentPath ?? []
+    }
+
     func _makeNode(_ ctx: inout _BuildContext) -> _VNode {
         let runtime = ctx.runtime
         let controlPath = ctx.path
@@ -805,6 +1203,32 @@ public struct TextField: View, _PrimitiveView {
             cursor: runtime._getTextCursor(path: controlPath),
             isFocused: isFocused
         )
+    }
+}
+
+public struct SecureField: View, _PrimitiveView {
+    public typealias Body = Never
+
+    let placeholder: String
+    let text: Binding<String>
+
+    public init(_ placeholder: String, text: Binding<String>) {
+        self.placeholder = placeholder
+        self.text = text
+    }
+
+    public init(_ placeholder: String, text: Binding<String>, prompt: Text?) {
+        self.placeholder = prompt?.content ?? placeholder
+        self.text = text
+    }
+
+    func _makeNode(_ ctx: inout _BuildContext) -> _VNode {
+        let node = ctx.buildChild(TextField(placeholder, text: text))
+        if case .textField(let id, let placeholder, _, let cursor, let isFocused) = node {
+            let masked = String(repeating: "•", count: text.wrappedValue.count)
+            return .textField(id: id, placeholder: placeholder, text: masked, cursor: cursor, isFocused: isFocused)
+        }
+        return node
     }
 }
 

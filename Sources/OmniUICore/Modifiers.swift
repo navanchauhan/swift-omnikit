@@ -22,8 +22,14 @@ public extension View {
         return _Passthrough(self)
     }
     func accentColor(_ color: Color?) -> some View {
-        _ = color
-        return _Passthrough(self)
+        tint(color)
+    }
+
+    func tint(_ color: Color?) -> some View {
+        if let color {
+            return AnyView(environment(\.tint, color))
+        }
+        return AnyView(environment(\.tint, nil))
     }
     func cornerRadius(_ radius: CGFloat) -> some View {
         clipShape(RoundedRectangle(cornerRadius: radius))
@@ -100,8 +106,12 @@ public extension View {
     }
 
     // MARK: SwiftUI API Surface (stubs/passthrough)
-    func navigationTitle(_ title: String) -> some View { _Passthrough(self) }
-    func navigationTitle(_ title: Text) -> some View { _Passthrough(self) }
+    func navigationTitle(_ title: String) -> some View {
+        environment(\.navigationTitle, title)
+    }
+    func navigationTitle(_ title: Text) -> some View {
+        environment(\.navigationTitle, title.content)
+    }
     func navigationBarTitleDisplayMode(_ mode: Any = ()) -> some View { _Passthrough(self) }
 
     func onTapGesture(perform action: @escaping () -> Void) -> some View {
@@ -126,6 +136,16 @@ public extension View {
     }
 
     func listStyle<S: ListStyle>(_ style: S) -> some View { _Passthrough(self) }
+    func formStyle<S: FormStyle>(_ style: S) -> some View {
+        let kind: _FormStyleKind
+        switch style {
+        case is GroupedFormStyle:
+            kind = .grouped
+        default:
+            kind = .automatic
+        }
+        return environment(\.formStyleKind, kind)
+    }
     func pickerStyle<S: PickerStyle>(_ style: S) -> some View { _Passthrough(self) }
     func buttonStyle<S: ButtonStyle>(_ style: S) -> some View { _Passthrough(self) }
     func textFieldStyle<S: TextFieldStyle>(_ style: S) -> some View { _Passthrough(self) }
@@ -137,7 +157,9 @@ public extension View {
         _ = background
         return _Passthrough(self)
     }
-    func toolbar<Content: View>(@ViewBuilder content: () -> Content) -> some View { _Passthrough(self) }
+    func toolbar<Content: View>(@ViewBuilder content: () -> Content) -> some View {
+        _ToolbarModifier(content: AnyView(self), toolbar: AnyView(content()))
+    }
     func toolbar(_ any: Any = ()) -> some View { _Passthrough(self) }
     func toolbarBackground(_ any: Any = (), for: Any = ()) -> some View { _Passthrough(self) }
     func controlSize(_ size: ControlSize) -> some View { _Passthrough(self) }
@@ -220,6 +242,9 @@ public extension View {
     func textInputAutocapitalization(_ style: TextInputAutocapitalization?) -> some View { _Passthrough(self) }
     func textContentType(_ type: UITextContentType?) -> some View { _Passthrough(self) }
     func disableAutocorrection(_ disable: Bool? = true) -> some View { _Passthrough(self) }
+    func autocorrectionDisabled(_ disabled: Bool = true) -> some View {
+        disableAutocorrection(disabled)
+    }
 
     func searchable(text: Binding<String>) -> some View { _Passthrough(self) }
     func refreshable(action: @escaping () async -> Void) -> some View { _Passthrough(self) }
@@ -296,6 +321,10 @@ public extension View {
         _OnAppear(content: AnyView(self), action: action)
     }
 
+    func onDisappear(perform action: @escaping () -> Void) -> some View {
+        _OnDisappear(content: AnyView(self), action: action)
+    }
+
     func safeAreaInset<Content: View>(edge: Edge, @ViewBuilder content: () -> Content) -> some View {
         _SafeAreaInset(base: AnyView(self), edge: edge, inset: AnyView(content()))
     }
@@ -307,6 +336,30 @@ public extension View {
 
     func presentationDragIndicator(_ visibility: Visibility) -> some View {
         _ = visibility
+        return _Passthrough(self)
+    }
+
+    func navigationSplitViewColumnWidth(min: CGFloat? = nil, ideal: CGFloat, max maxWidth: CGFloat? = nil) -> some View {
+        let fallback = ideal > 0 ? ideal : (min ?? maxWidth ?? 0)
+        let columns = Swift.max(1, Int((fallback / 8).rounded()))
+        return frame(width: CGFloat(columns))
+    }
+
+    func scaleEffect(_ scale: CGFloat, anchor: UnitPoint = .center) -> some View {
+        _ = anchor
+        if scale > 1 {
+            return AnyView(bold())
+        }
+        return AnyView(self)
+    }
+
+    func scaleEffect(x: CGFloat = 1, y: CGFloat = 1, anchor: UnitPoint = .center) -> some View {
+        _ = anchor
+        return scaleEffect(max(x, y))
+    }
+
+    func previewDisplayName(_ name: String) -> some View {
+        _ = name
         return _Passthrough(self)
     }
 }
@@ -537,6 +590,70 @@ private struct _SafeAreaInset: View, _PrimitiveView {
             return ctx.buildChild(HStack(spacing: 0) { base; inset })
         }
     }
+}
+
+private struct _ToolbarModifier: View, _PrimitiveView {
+    typealias Body = Never
+
+    let content: AnyView
+    let toolbar: AnyView
+
+    func _makeNode(_ ctx: inout _BuildContext) -> _VNode {
+        let baseNode = ctx.buildChild(content)
+        let toolbarNode = ctx.buildChild(toolbar)
+        var items = _collectToolbarItems(from: toolbarNode)
+        let env = _UIRuntime._currentEnvironment ?? ctx.runtime._baseEnvironment
+
+        if items.principal.isEmpty, let title = env.navigationTitle, !title.isEmpty {
+            items.principal.append(.text(title))
+        }
+
+        guard !items.isEmpty else { return baseNode }
+
+        var root: [_VNode] = []
+        if let top = _toolbarTopBar(items: items) {
+            root.append(top)
+        }
+        root.append(baseNode)
+        if let bottom = _toolbarBottomBar(items: items) {
+            root.append(bottom)
+        }
+        return .stack(axis: .vertical, spacing: 0, children: root)
+    }
+}
+
+private func _toolbarTopBar(items: _ToolbarLayoutItems) -> _VNode? {
+    if items.leading.isEmpty && items.principal.isEmpty && items.trailing.isEmpty {
+        return nil
+    }
+
+    var row: [_VNode] = []
+    if !items.leading.isEmpty {
+        row.append(.stack(axis: .horizontal, spacing: 1, children: items.leading))
+    }
+    if !items.principal.isEmpty {
+        if !row.isEmpty { row.append(.spacer) }
+        row.append(.stack(axis: .horizontal, spacing: 1, children: items.principal))
+        row.append(.spacer)
+    } else if !items.leading.isEmpty && !items.trailing.isEmpty {
+        row.append(.spacer)
+    }
+    if !items.trailing.isEmpty {
+        row.append(.stack(axis: .horizontal, spacing: 1, children: items.trailing))
+    }
+
+    return .stack(axis: .vertical, spacing: 0, children: [
+        .stack(axis: .horizontal, spacing: 1, children: row),
+        .divider,
+    ])
+}
+
+private func _toolbarBottomBar(items: _ToolbarLayoutItems) -> _VNode? {
+    guard !items.bottom.isEmpty else { return nil }
+    return .stack(axis: .vertical, spacing: 0, children: [
+        .divider,
+        .stack(axis: .horizontal, spacing: 1, children: items.bottom),
+    ])
 }
 
 private struct _Frame: View, _PrimitiveView {
@@ -840,6 +957,18 @@ public struct _OnAppear: View, _PrimitiveView {
         // Extremely small behavior: fire on every render for now.
         // TODO: fire once per identity path.
         action()
+        return ctx.buildChild(content)
+    }
+}
+
+public struct _OnDisappear: View, _PrimitiveView {
+    public typealias Body = Never
+
+    let content: AnyView
+    let action: () -> Void
+
+    func _makeNode(_ ctx: inout _BuildContext) -> _VNode {
+        ctx.runtime._registerOnDisappear(path: ctx.path, action: action)
         return ctx.buildChild(content)
     }
 }

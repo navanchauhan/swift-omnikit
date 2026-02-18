@@ -71,6 +71,8 @@ let package = Package(
         .package(url: "https://github.com/apple/swift-nio-transport-services.git", from: "1.0.0"),
         // For Swift macro stubs (SwiftData compatibility).
         .package(url: "https://github.com/swiftlang/swift-syntax.git", from: "602.0.0"),
+        // Swift-native testing DSL (`import Testing`, `@Test`, `#expect`).
+        .package(url: "https://github.com/swiftlang/swift-testing.git", from: "6.2.0"),
     ],
     targets: [
         // Targets are the basic building blocks of a package, defining a module or a test suite.
@@ -239,7 +241,10 @@ let package = Package(
         ),
         .testTarget(
             name: "OmniKitTests",
-            dependencies: ["OmniKit"]
+            dependencies: [
+                "OmniKit",
+                .product(name: "Testing", package: "swift-testing"),
+            ]
         ),
         .testTarget(
             name: "OmniHTTPTests",
@@ -267,7 +272,10 @@ let package = Package(
         ),
         .testTarget(
             name: "OmniUICoreTests",
-            dependencies: ["OmniUICore"]
+            dependencies: [
+                "OmniUICore",
+                .product(name: "Testing", package: "swift-testing"),
+            ]
         ),
     ],
     swiftLanguageModes: [.v6]

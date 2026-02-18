@@ -100,6 +100,23 @@ private enum _OpenURLKey: EnvironmentKey {
     static let defaultValue: OpenURLAction = OpenURLAction()
 }
 
+public enum _FormStyleKind: Hashable, Sendable {
+    case automatic
+    case grouped
+}
+
+private enum _TintColorKey: EnvironmentKey {
+    static let defaultValue: Color? = nil
+}
+
+private enum _FormStyleKey: EnvironmentKey {
+    static let defaultValue: _FormStyleKind = .automatic
+}
+
+private enum _NavigationTitleKey: EnvironmentKey {
+    static let defaultValue: String? = nil
+}
+
 public extension EnvironmentValues {
     var colorScheme: ColorScheme {
         get { self[_ColorSchemeKey.self] }
@@ -124,6 +141,21 @@ public extension EnvironmentValues {
     var openURL: OpenURLAction {
         get { self[_OpenURLKey.self] }
         set { self[_OpenURLKey.self] = newValue }
+    }
+
+    var tint: Color? {
+        get { self[_TintColorKey.self] }
+        set { self[_TintColorKey.self] = newValue }
+    }
+
+    var formStyleKind: _FormStyleKind {
+        get { self[_FormStyleKey.self] }
+        set { self[_FormStyleKey.self] = newValue }
+    }
+
+    var navigationTitle: String? {
+        get { self[_NavigationTitleKey.self] }
+        set { self[_NavigationTitleKey.self] = newValue }
     }
 }
 

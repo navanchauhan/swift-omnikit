@@ -1,6 +1,12 @@
 import Foundation
 
 public struct Color: Hashable, Sendable {
+    public enum RGBColorSpace: Hashable, Sendable {
+        case sRGB
+        case sRGBLinear
+        case displayP3
+    }
+
     public let name: String
     public let alpha: CGFloat
 
@@ -17,6 +23,11 @@ public struct Color: Hashable, Sendable {
 
     public init(red: CGFloat, green: CGFloat, blue: CGFloat, opacity: CGFloat = 1.0) {
         self.name = "rgb(\(red),\(green),\(blue))"
+        self.alpha = opacity
+    }
+
+    public init(_ colorSpace: RGBColorSpace, red: CGFloat, green: CGFloat, blue: CGFloat, opacity: CGFloat = 1.0) {
+        self.name = "\(colorSpace):rgb(\(red),\(green),\(blue))"
         self.alpha = opacity
     }
 

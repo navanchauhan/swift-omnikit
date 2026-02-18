@@ -29,12 +29,12 @@ struct KitchenSinkRoot: View {
     }
 }
 
-final class DemoModel: ObservableObject {
+final class DemoModel: OmniUICore.ObservableObject {
     var name: String = ""
     var count: Int = 0
 }
 
-final class AppEnvironment: ObservableObject {
+final class AppEnvironment: OmniUICore.ObservableObject {
     var banner: String = "Hello from EnvironmentObject"
 }
 
@@ -44,6 +44,14 @@ struct KitchenSinkHome: View {
     @State private var name: String = ""
     @State private var flavor: Flavor = .vanilla
     @State private var pickedRow: Int = 0
+    @State private var selectedTaggedRow: Int? = 2
+    @State private var secureToken: String = ""
+    @State private var coordinatorURL: String = ""
+    @State private var activeTab: DemoTab = .overview
+    @State private var splitSelection: SplitPane = .overview
+    @State private var showTransientProbe: Bool = false
+    @State private var lastDisappearEvent: String = "none"
+    @State private var pulseScale: Bool = false
     @State private var demoTick: Int = 0
     @StateObject private var model = DemoModel()
     @StateObject private var appEnv = AppEnvironment()
@@ -52,6 +60,18 @@ struct KitchenSinkHome: View {
         case vanilla = "Vanilla"
         case chocolate = "Chocolate"
         case strawberry = "Strawberry"
+    }
+
+    enum DemoTab: Hashable {
+        case overview
+        case controls
+        case data
+    }
+
+    enum SplitPane: Hashable {
+        case overview
+        case settings
+        case logs
     }
 
     private var demoAnimationsEnabled: Bool {
@@ -203,17 +223,187 @@ struct KitchenSinkHome: View {
                     }
                 }
 
+                CompatibilityShowcase(
+                    demoTick: demoTick,
+                    pulseColor: pulseColor,
+                    pulseScale: $pulseScale,
+                    coordinatorURL: $coordinatorURL,
+                    secureToken: $secureToken,
+                    selectedTaggedRow: $selectedTaggedRow,
+                    activeTab: $activeTab,
+                    splitSelection: $splitSelection,
+                    crtMode: $crtMode,
+                    showTransientProbe: $showTransientProbe,
+                    lastDisappearEvent: $lastDisappearEvent
+                )
+
                 Text("Renderer: native notcurses widgets.")
                     .foregroundStyle(.mint)
             }
             .padding(1)
             .background(Color.indigo.opacity(0.08))
         }
+        .navigationTitle("KitchenSink")
+        .toolbar {
+            ToolbarItem(placement: .navigationBarLeading) {
+                Text("OmniUI")
+            }
+            ToolbarItem(placement: .principal) {
+                Text("KitchenSink")
+            }
+            ToolbarItem(placement: .navigationBarTrailing) {
+                Text("tick \(demoTick)")
+            }
+            ToolbarItem(placement: .bottomBar) {
+                HStack(spacing: 1) {
+                    Text("Bottom")
+                    Button("Reset tick") { demoTick = 0 }
+                }
+            }
+        }
         .task {
             guard demoAnimationsEnabled else { return }
             while true {
                 try? await Task.sleep(nanoseconds: 120_000_000)
                 demoTick = (demoTick + 1) % 1_000_000
+            }
+        }
+    }
+}
+
+struct CompatibilityShowcase: View {
+    let demoTick: Int
+    let pulseColor: Color
+    @Binding var pulseScale: Bool
+    @Binding var coordinatorURL: String
+    @Binding var secureToken: String
+    @Binding var selectedTaggedRow: Int?
+    @Binding var activeTab: KitchenSinkHome.DemoTab
+    @Binding var splitSelection: KitchenSinkHome.SplitPane
+    @Binding var crtMode: Bool
+    @Binding var showTransientProbe: Bool
+    @Binding var lastDisappearEvent: String
+
+    var body: some View {
+        Group {
+            Section(header: Text("Progress / Tint / Animation").foregroundStyle(.cyan).bold()) {
+                HStack(spacing: 1) {
+                    ProgressView()
+                        .tint(pulseColor)
+                    Spacer()
+                    ProgressView(value: Double(demoTick % 100), total: 100)
+                }
+                Text("Scaled pulse label")
+                    .foregroundStyle(.pink)
+                    .scaleEffect(pulseScale ? 1.3 : 0.9)
+                Button("Toggle scale") { pulseScale.toggle() }
+            }
+
+            Section(header: Text("Text Inputs (prompt + secure)").foregroundStyle(.cyan).bold()) {
+                TextField(
+                    "Coordinator URL",
+                    text: $coordinatorURL,
+                    prompt: Text("https://localhost:8080")
+                )
+                .autocorrectionDisabled()
+                SecureField(
+                    "Bearer token",
+                    text: $secureToken,
+                    prompt: Text("Paste your token")
+                )
+                .textFieldStyle(.roundedBorder)
+                Text("Token length: \(secureToken.count)")
+                    .foregroundStyle(.secondary)
+            }
+
+            Section(header: Text("List(selection:)").foregroundStyle(.cyan).bold()) {
+                List(selection: $selectedTaggedRow) {
+                    ForEach(0..<5, id: \.self) { i in
+                        Label("Tagged row \(i)", systemImage: "circle")
+                            .tag(i)
+                    }
+                }
+                Text("Selected tagged row: \(selectedTaggedRow.map(String.init) ?? "nil")")
+            }
+
+            Section(header: Text("GridItem / LazyVGrid").foregroundStyle(.cyan).bold()) {
+                LazyVGrid(columns: [GridItem(.adaptive(minimum: 12), spacing: 1)], spacing: 1) {
+                    ForEach(0..<8, id: \.self) { i in
+                        Text("Card \(i)")
+                            .padding(1)
+                            .frame(maxWidth: .infinity)
+                            .background(i % 2 == 0 ? Color.teal.opacity(0.2) : Color.blue.opacity(0.2))
+                    }
+                }
+            }
+
+            Section(header: Text("TabView / tabItem").foregroundStyle(.cyan).bold()) {
+                TabView(selection: $activeTab) {
+                    Text("Overview panel")
+                        .tabItem { Label("Overview", systemImage: "list.bullet") }
+                        .tag(KitchenSinkHome.DemoTab.overview)
+
+                    Text("Controls panel")
+                        .tabItem { Label("Controls", systemImage: "slider.horizontal.3") }
+                        .tag(KitchenSinkHome.DemoTab.controls)
+
+                    Text("Data panel")
+                        .tabItem { Label("Data", systemImage: "tablecells") }
+                        .tag(KitchenSinkHome.DemoTab.data)
+                }
+                .tint(.orange)
+                Text("Active tab: \(String(describing: activeTab))")
+                    .foregroundStyle(.secondary)
+            }
+
+            Section(header: Text("NavigationSplitView").foregroundStyle(.cyan).bold()) {
+                NavigationSplitView {
+                    List(selection: $splitSelection) {
+                        Label("Overview", systemImage: "rectangle.3.group")
+                            .tag(KitchenSinkHome.SplitPane.overview)
+                        Label("Settings", systemImage: "gear")
+                            .tag(KitchenSinkHome.SplitPane.settings)
+                        Label("Logs", systemImage: "terminal")
+                            .tag(KitchenSinkHome.SplitPane.logs)
+                    }
+                    .navigationSplitViewColumnWidth(min: 18, ideal: 24)
+                } detail: {
+                    switch splitSelection {
+                    case .overview:
+                        Text("Split detail: Overview")
+                    case .settings:
+                        Text("Split detail: Settings")
+                    case .logs:
+                        Text("Split detail: Logs")
+                    }
+                }
+            }
+
+            Section(header: Text("Form(.grouped)").foregroundStyle(.cyan).bold()) {
+                Form {
+                    Section {
+                        TextField("URL", text: $coordinatorURL, prompt: Text("https://localhost:8080"))
+                            .autocorrectionDisabled()
+                        Toggle("Insecure TLS", isOn: $crtMode)
+                    } header: {
+                        Text("Connection")
+                    }
+                    Section {
+                        SecureField("Token", text: $secureToken, prompt: Text("Bearer"))
+                    } header: {
+                        Text("Authentication")
+                    }
+                }
+                .formStyle(.grouped)
+            }
+
+            Section(header: Text("onDisappear Probe").foregroundStyle(.cyan).bold()) {
+                Toggle("Show transient child", isOn: $showTransientProbe)
+                if showTransientProbe {
+                    TransientProbe(lastDisappearEvent: $lastDisappearEvent)
+                }
+                Text("Last disappear event: \(lastDisappearEvent)")
+                    .foregroundStyle(.secondary)
             }
         }
     }
@@ -238,6 +428,19 @@ struct EnvironmentBannerView: View {
             Text(env.banner)
             TextField("Banner", text: $env.banner)
         }
+    }
+}
+
+struct TransientProbe: View {
+    @Binding var lastDisappearEvent: String
+
+    var body: some View {
+        Text("Transient child is visible")
+            .foregroundStyle(.yellow)
+            .onDisappear {
+                let unix = Int(Date().timeIntervalSince1970)
+                lastDisappearEvent = "disappeared @ \(unix)"
+            }
     }
 }
 

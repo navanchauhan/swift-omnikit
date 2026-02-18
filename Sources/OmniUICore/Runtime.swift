@@ -70,6 +70,9 @@ public final class _UIRuntime: @unchecked Sendable {
     }
     private var overlays: [_OverlayEntry] = []
 
+    private var onDisappearHandlers: [String: (path: [Int], env: EnvironmentValues, action: () -> Void)] = [:]
+    private var onDisappearSeenThisFrame: Set<String> = []
+
     private struct _ViewCacheEntry {
         var node: _VNode
         var typeID: ObjectIdentifier
@@ -292,8 +295,36 @@ public final class _UIRuntime: @unchecked Sendable {
 
         _frameDirtyEverything = false
         _frameDirtyPaths.removeAll(keepingCapacity: true)
+        if !onDisappearHandlers.isEmpty {
+            let alivePathKeys = _frameAlivePathKeys
+            var removed: [String] = []
+            removed.reserveCapacity(onDisappearHandlers.count)
+            for key in onDisappearHandlers.keys where !alivePathKeys.contains(key) {
+                removed.append(key)
+            }
+            for key in removed {
+                guard let entry = onDisappearHandlers.removeValue(forKey: key) else { continue }
+                _UIRuntime.$_currentEnvironment.withValue(entry.env) {
+                    _BuildContext.withRuntime(self, path: entry.path) {
+                        entry.action()
+                    }
+                }
+            }
+
+            // If the view at a given path still exists but no longer has `.onDisappear`,
+            // remove the stale handler so we don't fire it in a later frame.
+            var stale: [String] = []
+            stale.reserveCapacity(onDisappearHandlers.count)
+            for key in onDisappearHandlers.keys where alivePathKeys.contains(key) && !onDisappearSeenThisFrame.contains(key) {
+                stale.append(key)
+            }
+            for key in stale {
+                onDisappearHandlers.removeValue(forKey: key)
+            }
+        }
         _frameAlivePathKeys.removeAll(keepingCapacity: true)
         _activeBuildRecords.removeAll(keepingCapacity: true)
+        onDisappearSeenThisFrame.removeAll(keepingCapacity: true)
 
         _lastRenderedSize = size
         _hasRenderedAtLeastOnce = true
@@ -355,6 +386,7 @@ public final class _UIRuntime: @unchecked Sendable {
         navStackRoots.removeAll(keepingCapacity: true)
         overlays.removeAll(keepingCapacity: true)
         tasksSeenThisFrame.removeAll(keepingCapacity: true)
+        onDisappearSeenThisFrame.removeAll(keepingCapacity: true)
     }
 
     private func _buildRootNode<V: View>(_ root: V, size: _Size) -> _VNode {
@@ -477,6 +509,14 @@ public final class _UIRuntime: @unchecked Sendable {
         let env = _UIRuntime._currentEnvironment ?? _baseEnvironment
         actions[id] = (path: path, env: env, action: action)
         return id
+    }
+
+    func _registerOnDisappear(path: [Int], action: @escaping () -> Void) {
+        _noteBuildSideEffect()
+        let key = _viewPathKey(path: path)
+        let env = _UIRuntime._currentEnvironment ?? _baseEnvironment
+        onDisappearHandlers[key] = (path: path, env: env, action: action)
+        onDisappearSeenThisFrame.insert(key)
     }
 
     func _invokeAction(_ id: _ActionID) {
