@@ -374,7 +374,7 @@ run_vhs_tests() {
         name="$(basename "$tape" .tape)"
         log_file="$OUTPUT_DIR/vhs_${name}.log"
         log "  Running tape: $name"
-        if OMNIUI_SMOKE_SECONDS="$VHS_SMOKE_SECONDS" VHS_NO_SANDBOX=1 timeout "$VHS_TIMEOUT_SECONDS" vhs "$tape" >"$log_file" 2>&1; then
+        if OMNIUI_SMOKE_SECONDS="$VHS_SMOKE_SECONDS" VHS_NO_SANDBOX=1 timeout --signal=TERM --kill-after=10s "$VHS_TIMEOUT_SECONDS" vhs "$tape" >"$log_file" 2>&1; then
             tail -3 "$log_file" || true
             pass "vhs/$name"
         else
