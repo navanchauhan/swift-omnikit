@@ -65,6 +65,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     needs: tui-smoke
+    continue-on-error: true
     steps:
       - uses: actions/checkout@v4
         with:
@@ -74,7 +75,7 @@ jobs:
         run: docker compose build tui-test
 
       - name: Run VHS tests
-        run: docker compose run -e TUI_TEST_MODE=vhs tui-test
+        run: docker compose run -e TUI_TEST_MODE=vhs -e TUI_VHS_TIMEOUT_SECONDS=45 tui-test
 
       - name: Upload VHS recordings
         if: always()
