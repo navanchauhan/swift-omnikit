@@ -8,16 +8,20 @@ on:
       - 'Sources/CNotcurses/**'
       - 'Sources/KitchenSink/**'
       - 'Tests/tui/**'
+      - 'scripts/tui-test.sh'
       - 'Dockerfile'
       - 'docker-compose.yml'
+      - '.github/workflows/tui-tests.yml'
   pull_request:
     paths:
       - 'Sources/OmniUI*/**'
       - 'Sources/CNotcurses/**'
       - 'Sources/KitchenSink/**'
       - 'Tests/tui/**'
+      - 'scripts/tui-test.sh'
       - 'Dockerfile'
       - 'docker-compose.yml'
+      - '.github/workflows/tui-tests.yml'
 
 jobs:
   tui-smoke:
