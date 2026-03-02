@@ -1,0 +1,2 @@
+# Track baseline screenshots with Git LFS
+Tests/tui/baselines/*.png filter=lfs diff=lfs merge=lfs -text
