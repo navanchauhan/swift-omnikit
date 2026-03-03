@@ -55,12 +55,11 @@ public actor Session {
     // MARK: - Public API
 
     public func submit(_ input: String) async {
-        let task = Task {
-            await self.processInput(input)
-        }
-        processingTask = task
-        await task.value
-        processingTask = nil
+        // Call processInput directly on the actor to avoid a deadlock:
+        // wrapping in Task { await self.processInput() } + await task.value
+        // deadlocks because the Task re-enters the same actor serial executor
+        // that is already suspended waiting for task.value.
+        await processInput(input)
         await persistStateIfNeeded()
     }
 
@@ -153,6 +152,7 @@ public actor Session {
     // MARK: - Core Agentic Loop
 
     private func processInput(_ userInput: String) async {
+        fputs("[Session] processInput called (\(userInput.count) chars)\n", stderr)
         if autoRestoreFromStorage && !didAttemptStorageRestore {
             do {
                 _ = try await restoreFromStorage()
@@ -218,9 +218,11 @@ public actor Session {
             )
 
             // 3. Call LLM
+            fputs("[Session] Calling LLM: \(providerProfile.model) via \(providerProfile.id) (round \(roundCount), \(messages.count) messages, \(toolDefs.count) tools)\n", stderr)
             let response: Response
             do {
                 response = try await completeWithTransientRetries(request: request)
+                fputs("[Session] LLM returned: \(response.text.prefix(100))... (\(response.toolCalls.count) tool calls)\n", stderr)
             } catch {
                 let errorDetail: String
                 if let sdkError = error as? SDKError {

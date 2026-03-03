@@ -48,6 +48,10 @@ let package = Package(
             targets: ["OmniAIAttractor"]
         ),
         .library(
+            name: "OmniAgentsSDK",
+            targets: ["OmniAgentsSDK"]
+        ),
+        .library(
             name: "OmniUICore",
             targets: ["OmniUICore"]
         ),
@@ -188,6 +192,15 @@ let package = Package(
             name: "OmniAIAttractor",
             dependencies: ["OmniAICore", "OmniAIAgent"],
             path: "Sources/OmniAIAttractor",
+            swiftSettings: [
+                .swiftLanguageMode(.v5),
+                .unsafeFlags(["-warn-concurrency", "-strict-concurrency=minimal"]),
+            ]
+        ),
+        .target(
+            name: "OmniAgentsSDK",
+            dependencies: ["OmniAICore"],
+            path: "Sources/OmniAgentsSDK",
             swiftSettings: [
                 .swiftLanguageMode(.v5),
                 .unsafeFlags(["-warn-concurrency", "-strict-concurrency=minimal"]),

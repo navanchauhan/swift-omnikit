@@ -64,7 +64,9 @@ public final class CodingAgentBackend: CodergenBackend, @unchecked Sendable {
         }
 
         // 8. Submit the prompt and wait for completion
+        fputs("[CodingAgentBackend] Submitting prompt (\(enrichedPrompt.count) chars) to \(provider)/\(model)...\n", stderr)
         await session.submit(enrichedPrompt)
+        fputs("[CodingAgentBackend] Submit returned.\n", stderr)
 
         // 9. Check response quality and request follow-ups if needed
         let initialHistory = await session.getHistory()
