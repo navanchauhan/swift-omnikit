@@ -173,7 +173,7 @@ private struct CLICommand {
 
         let result: PipelineResult
         if resume, let checkpoint = try findLatestCheckpoint() {
-            fputs("[AttractorCLI] Resuming from checkpoint: \(checkpoint.currentNode ?? "?")\n", stderr)
+            fputs("[AttractorCLI] Resuming from checkpoint: \(checkpoint.currentNode)\n", stderr)
             fputs("[AttractorCLI] Completed nodes: \(checkpoint.completedNodes.joined(separator: ", "))\n", stderr)
             result = try await engine.resume(dot: dot, checkpoint: checkpoint)
         } else {
@@ -396,8 +396,9 @@ private final class CodexCLICodergenBackend: CodergenBackend, @unchecked Sendabl
         // acceptable for a CLI tool with sequential execution.
         let stdoutReadQueue = DispatchQueue(label: "codex.stdout")
         let stderrReadQueue = DispatchQueue(label: "codex.stderr")
-        var stdoutData = Data()
-        var stderrData = Data()
+        // Safety: each var is only mutated from its own serial queue and read after synchronization.
+        nonisolated(unsafe) var stdoutData = Data()
+        nonisolated(unsafe) var stderrData = Data()
         stdoutReadQueue.async { stdoutData = stdoutPipe.fileHandleForReading.readDataToEndOfFile() }
         stderrReadQueue.async { stderrData = stderrPipe.fileHandleForReading.readDataToEndOfFile() }
 
@@ -613,8 +614,9 @@ private func runCommand(_ argv: [String], timeoutSeconds: Int) throws -> String 
     // Note: DispatchGroup.wait() blocks the calling thread (see codex comment above).
     let stdoutReadQueue = DispatchQueue(label: "cmd.stdout")
     let stderrReadQueue = DispatchQueue(label: "cmd.stderr")
-    var stdoutData = Data()
-    var stderrData = Data()
+    // Safety: each var is only mutated from its own serial queue and read after synchronization.
+    nonisolated(unsafe) var stdoutData = Data()
+    nonisolated(unsafe) var stderrData = Data()
     stdoutReadQueue.async { stdoutData = stdoutPipe.fileHandleForReading.readDataToEndOfFile() }
     stderrReadQueue.async { stderrData = stderrPipe.fileHandleForReading.readDataToEndOfFile() }
 

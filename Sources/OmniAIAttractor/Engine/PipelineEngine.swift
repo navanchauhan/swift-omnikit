@@ -505,13 +505,17 @@ public final class PipelineEngine: @unchecked Sendable {
 
         // Execute with optional timeout
         if let timeout = node.timeout {
+            // Extract values before task group to avoid capturing `state` across concurrency boundaries.
+            let ctx = state.context
+            let graph = state.graph
+            let logsRoot = state.logsRoot
             return try await withThrowingTaskGroup(of: Outcome.self) { group in
                 group.addTask {
                     try await handler.execute(
                         node: node,
-                        context: state.context,
-                        graph: state.graph,
-                        logsRoot: state.logsRoot
+                        context: ctx,
+                        graph: graph,
+                        logsRoot: logsRoot
                     )
                 }
                 group.addTask {

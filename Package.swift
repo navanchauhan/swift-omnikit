@@ -184,8 +184,8 @@ let package = Package(
                 .process("Resources"),
             ],
             swiftSettings: [
-                .swiftLanguageMode(.v5),
-                .unsafeFlags(["-warn-concurrency", "-strict-concurrency=minimal"]),
+                .unsafeFlags(["-warn-concurrency", "-strict-concurrency=complete"]),
+                .unsafeFlags(["-enable-actor-data-race-checks"], .when(configuration: .debug)),
             ]
         ),
         .target(
@@ -193,8 +193,8 @@ let package = Package(
             dependencies: ["OmniAICore", "OmniAIAgent"],
             path: "Sources/OmniAIAttractor",
             swiftSettings: [
-                .swiftLanguageMode(.v5),
-                .unsafeFlags(["-warn-concurrency", "-strict-concurrency=minimal"]),
+                .unsafeFlags(["-warn-concurrency", "-strict-concurrency=complete"]),
+                .unsafeFlags(["-enable-actor-data-race-checks"], .when(configuration: .debug)),
             ]
         ),
         .target(
@@ -269,8 +269,8 @@ let package = Package(
             dependencies: ["OmniAIAttractor"],
             path: "Sources/AttractorCLI",
             swiftSettings: [
-                .swiftLanguageMode(.v5),
-                .unsafeFlags(["-warn-concurrency", "-strict-concurrency=minimal"]),
+                .unsafeFlags(["-warn-concurrency", "-strict-concurrency=complete"]),
+                .unsafeFlags(["-enable-actor-data-race-checks"], .when(configuration: .debug)),
             ]
         ),
         .testTarget(
@@ -302,8 +302,8 @@ let package = Package(
                 .product(name: "Testing", package: "swift-testing"),
             ],
             swiftSettings: [
-                .swiftLanguageMode(.v5),
-                .unsafeFlags(["-warn-concurrency", "-strict-concurrency=minimal"]),
+                .unsafeFlags(["-warn-concurrency", "-strict-concurrency=complete"]),
+                .unsafeFlags(["-enable-actor-data-race-checks"], .when(configuration: .debug)),
             ]
         ),
         .testTarget(
@@ -315,8 +315,8 @@ let package = Package(
                 .product(name: "Testing", package: "swift-testing"),
             ],
             swiftSettings: [
-                .swiftLanguageMode(.v5),
-                .unsafeFlags(["-warn-concurrency", "-strict-concurrency=minimal"]),
+                .unsafeFlags(["-warn-concurrency", "-strict-concurrency=complete"]),
+                .unsafeFlags(["-enable-actor-data-race-checks"], .when(configuration: .debug)),
             ]
         ),
         .testTarget(
