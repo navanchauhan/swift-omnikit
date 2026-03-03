@@ -22,20 +22,28 @@ public actor Session {
     public private(set) var abortSignaled: Bool = false
     private let depth: Int
     private var processingTask: Task<Void, Never>?
+    private let storageBackend: (any SessionStorageBackend)?
+    private let autoRestoreFromStorage: Bool
+    private var didAttemptStorageRestore = false
 
     public init(
         profile: ProviderProfile,
         environment: ExecutionEnvironment,
         client: Client? = nil,
         config: SessionConfig = SessionConfig(),
-        depth: Int = 0
+        depth: Int = 0,
+        sessionID: String = UUID().uuidString,
+        storageBackend: (any SessionStorageBackend)? = nil,
+        autoRestoreFromStorage: Bool = true
     ) throws {
-        self.id = UUID().uuidString
+        self.id = sessionID
         self.providerProfile = profile
         self.executionEnv = environment
         self.config = config
         self.eventEmitter = EventEmitter()
         self.depth = depth
+        self.storageBackend = storageBackend
+        self.autoRestoreFromStorage = autoRestoreFromStorage
 
         if let client = client {
             self.llmClient = client
@@ -53,24 +61,29 @@ public actor Session {
         processingTask = task
         await task.value
         processingTask = nil
+        await persistStateIfNeeded()
     }
 
-    public func updateConfig(_ mutator: (inout SessionConfig) -> Void) {
+    public func updateConfig(_ mutator: (inout SessionConfig) -> Void) async {
         mutator(&config)
+        await persistStateIfNeeded()
     }
 
-    public func steer(_ message: String) {
+    public func steer(_ message: String) async {
         steeringQueue.append(message)
+        await persistStateIfNeeded()
     }
 
-    public func followUp(_ message: String) {
+    public func followUp(_ message: String) async {
         followupQueue.append(message)
+        await persistStateIfNeeded()
     }
 
-    public func abort() {
+    public func abort() async {
         abortSignaled = true
         state = .closed
         processingTask?.cancel()
+        await persistStateIfNeeded()
     }
 
     public func close() async {
@@ -82,10 +95,12 @@ public actor Session {
         }
         await eventEmitter.emit(SessionEvent(kind: .sessionEnd, sessionId: id, data: ["state": "closed"]))
         await eventEmitter.flush()
+        await persistStateIfNeeded()
     }
 
-    public func addSystemReminder(_ reminder: String) {
+    public func addSystemReminder(_ reminder: String) async {
         history.append(.system(SystemTurn(content: wrapSystemReminder(reminder))))
+        await persistStateIfNeeded()
     }
 
     public func getState() -> SessionState {
@@ -96,18 +111,71 @@ public actor Session {
         history
     }
 
+    @discardableResult
+    public func restoreFromStorage() async throws -> Bool {
+        didAttemptStorageRestore = true
+        guard let storageBackend else { return false }
+        guard let snapshot = try await storageBackend.load(sessionID: id) else {
+            return false
+        }
+        if snapshot.providerID != providerProfile.id || snapshot.model != providerProfile.model {
+            await eventEmitter.emit(SessionEvent(
+                kind: .warning,
+                sessionId: id,
+                data: [
+                    "message": "Restored session was created for \(snapshot.providerID)/\(snapshot.model) but current session is \(providerProfile.id)/\(providerProfile.model).",
+                ]
+            ))
+        }
+        history = snapshot.history.map { $0.toTurn() }
+        steeringQueue = snapshot.steeringQueue
+        followupQueue = snapshot.followupQueue
+        config = snapshot.config
+        state = snapshot.state
+        abortSignaled = snapshot.abortSignaled
+        await eventEmitter.emit(SessionEvent(
+            kind: .warning,
+            sessionId: id,
+            data: ["message": "Session restored from storage (\(history.count) turns)"]
+        ))
+        return true
+    }
+
+    public func persistNow() async {
+        await persistStateIfNeeded()
+    }
+
+    public func clearPersistedState() async throws {
+        guard let storageBackend else { return }
+        try await storageBackend.delete(sessionID: id)
+    }
+
     // MARK: - Core Agentic Loop
 
     private func processInput(_ userInput: String) async {
+        if autoRestoreFromStorage && !didAttemptStorageRestore {
+            do {
+                _ = try await restoreFromStorage()
+            } catch {
+                await eventEmitter.emit(SessionEvent(
+                    kind: .warning,
+                    sessionId: id,
+                    data: ["message": "Failed to restore session from storage: \(error)"]
+                ))
+            }
+        }
+        await recoverPendingToolCallsIfNeeded()
+
         // Emit SESSION_START on first input
         if history.isEmpty {
             await eventEmitter.emit(SessionEvent(kind: .sessionStart, sessionId: id))
         }
         state = .processing
         history.append(.user(UserTurn(content: userInput)))
+        await persistStateIfNeeded()
         await eventEmitter.emit(SessionEvent(kind: .userInput, sessionId: id, data: ["content": userInput]))
 
-        drainSteering()
+        await drainSteering()
 
         var roundCount = 0
 
@@ -163,6 +231,7 @@ public actor Session {
                 await eventEmitter.emit(SessionEvent(kind: .error, sessionId: id, data: ["error": errorDetail]))
                 if error is AuthenticationError || error is ContextLengthError {
                     state = .closed
+                    await persistStateIfNeeded()
                     await eventEmitter.emit(SessionEvent(kind: .sessionEnd, sessionId: id, data: ["state": "closed", "error": "\(error)"]))
                     return
                 }
@@ -179,6 +248,7 @@ public actor Session {
                 responseId: response.id
             )
             history.append(.assistant(assistantTurn))
+            await persistStateIfNeeded()
             await eventEmitter.emit(SessionEvent(
                 kind: .assistantTextStart,
                 sessionId: id,
@@ -215,15 +285,17 @@ public actor Session {
             roundCount += 1
             let results = await executeToolCalls(response.toolCalls)
             history.append(.toolResults(ToolResultsTurn(results: results)))
+            await persistStateIfNeeded()
 
             // 7. Drain steering
-            drainSteering()
+            await drainSteering()
 
             // 8. Loop detection
             if config.enableLoopDetection {
                 if detectLoop(window: config.loopDetectionWindow) {
                     let warning = "Loop detected: the last \(config.loopDetectionWindow) tool calls follow a repeating pattern. Try a different approach."
                     history.append(.steering(SteeringTurn(content: warning)))
+                    await persistStateIfNeeded()
                     await eventEmitter.emit(SessionEvent(kind: .loopDetection, sessionId: id, data: ["message": warning]))
                 }
             }
@@ -235,23 +307,91 @@ public actor Session {
         // Process follow-up messages
         if !followupQueue.isEmpty {
             let nextInput = followupQueue.removeFirst()
+            await persistStateIfNeeded()
             await processInput(nextInput)
             return
         }
 
         state = .idle
+        await persistStateIfNeeded()
         await eventEmitter.emit(SessionEvent(kind: .sessionEnd, sessionId: id))
+    }
+
+    private func recoverPendingToolCallsIfNeeded() async {
+        guard let pending = unresolvedToolCallsFromHistory() else { return }
+
+        await eventEmitter.emit(SessionEvent(
+            kind: .warning,
+            sessionId: id,
+            data: [
+                "message": "Recovered pending tool-call round from session history (\(pending.count) call(s)).",
+            ]
+        ))
+
+        let results = await executeToolCalls(pending)
+        history.append(.toolResults(ToolResultsTurn(results: results)))
+        await persistStateIfNeeded()
+    }
+
+    private func unresolvedToolCallsFromHistory() -> [ToolCall]? {
+        guard !history.isEmpty else { return nil }
+        for idx in stride(from: history.count - 1, through: 0, by: -1) {
+            let turn = history[idx]
+            if case .assistant(let assistant) = turn, !assistant.toolCalls.isEmpty {
+                if idx + 1 >= history.count {
+                    return assistant.toolCalls
+                }
+                let tail = history[(idx + 1)...]
+                for t in tail {
+                    if case .toolResults = t {
+                        return nil
+                    }
+                }
+                return assistant.toolCalls
+            }
+            if case .toolResults = turn {
+                return nil
+            }
+        }
+        return nil
+    }
+
+    private func persistStateIfNeeded() async {
+        guard let storageBackend else { return }
+        let snapshot = SessionSnapshot(
+            sessionID: id,
+            providerID: providerProfile.id,
+            model: providerProfile.model,
+            workingDirectory: executionEnv.workingDirectory(),
+            state: state,
+            history: history.map(PersistedTurn.init),
+            steeringQueue: steeringQueue,
+            followupQueue: followupQueue,
+            config: config,
+            abortSignaled: abortSignaled,
+            updatedAt: Date()
+        )
+        do {
+            try await storageBackend.save(snapshot)
+        } catch {
+            await eventEmitter.emit(SessionEvent(
+                kind: .warning,
+                sessionId: id,
+                data: [
+                    "message": "Failed to persist session state: \(error)",
+                ]
+            ))
+        }
     }
 
     // MARK: - Steering
 
-    private func drainSteering() {
+    private func drainSteering() async {
         while !steeringQueue.isEmpty {
             let msg = steeringQueue.removeFirst()
             history.append(.steering(SteeringTurn(content: msg)))
-            Task {
-                await eventEmitter.emit(SessionEvent(kind: .steeringInjected, sessionId: id, data: ["content": msg]))
-            }
+            await persistStateIfNeeded()
+            await eventEmitter.emit(SessionEvent(kind: .steeringInjected, sessionId: id, data: ["content": msg]))
         }
     }
 

@@ -9,7 +9,7 @@ public enum Turn: Sendable {
     case steering(SteeringTurn)
 }
 
-public struct UserTurn: Sendable {
+public struct UserTurn: Sendable, Codable {
     public var content: String
     public var timestamp: Date
 
@@ -59,7 +59,7 @@ public struct ToolResultsTurn: Sendable {
     }
 }
 
-public struct SystemTurn: Sendable {
+public struct SystemTurn: Sendable, Codable {
     public var content: String
     public var timestamp: Date
 
@@ -69,7 +69,7 @@ public struct SystemTurn: Sendable {
     }
 }
 
-public struct SteeringTurn: Sendable {
+public struct SteeringTurn: Sendable, Codable {
     public var content: String
     public var timestamp: Date
 

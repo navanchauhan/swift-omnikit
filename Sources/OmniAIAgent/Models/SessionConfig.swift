@@ -1,6 +1,6 @@
 import Foundation
 
-public struct SessionConfig: Sendable {
+public struct SessionConfig: Sendable, Codable {
     public var maxTurns: Int
     public var maxToolRoundsPerInput: Int
     public var interactiveMode: Bool
