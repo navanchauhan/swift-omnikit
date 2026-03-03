@@ -2,6 +2,12 @@ import Foundation
 
 // MARK: - Graph
 
+// Safety: @unchecked Sendable because Graph is mutated only during the
+// parsing/transform phase (before pipeline execution begins). Once
+// PipelineEngine.executeLoop starts, the graph is treated as read-only.
+// ParallelHandler branches receive the same Graph reference but only read it.
+// TODO: Convert to a value type or add locking if mutation during execution
+// is ever needed.
 public final class Graph: @unchecked Sendable {
     public var id: String
     public var nodes: [String: Node]
@@ -93,6 +99,11 @@ public struct GraphAttributes: Sendable {
 
 // MARK: - Node
 
+// Safety: Same invariant as Graph — nodes are mutated only during
+// parsing/transforms (e.g. StylesheetTransform, VariableExpansionTransform)
+// before execution. During execution they are read-only.
+// TODO: Convert to a value type or add locking if mutation during execution
+// is ever needed.
 public final class Node: @unchecked Sendable {
     public var id: String
     public var label: String

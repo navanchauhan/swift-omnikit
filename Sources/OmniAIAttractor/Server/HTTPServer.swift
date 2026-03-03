@@ -9,10 +9,34 @@ public final class PipelineRunState: @unchecked Sendable {
     private let lock = NSLock()
     public let id: String
     public let dotSource: String
-    public private(set) var status: PipelineRunStatus = .pending
-    public private(set) var result: PipelineResult?
-    public private(set) var error: String?
-    public private(set) var pendingQuestions: [PendingQuestion] = []
+    private var _status: PipelineRunStatus = .pending
+    private var _result: PipelineResult?
+    private var _error: String?
+    private var _pendingQuestions: [PendingQuestion] = []
+
+    public var status: PipelineRunStatus {
+        lock.lock()
+        defer { lock.unlock() }
+        return _status
+    }
+
+    public var result: PipelineResult? {
+        lock.lock()
+        defer { lock.unlock() }
+        return _result
+    }
+
+    public var error: String? {
+        lock.lock()
+        defer { lock.unlock() }
+        return _error
+    }
+
+    public var pendingQuestions: [PendingQuestion] {
+        lock.lock()
+        defer { lock.unlock() }
+        return _pendingQuestions
+    }
     private var questionAnswers: [String: InterviewAnswer] = [:]
     private var questionContinuations: [String: CheckedContinuation<InterviewAnswer, Never>] = [:]
     public let eventEmitter: PipelineEventEmitter
@@ -36,21 +60,21 @@ public final class PipelineRunState: @unchecked Sendable {
 
     func setStatus(_ s: PipelineRunStatus) {
         lock.lock()
-        status = s
+        _status = s
         lock.unlock()
     }
 
     func setResult(_ r: PipelineResult) {
         lock.lock()
-        result = r
-        status = r.status == .success ? .completed : .failed
+        _result = r
+        _status = r.status == .success ? .completed : .failed
         lock.unlock()
     }
 
     func setError(_ e: String) {
         lock.lock()
-        error = e
-        status = .failed
+        _error = e
+        _status = .failed
         lock.unlock()
     }
 
@@ -63,19 +87,19 @@ public final class PipelineRunState: @unchecked Sendable {
     func cancel() {
         lock.lock()
         task?.cancel()
-        status = .cancelled
+        _status = .cancelled
         lock.unlock()
     }
 
     func addPendingQuestion(_ q: PendingQuestion) {
         lock.lock()
-        pendingQuestions.append(q)
+        _pendingQuestions.append(q)
         lock.unlock()
     }
 
     func removePendingQuestion(_ qid: String) {
         lock.lock()
-        pendingQuestions.removeAll { $0.id == qid }
+        _pendingQuestions.removeAll { $0.id == qid }
         lock.unlock()
     }
 

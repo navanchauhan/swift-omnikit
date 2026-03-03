@@ -53,21 +53,16 @@ public actor EventEmitter {
     }
 
     public func events() -> AsyncStream<SessionEvent> {
-        AsyncStream { continuation in
-            Task { [weak self] in
-                await self?.addContinuation(continuation)
-            }
-        }
-    }
-
-    private func addContinuation(_ continuation: AsyncStream<SessionEvent>.Continuation) {
+        let (stream, continuation) = AsyncStream<SessionEvent>.makeStream()
         continuations.append(continuation)
+        return stream
     }
 
     public func flush() {
         for continuation in continuations {
             continuation.finish()
         }
+        continuations.removeAll()
     }
 
     public func allEvents() -> [SessionEvent] {
