@@ -303,7 +303,7 @@ public actor Session {
             }
 
             // Context window awareness
-            checkContextUsage()
+            await checkContextUsage()
         }
 
         // Process follow-up messages
@@ -711,18 +711,16 @@ You are running in non-interactive (automated pipeline) mode. Complete your assi
 
     // MARK: - Context Window Awareness
 
-    private func checkContextUsage() {
+    private func checkContextUsage() async {
         let approxTokens = totalCharsInHistory() / 4
         let threshold = providerProfile.contextWindowSize * 80 / 100
         if approxTokens > threshold {
             let pct = approxTokens * 100 / providerProfile.contextWindowSize
-            Task {
-                await eventEmitter.emit(SessionEvent(
-                    kind: .warning,
-                    sessionId: id,
-                    data: ["message": "Context usage at ~\(pct)% of context window"]
-                ))
-            }
+            await eventEmitter.emit(SessionEvent(
+                kind: .warning,
+                sessionId: id,
+                data: ["message": "Context usage at ~\(pct)% of context window"]
+            ))
         }
     }
 

@@ -1,6 +1,4 @@
 import Foundation
-import Dispatch
-
 import OmniHTTP
 
 public typealias CompleteMiddleware = @Sendable (
@@ -24,29 +22,12 @@ public protocol ProviderAdapter: Sendable {
     func supportsToolChoice(_ mode: ToolChoiceMode) -> Bool
 }
 
-private final class _OAuthExchangeResultBox: @unchecked Sendable {
-    private let lock = NSLock()
-    private var value: Result<HTTPResponse, Error>?
-
-    func set(_ result: Result<HTTPResponse, Error>) {
-        lock.lock()
-        value = result
-        lock.unlock()
-    }
-
-    func get() -> Result<HTTPResponse, Error>? {
-        lock.lock()
-        defer { lock.unlock() }
-        return value
-    }
-}
-
 private func exchangeCodexOAuthIDTokenForOpenAIApiKey(
     idToken: String,
     issuer: String,
     clientID: String,
     transport: HTTPTransport
-) throws -> String {
+) async throws -> String {
     let normalizedIssuer = issuer
         .trimmingCharacters(in: .whitespacesAndNewlines)
         .trimmingCharacters(in: CharacterSet(charactersIn: "/"))
@@ -73,23 +54,7 @@ private func exchangeCodexOAuthIDTokenForOpenAIApiKey(
         body: .text(body)
     )
 
-    let semaphore = DispatchSemaphore(value: 0)
-    let box = _OAuthExchangeResultBox()
-    Task {
-        do {
-            let response = try await transport.send(request, timeout: .seconds(30))
-            box.set(.success(response))
-        } catch {
-            box.set(.failure(error))
-        }
-        semaphore.signal()
-    }
-    semaphore.wait()
-
-    guard let result = box.get() else {
-        throw ConfigurationError(message: "OpenAI OAuth token exchange failed without a response")
-    }
-    let response = try result.get()
+    let response = try await transport.send(request, timeout: .seconds(30))
 
     guard (200..<300).contains(response.statusCode) else {
         let bodyString = String(decoding: response.body, as: UTF8.self)
@@ -210,47 +175,112 @@ public final class Client: @unchecked Sendable {
         streamMiddleware: [StreamMiddleware] = [],
         allowEmptyProviders: Bool = false
     ) throws -> Client {
-        // Provider adapters are registered only if their env var keys exist.
-        // This is implemented in Providers/*.swift.
+        // Synchronous overload — skips OAuth token exchange (which requires async networking).
+        // If OPENAI_API_KEY is set directly, this works fine. If only OPENAI_OAUTH_ID_TOKEN
+        // is set, callers must use the async fromEnvAsync() variant instead.
         let env = environment
+        let providers = try _buildProviders(env: env, transport: transport, oauthApiKey: nil, allowEmpty: allowEmptyProviders)
+        return try Client(
+            providers: providers,
+            defaultProvider: providers.first?.key,
+            middleware: middleware,
+            completeMiddleware: completeMiddleware,
+            streamMiddleware: streamMiddleware,
+            modelCatalog: modelCatalog
+        )
+    }
 
+    public static func fromEnvAsync(
+        environment: [String: String],
+        transport: OmniHTTP.HTTPTransport = OmniHTTP.URLSessionHTTPTransport(),
+        modelCatalog: ModelCatalog = .default,
+        middleware: [Middleware] = [],
+        completeMiddleware: [CompleteMiddleware] = [],
+        streamMiddleware: [StreamMiddleware] = [],
+        allowEmptyProviders: Bool = false
+    ) async throws -> Client {
+        let env = environment
+        // Resolve OAuth key asynchronously if needed.
+        let oauthKey = try await _resolveOpenAIApiKeyAsync(env: env, transport: transport)
+        let providers = try _buildProviders(env: env, transport: transport, oauthApiKey: oauthKey, allowEmpty: allowEmptyProviders)
+        return try Client(
+            providers: providers,
+            defaultProvider: providers.first?.key,
+            middleware: middleware,
+            completeMiddleware: completeMiddleware,
+            streamMiddleware: streamMiddleware,
+            modelCatalog: modelCatalog
+        )
+    }
+
+    public static func fromEnvAsync(
+        transport: OmniHTTP.HTTPTransport = OmniHTTP.URLSessionHTTPTransport(),
+        modelCatalog: ModelCatalog = .default,
+        middleware: [Middleware] = [],
+        completeMiddleware: [CompleteMiddleware] = [],
+        streamMiddleware: [StreamMiddleware] = [],
+        allowEmptyProviders: Bool = false
+    ) async throws -> Client {
+        try await fromEnvAsync(
+            environment: ProcessInfo.processInfo.environment,
+            transport: transport,
+            modelCatalog: modelCatalog,
+            middleware: middleware,
+            completeMiddleware: completeMiddleware,
+            streamMiddleware: streamMiddleware,
+            allowEmptyProviders: allowEmptyProviders
+        )
+    }
+
+    private static func _resolveOpenAIApiKeyAsync(
+        env: [String: String],
+        transport: HTTPTransport
+    ) async throws -> String? {
         func firstNonEmpty(_ keys: [String]) -> String? {
             for key in keys {
-                if let value = env[key], !value.isEmpty {
-                    return value
-                }
+                if let value = env[key], !value.isEmpty { return value }
             }
             return nil
         }
 
-        func resolveOpenAIApiKey() throws -> String? {
-            if let explicit = firstNonEmpty(["OPENAI_API_KEY", "DR_OPENAI_API_KEY"]) {
-                return explicit
+        if let explicit = firstNonEmpty(["OPENAI_API_KEY", "DR_OPENAI_API_KEY"]) {
+            return explicit
+        }
+
+        guard let idToken = firstNonEmpty(["OPENAI_OAUTH_ID_TOKEN", "DR_OPENAI_OAUTH_ID_TOKEN"]) else {
+            return nil
+        }
+
+        let issuer = firstNonEmpty(["OPENAI_OAUTH_ISSUER", "DR_OPENAI_OAUTH_ISSUER"])
+            ?? "https://auth.openai.com"
+        let clientID = firstNonEmpty(["OPENAI_OAUTH_CLIENT_ID", "DR_OPENAI_OAUTH_CLIENT_ID"])
+            ?? "app_EMoamEEZ73f0CkXaXp7hrann"
+
+        return try await exchangeCodexOAuthIDTokenForOpenAIApiKey(
+            idToken: idToken,
+            issuer: issuer,
+            clientID: clientID,
+            transport: transport
+        )
+    }
+
+    private static func _buildProviders(
+        env: [String: String],
+        transport: HTTPTransport,
+        oauthApiKey: String?,
+        allowEmpty: Bool
+    ) throws -> [String: ProviderAdapter] {
+        func firstNonEmpty(_ keys: [String]) -> String? {
+            for key in keys {
+                if let value = env[key], !value.isEmpty { return value }
             }
-
-            guard let idToken = firstNonEmpty([
-                "OPENAI_OAUTH_ID_TOKEN",
-                "DR_OPENAI_OAUTH_ID_TOKEN",
-            ]) else {
-                return nil
-            }
-
-            let issuer = firstNonEmpty(["OPENAI_OAUTH_ISSUER", "DR_OPENAI_OAUTH_ISSUER"])
-                ?? "https://auth.openai.com"
-            let clientID = firstNonEmpty(["OPENAI_OAUTH_CLIENT_ID", "DR_OPENAI_OAUTH_CLIENT_ID"])
-                ?? "app_EMoamEEZ73f0CkXaXp7hrann"
-
-            return try exchangeCodexOAuthIDTokenForOpenAIApiKey(
-                idToken: idToken,
-                issuer: issuer,
-                clientID: clientID,
-                transport: transport
-            )
+            return nil
         }
 
         var providers: [String: ProviderAdapter] = [:]
 
-        if let key = try resolveOpenAIApiKey() {
+        let openaiKey = firstNonEmpty(["OPENAI_API_KEY", "DR_OPENAI_API_KEY"]) ?? oauthApiKey
+        if let key = openaiKey {
             providers["openai"] = OpenAIAdapter(
                 apiKey: key,
                 baseURL: env["OPENAI_BASE_URL"],
@@ -272,18 +302,11 @@ public final class Client: @unchecked Sendable {
             providers["groq"] = GroqAdapter(apiKey: key, baseURL: env["GROQ_BASE_URL"], transport: transport)
         }
 
-        if providers.isEmpty && !allowEmptyProviders {
+        if providers.isEmpty && !allowEmpty {
             throw ConfigurationError(message: "No providers configured. Set OPENAI_API_KEY (or DR_OPENAI_API_KEY) or OPENAI_OAUTH_ID_TOKEN (or DR_OPENAI_OAUTH_ID_TOKEN) and/or ANTHROPIC_API_KEY (or DR_ANTHROPIC_API_KEY) and/or GEMINI_API_KEY (or DR_GEMINI_API_KEY) and/or CEREBRAS_API_KEY and/or GROQ_API_KEY.")
         }
 
-        return try Client(
-            providers: providers,
-            defaultProvider: providers.first?.key,
-            middleware: middleware,
-            completeMiddleware: completeMiddleware,
-            streamMiddleware: streamMiddleware,
-            modelCatalog: modelCatalog
-        )
+        return providers
     }
 
     public static func fromEnv(

@@ -388,6 +388,15 @@ private final class CodexCLICodergenBackend: CodergenBackend, @unchecked Sendabl
         }
         stdinPipe.fileHandleForWriting.closeFile()
 
+        // Read stdout/stderr concurrently to prevent pipe buffer deadlock
+        // when output exceeds ~64KB. Reading must start before waitUntilExit.
+        let stdoutReadQueue = DispatchQueue(label: "codex.stdout")
+        let stderrReadQueue = DispatchQueue(label: "codex.stderr")
+        var stdoutData = Data()
+        var stderrData = Data()
+        stdoutReadQueue.async { stdoutData = stdoutPipe.fileHandleForReading.readDataToEndOfFile() }
+        stderrReadQueue.async { stderrData = stderrPipe.fileHandleForReading.readDataToEndOfFile() }
+
         let group = DispatchGroup()
         group.enter()
         DispatchQueue.global(qos: .userInitiated).async {
@@ -408,14 +417,12 @@ private final class CodexCLICodergenBackend: CodergenBackend, @unchecked Sendabl
             )
         }
 
-        let stdout = String(
-            data: stdoutPipe.fileHandleForReading.readDataToEndOfFile(),
-            encoding: .utf8
-        ) ?? ""
-        let stderr = String(
-            data: stderrPipe.fileHandleForReading.readDataToEndOfFile(),
-            encoding: .utf8
-        ) ?? ""
+        // Wait for pipe reads to complete after process exits.
+        stdoutReadQueue.sync {}
+        stderrReadQueue.sync {}
+
+        let stdout = String(data: stdoutData, encoding: .utf8) ?? ""
+        let stderr = String(data: stderrData, encoding: .utf8) ?? ""
 
         guard process.terminationStatus == 0 else {
             throw ExitError(
@@ -597,6 +604,15 @@ private func runCommand(_ argv: [String], timeoutSeconds: Int) throws -> String 
         throw ExitError(code: 1, message: "Failed to start command '\(argv.joined(separator: " "))': \(error)")
     }
 
+    // Read stdout/stderr concurrently to prevent pipe buffer deadlock
+    // when output exceeds ~64KB. Reading must start before waitUntilExit.
+    let stdoutReadQueue = DispatchQueue(label: "cmd.stdout")
+    let stderrReadQueue = DispatchQueue(label: "cmd.stderr")
+    var stdoutData = Data()
+    var stderrData = Data()
+    stdoutReadQueue.async { stdoutData = stdoutPipe.fileHandleForReading.readDataToEndOfFile() }
+    stderrReadQueue.async { stderrData = stderrPipe.fileHandleForReading.readDataToEndOfFile() }
+
     let group = DispatchGroup()
     group.enter()
     DispatchQueue.global(qos: .userInitiated).async {
@@ -617,14 +633,12 @@ private func runCommand(_ argv: [String], timeoutSeconds: Int) throws -> String 
         )
     }
 
-    let stdout = String(
-        data: stdoutPipe.fileHandleForReading.readDataToEndOfFile(),
-        encoding: .utf8
-    ) ?? ""
-    let stderr = String(
-        data: stderrPipe.fileHandleForReading.readDataToEndOfFile(),
-        encoding: .utf8
-    ) ?? ""
+    // Wait for pipe reads to complete after process exits.
+    stdoutReadQueue.sync {}
+    stderrReadQueue.sync {}
+
+    let stdout = String(data: stdoutData, encoding: .utf8) ?? ""
+    let stderr = String(data: stderrData, encoding: .utf8) ?? ""
 
     guard process.terminationStatus == 0 else {
         throw ExitError(
