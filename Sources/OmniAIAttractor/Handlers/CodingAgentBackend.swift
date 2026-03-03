@@ -34,8 +34,8 @@ public final class CodingAgentBackend: CodergenBackend, @unchecked Sendable {
 
         // 4. Configure the session
         let sessionConfig = SessionConfig(
-            maxTurns: maxTurns > 0 ? maxTurns * 3 : 0, // turns = agent_turns * ~3 (user + assistant + tool)
-            maxToolRoundsPerInput: maxTurns > 0 ? maxTurns : 50,
+            maxTurns: 0,  // No limit — natural completion only
+            maxToolRoundsPerInput: 0,  // No limit — let the model run until it returns text with no tool calls
             defaultCommandTimeoutMs: 120_000,
             maxCommandTimeoutMs: 600_000,
             reasoningEffort: reasoningEffort,
