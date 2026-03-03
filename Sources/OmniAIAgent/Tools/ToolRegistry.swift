@@ -37,6 +37,8 @@ public struct RegisteredTool: Sendable {
     }
 }
 
+// Safety: @unchecked Sendable — all mutable state (tools) is guarded by `lock`.
+// The lock is never held across suspension points.
 public final class ToolRegistry: @unchecked Sendable {
     private var tools: [String: RegisteredTool] = [:]
     private let lock = NSLock()

@@ -742,8 +742,12 @@ private struct CodexExecSnapshot: Sendable {
     let truncatedCharCount: Int
 }
 
+// Safety: @unchecked Sendable because all mutable state (buffer, readOffset)
+// is guarded by `lock`. Process properties (isRunning, terminationStatus) are
+// also accessed under the lock to avoid racing with the readabilityHandler
+// callback which runs on an arbitrary dispatch queue.
 private final class CodexExecSession: @unchecked Sendable {
-    let process: Process
+    private let process: Process
     private let outputPipe: Pipe
     private let inputPipe: Pipe
     private let lock = NSLock()
@@ -769,11 +773,15 @@ private final class CodexExecSession: @unchecked Sendable {
     }
 
     var isRunning: Bool {
-        process.isRunning
+        lock.lock()
+        defer { lock.unlock() }
+        return process.isRunning
     }
 
     var exitCode: Int32? {
-        process.isRunning ? nil : process.terminationStatus
+        lock.lock()
+        defer { lock.unlock() }
+        return process.isRunning ? nil : process.terminationStatus
     }
 
     func write(_ chars: String) throws {
@@ -796,9 +804,12 @@ private final class CodexExecSession: @unchecked Sendable {
     }
 
     func terminate() {
-        if process.isRunning {
+        lock.lock()
+        let running = process.isRunning
+        if running {
             process.terminate()
         }
+        lock.unlock()
         outputPipe.fileHandleForReading.readabilityHandler = nil
     }
 

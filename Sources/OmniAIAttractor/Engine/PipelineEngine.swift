@@ -120,7 +120,7 @@ public final class PipelineEngine: @unchecked Sendable {
                 cycleIndex: cycleIndex
             )
 
-            try initializeRun(state: state, startAt: restartStartNode)
+            try await initializeRun(state: state, startAt: restartStartNode)
             try await executeLoop(state: state)
 
             if let restartTarget = state.restartTargetNodeId {
@@ -214,7 +214,7 @@ public final class PipelineEngine: @unchecked Sendable {
                     artifactStore: ArtifactStore(logsRoot: nextLogsRoot),
                     cycleIndex: loopCount
                 )
-                try initializeRun(state: nextState, startAt: restartTarget)
+                try await initializeRun(state: nextState, startAt: restartTarget)
                 state = nextState
                 continue
             }
@@ -232,7 +232,7 @@ public final class PipelineEngine: @unchecked Sendable {
         )
     }
 
-    private func initializeRun(state: ExecutionState, startAt: String? = nil) throws {
+    private func initializeRun(state: ExecutionState, startAt: String? = nil) async throws {
         // Create logs root directory
         try fm.createDirectory(at: state.logsRoot, withIntermediateDirectories: true)
 
@@ -258,15 +258,13 @@ public final class PipelineEngine: @unchecked Sendable {
 
         // Emit pipeline started
         if let emitter = config.eventEmitter {
-            Task {
-                await emitter.emit(PipelineEvent(
-                    kind: .pipelineStarted,
-                    data: [
-                        "pipeline_id": state.graph.id,
-                        "goal": state.graph.attributes.goal
-                    ]
-                ))
-            }
+            await emitter.emit(PipelineEvent(
+                kind: .pipelineStarted,
+                data: [
+                    "pipeline_id": state.graph.id,
+                    "goal": state.graph.attributes.goal
+                ]
+            ))
         }
     }
 
@@ -301,12 +299,10 @@ public final class PipelineEngine: @unchecked Sendable {
 
                 // Emit pipeline completed
                 if let emitter = config.eventEmitter {
-                    Task {
-                        await emitter.emit(PipelineEvent(
-                            kind: .pipelineCompleted,
-                            nodeId: currentId
-                        ))
-                    }
+                    await emitter.emit(PipelineEvent(
+                        kind: .pipelineCompleted,
+                        nodeId: currentId
+                    ))
                 }
 
                 state.currentNodeId = nil
@@ -315,13 +311,10 @@ public final class PipelineEngine: @unchecked Sendable {
 
             // Emit stage started
             if let emitter = config.eventEmitter {
-                let nodeIdCopy = currentId
-                Task {
-                    await emitter.emit(PipelineEvent(
-                        kind: .stageStarted,
-                        nodeId: nodeIdCopy
-                    ))
-                }
+                await emitter.emit(PipelineEvent(
+                    kind: .stageStarted,
+                    nodeId: currentId
+                ))
             }
 
             // Resolve context fidelity and build preamble for LLM nodes
@@ -355,20 +348,16 @@ public final class PipelineEngine: @unchecked Sendable {
             }
 
             // Save checkpoint
-            try saveCheckpoint(state: state)
+            try await saveCheckpoint(state: state)
 
             // Emit stage completed/failed
             if let emitter = config.eventEmitter {
-                let nodeIdCopy = currentId
-                let outcomeStatus = outcome.status
-                Task {
-                    let kind: PipelineEventKind = (outcomeStatus == .fail) ? .stageFailed : .stageCompleted
-                    await emitter.emit(PipelineEvent(
-                        kind: kind,
-                        nodeId: nodeIdCopy,
-                        data: ["outcome": outcomeStatus.rawValue]
-                    ))
-                }
+                let kind: PipelineEventKind = (outcome.status == .fail) ? .stageFailed : .stageCompleted
+                await emitter.emit(PipelineEvent(
+                    kind: kind,
+                    nodeId: currentId,
+                    data: ["outcome": outcome.status.rawValue]
+                ))
             }
 
             // Handle loop_restart
@@ -396,12 +385,10 @@ public final class PipelineEngine: @unchecked Sendable {
                     state.currentNodeId = nil
 
                     if let emitter = config.eventEmitter {
-                        Task {
-                            await emitter.emit(PipelineEvent(
-                                kind: .pipelineFailed,
-                                data: ["reason": outcome.failureReason]
-                            ))
-                        }
+                        await emitter.emit(PipelineEvent(
+                            kind: .pipelineFailed,
+                            data: ["reason": outcome.failureReason]
+                        ))
                     }
                     break
                 }
@@ -468,15 +455,11 @@ public final class PipelineEngine: @unchecked Sendable {
 
                 // Emit retrying event
                 if let emitter = config.eventEmitter {
-                    let nodeId = node.id
-                    let attemptCopy = attempt
-                    Task {
-                        await emitter.emit(PipelineEvent(
-                            kind: .stageRetrying,
-                            nodeId: nodeId,
-                            data: ["attempt": String(attemptCopy)]
-                        ))
-                    }
+                    await emitter.emit(PipelineEvent(
+                        kind: .stageRetrying,
+                        nodeId: node.id,
+                        data: ["attempt": String(attempt)]
+                    ))
                 }
 
                 // Apply backoff delay
@@ -840,7 +823,7 @@ public final class PipelineEngine: @unchecked Sendable {
         try data.write(to: url)
     }
 
-    private func saveCheckpoint(state: ExecutionState) throws {
+    private func saveCheckpoint(state: ExecutionState) async throws {
         let outcomeStrings = state.nodeOutcomes.mapValues { $0.rawValue }
         let checkpoint = Checkpoint(
             timestamp: Date(),
@@ -856,13 +839,10 @@ public final class PipelineEngine: @unchecked Sendable {
 
         // Emit checkpoint event
         if let emitter = config.eventEmitter {
-            let nodeId = state.currentNodeId
-            Task {
-                await emitter.emit(PipelineEvent(
-                    kind: .checkpointSaved,
-                    nodeId: nodeId
-                ))
-            }
+            await emitter.emit(PipelineEvent(
+                kind: .checkpointSaved,
+                nodeId: state.currentNodeId
+            ))
         }
     }
 

@@ -14,6 +14,8 @@ public protocol NodeHandler: Sendable {
 
 // MARK: - Handler Registry
 
+// Safety: @unchecked Sendable — all mutable state (handlers) is guarded by
+// `lock`. Registration happens during setup; resolution happens during execution.
 public final class HandlerRegistry: @unchecked Sendable {
     private var handlers: [String: NodeHandler] = [:]
     private let lock = NSLock()

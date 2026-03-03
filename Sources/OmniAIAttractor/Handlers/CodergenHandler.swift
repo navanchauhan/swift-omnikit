@@ -169,6 +169,8 @@ public final class CodergenHandler: NodeHandler, @unchecked Sendable {
 
     // MARK: - Shell Hook Execution
 
+    // Note: Blocks a cooperative thread via readDataToEndOfFile()/waitUntilExit().
+    // Hooks are short-lived shell commands so starvation risk is low.
     private func runShellHook(_ script: String, nodeId: String) throws -> String {
         let process = Process()
         let stdout = Pipe()

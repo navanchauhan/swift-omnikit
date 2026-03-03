@@ -2,6 +2,11 @@ import Foundation
 
 // MARK: - Tool Handler
 
+// Safety: @unchecked Sendable — no mutable state; all state is local to execute().
+// Note: execute() blocks a cooperative thread pool thread via readDataToEndOfFile()
+// and waitUntilExit(). This is acceptable for sequential pipeline execution but
+// may cause thread starvation under ParallelHandler with many tool nodes.
+// TODO: Move Process execution to a detached task or blocking executor.
 public final class ToolHandler: NodeHandler, @unchecked Sendable {
     public let handlerType: HandlerType = .tool
 

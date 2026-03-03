@@ -2,6 +2,12 @@ import Foundation
 
 // MARK: - Pipeline Context
 
+// Safety: @unchecked Sendable — all mutable state (store, log) is guarded by
+// `lock`. Individual get/set operations are atomic, but compound read-then-write
+// sequences (e.g. getString + set) are NOT atomic. Callers requiring atomicity
+// across multiple operations should use applyUpdates() or coordinate externally.
+// ParallelHandler branches receive cloned contexts; only the shared parent
+// context is written to after all branches complete.
 public final class PipelineContext: @unchecked Sendable {
     private let lock = NSLock()
     private var store: [String: Any]

@@ -18,6 +18,11 @@ public struct ArtifactInfo: Sendable {
 
 // MARK: - Artifact Store
 
+// Safety: @unchecked Sendable — all mutable state (inMemory, metadata) is
+// guarded by `lock`. Note: store() performs file I/O while holding the lock,
+// which can block the cooperative thread pool. This is acceptable for the
+// current write-once/read-many access pattern but should be revisited if
+// artifact stores are shared across concurrent pipelines.
 public final class ArtifactStore: @unchecked Sendable {
     private let lock = NSLock()
     private var inMemory: [String: Any] = [:]

@@ -62,7 +62,9 @@ public func spawnAgentTool(parentSession: Session) -> RegisteredTool {
 
             await parentSession.registerSubagent(handle)
 
-            // Start the subagent asynchronously
+            // Start the subagent asynchronously. Intentionally fire-and-forget:
+            // the subagent runs independently and is retrieved via 'wait' or
+            // 'close_agent' tools. submit() does not throw.
             Task {
                 await subSession.submit(task)
             }

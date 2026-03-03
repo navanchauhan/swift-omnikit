@@ -203,10 +203,18 @@ public struct CallbackInterviewer: Interviewer {
 
 // MARK: - QueueInterviewer
 
+// Safety: @unchecked Sendable — all mutable state (queue, _askedQuestions)
+// is guarded by `lock`.
 public final class QueueInterviewer: @unchecked Sendable, Interviewer {
     private var queue: [InterviewAnswer]
     private let lock = NSLock()
-    public private(set) var askedQuestions: [InterviewQuestion] = []
+    private var _askedQuestions: [InterviewQuestion] = []
+
+    public var askedQuestions: [InterviewQuestion] {
+        lock.lock()
+        defer { lock.unlock() }
+        return _askedQuestions
+    }
 
     public init(answers: [InterviewAnswer]) {
         self.queue = answers
@@ -219,7 +227,7 @@ public final class QueueInterviewer: @unchecked Sendable, Interviewer {
     private func nextAnswer(for question: InterviewQuestion) -> InterviewAnswer {
         lock.lock()
         defer { lock.unlock() }
-        askedQuestions.append(question)
+        _askedQuestions.append(question)
         if queue.isEmpty {
             return .skipped()
         }
@@ -229,10 +237,18 @@ public final class QueueInterviewer: @unchecked Sendable, Interviewer {
 
 // MARK: - RecordingInterviewer
 
+// Safety: @unchecked Sendable — all mutable state (_recordings) is guarded
+// by `lock`. The `inner` interviewer is required to be Sendable via protocol.
 public final class RecordingInterviewer: @unchecked Sendable, Interviewer {
     private let inner: Interviewer
     private let lock = NSLock()
-    public private(set) var recordings: [(InterviewQuestion, InterviewAnswer)] = []
+    private var _recordings: [(InterviewQuestion, InterviewAnswer)] = []
+
+    public var recordings: [(InterviewQuestion, InterviewAnswer)] {
+        lock.lock()
+        defer { lock.unlock() }
+        return _recordings
+    }
 
     public init(wrapping inner: Interviewer) {
         self.inner = inner
@@ -246,7 +262,7 @@ public final class RecordingInterviewer: @unchecked Sendable, Interviewer {
 
     private func record(_ question: InterviewQuestion, _ answer: InterviewAnswer) {
         lock.lock()
-        recordings.append((question, answer))
+        _recordings.append((question, answer))
         lock.unlock()
     }
 

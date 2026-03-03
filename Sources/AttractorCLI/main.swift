@@ -390,6 +390,10 @@ private final class CodexCLICodergenBackend: CodergenBackend, @unchecked Sendabl
 
         // Read stdout/stderr concurrently to prevent pipe buffer deadlock
         // when output exceeds ~64KB. Reading must start before waitUntilExit.
+        // Note: DispatchGroup.wait() blocks the calling thread. This is called
+        // from a synchronous throws function within the CLI entry point. If the
+        // caller is on the cooperative thread pool, this could starve threads;
+        // acceptable for a CLI tool with sequential execution.
         let stdoutReadQueue = DispatchQueue(label: "codex.stdout")
         let stderrReadQueue = DispatchQueue(label: "codex.stderr")
         var stdoutData = Data()
@@ -606,6 +610,7 @@ private func runCommand(_ argv: [String], timeoutSeconds: Int) throws -> String 
 
     // Read stdout/stderr concurrently to prevent pipe buffer deadlock
     // when output exceeds ~64KB. Reading must start before waitUntilExit.
+    // Note: DispatchGroup.wait() blocks the calling thread (see codex comment above).
     let stdoutReadQueue = DispatchQueue(label: "cmd.stdout")
     let stderrReadQueue = DispatchQueue(label: "cmd.stderr")
     var stdoutData = Data()

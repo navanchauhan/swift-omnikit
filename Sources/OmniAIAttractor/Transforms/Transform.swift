@@ -77,6 +77,8 @@ public struct PreambleTransform: GraphTransform {
 
 /// Manages and applies a sequence of transforms to a graph.
 /// Built-in transforms run first, followed by custom transforms in registration order.
+// Safety: @unchecked Sendable — mutable state (customTransforms) is guarded by
+// `lock`. The lock is released before applying transforms.
 public final class TransformPipeline: @unchecked Sendable {
     private var customTransforms: [GraphTransform] = []
     private let lock = NSLock()
