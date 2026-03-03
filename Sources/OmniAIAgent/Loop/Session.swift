@@ -202,7 +202,11 @@ public actor Session {
             fputs("[Session] step: discoverProjectDocs\n", stderr)
             let projectDocs = await discoverProjectDocs(workingDir: executionEnv.workingDirectory())
             fputs("[Session] step: gatherGitContext\n", stderr)
-            let gitCtx = await gatherGitContext()
+            // Skip git context gathering in non-interactive mode to avoid intermittent
+            // subprocess hangs that stall the pipeline. Git context is decorative only.
+            let gitCtx: GitContext? = config.interactiveMode
+                ? await gatherGitContext()
+                : nil
             fputs("[Session] step: buildSystemPrompt\n", stderr)
             let systemPrompt = providerProfile.buildSystemPrompt(
                 environment: executionEnv,

@@ -147,12 +147,15 @@ public final class LocalExecutionEnvironment: ExecutionEnvironment, @unchecked S
         _ = setpgid(pid, pid)
 
         // Read output concurrently so long-running commands cannot deadlock on full pipes.
-        let stdoutReadTask = Task.detached(priority: .userInitiated) {
-            stdoutPipe.fileHandleForReading.readDataToEndOfFile()
-        }
-        let stderrReadTask = Task.detached(priority: .userInitiated) {
-            stderrPipe.fileHandleForReading.readDataToEndOfFile()
-        }
+        // Use DispatchQueue (not Task.detached) for blocking I/O to avoid consuming
+        // cooperative thread pool threads — blocking calls in Task.detached can starve
+        // the pool when multiple subprocesses run concurrently.
+        let stdoutBox = _DataBox()
+        let stderrBox = _DataBox()
+        let stdoutQueue = DispatchQueue(label: "exec.stdout.\(pid)")
+        let stderrQueue = DispatchQueue(label: "exec.stderr.\(pid)")
+        stdoutQueue.async { stdoutBox.set(stdoutPipe.fileHandleForReading.readDataToEndOfFile()) }
+        stderrQueue.async { stderrBox.set(stderrPipe.fileHandleForReading.readDataToEndOfFile()) }
 
         // Timeout task
         let timeoutFlag = TimeoutFlag()
@@ -167,14 +170,30 @@ public final class LocalExecutionEnvironment: ExecutionEnvironment, @unchecked S
             }
         }
 
-        let waitTask = Task.detached(priority: .userInitiated) {
-            process.waitUntilExit()
+        // Wait for process on a dispatch queue thread, not the cooperative pool.
+        // Using withCheckedContinuation ensures we yield the cooperative thread
+        // while the blocking waitUntilExit runs on a GCD thread.
+        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+            DispatchQueue.global(qos: .userInitiated).async {
+                process.waitUntilExit()
+                continuation.resume()
+            }
         }
-        await waitTask.value
         timeoutTask.cancel()
 
-        let stdoutData = await stdoutReadTask.value
-        let stderrData = await stderrReadTask.value
+        // Wait for pipe reads to finish after process exits — also off the cooperative pool.
+        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+            stdoutQueue.async {
+                continuation.resume()
+            }
+        }
+        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+            stderrQueue.async {
+                continuation.resume()
+            }
+        }
+        let stdoutData = stdoutBox.get()
+        let stderrData = stderrBox.get()
 
         let stdout = String(data: stdoutData, encoding: .utf8) ?? ""
         let stderr = String(data: stderrData, encoding: .utf8) ?? ""
@@ -517,6 +536,23 @@ Base64:
         if kill(-pid, signal) != 0 {
             _ = kill(pid, signal)
         }
+    }
+}
+
+private final class _DataBox: @unchecked Sendable {
+    private let lock = NSLock()
+    private var data = Data()
+
+    func set(_ d: Data) {
+        lock.lock()
+        data = d
+        lock.unlock()
+    }
+
+    func get() -> Data {
+        lock.lock()
+        defer { lock.unlock() }
+        return data
     }
 }
 
