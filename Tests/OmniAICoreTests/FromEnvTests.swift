@@ -119,7 +119,7 @@ final class FromEnvTests {
             HTTPResponse(statusCode: 200, headers: HTTPHeaders(), body: Array(try openAIResponse.data())),
         ])
 
-        let client = try Client.fromEnv(
+        let client = try await Client.fromEnvAsync(
             environment: [
                 "OPENAI_OAUTH_ID_TOKEN": "id-token-123",
                 "OPENAI_OAUTH_CLIENT_ID": "client-xyz",
