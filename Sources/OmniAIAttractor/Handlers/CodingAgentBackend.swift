@@ -201,6 +201,12 @@ public final class CodingAgentBackend: CodergenBackend, @unchecked Sendable {
 
         WITHOUT this JSON block, the pipeline will treat your work as incomplete. \
         This is not optional - the JSON status block MUST appear in your response.
+
+        4. STOP WHEN DONE: Once you have written all files and completed the task, \
+        STOP making tool calls. Return your final summary text with the JSON status block \
+        as a regular message (no tool calls). The session ends when you return a message \
+        with zero tool calls. Do NOT keep reading or re-verifying files after writing them — \
+        trust your work and finish.
         """)
 
         return parts.joined(separator: "\n\n")
