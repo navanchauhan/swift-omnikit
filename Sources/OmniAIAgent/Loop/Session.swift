@@ -152,7 +152,8 @@ public actor Session {
     // MARK: - Core Agentic Loop
 
     private func processInput(_ userInput: String) async {
-        fputs("[Session] processInput called (\(userInput.count) chars)\n", stderr)
+        fputs("[Session] processInput START (\(userInput.count) chars)\n", stderr)
+        fputs("[Session] step: restoreFromStorage check\n", stderr)
         if autoRestoreFromStorage && !didAttemptStorageRestore {
             do {
                 _ = try await restoreFromStorage()
@@ -164,6 +165,7 @@ public actor Session {
                 ))
             }
         }
+        fputs("[Session] step: recoverPendingToolCalls\n", stderr)
         await recoverPendingToolCallsIfNeeded()
 
         // Emit SESSION_START on first input
@@ -175,6 +177,7 @@ public actor Session {
         await persistStateIfNeeded()
         await eventEmitter.emit(SessionEvent(kind: .userInput, sessionId: id, data: ["content": userInput]))
 
+        fputs("[Session] step: drainSteering\n", stderr)
         await drainSteering()
 
         var roundCount = 0
@@ -196,8 +199,11 @@ public actor Session {
             }
 
             // 2. Build LLM request
+            fputs("[Session] step: discoverProjectDocs\n", stderr)
             let projectDocs = await discoverProjectDocs(workingDir: executionEnv.workingDirectory())
+            fputs("[Session] step: gatherGitContext\n", stderr)
             let gitCtx = await gatherGitContext()
+            fputs("[Session] step: buildSystemPrompt\n", stderr)
             let systemPrompt = providerProfile.buildSystemPrompt(
                 environment: executionEnv,
                 projectDocs: projectDocs,
@@ -509,6 +515,19 @@ You are running in non-interactive (automated pipeline) mode. Complete your assi
 """))
         }
 
+        // Build a lookup of tool call ID → tool name from assistant turns so we
+        // can include the name when sending tool results (required by OpenAI Responses API).
+        var toolCallIdToName: [String: String] = [:]
+        for turn in history {
+            if case .assistant(let t) = turn {
+                for call in t.toolCalls {
+                    if !call.name.isEmpty {
+                        toolCallIdToName[call.id] = call.name
+                    }
+                }
+            }
+        }
+
         for turn in history {
             switch turn {
             case .user(let t):
@@ -536,8 +555,11 @@ You are running in non-interactive (automated pipeline) mode. Complete your assi
                 }
             case .toolResults(let t):
                 for result in t.results {
+                    // Look up the tool name from the preceding assistant turn's tool calls.
+                    let toolName = toolCallIdToName[result.toolCallId]
                     messages.append(.toolResult(
                         toolCallId: result.toolCallId,
+                        toolName: toolName,
                         content: result.content,
                         isError: result.isError,
                         imageData: result.imageData,
@@ -570,6 +592,11 @@ You are running in non-interactive (automated pipeline) mode. Complete your assi
 
         while true {
             do {
+                // Use streaming when the provider supports it — this enables
+                // WebSocket transport for OpenAI (faster, avoids HTTP timeouts).
+                if providerProfile.supportsStreaming {
+                    return try await streamAndAccumulate(request: request)
+                }
                 return try await llmClient.complete(request: request)
             } catch {
                 if error is AuthenticationError || error is ContextLengthError {
@@ -594,6 +621,36 @@ You are running in non-interactive (automated pipeline) mode. Complete your assi
                 attempt += 1
             }
         }
+    }
+
+    private func streamAndAccumulate(request: Request) async throws -> Response {
+        let stream = try await llmClient.stream(request: request)
+        var accumulator = StreamAccumulator()
+        var eventCount = 0
+        var eventTypes: [String: Int] = [:]
+        for try await event in stream {
+            eventCount += 1
+            eventTypes[event.type.rawValue, default: 0] += 1
+            if event.type.rawValue == "finish" {
+                fputs("[Session] finish event: response=\(event.response != nil), finishReason=\(String(describing: event.finishReason)), usage=\(String(describing: event.usage)), text=\(event.response?.text.prefix(100) ?? "nil"), toolCalls=\(event.response?.toolCalls.count ?? -1)\n", stderr)
+            }
+            accumulator.process(event)
+            // Emit text deltas to event emitter for real-time visibility.
+            if let delta = event.delta, !delta.isEmpty {
+                await eventEmitter.emit(SessionEvent(
+                    kind: .assistantTextDelta,
+                    sessionId: id,
+                    data: ["delta": delta]
+                ))
+            }
+        }
+        fputs("[Session] Stream finished: \(eventCount) events, types: \(eventTypes)\n", stderr)
+        guard let response = accumulator.response() else {
+            fputs("[Session] StreamAccumulator produced no response from \(eventCount) events\n", stderr)
+            throw SDKError(message: "Stream completed without producing a response (\(eventCount) events)")
+        }
+        fputs("[Session] Accumulated response: \(response.text.count) chars, \(response.toolCalls.count) tool calls\n", stderr)
+        return response
     }
 
     private func isTransient(_ error: any Error) -> Bool {

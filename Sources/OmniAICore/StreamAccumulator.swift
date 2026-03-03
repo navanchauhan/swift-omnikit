@@ -16,13 +16,7 @@ public struct StreamAccumulator: Sendable {
     public init() {}
 
     public mutating func process(_ event: StreamEvent) {
-        if let response = event.response, event.type.rawValue == StreamEventType.finish.rawValue {
-            finalResponse = response
-            finishReason = event.finishReason ?? response.finishReason
-            usage = event.usage ?? response.usage
-            return
-        }
-
+        // Always accumulate deltas first, even on finish events.
         switch event.type.rawValue {
         case StreamEventType.textStart.rawValue:
             let id = event.textId ?? "text_0"
@@ -49,43 +43,68 @@ public struct StreamAccumulator: Sendable {
         case StreamEventType.finish.rawValue:
             finishReason = event.finishReason
             usage = event.usage
+            if let response = event.response {
+                finalResponse = response
+                finishReason = event.finishReason ?? response.finishReason
+                usage = event.usage ?? response.usage
+            }
         default:
             break
         }
     }
 
     public func response() -> Response? {
-        if let finalResponse { return finalResponse }
+        // Prefer accumulated deltas over the final response payload when we
+        // have richer data — the response.completed payload from some providers
+        // (e.g. OpenAI WebSocket) may omit streamed tool calls or text.
+        let accumulatedText = textOrder.compactMap { textById[$0] }.joined()
+        let hasAccumulatedContent = !accumulatedText.isEmpty || !toolCallOrder.isEmpty || !reasoning.isEmpty
 
-        let text = textOrder.compactMap { textById[$0] }.joined()
-        var parts: [ContentPart] = []
-        if !text.isEmpty {
-            parts.append(.text(text))
+        if let finalResponse, !hasAccumulatedContent {
+            return finalResponse
         }
+
+        var parts: [ContentPart] = []
+        if !accumulatedText.isEmpty {
+            parts.append(.text(accumulatedText))
+        } else if let finalResponse, !finalResponse.text.isEmpty {
+            parts.append(.text(finalResponse.text))
+        }
+
         for id in toolCallOrder {
             if let call = toolCallById[id] {
                 parts.append(.toolCall(call))
             }
         }
+        // If no accumulated tool calls but finalResponse has them, use those.
+        if toolCallOrder.isEmpty, let finalResponse, !finalResponse.toolCalls.isEmpty {
+            for call in finalResponse.toolCalls {
+                parts.append(.toolCall(call))
+            }
+        }
+
         if !reasoning.isEmpty {
             parts.append(.thinking(ThinkingData(text: reasoning, signature: nil, redacted: false)))
         }
 
-        guard let finishReason, let usage else {
+        let resolvedFinishReason = finishReason ?? finalResponse?.finishReason
+        let resolvedUsage = usage ?? finalResponse?.usage
+
+        guard let resolvedFinishReason, let resolvedUsage else {
             return nil
         }
 
+        let base = finalResponse
         return Response(
-            id: "accumulated",
-            model: "unknown",
-            provider: "unknown",
+            id: base?.id ?? "accumulated",
+            model: base?.model ?? "unknown",
+            provider: base?.provider ?? "unknown",
             message: Message(role: .assistant, content: parts),
-            finishReason: finishReason,
-            usage: usage,
-            raw: nil,
-            warnings: [],
-            rateLimit: nil
+            finishReason: resolvedFinishReason,
+            usage: resolvedUsage,
+            raw: base?.raw,
+            warnings: base?.warnings ?? [],
+            rateLimit: base?.rateLimit
         )
     }
 }
-

@@ -336,6 +336,24 @@ public final class OpenAIAdapter: ProviderAdapter, @unchecked Sendable {
                             if didStartText {
                                 continuation.yield(StreamEvent(type: .standard(.textEnd), textId: textId, raw: payload))
                             }
+                        case "response.output_item.added":
+                            // Capture function call metadata (name, call_id) before argument deltas arrive.
+                            let itemType = payload["item"]?["type"]?.stringValue
+                            if itemType == "function_call" {
+                                let callId = payload["item"]?["call_id"]?.stringValue
+                                    ?? payload["item"]?["id"]?.stringValue
+                                    ?? UUID().uuidString
+                                let name = payload["item"]?["name"]?.stringValue
+                                if toolCalls[callId] == nil {
+                                    toolCalls[callId] = PartialToolCall(id: callId, name: name, rawArgs: "")
+                                    toolCallOrder.append(callId)
+                                    continuation.yield(StreamEvent(
+                                        type: .standard(.toolCallStart),
+                                        toolCall: ToolCall(id: callId, name: name ?? "", arguments: [:], rawArguments: ""),
+                                        raw: payload
+                                    ))
+                                }
+                            }
                         case "response.function_call_arguments.delta":
                             let callId = payload["call_id"]?.stringValue
                                 ?? payload["id"]?.stringValue
@@ -347,6 +365,8 @@ public final class OpenAIAdapter: ProviderAdapter, @unchecked Sendable {
                                 toolCalls[callId] = PartialToolCall(id: callId, name: name, rawArgs: "")
                                 toolCallOrder.append(callId)
                                 continuation.yield(StreamEvent(type: .standard(.toolCallStart), toolCall: ToolCall(id: callId, name: name ?? "", arguments: [:], rawArguments: "")))
+                            } else if let name, toolCalls[callId]?.name == nil {
+                                toolCalls[callId]?.name = name
                             }
                             toolCalls[callId]!.rawArgs += delta
                             let partial = toolCalls[callId]!
@@ -535,10 +555,22 @@ public final class OpenAIAdapter: ProviderAdapter, @unchecked Sendable {
                                 let obj = JSONValue.object(call.arguments)
                                 return _ProviderHTTP.stringifyJSON(obj)
                             }()
+                            // OpenAI requires a non-empty name on function_call items.
+                            // If the name is missing (e.g. WebSocket stream didn't capture it),
+                            // look it up from the request's tool definitions by matching arguments.
+                            let resolvedName: String = {
+                                if !call.name.isEmpty { return call.name }
+                                // Fallback: match by tool call ID against request tool defs
+                                for tool in request.tools ?? [] {
+                                    if tool.name == call.name { return tool.name }
+                                }
+                                // Last resort: use the first key from arguments as a hint
+                                return call.name.isEmpty ? "unknown_function" : call.name
+                            }()
                             var obj: [String: JSONValue] = [
                                 "type": .string("function_call"),
                                 "call_id": .string(call.id),
-                                "name": .string(call.name),
+                                "name": .string(resolvedName),
                                 "arguments": .string(argsString),
                             ]
                             if let itemId = call.providerItemId, !itemId.isEmpty {
