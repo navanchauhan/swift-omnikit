@@ -338,18 +338,29 @@ public final class OpenAIAdapter: ProviderAdapter, @unchecked Sendable {
                             }
                         case "response.output_item.added":
                             // Capture function call metadata (name, call_id) before argument deltas arrive.
+                            // OpenAI uses two IDs: item.id (the item ID) and item.call_id (the call ID).
+                            // Later delta events reference the call via call_id which may be EITHER of these.
+                            // Register under both so deltas always find the existing entry.
                             let itemType = payload["item"]?["type"]?.stringValue
                             if itemType == "function_call" {
-                                let callId = payload["item"]?["call_id"]?.stringValue
-                                    ?? payload["item"]?["id"]?.stringValue
-                                    ?? UUID().uuidString
+                                let itemCallId = payload["item"]?["call_id"]?.stringValue
+                                let itemId = payload["item"]?["id"]?.stringValue
+                                let primaryId = itemCallId ?? itemId ?? UUID().uuidString
                                 let name = payload["item"]?["name"]?.stringValue
-                                if toolCalls[callId] == nil {
-                                    toolCalls[callId] = PartialToolCall(id: callId, name: name, rawArgs: "")
-                                    toolCallOrder.append(callId)
+                                if toolCalls[primaryId] == nil {
+                                    let partial = PartialToolCall(id: primaryId, name: name, rawArgs: "")
+                                    toolCalls[primaryId] = partial
+                                    // Also register under the alternate ID so delta events find us.
+                                    if let itemId, itemId != primaryId {
+                                        toolCalls[itemId] = partial
+                                    }
+                                    if let itemCallId, itemCallId != primaryId {
+                                        toolCalls[itemCallId] = partial
+                                    }
+                                    toolCallOrder.append(primaryId)
                                     continuation.yield(StreamEvent(
                                         type: .standard(.toolCallStart),
-                                        toolCall: ToolCall(id: callId, name: name ?? "", arguments: [:], rawArguments: ""),
+                                        toolCall: ToolCall(id: primaryId, name: name ?? "", arguments: [:], rawArguments: ""),
                                         raw: payload
                                     ))
                                 }
@@ -369,11 +380,15 @@ public final class OpenAIAdapter: ProviderAdapter, @unchecked Sendable {
                                 toolCalls[callId]?.name = name
                             }
                             toolCalls[callId]!.rawArgs += delta
-                            let partial = toolCalls[callId]!
+                            // Sync rawArgs back to any alias entries pointing to the same call.
+                            let updatedPartial = toolCalls[callId]!
+                            for (key, val) in toolCalls where val.id == updatedPartial.id && key != callId {
+                                toolCalls[key]?.rawArgs = updatedPartial.rawArgs
+                            }
                             continuation.yield(
                                 StreamEvent(
                                     type: .standard(.toolCallDelta),
-                                    toolCall: ToolCall(id: callId, name: partial.name ?? "", arguments: [:], rawArguments: partial.rawArgs),
+                                    toolCall: ToolCall(id: updatedPartial.id, name: updatedPartial.name ?? "", arguments: [:], rawArguments: updatedPartial.rawArgs),
                                     raw: payload
                                 )
                             )
@@ -389,10 +404,11 @@ public final class OpenAIAdapter: ProviderAdapter, @unchecked Sendable {
                                     else { return [:] }
                                     return obj
                                 }()
+                                // Use the canonical ID from the partial (set by output_item.added).
                                 continuation.yield(
                                     StreamEvent(
                                         type: .standard(.toolCallEnd),
-                                        toolCall: ToolCall(id: callId, name: partial.name ?? "", arguments: parsedArgs, rawArguments: partial.rawArgs),
+                                        toolCall: ToolCall(id: partial.id, name: partial.name ?? "", arguments: parsedArgs, rawArguments: partial.rawArgs),
                                         raw: payload
                                     )
                                 )
@@ -555,24 +571,15 @@ public final class OpenAIAdapter: ProviderAdapter, @unchecked Sendable {
                                 let obj = JSONValue.object(call.arguments)
                                 return _ProviderHTTP.stringifyJSON(obj)
                             }()
-                            // OpenAI requires a non-empty name on function_call items.
-                            // If the name is missing (e.g. WebSocket stream didn't capture it),
-                            // look it up from the request's tool definitions by matching arguments.
-                            let resolvedName: String = {
-                                if !call.name.isEmpty { return call.name }
-                                // Fallback: match by tool call ID against request tool defs
-                                for tool in request.tools ?? [] {
-                                    if tool.name == call.name { return tool.name }
-                                }
-                                // Last resort: use the first key from arguments as a hint
-                                return call.name.isEmpty ? "unknown_function" : call.name
-                            }()
                             var obj: [String: JSONValue] = [
                                 "type": .string("function_call"),
                                 "call_id": .string(call.id),
-                                "name": .string(resolvedName),
                                 "arguments": .string(argsString),
                             ]
+                            // OpenAI requires a non-empty name on function_call items.
+                            if !call.name.isEmpty {
+                                obj["name"] = .string(call.name)
+                            }
                             if let itemId = call.providerItemId, !itemId.isEmpty {
                                 obj["id"] = .string(itemId)
                             }
