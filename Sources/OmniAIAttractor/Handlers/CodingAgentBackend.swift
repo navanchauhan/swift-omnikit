@@ -74,11 +74,15 @@ public final class CodingAgentBackend: CodergenBackend, @unchecked Sendable {
         let tracker = ToolCallTracker()
         let errorTracker = ErrorTracker()
         await session.eventEmitter.on { event in
-            Task { await tracker.process(event) }
-            Task { await errorTracker.process(event) }
+            tracker.process(event)
+            errorTracker.process(event)
         }
 
-        // 6. Submit the raw task prompt and wait for completion
+        // 6. Submit the raw task prompt and wait for completion.
+        // Stream-level inactivity timeout in Session.streamAndAccumulate() handles
+        // stalled streams; callLLMWithRetry retries transient failures (including
+        // RequestTimeoutError). No outer hard timeout here — sessions with many
+        // tool call rounds legitimately run for minutes.
         fputs("[CodingAgentBackend] Submitting prompt (\(prompt.count) chars) to \(provider)/\(model)...\n", stderr)
         await session.submit(prompt)
         fputs("[CodingAgentBackend] Submit returned.\n", stderr)
@@ -103,7 +107,7 @@ public final class CodingAgentBackend: CodergenBackend, @unchecked Sendable {
         let parsed = parseResponse(finalResponse)
 
         // Log errors if agent produced no output
-        let errors = await errorTracker.errors
+        let errors = errorTracker.errors
         if !errors.isEmpty {
             fputs("[CodingAgentBackend] Session errors:\n", stderr)
             for err in errors {
@@ -433,12 +437,25 @@ private final class MinimalProviderProfile: ProviderProfile, @unchecked Sendable
 // MARK: - Tool Call Tracker
 
 /// Tracks tool call count from session events.
-private actor ToolCallTracker {
-    var count: Int = 0
+/// Uses NSLock instead of actor isolation so the event handler can call
+/// process() synchronously, avoiding fire-and-forget Task{} that starve
+/// the cooperative thread pool under parallel session execution.
+// Safety: @unchecked Sendable — mutable state (count) guarded by lock.
+private final class ToolCallTracker: @unchecked Sendable {
+    private let lock = NSLock()
+    private var _count: Int = 0
+
+    var count: Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return _count
+    }
 
     func process(_ event: SessionEvent) {
         if event.kind == .toolCallEnd {
-            count += 1
+            lock.lock()
+            _count += 1
+            lock.unlock()
         }
     }
 }
@@ -446,18 +463,31 @@ private actor ToolCallTracker {
 // MARK: - Error Tracker
 
 /// Tracks errors from session events for debugging.
-private actor ErrorTracker {
-    var errors: [String] = []
+/// Uses NSLock instead of actor isolation for the same reason as ToolCallTracker.
+// Safety: @unchecked Sendable — mutable state (errors) guarded by lock.
+private final class ErrorTracker: @unchecked Sendable {
+    private let lock = NSLock()
+    private var _errors: [String] = []
+
+    var errors: [String] {
+        lock.lock()
+        defer { lock.unlock() }
+        return _errors
+    }
 
     func process(_ event: SessionEvent) {
         if event.kind == .error {
             let detail = event.data["error"] ?? "unknown error"
-            errors.append(detail)
+            lock.lock()
+            _errors.append(detail)
+            lock.unlock()
             fputs("[CodingAgentBackend:ERROR] \(detail)\n", stderr)
         }
         if event.kind == .sessionEnd, let state = event.data["state"], state == "closed",
            let error = event.data["error"] {
-            errors.append("Session closed with error: \(error)")
+            lock.lock()
+            _errors.append("Session closed with error: \(error)")
+            lock.unlock()
             fputs("[CodingAgentBackend:ERROR] Session closed: \(error)\n", stderr)
         }
         if event.kind == .warning {

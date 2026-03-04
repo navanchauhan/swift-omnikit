@@ -207,24 +207,34 @@ public final class URLSessionHTTPTransport: HTTPTransport, @unchecked Sendable {
         }
 
         let stream: HTTPByteStream = AsyncThrowingStream { continuation in
-            Task {
+            let producer = Task {
                 do {
-                    var buffer: [UInt8] = []
-                    buffer.reserveCapacity(4096)
-                    for try await b in asyncBytes {
-                        buffer.append(b)
-                        if buffer.count >= 4096 {
-                            continuation.yield(buffer)
-                            buffer.removeAll(keepingCapacity: true)
+                    try await withTaskCancellationHandler {
+                        var buffer: [UInt8] = []
+                        buffer.reserveCapacity(4096)
+                        for try await b in asyncBytes {
+                            try Task.checkCancellation()
+                            buffer.append(b)
+                            if buffer.count >= 4096 {
+                                continuation.yield(buffer)
+                                buffer.removeAll(keepingCapacity: true)
+                            }
                         }
+                        if !buffer.isEmpty {
+                            continuation.yield(buffer)
+                        }
+                        continuation.finish()
+                    } onCancel: {
+                        asyncBytes.task.cancel()
                     }
-                    if !buffer.isEmpty {
-                        continuation.yield(buffer)
-                    }
+                } catch is CancellationError {
                     continuation.finish()
                 } catch {
                     continuation.finish(throwing: error)
                 }
+            }
+            continuation.onTermination = { @Sendable _ in
+                producer.cancel()
             }
         }
 
@@ -248,7 +258,7 @@ public struct SSEEvent: Sendable, Equatable {
 public enum SSE {
     public static func parse(_ byteStream: HTTPByteStream) -> AsyncThrowingStream<SSEEvent, Error> {
         AsyncThrowingStream { continuation in
-            Task {
+            let parser = Task {
                 do {
                     var buffer: [UInt8] = []
                     buffer.reserveCapacity(8 * 1024)
@@ -317,6 +327,7 @@ public enum SSE {
                     }
 
                     for try await chunk in byteStream {
+                        try Task.checkCancellation()
                         buffer.append(contentsOf: chunk)
 
                         while true {
@@ -333,9 +344,14 @@ public enum SSE {
                     }
                     dispatchIfNeeded()
                     continuation.finish()
+                } catch is CancellationError {
+                    continuation.finish()
                 } catch {
                     continuation.finish(throwing: error)
                 }
+            }
+            continuation.onTermination = { @Sendable _ in
+                parser.cancel()
             }
         }
     }

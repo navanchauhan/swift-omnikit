@@ -202,8 +202,9 @@ let package = Package(
             dependencies: ["OmniAICore"],
             path: "Sources/OmniAgentsSDK",
             swiftSettings: [
-                .swiftLanguageMode(.v5),
-                .unsafeFlags(["-warn-concurrency", "-strict-concurrency=minimal"]),
+                .swiftLanguageMode(.v6),
+                .unsafeFlags(["-warn-concurrency", "-strict-concurrency=complete"]),
+                .unsafeFlags(["-enable-actor-data-race-checks"], .when(configuration: .debug)),
             ]
         ),
         .target(

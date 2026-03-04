@@ -823,71 +823,77 @@ You are running in non-interactive (automated pipeline) mode. Complete your assi
         let timeoutEnabled = inactivityTimeoutSeconds > 0
         let wallClockLimitSeconds = inactivityTimeoutSeconds * 3
         let activityState = StreamActivityState(start: ContinuousClock.now)
+        let emitter = eventEmitter
+        let sid = id
 
-        let stream = AsyncThrowingStream<StreamEvent, Error> { continuation in
-            let producer = Task {
-                do {
-                    for try await event in rawStream {
-                        if Self.isActivityEvent(event) {
-                            await activityState.markActivity()
-                        }
-                        continuation.yield(event)
-                    }
-                    continuation.finish()
-                } catch {
-                    continuation.finish(throwing: error)
-                }
-            }
-
-            let monitor: Task<Void, Never>? = timeoutEnabled ? Task {
-                while !Task.isCancelled {
-                    try? await Task.sleep(for: .seconds(1))
-                    let now = ContinuousClock.now
-                    let snapshot = await activityState.snapshot()
-                    let idle = Self.secondsBetween(snapshot.lastActivity, and: now)
-                    if idle >= inactivityTimeoutSeconds {
-                        producer.cancel()
-                        continuation.finish(throwing: RequestTimeoutError(
-                            message: "LLM inactivity timeout after \(Int(inactivityTimeoutSeconds))s"
-                        ))
-                        return
-                    }
-                    let elapsed = Self.secondsBetween(snapshot.start, and: now)
-                    if elapsed >= wallClockLimitSeconds {
-                        producer.cancel()
-                        continuation.finish(throwing: RequestTimeoutError(
-                            message: "LLM wall-clock timeout after \(Int(elapsed))s"
-                        ))
-                        return
-                    }
-                }
-            } : nil
-
-            continuation.onTermination = { @Sendable _ in
-                producer.cancel()
-                monitor?.cancel()
-            }
+        if !timeoutEnabled {
+            // No timeout configured — consume directly without task group overhead.
+            return try await Self.consumeStream(
+                rawStream, activityState: activityState, eventEmitter: emitter, sessionID: sid
+            )
         }
 
+        // Supervised: consumer races against watchdog in a task group.
+        // When the watchdog throws RequestTimeoutError, group.cancelAll() cancels
+        // the consumer task, which cancels the SSE stream, which cancels the
+        // URLSession byte stream via the onTermination/onCancel chain in OmniHTTP.
+        let response = try await withThrowingTaskGroup(of: Response?.self) { group in
+            group.addTask {
+                try await Self.consumeStream(
+                    rawStream, activityState: activityState, eventEmitter: emitter, sessionID: sid
+                )
+            }
+
+            group.addTask {
+                try await Self.runInactivityWatchdog(
+                    activityState: activityState,
+                    inactivityLimit: inactivityTimeoutSeconds,
+                    wallClockLimit: wallClockLimitSeconds
+                )
+                return nil // unreachable — watchdog throws or loops until cancelled
+            }
+
+            guard let first = try await group.next(), let result = first else {
+                group.cancelAll()
+                throw SDKError(message: "Stream supervision exited without a result")
+            }
+            group.cancelAll() // cancel the watchdog
+            return result
+        }
+
+        return response
+    }
+
+    private static func consumeStream(
+        _ rawStream: AsyncThrowingStream<StreamEvent, Error>,
+        activityState: StreamActivityState,
+        eventEmitter: EventEmitter,
+        sessionID: String
+    ) async throws -> Response {
         var accumulator = StreamAccumulator()
         var eventCount = 0
         var eventTypes: [String: Int] = [:]
-        for try await event in stream {
+
+        for try await event in rawStream {
+            try Task.checkCancellation()
+            if isActivityEvent(event) {
+                await activityState.markActivity()
+            }
             eventCount += 1
             eventTypes[event.type.rawValue, default: 0] += 1
             if event.type.rawValue == "finish" {
                 fputs("[Session] finish event: response=\(event.response != nil), finishReason=\(String(describing: event.finishReason)), usage=\(String(describing: event.usage)), text=\(event.response?.text.prefix(100) ?? "nil"), toolCalls=\(event.response?.toolCalls.count ?? -1)\n", stderr)
             }
             accumulator.process(event)
-            // Emit text deltas to event emitter for real-time visibility.
             if let delta = event.delta, !delta.isEmpty {
                 await eventEmitter.emit(SessionEvent(
                     kind: .assistantTextDelta,
-                    sessionId: id,
+                    sessionId: sessionID,
                     data: ["delta": delta]
                 ))
             }
         }
+
         fputs("[Session] Stream finished: \(eventCount) events, types: \(eventTypes)\n", stderr)
         if accumulator.hasIncompleteToolCalls() {
             let count = accumulator.incompleteToolCallCount()
@@ -904,6 +910,30 @@ You are running in non-interactive (automated pipeline) mode. Complete your assi
         }
         fputs("[Session] Accumulated response: \(response.text.count) chars, \(response.toolCalls.count) tool calls\n", stderr)
         return response
+    }
+
+    private static func runInactivityWatchdog(
+        activityState: StreamActivityState,
+        inactivityLimit: Double,
+        wallClockLimit: Double
+    ) async throws {
+        while !Task.isCancelled {
+            try await Task.sleep(for: .seconds(1))
+            let now = ContinuousClock.now
+            let snapshot = await activityState.snapshot()
+            let idle = secondsBetween(snapshot.lastActivity, and: now)
+            if idle >= inactivityLimit {
+                throw RequestTimeoutError(
+                    message: "LLM inactivity timeout after \(Int(idle))s"
+                )
+            }
+            let elapsed = secondsBetween(snapshot.start, and: now)
+            if elapsed >= wallClockLimit {
+                throw RequestTimeoutError(
+                    message: "LLM wall-clock timeout after \(Int(elapsed))s"
+                )
+            }
+        }
     }
 
     private static func isActivityEvent(_ event: StreamEvent) -> Bool {
