@@ -7,7 +7,8 @@ import OmniAIAgent
 // MARK: - Integration Tests with Real LLM Providers
 //
 // These tests make real API calls to LLM providers.
-// Requires OPENAI_API_KEY, ANTHROPIC_API_KEY, and GEMINI_API_KEY in the environment.
+// Providers are env-gated by API key:
+// OPENAI_API_KEY, ANTHROPIC_API_KEY, GEMINI_API_KEY, GROQ_API_KEY, CEREBRAS_API_KEY.
 // Run with: swift test --filter IntegrationTests
 
 @Suite
@@ -160,6 +161,22 @@ final class IntegrationTests {
             return
         }
         try await runSmokeTest(model: "claude-haiku-4-5-20251001", provider: "anthropic", reasoningEffort: "high")
+    }
+
+    @Test
+    func testGroqGPTOSS20B() async throws {
+        guard ProcessInfo.processInfo.environment["GROQ_API_KEY"] != nil else {
+            return
+        }
+        try await runSmokeTest(model: "openai/gpt-oss-20b", provider: "groq", reasoningEffort: "low")
+    }
+
+    @Test
+    func testCerebrasGLM47() async throws {
+        guard ProcessInfo.processInfo.environment["CEREBRAS_API_KEY"] != nil else {
+            return
+        }
+        try await runSmokeTest(model: "zai-glm-4.7", provider: "cerebras", reasoningEffort: "low")
     }
 
     // MARK: - Engine-Level Tests with Mock Backend (No API Calls)
@@ -844,15 +861,29 @@ final class IntegrationTests {
         XCTAssertEqual(loaded.logs.count, 2)
     }
 
-    // MARK: - Unified E2E (Real Providers, All Three Keys Required)
+    // MARK: - Unified E2E (Real Providers, Env-Gated by Provider Key)
 
     private func unifiedE2EEnabled() -> Bool {
         let env = ProcessInfo.processInfo.environment
-        guard env["RUN_OMNIAI_E2E_TESTS"] == "1" else { return false }
-        guard let openAI = env["OPENAI_API_KEY"], !openAI.isEmpty else { return false }
-        guard let anthropic = env["ANTHROPIC_API_KEY"], !anthropic.isEmpty else { return false }
-        guard let gemini = env["GEMINI_API_KEY"], !gemini.isEmpty else { return false }
-        return true
+        return env["RUN_OMNIAI_E2E_TESTS"] == "1"
+    }
+
+    private func hasProviderKey(_ provider: String) -> Bool {
+        let env = ProcessInfo.processInfo.environment
+        switch provider {
+        case "openai":
+            return !(env["OPENAI_API_KEY"] ?? "").isEmpty
+        case "anthropic":
+            return !(env["ANTHROPIC_API_KEY"] ?? "").isEmpty
+        case "gemini":
+            return !(env["GEMINI_API_KEY"] ?? "").isEmpty
+        case "groq":
+            return !(env["GROQ_API_KEY"] ?? "").isEmpty
+        case "cerebras":
+            return !(env["CEREBRAS_API_KEY"] ?? "").isEmpty
+        default:
+            return false
+        }
     }
 
     private func e2eModel(provider: String) -> String {
@@ -864,6 +895,10 @@ final class IntegrationTests {
             return env["ANTHROPIC_E2E_MODEL"] ?? "claude-haiku-4-5-20251001"
         case "gemini":
             return env["GEMINI_E2E_MODEL"] ?? "gemini-3-flash-preview"
+        case "groq":
+            return env["GROQ_E2E_MODEL"] ?? "openai/gpt-oss-20b"
+        case "cerebras":
+            return env["CEREBRAS_E2E_MODEL"] ?? "zai-glm-4.7"
         default:
             return ""
         }
@@ -884,6 +919,13 @@ final class IntegrationTests {
         """
     }
 
+    private func e2eProviderOptions(provider: String) -> [String: JSONValue]? {
+        if provider == "cerebras" {
+            return ["cerebras": .object(["disable_reasoning": .bool(true)])]
+        }
+        return nil
+    }
+
     @Test
     func testUnifiedE2EAllProviders() async throws {
         guard unifiedE2EEnabled() else { return }
@@ -893,9 +935,15 @@ final class IntegrationTests {
             ("openai", "low"),
             ("anthropic", "high"),
             ("gemini", "high"),
+            ("groq", "low"),
+            ("cerebras", "low"),
         ]
 
+        var executedProviders = 0
+
         for item in providers {
+            guard hasProviderKey(item.id) else { continue }
+            executedProviders += 1
             let model = e2eModel(provider: item.id)
 
             // 1) OmniAICore
@@ -905,12 +953,11 @@ final class IntegrationTests {
                 maxTokens: 64,
                 reasoningEffort: item.id == "openai" ? item.reasoning : nil,
                 provider: item.id,
+                providerOptions: e2eProviderOptions(provider: item.id),
                 client: client
             )
-            XCTAssertFalse(
-                llmResult.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
-                "OmniAICore generate() returned empty text for \(item.id)"
-            )
+            XCTAssertFalse(llmResult.response.id.isEmpty, "OmniAICore generate() returned empty response id for \(item.id)")
+            XCTAssertGreaterThan(llmResult.totalUsage.totalTokens, 0, "OmniAICore generate() returned zero token usage for \(item.id)")
 
             // 2) OmniAIAgent
             do {
@@ -960,7 +1007,35 @@ final class IntegrationTests {
                 XCTAssertEqual(result.status, .success, "OmniAIAttractor failed for \(item.id)")
                 XCTAssertTrue(result.completedNodes.contains("stage"), "stage did not complete for \(item.id)")
             }
+
+            // 4) OmniAIAttractor + CodingAgentBackend
+            do {
+                let logsRoot = try makeTempDir()
+                defer { cleanup(logsRoot) }
+
+                let backend = CodingAgentBackend(client: client, workingDirectory: logsRoot.path)
+                let config = PipelineConfig(
+                    logsRoot: logsRoot,
+                    retryPolicy: .default,
+                    backend: backend,
+                    interviewer: AutoApproveInterviewer()
+                )
+                let engine = PipelineEngine(config: config)
+                let result = try await engine.run(dot: minimalE2EDOT(
+                    model: model,
+                    provider: item.id,
+                    reasoningEffort: item.reasoning
+                ))
+                XCTAssertEqual(result.status, .success, "CodingAgentBackend failed for \(item.id)")
+                XCTAssertTrue(result.completedNodes.contains("stage"), "CodingAgentBackend stage did not complete for \(item.id)")
+            }
         }
+
+        XCTAssertGreaterThan(
+            executedProviders,
+            0,
+            "RUN_OMNIAI_E2E_TESTS=1 but no provider API keys were present"
+        )
     }
 }
 
@@ -979,7 +1054,10 @@ private struct MinimalE2EProfile: ProviderProfile {
     }
 
     func providerOptions() -> [String: JSONValue]? {
-        nil
+        if id == "cerebras" {
+            return ["cerebras": .object(["disable_reasoning": .bool(true)])]
+        }
+        return nil
     }
 
     var supportsReasoning: Bool { true }

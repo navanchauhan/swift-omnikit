@@ -25,6 +25,8 @@ public actor Session {
     private let storageBackend: (any SessionStorageBackend)?
     private let autoRestoreFromStorage: Bool
     private var didAttemptStorageRestore = false
+    private var lastToolCallSignature: String?
+    private var consecutiveIdenticalToolCallCount: Int = 0
 
     public init(
         profile: ProviderProfile,
@@ -410,40 +412,42 @@ public actor Session {
     // MARK: - Tool Execution
 
     private func executeToolCalls(_ toolCalls: [ToolCall]) async -> [ToolResult] {
-        if providerProfile.supportsParallelToolCalls && toolCalls.count > 1 {
-            return await withTaskGroup(of: ToolResult.self) { group in
-                for tc in toolCalls {
-                    group.addTask {
-                        await self.executeSingleTool(tc)
-                    }
-                }
-                var results: [ToolResult] = []
-                for await result in group {
-                    results.append(result)
-                }
-                // Maintain order matching tool calls
-                return results.sorted { a, b in
-                    let aIdx = toolCalls.firstIndex(where: { $0.id == a.toolCallId }) ?? 0
-                    let bIdx = toolCalls.firstIndex(where: { $0.id == b.toolCallId }) ?? 0
-                    return aIdx < bIdx
-                }
-            }
-        } else {
-            var results: [ToolResult] = []
-            for tc in toolCalls {
-                let result = await executeSingleTool(tc)
-                results.append(result)
-            }
-            return results
+        var results: [ToolResult] = []
+        for tc in toolCalls {
+            let result = await executeSingleTool(tc)
+            results.append(result)
         }
+        return results
     }
 
     private func executeSingleTool(_ toolCall: ToolCall) async -> ToolResult {
+        let policyDenial = "same tool run five times in a row. denied by policy. try something else"
         await eventEmitter.emit(SessionEvent(
             kind: .toolCallStart,
             sessionId: id,
             data: ["tool_name": toolCall.name, "call_id": toolCall.id]
         ))
+
+        let signature = toolCallSignature(toolCall)
+        if signature == lastToolCallSignature {
+            consecutiveIdenticalToolCallCount += 1
+        } else {
+            lastToolCallSignature = signature
+            consecutiveIdenticalToolCallCount = 1
+        }
+        if consecutiveIdenticalToolCallCount >= 6 {
+            await eventEmitter.emit(SessionEvent(
+                kind: .toolCallEnd,
+                sessionId: id,
+                data: [
+                    "call_id": toolCall.id,
+                    "error": policyDenial,
+                    "policy_blocked": "true",
+                    "tool_name": toolCall.name,
+                ]
+            ))
+            return ToolResult(toolCallId: toolCall.id, content: .string(policyDenial), isError: true)
+        }
 
         guard let registered = providerProfile.toolRegistry.get(toolCall.name) else {
             let errorMsg = "Unknown tool: \(toolCall.name)"
@@ -505,6 +509,11 @@ public actor Session {
             ))
             return ToolResult(toolCallId: toolCall.id, content: .string(errorMsg), isError: true)
         }
+    }
+
+    private func toolCallSignature(_ toolCall: ToolCall) -> String {
+        let args = JSONValue.object(toolCall.arguments).description
+        return "\(toolCall.name)::\(args)"
     }
 
     // MARK: - History Conversion

@@ -34,7 +34,7 @@ public final class LLMKitBackend: CodergenBackend, @unchecked Sendable {
                         model: candidateModel,
                         prompt: prompt,
                         system: systemPrompt,
-                        reasoningEffort: reasoningEffort,
+                        reasoningEffort: effectiveReasoningEffort(for: provider, requested: reasoningEffort),
                         provider: provider,
                         providerOptions: providerOptions(for: provider),
                         inactivityTimeoutSeconds: inactivityTimeoutSeconds,
@@ -159,26 +159,36 @@ public final class LLMKitBackend: CodergenBackend, @unchecked Sendable {
         for provider: String,
         environment: [String: String] = ProcessInfo.processInfo.environment
     ) -> [String: JSONValue]? {
-        guard provider.lowercased() == "openai" else {
+        switch provider.lowercased() {
+        case "openai":
+            var openAIOptions: [String: JSONValue] = [
+                OpenAIProviderOptionKeys.responsesTransport: .string("websocket"),
+            ]
+            if let wsBase = environment["OPENAI_WEBSOCKET_BASE_URL"],
+               !wsBase.isEmpty
+            {
+                openAIOptions[OpenAIProviderOptionKeys.websocketBaseURL] = .string(wsBase)
+            }
+            return ["openai": .object(openAIOptions)]
+        case "cerebras":
+            return ["cerebras": .object(["disable_reasoning": .bool(true)])]
+        default:
             return nil
         }
+    }
 
-        var openAIOptions: [String: JSONValue] = [
-            OpenAIProviderOptionKeys.responsesTransport: .string("websocket"),
-        ]
-        if let wsBase = environment["OPENAI_WEBSOCKET_BASE_URL"],
-           !wsBase.isEmpty
-        {
-            openAIOptions[OpenAIProviderOptionKeys.websocketBaseURL] = .string(wsBase)
+    private func effectiveReasoningEffort(for provider: String, requested: String) -> String? {
+        if provider.lowercased() == "cerebras" {
+            return nil
         }
-        return ["openai": .object(openAIOptions)]
+        return requested
     }
 
     private func runWithInactivityTimeout(
         model: String,
         prompt: String,
         system: String,
-        reasoningEffort: String,
+        reasoningEffort: String?,
         provider: String,
         providerOptions: [String: JSONValue]?,
         inactivityTimeoutSeconds: Double,
