@@ -27,6 +27,7 @@ public actor Session {
     private var didAttemptStorageRestore = false
     private var lastToolCallSignature: String?
     private var consecutiveIdenticalToolCallCount: Int = 0
+    private var cachedProjectDocs: String?
 
     public init(
         profile: ProviderProfile,
@@ -210,8 +211,14 @@ public actor Session {
             }
 
             // 2. Build LLM request
-            fputs("[Session] step: discoverProjectDocs\n", stderr)
-            let projectDocs = await discoverProjectDocs(workingDir: executionEnv.workingDirectory())
+            // Cache project docs after first discovery to avoid repeated subprocess
+            // calls (git rev-parse, file reads) that cause scheduling pressure under
+            // parallel session execution.
+            if cachedProjectDocs == nil {
+                fputs("[Session] step: discoverProjectDocs\n", stderr)
+                cachedProjectDocs = await discoverProjectDocs(workingDir: executionEnv.workingDirectory()) ?? ""
+            }
+            let projectDocs: String? = cachedProjectDocs?.isEmpty == true ? nil : cachedProjectDocs
             fputs("[Session] step: gatherGitContext\n", stderr)
             // Skip git context gathering in non-interactive mode to avoid intermittent
             // subprocess hangs that stall the pipeline. Git context is decorative only.
@@ -321,9 +328,12 @@ public actor Session {
 
             // 6. Execute tool calls
             roundCount += 1
+            fputs("[Session] step: executeToolCalls (\(response.toolCalls.count) calls, round \(roundCount))\n", stderr)
             let results = await executeToolCalls(response.toolCalls)
+            fputs("[Session] step: toolCalls complete, persisting\n", stderr)
             history.append(.toolResults(ToolResultsTurn(results: results)))
             await persistStateIfNeeded()
+            fputs("[Session] step: persisted, draining steering\n", stderr)
 
             // 7. Drain steering
             await drainSteering()
@@ -339,7 +349,9 @@ public actor Session {
             }
 
             // Context window awareness
+            fputs("[Session] step: checkContextUsage\n", stderr)
             await checkContextUsage()
+            fputs("[Session] step: looping to next LLM call\n", stderr)
         }
 
         // Process follow-up messages
@@ -832,6 +844,7 @@ You are running in non-interactive (automated pipeline) mode. Complete your assi
     }
 
     private func completeWithTransientRetries(request: Request) async throws -> Response {
+        fputs("[Session] completeWithTransientRetries: entering (streaming=\(providerProfile.supportsStreaming), timeout=\(String(describing: config.llmInactivityTimeoutSeconds)))\n", stderr)
         let maxAttempts = 3
         var attempt = 1
 
