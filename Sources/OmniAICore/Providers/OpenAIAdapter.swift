@@ -218,7 +218,8 @@ public final class OpenAIAdapter: ProviderAdapter, @unchecked Sendable {
                             }
                         case "response.completed":
                             guard let payload else { break }
-                            var response = try parseResponse(json: payload, headers: res.headers, requestedModel: request.model)
+                            let responseJSON = payload["response"] ?? payload
+                            var response = try parseResponse(json: responseJSON, headers: res.headers, requestedModel: request.model)
                             if response.text.isEmpty, !accumulatedText.isEmpty {
                                 // Some Responses API streams don't include full message content in the final
                                 // completed payload. Prefer the accumulated deltas as the canonical text.
@@ -414,7 +415,8 @@ public final class OpenAIAdapter: ProviderAdapter, @unchecked Sendable {
                                 )
                             }
                         case "response.completed", "response.incomplete":
-                            var response = try parseResponse(json: payload, headers: HTTPHeaders(), requestedModel: request.model)
+                            let responseJSON = payload["response"] ?? payload
+                            var response = try parseResponse(json: responseJSON, headers: HTTPHeaders(), requestedModel: request.model)
                             if response.text.isEmpty, !accumulatedText.isEmpty {
                                 var parts = response.message.content
                                 if !parts.contains(where: { $0.kind.rawValue == ContentKind.text.rawValue }) {
@@ -626,6 +628,11 @@ public final class OpenAIAdapter: ProviderAdapter, @unchecked Sendable {
             "model": .string(request.model),
             "input": .array(inputItems),
         ]
+
+        if let previousResponseId = request.previousResponseId,
+           !previousResponseId.isEmpty {
+            root["previous_response_id"] = .string(previousResponseId)
+        }
 
         if !instructionsParts.isEmpty {
             root["instructions"] = .string(instructionsParts.joined(separator: "\n"))

@@ -7,6 +7,7 @@ public final class OpenAIProfile: ProviderProfile, @unchecked Sendable {
     public let toolRegistry: ToolRegistry
     private let includeNativeWebSearch: Bool
     private let webSearchExternalWebAccess: Bool?
+    private let forceCodexSystemPrompt: Bool
     public let supportsReasoning = true
     public let supportsStreaming = true
     public let supportsParallelToolCalls = true
@@ -26,11 +27,13 @@ public final class OpenAIProfile: ProviderProfile, @unchecked Sendable {
         useUnifiedExec: Bool = true,
         includeCollabTools: Bool = false,
         includeWebSearch: Bool = false,
-        webSearchExternalWebAccess: Bool? = true
+        webSearchExternalWebAccess: Bool? = true,
+        forceCodexSystemPrompt: Bool = false
     ) {
         self.model = model
         self.includeNativeWebSearch = includeWebSearch
         self.webSearchExternalWebAccess = webSearchExternalWebAccess
+        self.forceCodexSystemPrompt = forceCodexSystemPrompt
 
         let registry = ToolRegistry()
         if useUnifiedExec {
@@ -67,7 +70,7 @@ public final class OpenAIProfile: ProviderProfile, @unchecked Sendable {
     }
 
     public func buildSystemPrompt(environment: ExecutionEnvironment, projectDocs: String?, userInstructions: String? = nil, gitContext: GitContext? = nil) -> String {
-        let basePrompt = CodexSystemPrompt.prompt(for: model)
+        let basePrompt = CodexSystemPrompt.openAIPrompt(for: model)
         let workingDir = environment.workingDirectory()
         let envContext = """
 

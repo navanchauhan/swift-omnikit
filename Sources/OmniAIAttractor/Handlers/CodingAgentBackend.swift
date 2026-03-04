@@ -138,11 +138,16 @@ public final class CodingAgentBackend: CodergenBackend, @unchecked Sendable {
         case "anthropic":
             return AnthropicProfile(model: model.isEmpty ? "claude-opus-4-6" : model, enableInteractiveTools: false)
         case "openai":
-            return OpenAIProfile(model: model.isEmpty ? "gpt-5.2-codex" : model)
+            return OpenAIProfile(
+                model: model.isEmpty ? "gpt-5.2-codex" : model,
+                forceCodexSystemPrompt: true
+            )
         case "gemini":
-            return MinimalProviderProfile(
-                id: "gemini",
-                model: model.isEmpty ? "gemini-3.1-pro-preview-customtools" : model
+            return GeminiProfile(
+                model: model.isEmpty ? "gemini-3.1-pro-preview-customtools" : model,
+                interactiveMode: false,
+                enableTodos: false,
+                enablePlanTools: false
             )
         case "groq":
             return MinimalProviderProfile(

@@ -133,29 +133,37 @@ public final class GeminiAdapter: ProviderAdapter, @unchecked Sendable {
                             let content = first["content"]
                             let parts = content?["parts"]?.arrayValue ?? []
                             for p in parts {
-                                if let t = p["text"]?.stringValue, !t.isEmpty {
+                                let isThought = p["thought"]?.boolValue == true
+                                let sig = p["thoughtSignature"]?.stringValue
+                                if isThought, let t = p["text"]?.stringValue, !t.isEmpty {
+                                    // Thought part: text field contains the reasoning content.
+                                    accumulatedParts.append(.thinking(ThinkingData(text: t, signature: sig, redacted: false)))
+                                    continuation.yield(StreamEvent(type: .standard(.reasoningStart)))
+                                    continuation.yield(StreamEvent(type: .standard(.reasoningDelta), reasoningDelta: t))
+                                    continuation.yield(StreamEvent(type: .standard(.reasoningEnd)))
+                                } else if let t = p["text"]?.stringValue, !t.isEmpty {
                                     if !didStartText {
                                         didStartText = true
                                         continuation.yield(StreamEvent(type: .standard(.textStart), textId: textId))
                                     }
                                     accumulatedText += t
                                     continuation.yield(StreamEvent(type: .standard(.textDelta), delta: t, textId: textId))
+                                } else if sig != nil, p["text"] != nil {
+                                    // Empty text part with thoughtSignature (Gemini 3 streaming final chunk).
+                                    // Attach to the last thinking part if possible.
+                                    if let lastIdx = accumulatedParts.lastIndex(where: { $0.kind.rawValue == ContentKind.thinking.rawValue }),
+                                       let existing = accumulatedParts[lastIdx].thinking {
+                                        accumulatedParts[lastIdx] = .thinking(ThinkingData(text: existing.text, signature: sig, redacted: false))
+                                    }
                                 }
                                 if let fc = p["functionCall"] {
                                     let name = fc["name"]?.stringValue ?? ""
                                     let args = fc["args"]?.objectValue ?? [:]
-                                    let sig = p["thoughtSignature"]?.stringValue
-                                    let callId = "call_\(UUID().uuidString)"
+                                    let callId = fc["id"]?.stringValue ?? "call_\(UUID().uuidString)"
                                     let call = ToolCall(id: callId, name: name, arguments: args, rawArguments: nil, thoughtSignature: sig)
                                     accumulatedParts.append(.toolCall(call))
                                     continuation.yield(StreamEvent(type: .standard(.toolCallStart), toolCall: call))
                                     continuation.yield(StreamEvent(type: .standard(.toolCallEnd), toolCall: call))
-                                }
-                                if let thought = p["thought"]?.stringValue, !thought.isEmpty {
-                                    accumulatedParts.append(.thinking(ThinkingData(text: thought, signature: nil, redacted: false)))
-                                    continuation.yield(StreamEvent(type: .standard(.reasoningStart)))
-                                    continuation.yield(StreamEvent(type: .standard(.reasoningDelta), reasoningDelta: thought))
-                                    continuation.yield(StreamEvent(type: .standard(.reasoningEnd)))
                                 }
                             }
                         }
@@ -250,7 +258,15 @@ public final class GeminiAdapter: ProviderAdapter, @unchecked Sendable {
             case ContentKind.toolResult.rawValue:
                 guard let tr = part.toolResult else { return [] }
                 let fname = tr.toolCallId // fallback; adapter should use message.name when available
-                return [.object(["functionResponse": .object(["name": .string(fname), "response": wrapFunctionResponse(tr.content)])])]
+                var frObj: [String: JSONValue] = [
+                    "name": .string(fname),
+                    "response": wrapFunctionResponse(tr.content),
+                ]
+                // Include the function call id for proper matching when the API provides one.
+                if !tr.toolCallId.hasPrefix("call_") {
+                    frObj["id"] = .string(tr.toolCallId)
+                }
+                return [.object(["functionResponse": .object(frObj)])]
             default:
                 throw InvalidRequestError(message: "Unsupported content kind for Gemini: \(part.kind.rawValue)", provider: name, statusCode: nil, errorCode: nil, retryable: false)
             }
@@ -278,7 +294,11 @@ public final class GeminiAdapter: ProviderAdapter, @unchecked Sendable {
                    let tr = msg.content.first(where: { $0.kind.rawValue == ContentKind.toolResult.rawValue })?.toolResult
                 {
                     let response = (tr.content.objectValue != nil) ? tr.content : .object(["result": tr.content])
-                    parts = [.object(["functionResponse": .object(["name": .string(toolName), "response": response])])]
+                    var frObj: [String: JSONValue] = ["name": .string(toolName), "response": response]
+                    if let callId = msg.toolCallId, !callId.hasPrefix("call_") {
+                        frObj["id"] = .string(callId)
+                    }
+                    parts = [.object(["functionResponse": .object(frObj)])]
                 }
                 if !parts.isEmpty {
                     contents.append(.object(["role": .string(role), "parts": .array(parts)]))
@@ -325,7 +345,7 @@ public final class GeminiAdapter: ProviderAdapter, @unchecked Sendable {
                         .object([
                             "name": .string(tool.name),
                             "description": .string(tool.description),
-                            "parameters": tool.parameters,
+                            "parameters": sanitizeToolSchemaForGemini(tool.parameters),
                         ])
                     }),
                 ]),
@@ -342,6 +362,23 @@ public final class GeminiAdapter: ProviderAdapter, @unchecked Sendable {
         }
 
         return try _ProviderHTTP.jsonBytes(.object(root))
+    }
+
+    /// Gemini function declaration schemas reject some standard JSON-Schema fields
+    /// (notably `additionalProperties`), so strip unsupported keys recursively.
+    private func sanitizeToolSchemaForGemini(_ value: JSONValue) -> JSONValue {
+        switch value {
+        case .object(let obj):
+            var out: [String: JSONValue] = [:]
+            for (k, v) in obj where k != "additionalProperties" {
+                out[k] = sanitizeToolSchemaForGemini(v)
+            }
+            return .object(out)
+        case .array(let arr):
+            return .array(arr.map { sanitizeToolSchemaForGemini($0) })
+        default:
+            return value
+        }
     }
 
     private func mapToolChoice(_ choice: ToolChoice) -> JSONValue {
@@ -369,18 +406,25 @@ public final class GeminiAdapter: ProviderAdapter, @unchecked Sendable {
         var parts: [ContentPart] = []
         if let content = first?["content"], let p = content["parts"]?.arrayValue {
             for part in p {
-                if let t = part["text"]?.stringValue, !t.isEmpty {
+                let isThought = part["thought"]?.boolValue == true
+                let sig = part["thoughtSignature"]?.stringValue
+                if isThought, let t = part["text"]?.stringValue, !t.isEmpty {
+                    // Thought part: the boolean flag marks this as reasoning content.
+                    parts.append(.thinking(ThinkingData(text: t, signature: sig, redacted: false)))
+                } else if let t = part["text"]?.stringValue, !t.isEmpty {
                     parts.append(.text(t))
+                } else if sig != nil, part["text"] != nil {
+                    // Empty text with thoughtSignature — attach to last thinking part.
+                    if let lastIdx = parts.lastIndex(where: { $0.kind.rawValue == ContentKind.thinking.rawValue }),
+                       let existing = parts[lastIdx].thinking {
+                        parts[lastIdx] = .thinking(ThinkingData(text: existing.text, signature: sig, redacted: false))
+                    }
                 }
                 if let fc = part["functionCall"] {
                     let name = fc["name"]?.stringValue ?? ""
                     let args = fc["args"]?.objectValue ?? [:]
-                    let id = "call_\(UUID().uuidString)"
-                    let sig = part["thoughtSignature"]?.stringValue
-                    parts.append(.toolCall(ToolCall(id: id, name: name, arguments: args, rawArguments: nil, thoughtSignature: sig)))
-                }
-                if let thought = part["thought"]?.stringValue, !thought.isEmpty {
-                    parts.append(.thinking(ThinkingData(text: thought, signature: nil, redacted: false)))
+                    let callId = fc["id"]?.stringValue ?? "call_\(UUID().uuidString)"
+                    parts.append(.toolCall(ToolCall(id: callId, name: name, arguments: args, rawArguments: nil, thoughtSignature: sig)))
                 }
             }
         }

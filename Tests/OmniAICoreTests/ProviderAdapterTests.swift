@@ -147,6 +147,44 @@ final class ProviderAdapterTests {
     }
 
     @Test
+    func testOpenAIAdapterIncludesPreviousResponseIdInHTTPRequest() async throws {
+        let responseJSON: JSONValue = .object([
+            "id": .string("resp_2"),
+            "model": .string("gpt-5.2"),
+            "output": .array([
+                .object([
+                    "type": .string("message"),
+                    "content": .array([.object(["type": .string("output_text"), "text": .string("ok")])]),
+                ]),
+            ]),
+            "finish_reason": .string("stop"),
+            "usage": .object([
+                "prompt_tokens": .number(1),
+                "completion_tokens": .number(1),
+            ]),
+        ])
+
+        let transport = StubTransport(send: { _ in
+            HTTPResponse(statusCode: 200, headers: HTTPHeaders(), body: Array(try responseJSON.data()))
+        })
+
+        let adapter = OpenAIAdapter(apiKey: "sk-test", transport: transport)
+        _ = try await adapter.complete(
+            request: Request(
+                model: "gpt-5.2",
+                messages: [.system("sys"), .user("continue")],
+                previousResponseId: "resp_prev_123"
+            )
+        )
+
+        let sentOpt = await transport.lastSendRequest
+        let sent = try XCTUnwrap(sentOpt)
+        let body = try JSONValue.parse(bodyBytes(sent))
+        XCTAssertEqual(body["previous_response_id"]?.stringValue, "resp_prev_123")
+        XCTAssertTrue(body["instructions"]?.stringValue?.contains("sys") ?? false)
+    }
+
+    @Test
     func testOpenAIAdapterInjectsNativeWebSearchToolFromProviderOptions() async throws {
         let responseJSON: JSONValue = .object([
             "id": .string("resp_1"),
@@ -933,6 +971,57 @@ final class ProviderAdapterTests {
     }
 
     @Test
+    func testGeminiAdapterStripsAdditionalPropertiesFromToolSchema() async throws {
+        let responseJSON: JSONValue = .object([
+            "candidates": .array([
+                .object([
+                    "finishReason": .string("STOP"),
+                    "content": .object(["parts": .array([.object(["text": .string("ok")])])]),
+                ]),
+            ]),
+            "usageMetadata": .object([
+                "promptTokenCount": .number(1),
+                "candidatesTokenCount": .number(1),
+            ]),
+        ])
+
+        let transport = StubTransport(send: { _ in
+            HTTPResponse(statusCode: 200, headers: HTTPHeaders(), body: Array(try responseJSON.data()))
+        })
+
+        let adapter = GeminiAdapter(apiKey: "gemini-test", transport: transport)
+        let schema: JSONValue = .object([
+            "type": .string("object"),
+            "properties": .object([
+                "payload": .object([
+                    "type": .string("object"),
+                    "properties": .object(["name": .object(["type": .string("string")])]),
+                    "additionalProperties": .bool(false),
+                ]),
+            ]),
+            "additionalProperties": .bool(false),
+        ])
+        let tool = try Tool(name: "t", description: "tool", parameters: schema)
+
+        _ = try await adapter.complete(
+            request: Request(
+                model: "gemini-3-flash-preview",
+                messages: [.user("hi")],
+                tools: [tool],
+                toolChoice: .auto
+            )
+        )
+
+        let sentOpt = await transport.lastSendRequest
+        let sent = try XCTUnwrap(sentOpt)
+        let body = try JSONValue.parse(bodyBytes(sent))
+        let params = body["tools"]?.arrayValue?.first?["functionDeclarations"]?.arrayValue?.first?["parameters"]
+        XCTAssertNotNil(params)
+        XCTAssertNil(params?["additionalProperties"])
+        XCTAssertNil(params?["properties"]?["payload"]?["additionalProperties"])
+    }
+
+    @Test
     func testCerebrasAdapterBuildsChatCompletionsRequestAndParsesUsage() async throws {
         let responseJSON: JSONValue = .object([
             "id": .string("chatcmpl_1"),
@@ -1179,16 +1268,18 @@ final class ProviderAdapterTests {
     func testOpenAIAdapterStreamingMapsTextEvents() async throws {
         let completedJSON: JSONValue = .object([
             "type": .string("response.completed"),
-            "id": .string("resp_1"),
-            "model": .string("gpt-5.2"),
-            "output": .array([
-                .object([
-                    "type": .string("message"),
-                    "content": .array([.object(["type": .string("output_text"), "text": .string("hello")])]),
+            "response": .object([
+                "id": .string("resp_1"),
+                "model": .string("gpt-5.2"),
+                "output": .array([
+                    .object([
+                        "type": .string("message"),
+                        "content": .array([.object(["type": .string("output_text"), "text": .string("hello")])]),
+                    ]),
                 ]),
+                "finish_reason": .string("stop"),
+                "usage": .object(["prompt_tokens": .number(1), "completion_tokens": .number(1)]),
             ]),
-            "finish_reason": .string("stop"),
-            "usage": .object(["prompt_tokens": .number(1), "completion_tokens": .number(1)]),
         ])
 
         let sse = """
@@ -1226,22 +1317,25 @@ final class ProviderAdapterTests {
 
         XCTAssertEqual(chunks.joined(), "hello")
         XCTAssertEqual(finish?.text, "hello")
+        XCTAssertEqual(finish?.id, "resp_1", "Response ID should be extracted from nested response.completed payload")
     }
 
     @Test
     func testOpenAIAdapterStreamingUsesWebSocketModeWhenConfigured() async throws {
         let completedJSON: JSONValue = .object([
             "type": .string("response.completed"),
-            "id": .string("resp_ws_1"),
-            "model": .string("gpt-5.2"),
-            "output": .array([
-                .object([
-                    "type": .string("message"),
-                    "content": .array([.object(["type": .string("output_text"), "text": .string("hello")])]),
+            "response": .object([
+                "id": .string("resp_ws_1"),
+                "model": .string("gpt-5.2"),
+                "output": .array([
+                    .object([
+                        "type": .string("message"),
+                        "content": .array([.object(["type": .string("output_text"), "text": .string("hello")])]),
+                    ]),
                 ]),
+                "finish_reason": .string("stop"),
+                "usage": .object(["prompt_tokens": .number(1), "completion_tokens": .number(1)]),
             ]),
-            "finish_reason": .string("stop"),
-            "usage": .object(["prompt_tokens": .number(1), "completion_tokens": .number(1)]),
         ])
 
         let wsTransport = StubOpenAIResponsesWebSocketTransport(open: {
@@ -1265,7 +1359,7 @@ final class ProviderAdapterTests {
         )
         let request = Request(
             model: "gpt-5.2",
-            messages: [.user("hi")],
+            messages: [.system("sys"), .user("hi")],
             providerOptions: [
                 "openai": .object([
                     OpenAIProviderOptionKeys.responsesTransport: .string("websocket"),
@@ -1306,8 +1400,64 @@ final class ProviderAdapterTests {
         XCTAssertEqual(createEvent["type"]?.stringValue, "response.create")
         XCTAssertEqual(createEvent["stream"]?.boolValue, true)
         XCTAssertEqual(createEvent["model"]?.stringValue, "gpt-5.2")
+        XCTAssertTrue(createEvent["instructions"]?.stringValue?.contains("sys") ?? false)
         XCTAssertNil(createEvent[OpenAIProviderOptionKeys.responsesTransport])
         XCTAssertNil(createEvent[OpenAIProviderOptionKeys.websocketBaseURL])
+    }
+
+    @Test
+    func testOpenAIAdapterStreamingViaWebSocketIncludesPreviousResponseId() async throws {
+        let completedJSON: JSONValue = .object([
+            "type": .string("response.completed"),
+            "response": .object([
+                "id": .string("resp_ws_prev"),
+                "model": .string("gpt-5.2"),
+                "output": .array([
+                    .object([
+                        "type": .string("message"),
+                        "content": .array([.object(["type": .string("output_text"), "text": .string("ok")])]),
+                    ]),
+                ]),
+                "finish_reason": .string("stop"),
+                "usage": .object(["prompt_tokens": .number(1), "completion_tokens": .number(1)]),
+            ]),
+        ])
+
+        let wsTransport = StubOpenAIResponsesWebSocketTransport(open: {
+            AsyncThrowingStream { continuation in
+                continuation.yield(completedJSON)
+                continuation.finish()
+            }
+        })
+
+        let transport = StubTransport(stream: { _ in
+            XCTFail("Expected websocket transport path, not SSE stream path")
+            return HTTPStreamResponse(statusCode: 500, headers: HTTPHeaders(), body: AsyncThrowingStream { $0.finish() })
+        })
+
+        let adapter = OpenAIAdapter(
+            apiKey: "sk-test",
+            transport: transport,
+            responsesWebSocketTransport: wsTransport
+        )
+
+        let request = Request(
+            model: "gpt-5.2",
+            messages: [.system("sys"), .user("continue")],
+            previousResponseId: "resp_prev_ws_1",
+            providerOptions: [
+                "openai": .object([
+                    OpenAIProviderOptionKeys.responsesTransport: .string("websocket"),
+                ]),
+            ]
+        )
+
+        let stream = try await adapter.stream(request: request)
+        for try await _ in stream {}
+        let createEventOpt = await wsTransport.lastCreateEvent
+        let createEvent = try XCTUnwrap(createEventOpt)
+        XCTAssertEqual(createEvent["previous_response_id"]?.stringValue, "resp_prev_ws_1")
+        XCTAssertTrue(createEvent["instructions"]?.stringValue?.contains("sys") ?? false)
     }
 
     @Test
@@ -2174,18 +2324,20 @@ final class ProviderAdapterTests {
     func testOpenAIAdapterStreamingMapsToolCallEvents() async throws {
         let completedJSON: JSONValue = .object([
             "type": .string("response.completed"),
-            "id": .string("resp_1"),
-            "model": .string("gpt-5.2"),
-            "output": .array([
-                .object([
-                    "type": .string("function_call"),
-                    "call_id": .string("c1"),
-                    "name": .string("add"),
-                    "arguments": .string("{\"a\":1,\"b\":2}"),
+            "response": .object([
+                "id": .string("resp_1"),
+                "model": .string("gpt-5.2"),
+                "output": .array([
+                    .object([
+                        "type": .string("function_call"),
+                        "call_id": .string("c1"),
+                        "name": .string("add"),
+                        "arguments": .string("{\"a\":1,\"b\":2}"),
+                    ]),
                 ]),
+                "finish_reason": .string("tool_calls"),
+                "usage": .object(["prompt_tokens": .number(1), "completion_tokens": .number(1)]),
             ]),
-            "finish_reason": .string("tool_calls"),
-            "usage": .object(["prompt_tokens": .number(1), "completion_tokens": .number(1)]),
         ])
 
         let sse = """

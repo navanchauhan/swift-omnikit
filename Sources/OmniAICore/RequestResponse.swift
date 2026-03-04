@@ -116,6 +116,7 @@ public struct Request: Sendable {
     public var model: String
     public var messages: [Message]
     public var provider: String?
+    public var previousResponseId: String?
 
     public var tools: [Tool]?
     public var toolChoice: ToolChoice?
@@ -139,6 +140,7 @@ public struct Request: Sendable {
         model: String,
         messages: [Message],
         provider: String? = nil,
+        previousResponseId: String? = nil,
         tools: [Tool]? = nil,
         toolChoice: ToolChoice? = nil,
         responseFormat: ResponseFormat? = nil,
@@ -155,6 +157,7 @@ public struct Request: Sendable {
         self.model = model
         self.messages = messages
         self.provider = provider
+        self.previousResponseId = previousResponseId
         self.tools = tools
         self.toolChoice = toolChoice
         self.responseFormat = responseFormat

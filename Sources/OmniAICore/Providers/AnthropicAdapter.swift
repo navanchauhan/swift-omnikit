@@ -180,6 +180,11 @@ public final class AnthropicAdapter: ProviderAdapter, @unchecked Sendable {
                                     blocks[index] = .toolUse(id: id, name: name, rawJSON: next)
                                     continuation.yield(StreamEvent(type: .standard(.toolCallDelta), toolCall: ToolCall(id: id, name: name, arguments: [:], rawArguments: next)))
                                 }
+                            case "signature_delta":
+                                let sig = delta?["signature"]?.stringValue ?? ""
+                                if case .thinking(let text, _)? = blocks[index] {
+                                    blocks[index] = .thinking(text: text, signature: sig)
+                                }
                             case "redacted_thinking_delta":
                                 let data = delta?["data"]?.stringValue ?? ""
                                 if case .redactedThinking(let current)? = blocks[index] {
@@ -353,10 +358,21 @@ public final class AnthropicAdapter: ProviderAdapter, @unchecked Sendable {
                 ])
             case ContentKind.toolResult.rawValue:
                 guard let tr = part.toolResult else { return nil }
+                // Anthropic accepts content as a plain string or an array of content blocks.
+                // Preserve the original type to avoid double-encoding strings.
+                let content: JSONValue
+                switch tr.content {
+                case .string:
+                    content = tr.content
+                case .array:
+                    content = tr.content
+                default:
+                    content = .string(_ProviderHTTP.stringifyJSON(tr.content))
+                }
                 return .object([
                     "type": .string("tool_result"),
                     "tool_use_id": .string(tr.toolCallId),
-                    "content": .string(_ProviderHTTP.stringifyJSON(tr.content)),
+                    "content": content,
                     "is_error": .bool(tr.isError),
                 ])
             case ContentKind.thinking.rawValue:

@@ -216,13 +216,28 @@ public actor Session {
                 userInstructions: config.userInstructions,
                 gitContext: gitCtx
             )
-            let messages = convertHistoryToMessages(systemPrompt: systemPrompt)
             let toolDefs = providerProfile.tools()
+            let previousResponseId = providerProfile.id == "openai"
+                ? latestAssistantResponseId()
+                : nil
+            let messages: [Message]
+            if let prevId = previousResponseId {
+                // When resuming via previous_response_id, only send turns added
+                // after the assistant turn that produced that response. The server
+                // already has everything up to and including that response.
+                messages = convertIncrementalMessages(
+                    systemPrompt: systemPrompt,
+                    afterResponseId: prevId
+                )
+            } else {
+                messages = convertHistoryToMessages(systemPrompt: systemPrompt)
+            }
 
             let request = Request(
                 model: providerProfile.model,
                 messages: messages,
                 provider: providerProfile.id,
+                previousResponseId: previousResponseId,
                 tools: toolDefs.isEmpty ? nil : toolDefs,
                 toolChoice: toolDefs.isEmpty ? nil : ToolChoice.auto,
                 reasoningEffort: config.reasoningEffort,
@@ -599,6 +614,106 @@ You are running in non-interactive (automated pipeline) mode. Complete your assi
         return messages
     }
 
+    /// Build a message list containing only the system prompt and turns added
+    /// AFTER the assistant turn whose `responseId` matches `afterResponseId`.
+    /// This is used with OpenAI's `previous_response_id` so the server-side
+    /// context supplies everything up to that response and we only send new items.
+    private func convertIncrementalMessages(systemPrompt: String, afterResponseId: String) -> [Message] {
+        // Find the index of the assistant turn that produced this response.
+        var cutoffIndex: Int? = nil
+        for idx in stride(from: history.count - 1, through: 0, by: -1) {
+            if case .assistant(let t) = history[idx], t.responseId == afterResponseId {
+                cutoffIndex = idx
+                break
+            }
+        }
+
+        // If we can't find the matching turn, fall back to full history.
+        guard let cutoff = cutoffIndex, cutoff + 1 < history.count else {
+            return convertHistoryToMessages(systemPrompt: systemPrompt)
+        }
+
+        // System/developer messages are sent as `instructions` by the adapter,
+        // so we still include the system prompt. Only the input items change.
+        var messages: [Message] = [.system(systemPrompt)]
+        if !config.interactiveMode {
+            messages.append(.user("""
+<system-reminder>
+You are running in non-interactive (automated pipeline) mode. Complete your assigned task using the available tools, then provide your final response. Do not attempt to ask the user questions or wait for interactive input.
+</system-reminder>
+"""))
+        }
+
+        // Build tool-call-id → name lookup from ALL history (the server knows
+        // about these tool calls from the previous response chain).
+        var toolCallIdToName: [String: String] = [:]
+        for turn in history {
+            if case .assistant(let t) = turn {
+                for call in t.toolCalls {
+                    if !call.name.isEmpty {
+                        toolCallIdToName[call.id] = call.name
+                    }
+                }
+            }
+        }
+
+        // Only convert turns that came after the matched assistant turn.
+        let newTurns = history[(cutoff + 1)...]
+        for turn in newTurns {
+            switch turn {
+            case .user(let t):
+                messages.append(.user(t.content))
+            case .assistant(let t):
+                if let rawParts = t.rawContentParts, !rawParts.isEmpty {
+                    messages.append(Message(role: .assistant, content: rawParts))
+                } else {
+                    var parts: [ContentPart] = []
+                    if let reasoning = t.reasoning, !reasoning.isEmpty {
+                        parts.append(.thinking(ThinkingData(text: reasoning)))
+                    }
+                    if !t.content.isEmpty {
+                        parts.append(.text(t.content))
+                    }
+                    for tc in t.toolCalls {
+                        parts.append(.toolCall(tc))
+                    }
+                    if parts.isEmpty {
+                        parts.append(.text(""))
+                    }
+                    messages.append(Message(role: .assistant, content: parts))
+                }
+            case .toolResults(let t):
+                for result in t.results {
+                    let toolName = toolCallIdToName[result.toolCallId]
+                    messages.append(.toolResult(
+                        toolCallId: result.toolCallId,
+                        toolName: toolName,
+                        content: result.content,
+                        isError: result.isError,
+                        imageData: result.imageData,
+                        imageMediaType: result.imageMediaType
+                    ))
+                    if let imageData = result.imageData {
+                        let image = ImageData(data: imageData, mediaType: result.imageMediaType)
+                        messages.append(Message(
+                            role: .user,
+                            content: [
+                                .text("<system-reminder>Image content from the previous view_image tool call is attached below.</system-reminder>"),
+                                .image(image),
+                            ]
+                        ))
+                    }
+                }
+            case .system(let t):
+                messages.append(.user(t.content))
+            case .steering(let t):
+                messages.append(.user(t.content))
+            }
+        }
+
+        return messages
+    }
+
     private func completeWithTransientRetries(request: Request) async throws -> Response {
         let maxAttempts = 3
         var attempt = 1
@@ -634,6 +749,16 @@ You are running in non-interactive (automated pipeline) mode. Complete your assi
                 attempt += 1
             }
         }
+    }
+
+    private func latestAssistantResponseId() -> String? {
+        for turn in history.reversed() {
+            guard case .assistant(let assistantTurn) = turn else { continue }
+            if let responseId = assistantTurn.responseId, !responseId.isEmpty {
+                return responseId
+            }
+        }
+        return nil
     }
 
     private func streamAndAccumulate(request: Request) async throws -> Response {
