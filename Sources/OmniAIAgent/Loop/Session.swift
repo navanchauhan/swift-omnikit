@@ -452,11 +452,49 @@ public actor Session {
     // MARK: - Tool Execution
 
     private func executeToolCalls(_ toolCalls: [ToolCall]) async -> [ToolResult] {
-        if shouldExecuteToolCallsInParallel(toolCallCount: toolCalls.count) {
+        // Pre-check: update duplicate-call tracking (actor-isolated state) serially
+        // before entering the task group. This avoids actor reentrancy in the parallel path.
+        var policyBlocked: [String: String] = [:] // toolCall.id -> denial message
+        let policyDenial = "same tool run five times in a row. denied by policy. try something else"
+        for toolCall in toolCalls {
+            let signature = toolCallSignature(toolCall)
+            if signature == lastToolCallSignature {
+                consecutiveIdenticalToolCallCount += 1
+            } else {
+                lastToolCallSignature = signature
+                consecutiveIdenticalToolCallCount = 1
+            }
+            if consecutiveIdenticalToolCallCount >= 6 {
+                policyBlocked[toolCall.id] = policyDenial
+            }
+        }
+
+        let shouldParallel = toolCalls.count > 1
+            && providerProfile.supportsParallelToolCalls
+            && config.parallelToolCalls == true
+
+        // Capture actor-isolated state into local lets for use in nonisolated task group.
+        let registry = providerProfile.toolRegistry
+        let env = executionEnv
+        let cfg = config
+        let emitter = eventEmitter
+        let sid = id
+
+        if shouldParallel {
             return await withTaskGroup(of: (Int, ToolResult).self, returning: [ToolResult].self) { group in
                 for (index, toolCall) in toolCalls.enumerated() {
+                    let blocked = policyBlocked[toolCall.id]
                     group.addTask {
-                        let result = await self.executeSingleTool(toolCall)
+                        // Runs outside Session actor — no reentrancy.
+                        let result = await Self.executeSingleToolNonisolated(
+                            toolCall: toolCall,
+                            policyBlocked: blocked,
+                            registry: registry,
+                            env: env,
+                            config: cfg,
+                            eventEmitter: emitter,
+                            sessionID: sid
+                        )
                         return (index, result)
                     }
                 }
@@ -465,72 +503,79 @@ public actor Session {
                 for await tuple in group {
                     collected.append(tuple)
                 }
-
-                return collected
-                    .sorted { $0.0 < $1.0 }
-                    .map(\.1)
+                return collected.sorted { $0.0 < $1.0 }.map(\.1)
             }
         }
 
+        // Serial fallback
         var results: [ToolResult] = []
         results.reserveCapacity(toolCalls.count)
         for toolCall in toolCalls {
-            let result = await executeSingleTool(toolCall)
+            let blocked = policyBlocked[toolCall.id]
+            let result = await Self.executeSingleToolNonisolated(
+                toolCall: toolCall,
+                policyBlocked: blocked,
+                registry: registry,
+                env: env,
+                config: cfg,
+                eventEmitter: emitter,
+                sessionID: sid
+            )
             results.append(result)
         }
         return results
     }
 
-    private func shouldExecuteToolCallsInParallel(toolCallCount: Int) -> Bool {
-        guard toolCallCount > 1 else { return false }
-        guard providerProfile.supportsParallelToolCalls else { return false }
-        return config.parallelToolCalls == true
-    }
-
-    private func executeSingleTool(_ toolCall: ToolCall) async -> ToolResult {
-        let policyDenial = "same tool run five times in a row. denied by policy. try something else"
+    /// Executes a single tool call without requiring Session actor isolation.
+    /// All needed state is passed as parameters so this can run in a task group
+    /// child task without re-entering the Session actor (which would deadlock).
+    private static func executeSingleToolNonisolated(
+        toolCall: ToolCall,
+        policyBlocked: String?,
+        registry: ToolRegistry,
+        env: any ExecutionEnvironment,
+        config: SessionConfig,
+        eventEmitter: EventEmitter,
+        sessionID: String
+    ) async -> ToolResult {
         await eventEmitter.emit(SessionEvent(
             kind: .toolCallStart,
-            sessionId: id,
+            sessionId: sessionID,
             data: ["tool_name": toolCall.name, "call_id": toolCall.id]
         ))
 
-        let signature = toolCallSignature(toolCall)
-        if signature == lastToolCallSignature {
-            consecutiveIdenticalToolCallCount += 1
-        } else {
-            lastToolCallSignature = signature
-            consecutiveIdenticalToolCallCount = 1
-        }
-        if consecutiveIdenticalToolCallCount >= 6 {
+        if let denial = policyBlocked {
             await eventEmitter.emit(SessionEvent(
                 kind: .toolCallEnd,
-                sessionId: id,
+                sessionId: sessionID,
                 data: [
                     "call_id": toolCall.id,
-                    "error": policyDenial,
+                    "error": denial,
                     "policy_blocked": "true",
                     "tool_name": toolCall.name,
                 ]
             ))
-            return ToolResult(toolCallId: toolCall.id, content: .string(policyDenial), isError: true)
+            return ToolResult(toolCallId: toolCall.id, content: .string(denial), isError: true)
         }
 
-        guard let registered = providerProfile.toolRegistry.get(toolCall.name) else {
+        guard let registered = registry.get(toolCall.name) else {
             let errorMsg = "Unknown tool: \(toolCall.name)"
             await eventEmitter.emit(SessionEvent(
                 kind: .toolCallEnd,
-                sessionId: id,
+                sessionId: sessionID,
                 data: ["call_id": toolCall.id, "error": errorMsg]
             ))
             return ToolResult(toolCallId: toolCall.id, content: .string(errorMsg), isError: true)
         }
 
         // Validate arguments against tool parameter schema
-        if let validationError = validateToolArguments(toolCall.arguments, against: registered.definition.parameters) {
+        do {
+            try JSONSchema(registered.definition.parameters).validate(.object(toolCall.arguments))
+        } catch {
+            let validationError = "Invalid tool arguments: \(error)"
             await eventEmitter.emit(SessionEvent(
                 kind: .toolCallEnd,
-                sessionId: id,
+                sessionId: sessionID,
                 data: ["call_id": toolCall.id, "error": validationError]
             ))
             return ToolResult(toolCallId: toolCall.id, content: .string(validationError), isError: true)
@@ -543,20 +588,40 @@ public actor Session {
             let conversionError = "Invalid tool arguments for \(toolCall.name): \(error)"
             await eventEmitter.emit(SessionEvent(
                 kind: .toolCallEnd,
-                sessionId: id,
+                sessionId: sessionID,
                 data: ["call_id": toolCall.id, "error": conversionError]
             ))
             return ToolResult(toolCallId: toolCall.id, content: .string(conversionError), isError: true)
         }
 
         do {
-            let rawOutput = try await registered.executor(foundationArguments, executionEnv)
+            let rawOutput = try await registered.executor(foundationArguments, env)
             let truncatedOutput = truncateToolOutput(rawOutput, toolName: toolCall.name, config: config)
-            let imageAttachment = resolveImageAttachment(toolName: toolCall.name, arguments: foundationArguments)
+
+            // Resolve image attachment inline (no actor state needed)
+            var imageData: [UInt8]?
+            var imageMediaType: String?
+            if toolCall.name == "view_image", let rawPath = foundationArguments["path"] as? String {
+                let resolvedPath: String = rawPath.hasPrefix("/")
+                    ? rawPath
+                    : (env.workingDirectory() as NSString).appendingPathComponent(rawPath)
+                if let data = try? Data(contentsOf: URL(fileURLWithPath: resolvedPath)), !data.isEmpty {
+                    imageData = Array(data)
+                    imageMediaType = {
+                        switch URL(fileURLWithPath: resolvedPath).pathExtension.lowercased() {
+                        case "png": return "image/png"
+                        case "jpg", "jpeg": return "image/jpeg"
+                        case "gif": return "image/gif"
+                        case "webp": return "image/webp"
+                        default: return "application/octet-stream"
+                        }
+                    }()
+                }
+            }
 
             await eventEmitter.emit(SessionEvent(
                 kind: .toolCallEnd,
-                sessionId: id,
+                sessionId: sessionID,
                 data: ["call_id": toolCall.id, "output": rawOutput, "truncated": "\(rawOutput.count != truncatedOutput.count)"]
             ))
 
@@ -564,14 +629,14 @@ public actor Session {
                 toolCallId: toolCall.id,
                 content: .string(truncatedOutput),
                 isError: false,
-                imageData: imageAttachment?.data,
-                imageMediaType: imageAttachment?.mediaType
+                imageData: imageData,
+                imageMediaType: imageMediaType
             )
         } catch {
             let errorMsg = "Tool error (\(toolCall.name)): \(error)"
             await eventEmitter.emit(SessionEvent(
                 kind: .toolCallEnd,
-                sessionId: id,
+                sessionId: sessionID,
                 data: ["call_id": toolCall.id, "error": errorMsg]
             ))
             return ToolResult(toolCallId: toolCall.id, content: .string(errorMsg), isError: true)
