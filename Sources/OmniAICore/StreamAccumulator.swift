@@ -6,6 +6,8 @@ public struct StreamAccumulator: Sendable {
 
     private var toolCallOrder: [String] = []
     private var toolCallById: [String: ToolCall] = [:]
+    private var toolCallStartedIDs: Set<String> = []
+    private var toolCallCompletedIDs: Set<String> = []
 
     private var reasoning: String = ""
 
@@ -39,6 +41,10 @@ public struct StreamAccumulator: Sendable {
                     toolCallOrder.append(call.id)
                 }
                 toolCallById[call.id] = call
+                toolCallStartedIDs.insert(call.id)
+                if event.type.rawValue == StreamEventType.toolCallEnd.rawValue {
+                    toolCallCompletedIDs.insert(call.id)
+                }
             }
         case StreamEventType.finish.rawValue:
             finishReason = event.finishReason
@@ -71,12 +77,14 @@ public struct StreamAccumulator: Sendable {
             parts.append(.text(finalResponse.text))
         }
 
-        for id in toolCallOrder {
+        for id in toolCallOrder where toolCallCompletedIDs.contains(id) {
             if let call = toolCallById[id] {
                 parts.append(.toolCall(call))
             }
         }
-        // If no accumulated tool calls but finalResponse has them, use those.
+        // If no accumulated completed tool calls but finalResponse has tool calls,
+        // use those only when no streamed tool call started. If streamed calls started
+        // but never completed, they are considered incomplete and must not execute.
         if toolCallOrder.isEmpty, let finalResponse, !finalResponse.toolCalls.isEmpty {
             for call in finalResponse.toolCalls {
                 parts.append(.toolCall(call))
@@ -106,5 +114,13 @@ public struct StreamAccumulator: Sendable {
             warnings: base?.warnings ?? [],
             rateLimit: base?.rateLimit
         )
+    }
+
+    public func hasIncompleteToolCalls() -> Bool {
+        !toolCallStartedIDs.subtracting(toolCallCompletedIDs).isEmpty
+    }
+
+    public func incompleteToolCallCount() -> Int {
+        toolCallStartedIDs.subtracting(toolCallCompletedIDs).count
     }
 }

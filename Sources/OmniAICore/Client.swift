@@ -488,7 +488,16 @@ public final class Client: @unchecked Sendable {
                 try await m.stream(request: req, next: next)
             }
         }
-        return try await handler(request)
+        let upstream = try await handler(request)
+        if let inactivityTimeout = request.timeout?.asConfig.total,
+           Self.durationSeconds(inactivityTimeout) > 0
+        {
+            return Self.withInactivityWatchdog(
+                stream: upstream,
+                inactivityTimeout: inactivityTimeout
+            )
+        }
+        return upstream
     }
 
     public func stream(request: Request) async throws -> AsyncThrowingStream<StreamEvent, Error> {
@@ -531,5 +540,83 @@ public final class Client: @unchecked Sendable {
             }
             return a
         }
+    }
+
+    private static func withInactivityWatchdog(
+        stream: AsyncThrowingStream<StreamEvent, Error>,
+        inactivityTimeout: Duration
+    ) -> AsyncThrowingStream<StreamEvent, Error> {
+        let activityState = StreamActivityState(start: ContinuousClock.now)
+        return AsyncThrowingStream<StreamEvent, Error> { continuation in
+            let producer = Task {
+                do {
+                    for try await event in stream {
+                        if isActivityEvent(event) {
+                            await activityState.markActivity()
+                        }
+                        continuation.yield(event)
+                    }
+                    continuation.finish()
+                } catch {
+                    continuation.finish(throwing: error)
+                }
+            }
+
+            let monitor = Task {
+                while !Task.isCancelled {
+                    try? await Task.sleep(for: .seconds(1))
+                    let snapshot = await activityState.snapshot()
+                    if (ContinuousClock.now - snapshot.lastActivity) >= inactivityTimeout {
+                        producer.cancel()
+                        continuation.finish(throwing: RequestTimeoutError(
+                            message: "Stream inactivity timeout after \(Int(durationSeconds(inactivityTimeout)))s"
+                        ))
+                        return
+                    }
+                }
+            }
+
+            continuation.onTermination = { @Sendable _ in
+                producer.cancel()
+                monitor.cancel()
+            }
+        }
+    }
+
+    private static func isActivityEvent(_ event: StreamEvent) -> Bool {
+        switch event.type.rawValue {
+        case StreamEventType.textStart.rawValue,
+             StreamEventType.textDelta.rawValue,
+             StreamEventType.reasoningDelta.rawValue,
+             StreamEventType.toolCallStart.rawValue,
+             StreamEventType.toolCallDelta.rawValue,
+             StreamEventType.toolCallEnd.rawValue,
+             StreamEventType.finish.rawValue:
+            return true
+        default:
+            return false
+        }
+    }
+
+    private static func durationSeconds(_ duration: Duration) -> Double {
+        Double(duration.components.seconds) + Double(duration.components.attoseconds) / 1e18
+    }
+}
+
+private actor StreamActivityState {
+    private let start: ContinuousClock.Instant
+    private var lastActivity: ContinuousClock.Instant
+
+    init(start: ContinuousClock.Instant) {
+        self.start = start
+        self.lastActivity = start
+    }
+
+    func markActivity() {
+        lastActivity = ContinuousClock.now
+    }
+
+    func snapshot() -> (start: ContinuousClock.Instant, lastActivity: ContinuousClock.Instant) {
+        (start, lastActivity)
     }
 }

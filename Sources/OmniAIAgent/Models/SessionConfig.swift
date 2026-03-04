@@ -13,6 +13,8 @@ public struct SessionConfig: Sendable, Codable {
     public var loopDetectionWindow: Int
     public var maxSubagentDepth: Int
     public var userInstructions: String?
+    public var llmInactivityTimeoutSeconds: Double?
+    public var parallelToolCalls: Bool?
 
     public init(
         maxTurns: Int = 0,
@@ -26,7 +28,9 @@ public struct SessionConfig: Sendable, Codable {
         enableLoopDetection: Bool = true,
         loopDetectionWindow: Int = 10,
         maxSubagentDepth: Int = 1,
-        userInstructions: String? = nil
+        userInstructions: String? = nil,
+        llmInactivityTimeoutSeconds: Double? = nil,
+        parallelToolCalls: Bool? = nil
     ) {
         self.maxTurns = maxTurns
         self.maxToolRoundsPerInput = maxToolRoundsPerInput
@@ -40,5 +44,7 @@ public struct SessionConfig: Sendable, Codable {
         self.loopDetectionWindow = loopDetectionWindow
         self.maxSubagentDepth = maxSubagentDepth
         self.userInstructions = userInstructions
+        self.llmInactivityTimeoutSeconds = llmInactivityTimeoutSeconds
+        self.parallelToolCalls = parallelToolCalls
     }
 }

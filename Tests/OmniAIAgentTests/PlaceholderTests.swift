@@ -110,6 +110,7 @@ final class SessionConfigTests {
         XCTAssertEqual(config.loopDetectionWindow, 10)
         XCTAssertEqual(config.maxSubagentDepth, 1)
         XCTAssertNil(config.userInstructions)
+        XCTAssertNil(config.parallelToolCalls)
     }
 
     @Test
@@ -126,7 +127,8 @@ final class SessionConfigTests {
             enableLoopDetection: false,
             loopDetectionWindow: 5,
             maxSubagentDepth: 2,
-            userInstructions: "Always use tabs"
+            userInstructions: "Always use tabs",
+            parallelToolCalls: true
         )
         XCTAssertEqual(config.maxTurns, 5)
         XCTAssertEqual(config.maxToolRoundsPerInput, 50)
@@ -140,6 +142,7 @@ final class SessionConfigTests {
         XCTAssertEqual(config.loopDetectionWindow, 5)
         XCTAssertEqual(config.maxSubagentDepth, 2)
         XCTAssertEqual(config.userInstructions, "Always use tabs")
+        XCTAssertEqual(config.parallelToolCalls, true)
     }
 }
 

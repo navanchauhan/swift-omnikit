@@ -731,6 +731,63 @@ final class IntegrationTests {
         XCTAssertEqual(postOutput, "POST_HOOK_OUTPUT", "Post-hook output should be captured")
     }
 
+    @Test
+    func testCodergenHandlerPersistsArtifactAndContextOverrides() async throws {
+        let logsRoot = try makeTempDir()
+        defer { cleanup(logsRoot) }
+
+        let backend = MockIntBackend()
+        let handler = CodergenHandler(backend: backend)
+
+        let artifactPath = logsRoot
+            .appendingPathComponent("artifacts/summary.md")
+            .path
+
+        let node = Node(
+            id: "stage",
+            shape: "box",
+            prompt: "Generate stage output",
+            llmModel: "gpt-5.2",
+            llmProvider: "openai"
+        )
+        node.rawAttributes["artifact_path"] = .string(artifactPath)
+        node.rawAttributes["excluded_tools"] = .string("Task, write_file")
+        node.rawAttributes["max_agent_turns"] = .integer(13)
+        node.rawAttributes["default_command_timeout_ms"] = .integer(30_000)
+        node.rawAttributes["max_command_timeout_ms"] = .integer(120_000)
+        node.rawAttributes["llm_inactivity_timeout_seconds"] = .float(45.0)
+        node.rawAttributes["loop_detection_window"] = .integer(7)
+        node.rawAttributes["parallel_tool_calls"] = .boolean(true)
+        node.rawAttributes["user_instructions"] = .string("Keep output short")
+
+        let context = PipelineContext()
+        let graph = Graph(id: "artifact_graph")
+
+        let outcome = try await handler.execute(
+            node: node,
+            context: context,
+            graph: graph,
+            logsRoot: logsRoot
+        )
+
+        XCTAssertEqual(outcome.status, .success)
+
+        let persisted = try String(contentsOfFile: artifactPath, encoding: .utf8)
+        XCTAssertTrue(persisted.contains("Mock response for:"))
+        XCTAssertEqual(context.getString("artifact.stage.path"), artifactPath)
+
+        XCTAssertEqual(context.getString("_current_node_id"), "stage")
+        XCTAssertEqual(context.getString("_current_node_excluded_tools"), "Task, write_file")
+        XCTAssertEqual(context.getString("_current_node_max_agent_turns"), "13")
+        XCTAssertEqual(context.getString("_current_node_default_command_timeout_ms"), "30000")
+        XCTAssertEqual(context.getString("_current_node_max_command_timeout_ms"), "120000")
+        XCTAssertEqual(context.getString("_current_node_llm_inactivity_timeout_seconds"), "45.0")
+        XCTAssertEqual(context.getString("_current_node_loop_detection_window"), "7")
+        XCTAssertEqual(context.getString("_current_node_parallel_tool_calls"), "true")
+        XCTAssertEqual(context.getString("_current_node_user_instructions"), "Keep output short")
+        XCTAssertFalse(context.getString("_current_node_resume_key").isEmpty)
+    }
+
     // MARK: - Loop Restart Tests (Gap 4)
 
     @Test

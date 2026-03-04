@@ -420,6 +420,7 @@ public final class PipelineEngine: @unchecked Sendable {
 
     private func executeWithRetry(node: Node, state: ExecutionState) async throws -> Outcome {
         let maxRetries = node.maxRetries > 0 ? node.maxRetries : state.graph.attributes.defaultMaxRetry
+        let retryPolicy = effectiveRetryPolicy(node: node, graph: state.graph)
         var attempt = 0
 
         while true {
@@ -463,7 +464,7 @@ public final class PipelineEngine: @unchecked Sendable {
                 }
 
                 // Apply backoff delay
-                let delay = config.retryPolicy.delay(forAttempt: attempt - 1)
+                let delay = retryPolicy.delay(forAttempt: attempt - 1)
                 if delay > 0 {
                     try await Task.sleep(for: .milliseconds(Int(delay * 1000)))
                 }
@@ -487,6 +488,118 @@ public final class PipelineEngine: @unchecked Sendable {
             // Retries exhausted or no retries configured
             return outcome
         }
+    }
+
+    private func effectiveRetryPolicy(node: Node, graph: Graph) -> PipelineRetryPolicy {
+        var policy = config.retryPolicy
+        policy = applyRetryPolicyOverrides(attrs: graph.rawAttributes, to: policy)
+        policy = applyRetryPolicyOverrides(attrs: node.rawAttributes, to: policy)
+        return policy
+    }
+
+    private func applyRetryPolicyOverrides(
+        attrs: [String: AttributeValue],
+        to base: PipelineRetryPolicy
+    ) -> PipelineRetryPolicy {
+        var policy = base
+
+        if let strategyRaw = firstString(
+            attrs,
+            keys: ["retry_policy.strategy", "retry.strategy", "retry_strategy"]
+        ),
+           let strategy = RetryStrategy(rawValue: strategyRaw.trimmingCharacters(in: .whitespacesAndNewlines).lowercased())
+        {
+            policy.strategy = strategy
+        }
+
+        if let baseDelay = firstDouble(
+            attrs,
+            keys: ["retry_policy.base_delay", "retry.base_delay", "retry_base_delay"]
+        ),
+           baseDelay >= 0
+        {
+            policy.baseDelay = baseDelay
+        }
+
+        if let maxDelay = firstDouble(
+            attrs,
+            keys: ["retry_policy.max_delay", "retry.max_delay", "retry_max_delay"]
+        ),
+           maxDelay >= 0
+        {
+            policy.maxDelay = maxDelay
+        }
+
+        if let multiplier = firstDouble(
+            attrs,
+            keys: [
+                "retry_policy.backoff_multiplier",
+                "retry.backoff_multiplier",
+                "retry_backoff_multiplier",
+            ]
+        ),
+           multiplier > 0
+        {
+            policy.backoffMultiplier = multiplier
+        }
+
+        if let jitter = firstBool(
+            attrs,
+            keys: ["retry_policy.jitter", "retry.jitter", "retry_jitter"]
+        ) {
+            policy.jitter = jitter
+        }
+
+        return policy
+    }
+
+    private func firstString(_ attrs: [String: AttributeValue], keys: [String]) -> String? {
+        for key in keys {
+            if let value = attrs[key] {
+                return value.stringValue
+            }
+        }
+        return nil
+    }
+
+    private func firstDouble(_ attrs: [String: AttributeValue], keys: [String]) -> Double? {
+        for key in keys {
+            guard let value = attrs[key] else { continue }
+            switch value {
+            case .float(let f):
+                return f
+            case .integer(let i):
+                return Double(i)
+            case .string(let s):
+                if let parsed = Double(s.trimmingCharacters(in: .whitespacesAndNewlines)) {
+                    return parsed
+                }
+            default:
+                continue
+            }
+        }
+        return nil
+    }
+
+    private func firstBool(_ attrs: [String: AttributeValue], keys: [String]) -> Bool? {
+        for key in keys {
+            guard let value = attrs[key] else { continue }
+            switch value {
+            case .boolean(let b):
+                return b
+            case .string(let s):
+                let normalized = s.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+                if ["true", "1", "yes", "on"].contains(normalized) {
+                    return true
+                }
+                if ["false", "0", "no", "off"].contains(normalized) {
+                    return false
+                }
+            default:
+                continue
+            }
+        }
+        return nil
     }
 
     private func executeHandler(node: Node, state: ExecutionState) async throws -> Outcome {

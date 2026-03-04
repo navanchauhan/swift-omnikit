@@ -23,35 +23,51 @@ public final class CodingAgentBackend: CodergenBackend, @unchecked Sendable {
         context: PipelineContext
     ) async throws -> CodergenResult {
         let resolvedClient = try (client ?? Client.fromEnv())
+        let overrides = resolveNodeOverrides(from: context)
 
         // 1. Create the provider profile wrapped with pipeline context
         let baseProfile = createProfile(provider: provider, model: model)
+        let effectiveProfile: ProviderProfile = {
+            if overrides.excludedTools.isEmpty {
+                return baseProfile
+            }
+            return FilteredToolProfile(wrapping: baseProfile, excludedTools: overrides.excludedTools)
+        }()
         let pipelineContext = PipelineProfileContext(
             goal: context.getString("_graph_goal"),
             previousStageLabel: context.getString("last_stage"),
             previousStageOutput: context.getString("last_response"),
             toolOutput: context.getString("tool.output")
         )
-        let profile = PipelineProfile(wrapping: baseProfile, context: pipelineContext)
+        let profile = PipelineProfile(wrapping: effectiveProfile, context: pipelineContext)
 
         // 2. Configure the session
         let sessionConfig = SessionConfig(
-            maxTurns: 0,
+            maxTurns: overrides.maxTurns ?? 0,
             maxToolRoundsPerInput: 0,
+            defaultCommandTimeoutMs: overrides.defaultCommandTimeoutMs ?? 10_000,
+            maxCommandTimeoutMs: overrides.maxCommandTimeoutMs ?? 600_000,
             reasoningEffort: effectiveReasoningEffort(for: provider, requested: reasoningEffort),
             enableLoopDetection: true,
-            loopDetectionWindow: 10
+            loopDetectionWindow: overrides.loopDetectionWindow ?? 10,
+            userInstructions: overrides.userInstructions,
+            llmInactivityTimeoutSeconds: overrides.llmInactivityTimeoutSeconds ?? resolveLLMInactivityTimeoutSeconds(),
+            parallelToolCalls: overrides.parallelToolCalls
         )
 
         // 3. Create execution environment
         let env = LocalExecutionEnvironment(workingDir: workingDirectory)
+        let storageBackend = makeStorageBackend()
+        let sessionID = buildSessionID(for: overrides.resumeKey)
 
         // 4. Create the session
         let session = try Session(
             profile: profile,
             environment: env,
             client: resolvedClient,
-            config: sessionConfig
+            config: sessionConfig,
+            sessionID: sessionID,
+            storageBackend: storageBackend
         )
 
         // 5. Track tool calls and errors via events
@@ -84,6 +100,7 @@ public final class CodingAgentBackend: CodergenBackend, @unchecked Sendable {
         // 8. Extract the final response from session history (including all follow-ups)
         let history = await session.getHistory()
         let finalResponse = buildFinalResponse(from: history, tracker: tracker)
+        let parsed = parseResponse(finalResponse)
 
         // Log errors if agent produced no output
         let errors = await errorTracker.errors
@@ -94,9 +111,10 @@ public final class CodingAgentBackend: CodergenBackend, @unchecked Sendable {
             }
         }
 
+        // Stage completed; clear persisted state for this node session.
+        try? await session.clearPersistedState()
         await session.close()
-
-        return parseResponse(finalResponse)
+        return parsed
     }
 
     // MARK: - Response Extraction
@@ -175,6 +193,96 @@ public final class CodingAgentBackend: CodergenBackend, @unchecked Sendable {
         return requested
     }
 
+    private func resolveLLMInactivityTimeoutSeconds() -> Double {
+        let env = ProcessInfo.processInfo.environment
+        let keys = [
+            "ATTRACTOR_AGENT_INACTIVITY_TIMEOUT_SECONDS",
+            "ATTRACTOR_LLM_INACTIVITY_TIMEOUT_SECONDS",
+        ]
+        for key in keys {
+            if let raw = env[key], let value = Double(raw), value > 0 {
+                return value
+            }
+        }
+        // Default watchdog for agent backend requests.
+        return 90
+    }
+
+    private func resolveNodeOverrides(from context: PipelineContext) -> NodeOverrides {
+        NodeOverrides(
+            maxTurns: parseInt(context.getString("_current_node_max_agent_turns")),
+            defaultCommandTimeoutMs: parseInt(context.getString("_current_node_default_command_timeout_ms")),
+            maxCommandTimeoutMs: parseInt(context.getString("_current_node_max_command_timeout_ms")),
+            llmInactivityTimeoutSeconds: parseDouble(context.getString("_current_node_llm_inactivity_timeout_seconds")),
+            loopDetectionWindow: parseInt(context.getString("_current_node_loop_detection_window")),
+            parallelToolCalls: parseBool(context.getString("_current_node_parallel_tool_calls")),
+            userInstructions: {
+                let value = context.getString("_current_node_user_instructions")
+                return value.isEmpty ? nil : value
+            }(),
+            excludedTools: parseStringList(context.getString("_current_node_excluded_tools")),
+            resumeKey: {
+                let value = context.getString("_current_node_resume_key")
+                return value.isEmpty ? nil : value
+            }()
+        )
+    }
+
+    private func makeStorageBackend() -> SessionStorageBackend {
+        let root = URL(fileURLWithPath: workingDirectory, isDirectory: true)
+            .appendingPathComponent(".ai/attractor-agent-state", isDirectory: true)
+        return FileSessionStorageBackend(rootDirectory: root)
+    }
+
+    private func buildSessionID(for resumeKey: String?) -> String {
+        guard let resumeKey, !resumeKey.isEmpty else {
+            return UUID().uuidString
+        }
+        return sanitizeSessionID(resumeKey)
+    }
+
+    private func sanitizeSessionID(_ value: String) -> String {
+        let allowed = Set("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_.")
+        let sanitized = value.map { allowed.contains($0) ? $0 : "_" }
+        return String(sanitized.prefix(180))
+    }
+
+    private func parseInt(_ value: String) -> Int? {
+        guard !value.isEmpty else { return nil }
+        return Int(value)
+    }
+
+    private func parseDouble(_ value: String) -> Double? {
+        guard !value.isEmpty else { return nil }
+        return Double(value)
+    }
+
+    private func parseBool(_ value: String) -> Bool? {
+        guard !value.isEmpty else { return nil }
+        switch value.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
+        case "true", "1", "yes", "on":
+            return true
+        case "false", "0", "no", "off":
+            return false
+        default:
+            return nil
+        }
+    }
+
+    private func parseStringList(_ value: String) -> [String] {
+        guard !value.isEmpty else { return [] }
+        if value.hasPrefix("[") && value.hasSuffix("]"),
+           let data = value.data(using: .utf8),
+           let list = try? JSONSerialization.jsonObject(with: data) as? [String]
+        {
+            return list.map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }.filter { !$0.isEmpty }
+        }
+        return value
+            .split(separator: ",")
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+    }
+
     // MARK: - Response Parsing (reused from LLMKitBackend)
 
     private func parseResponse(_ response: String) -> CodergenResult {
@@ -227,6 +335,68 @@ public final class CodingAgentBackend: CodergenBackend, @unchecked Sendable {
             return nil
         }
         return nsText.substring(with: lastMatch.range(at: 1))
+    }
+}
+
+private struct NodeOverrides: Sendable {
+    var maxTurns: Int?
+    var defaultCommandTimeoutMs: Int?
+    var maxCommandTimeoutMs: Int?
+    var llmInactivityTimeoutSeconds: Double?
+    var loopDetectionWindow: Int?
+    var parallelToolCalls: Bool?
+    var userInstructions: String?
+    var excludedTools: [String]
+    var resumeKey: String?
+}
+
+private final class FilteredToolProfile: ProviderProfile, @unchecked Sendable {
+    private let wrapped: ProviderProfile
+    let toolRegistry: ToolRegistry
+    let excludedNamesLowercased: Set<String>
+
+    var id: String { wrapped.id }
+    var model: String { wrapped.model }
+    var supportsReasoning: Bool { wrapped.supportsReasoning }
+    var supportsStreaming: Bool { wrapped.supportsStreaming }
+    var supportsParallelToolCalls: Bool { wrapped.supportsParallelToolCalls }
+    var contextWindowSize: Int { wrapped.contextWindowSize }
+
+    init(wrapping profile: ProviderProfile, excludedTools: [String]) {
+        self.wrapped = profile
+        self.toolRegistry = ToolRegistry()
+        self.excludedNamesLowercased = Set(excludedTools.map { $0.lowercased() })
+
+        for name in profile.toolRegistry.names() {
+            if excludedNamesLowercased.contains(name.lowercased()) {
+                continue
+            }
+            if let tool = profile.toolRegistry.get(name) {
+                self.toolRegistry.register(tool)
+            }
+        }
+    }
+
+    func buildSystemPrompt(
+        environment: ExecutionEnvironment,
+        projectDocs: String?,
+        userInstructions: String?,
+        gitContext: GitContext?
+    ) -> String {
+        wrapped.buildSystemPrompt(
+            environment: environment,
+            projectDocs: projectDocs,
+            userInstructions: userInstructions,
+            gitContext: gitContext
+        )
+    }
+
+    func tools() -> [Tool] {
+        toolRegistry.llmKitDefinitions()
+    }
+
+    func providerOptions() -> [String: JSONValue]? {
+        wrapped.providerOptions()
     }
 }
 

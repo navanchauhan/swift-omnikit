@@ -204,6 +204,95 @@ struct SessionPersistenceTests {
         #expect(toolTurn.results[0].isError == false)
         #expect(userText(at: 3, in: history) == "continue")
     }
+
+    @Test
+    func sessionResumeSkipsDuplicatePromptForInProgressSnapshot() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("omnikit-session-resume-duplicate-\(UUID().uuidString)", isDirectory: true)
+        let storage = FileSessionStorageBackend(rootDirectory: root)
+
+        let toolRegistry = ToolRegistry()
+        toolRegistry.register(RegisteredTool(
+            definition: AgentToolDefinition(
+                name: "echo_tool",
+                description: "Echo",
+                parameters: [
+                    "type": "object",
+                    "properties": [:] as [String: Any],
+                    "additionalProperties": true,
+                ]
+            ),
+            executor: { _, _ in "tool-ok" }
+        ))
+        let profile = TestProfile(toolRegistry: toolRegistry)
+        let sessionID = "resume-duplicate-prompt"
+        let repeatedPrompt = "resume original prompt"
+
+        let pendingCall = PersistedToolCall(
+            id: "call-dup-1",
+            name: "echo_tool",
+            arguments: [:],
+            rawArguments: nil,
+            thoughtSignature: nil,
+            providerItemId: nil
+        )
+        let snapshot = SessionSnapshot(
+            sessionID: sessionID,
+            providerID: "openai",
+            model: "gpt-test",
+            workingDirectory: root.path,
+            state: .processing,
+            history: [
+                .user(UserTurn(content: repeatedPrompt)),
+                .assistant(PersistedAssistantTurn(
+                    content: "",
+                    toolCalls: [pendingCall],
+                    reasoning: nil,
+                    usage: PersistedUsage(
+                        inputTokens: 1,
+                        outputTokens: 1,
+                        reasoningTokens: nil,
+                        cacheReadTokens: nil,
+                        cacheWriteTokens: nil,
+                        raw: nil
+                    ),
+                    responseId: "resp-dup",
+                    timestamp: Date()
+                )),
+            ],
+            steeringQueue: [],
+            followupQueue: [],
+            config: SessionConfig(),
+            abortSignaled: false
+        )
+        try await storage.save(snapshot)
+
+        let env = LocalExecutionEnvironment(workingDir: root.path)
+        try await env.initialize()
+        let client = try Client(
+            providers: [
+                "openai": MockProviderAdapter(
+                    responses: [makeResponse(text: "finished after resume")]
+                ),
+            ],
+            defaultProvider: "openai"
+        )
+        let session = try Session(
+            profile: profile,
+            environment: env,
+            client: client,
+            sessionID: sessionID,
+            storageBackend: storage
+        )
+
+        await session.submit(repeatedPrompt)
+        let history = await session.getHistory()
+        let repeatedCount = history.reduce(0) { partial, turn in
+            guard case .user(let user) = turn else { return partial }
+            return partial + (user.content == repeatedPrompt ? 1 : 0)
+        }
+        #expect(repeatedCount == 1)
+    }
 }
 
 private actor MockProviderAdapter: ProviderAdapter {

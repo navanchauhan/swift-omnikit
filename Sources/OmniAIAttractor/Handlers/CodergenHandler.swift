@@ -61,6 +61,8 @@ public final class CodergenHandler: NodeHandler, @unchecked Sendable {
         // 2. Create stage directory
         let stageDir = logsRoot.appendingPathComponent(node.id)
         try FileManager.default.createDirectory(at: stageDir, withIntermediateDirectories: true)
+        context.set("_current_node_id", node.id)
+        context.set("_current_stage_dir", stageDir.path)
 
         // 3. Write prompt
         let promptFile = stageDir.appendingPathComponent("prompt.md")
@@ -94,13 +96,36 @@ public final class CodergenHandler: NodeHandler, @unchecked Sendable {
         let provider = node.llmProvider.isEmpty ? "anthropic" : node.llmProvider
         let reasoningEffort = node.reasoningEffort.isEmpty ? "high" : node.reasoningEffort
 
-        // Pass node-level agent config to context for CodingAgentBackend
+        // Pass node-level agent config to context for CodingAgentBackend.
         if let maxTurns = node.rawAttributes["max_agent_turns"]?.intValue {
             context.set("_current_node_max_agent_turns", String(maxTurns))
         }
-        if let timeout = node.rawAttributes["timeout"]?.intValue {
-            context.set("_current_node_timeout", String(timeout))
+        if let defaultTimeout = node.rawAttributes["default_command_timeout_ms"]?.intValue {
+            context.set("_current_node_default_command_timeout_ms", String(defaultTimeout))
         }
+        if let maxCommandTimeout = node.rawAttributes["max_command_timeout_ms"]?.intValue {
+            context.set("_current_node_max_command_timeout_ms", String(maxCommandTimeout))
+        }
+        if let inactivityTimeout = node.rawAttributes["llm_inactivity_timeout_seconds"] {
+            context.set("_current_node_llm_inactivity_timeout_seconds", inactivityTimeout.stringValue)
+        }
+        if let loopWindow = node.rawAttributes["loop_detection_window"]?.intValue {
+            context.set("_current_node_loop_detection_window", String(loopWindow))
+        }
+        if let userInstructions = node.rawAttributes["user_instructions"]?.stringValue, !userInstructions.isEmpty {
+            context.set("_current_node_user_instructions", userInstructions)
+        }
+        if let parallelToolCalls = node.rawAttributes["parallel_tool_calls"]?.boolValue {
+            context.set("_current_node_parallel_tool_calls", parallelToolCalls ? "true" : "false")
+        }
+        if let excludedTools = node.rawAttributes["excluded_tools"]?.stringValue, !excludedTools.isEmpty {
+            context.set("_current_node_excluded_tools", excludedTools)
+        }
+        if let artifactPath = node.rawAttributes["artifact_path"]?.stringValue, !artifactPath.isEmpty {
+            context.set("_current_node_artifact_path", artifactPath)
+        }
+        let resumeKey = buildNodeResumeKey(graphID: graph.id, nodeID: node.id, provider: provider, model: model, prompt: prompt)
+        context.set("_current_node_resume_key", resumeKey)
 
         let result: CodergenResult
         do {
@@ -118,6 +143,23 @@ public final class CodergenHandler: NodeHandler, @unchecked Sendable {
         // 6. Write response
         let responseFile = stageDir.appendingPathComponent("response.md")
         try Data(result.response.utf8).write(to: responseFile)
+
+        // Host-owned artifact persistence for deterministic downstream handoff.
+        if let artifactPath = node.rawAttributes["artifact_path"]?.stringValue, !artifactPath.isEmpty {
+            let artifactURL: URL
+            if artifactPath.hasPrefix("/") {
+                artifactURL = URL(fileURLWithPath: artifactPath)
+            } else {
+                let cwd = URL(fileURLWithPath: FileManager.default.currentDirectoryPath, isDirectory: true)
+                artifactURL = cwd.appendingPathComponent(artifactPath)
+            }
+            try FileManager.default.createDirectory(
+                at: artifactURL.deletingLastPathComponent(),
+                withIntermediateDirectories: true
+            )
+            try Data(result.response.utf8).write(to: artifactURL)
+            context.set("artifact.\(node.id).path", artifactURL.path)
+        }
 
         // 7. Execute post-hooks (spec §9.7: post-hook failures are logged but do not block execution)
         if !graph.attributes.toolHooksPost.isEmpty {
@@ -167,6 +209,29 @@ public final class CodergenHandler: NodeHandler, @unchecked Sendable {
         return outcome
     }
 
+    private func buildNodeResumeKey(
+        graphID: String,
+        nodeID: String,
+        provider: String,
+        model: String,
+        prompt: String
+    ) -> String {
+        let raw = "\(graphID)|\(nodeID)|\(provider)|\(model)|\(prompt)"
+        let hash = fnv1a64(raw)
+        return "\(graphID).\(nodeID).\(provider).\(model).\(hash)"
+    }
+
+    private func fnv1a64(_ value: String) -> String {
+        let offsetBasis: UInt64 = 14695981039346656037
+        let prime: UInt64 = 1099511628211
+        var hash = offsetBasis
+        for b in value.utf8 {
+            hash ^= UInt64(b)
+            hash = hash &* prime
+        }
+        return String(hash, radix: 16)
+    }
+
     // MARK: - Shell Hook Execution
 
     // Note: Blocks a cooperative thread via readDataToEndOfFile()/waitUntilExit().
@@ -204,5 +269,3 @@ public final class CodergenHandler: NodeHandler, @unchecked Sendable {
         return outStr.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 }
-
-

@@ -174,10 +174,19 @@ public actor Session {
         if history.isEmpty {
             await eventEmitter.emit(SessionEvent(kind: .sessionStart, sessionId: id))
         }
+        let resumeContinuation = shouldTreatAsResumeContinuation(userInput: userInput)
         state = .processing
-        history.append(.user(UserTurn(content: userInput)))
-        await persistStateIfNeeded()
-        await eventEmitter.emit(SessionEvent(kind: .userInput, sessionId: id, data: ["content": userInput]))
+        if !resumeContinuation {
+            history.append(.user(UserTurn(content: userInput)))
+            await persistStateIfNeeded()
+            await eventEmitter.emit(SessionEvent(kind: .userInput, sessionId: id, data: ["content": userInput]))
+        } else {
+            await eventEmitter.emit(SessionEvent(
+                kind: .warning,
+                sessionId: id,
+                data: ["message": "Resuming in-progress session state for repeated prompt"]
+            ))
+        }
 
         fputs("[Session] step: drainSteering\n", stderr)
         await drainSteering()
@@ -385,6 +394,22 @@ public actor Session {
         return nil
     }
 
+    private func shouldTreatAsResumeContinuation(userInput: String) -> Bool {
+        guard state == .processing else { return false }
+        guard !userInput.isEmpty else { return false }
+        guard let latestUser = latestUserInput(), latestUser == userInput else { return false }
+        return unresolvedToolCallsFromHistory() != nil || !history.isEmpty
+    }
+
+    private func latestUserInput() -> String? {
+        for turn in history.reversed() {
+            if case .user(let t) = turn {
+                return t.content
+            }
+        }
+        return nil
+    }
+
     private func persistStateIfNeeded() async {
         guard let storageBackend else { return }
         let snapshot = SessionSnapshot(
@@ -427,12 +452,39 @@ public actor Session {
     // MARK: - Tool Execution
 
     private func executeToolCalls(_ toolCalls: [ToolCall]) async -> [ToolResult] {
+        if shouldExecuteToolCallsInParallel(toolCallCount: toolCalls.count) {
+            return await withTaskGroup(of: (Int, ToolResult).self, returning: [ToolResult].self) { group in
+                for (index, toolCall) in toolCalls.enumerated() {
+                    group.addTask {
+                        let result = await self.executeSingleTool(toolCall)
+                        return (index, result)
+                    }
+                }
+
+                var collected: [(Int, ToolResult)] = []
+                for await tuple in group {
+                    collected.append(tuple)
+                }
+
+                return collected
+                    .sorted { $0.0 < $1.0 }
+                    .map(\.1)
+            }
+        }
+
         var results: [ToolResult] = []
-        for tc in toolCalls {
-            let result = await executeSingleTool(tc)
+        results.reserveCapacity(toolCalls.count)
+        for toolCall in toolCalls {
+            let result = await executeSingleTool(toolCall)
             results.append(result)
         }
         return results
+    }
+
+    private func shouldExecuteToolCallsInParallel(toolCallCount: Int) -> Bool {
+        guard toolCallCount > 1 else { return false }
+        guard providerProfile.supportsParallelToolCalls else { return false }
+        return config.parallelToolCalls == true
     }
 
     private func executeSingleTool(_ toolCall: ToolCall) async -> ToolResult {
@@ -723,7 +775,11 @@ You are running in non-interactive (automated pipeline) mode. Complete your assi
                 // Use streaming when the provider supports it — this enables
                 // WebSocket transport for OpenAI (faster, avoids HTTP timeouts).
                 if providerProfile.supportsStreaming {
-                    return try await streamAndAccumulate(request: request)
+                    var streamRequest = request
+                    if let inactivity = config.llmInactivityTimeoutSeconds, inactivity > 0, streamRequest.timeout == nil {
+                        streamRequest.timeout = .seconds(inactivity)
+                    }
+                    return try await streamAndAccumulate(request: streamRequest)
                 }
                 return try await llmClient.complete(request: request)
             } catch {
@@ -762,7 +818,57 @@ You are running in non-interactive (automated pipeline) mode. Complete your assi
     }
 
     private func streamAndAccumulate(request: Request) async throws -> Response {
-        let stream = try await llmClient.stream(request: request)
+        let rawStream = try await llmClient.stream(request: request)
+        let inactivityTimeoutSeconds = config.llmInactivityTimeoutSeconds ?? 0
+        let timeoutEnabled = inactivityTimeoutSeconds > 0
+        let wallClockLimitSeconds = inactivityTimeoutSeconds * 3
+        let activityState = StreamActivityState(start: ContinuousClock.now)
+
+        let stream = AsyncThrowingStream<StreamEvent, Error> { continuation in
+            let producer = Task {
+                do {
+                    for try await event in rawStream {
+                        if Self.isActivityEvent(event) {
+                            await activityState.markActivity()
+                        }
+                        continuation.yield(event)
+                    }
+                    continuation.finish()
+                } catch {
+                    continuation.finish(throwing: error)
+                }
+            }
+
+            let monitor: Task<Void, Never>? = timeoutEnabled ? Task {
+                while !Task.isCancelled {
+                    try? await Task.sleep(for: .seconds(1))
+                    let now = ContinuousClock.now
+                    let snapshot = await activityState.snapshot()
+                    let idle = Self.secondsBetween(snapshot.lastActivity, and: now)
+                    if idle >= inactivityTimeoutSeconds {
+                        producer.cancel()
+                        continuation.finish(throwing: RequestTimeoutError(
+                            message: "LLM inactivity timeout after \(Int(inactivityTimeoutSeconds))s"
+                        ))
+                        return
+                    }
+                    let elapsed = Self.secondsBetween(snapshot.start, and: now)
+                    if elapsed >= wallClockLimitSeconds {
+                        producer.cancel()
+                        continuation.finish(throwing: RequestTimeoutError(
+                            message: "LLM wall-clock timeout after \(Int(elapsed))s"
+                        ))
+                        return
+                    }
+                }
+            } : nil
+
+            continuation.onTermination = { @Sendable _ in
+                producer.cancel()
+                monitor?.cancel()
+            }
+        }
+
         var accumulator = StreamAccumulator()
         var eventCount = 0
         var eventTypes: [String: Int] = [:]
@@ -783,12 +889,59 @@ You are running in non-interactive (automated pipeline) mode. Complete your assi
             }
         }
         fputs("[Session] Stream finished: \(eventCount) events, types: \(eventTypes)\n", stderr)
+        if accumulator.hasIncompleteToolCalls() {
+            let count = accumulator.incompleteToolCallCount()
+            let finish = accumulator.response()?.finishReason.reason ?? "unknown"
+            if finish == "length" || finish == "other" {
+                throw RequestTimeoutError(
+                    message: "Stream ended with \(count) incomplete tool call(s) and finishReason=\(finish); retrying request"
+                )
+            }
+        }
         guard let response = accumulator.response() else {
             fputs("[Session] StreamAccumulator produced no response from \(eventCount) events\n", stderr)
             throw SDKError(message: "Stream completed without producing a response (\(eventCount) events)")
         }
         fputs("[Session] Accumulated response: \(response.text.count) chars, \(response.toolCalls.count) tool calls\n", stderr)
         return response
+    }
+
+    private static func isActivityEvent(_ event: StreamEvent) -> Bool {
+        switch event.type.rawValue {
+        case StreamEventType.textStart.rawValue,
+             StreamEventType.textDelta.rawValue,
+             StreamEventType.reasoningDelta.rawValue,
+             StreamEventType.toolCallStart.rawValue,
+             StreamEventType.toolCallDelta.rawValue,
+             StreamEventType.toolCallEnd.rawValue,
+             StreamEventType.finish.rawValue:
+            return true
+        default:
+            return false
+        }
+    }
+
+    private static func secondsBetween(_ start: ContinuousClock.Instant, and end: ContinuousClock.Instant) -> Double {
+        let duration = end - start
+        return Double(duration.components.seconds) + Double(duration.components.attoseconds) / 1e18
+    }
+
+    private actor StreamActivityState {
+        private let streamStart: ContinuousClock.Instant
+        private var lastEventAt: ContinuousClock.Instant
+
+        init(start: ContinuousClock.Instant) {
+            streamStart = start
+            lastEventAt = start
+        }
+
+        func markActivity() {
+            lastEventAt = ContinuousClock.now
+        }
+
+        func snapshot() -> (start: ContinuousClock.Instant, lastActivity: ContinuousClock.Instant) {
+            (streamStart, lastEventAt)
+        }
     }
 
     private func isTransient(_ error: any Error) -> Bool {

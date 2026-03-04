@@ -1635,6 +1635,100 @@ final class AttractorTests {
 
         try? FileManager.default.removeItem(at: logsRoot)
     }
+
+    @Test
+    func testGraphRetryPolicyOverridesEngineConfig() async throws {
+        let dot = """
+        digraph test {
+            graph [
+                retry_policy.strategy="linear",
+                retry_policy.base_delay=0.12,
+                retry_policy.max_delay=0.12,
+                retry_policy.jitter=false
+            ]
+            start [shape=Mdiamond]
+            task [shape=box, prompt="Flaky", allow_partial=true, max_retries=1]
+            done [shape=Msquare]
+            start -> task -> done
+        }
+        """
+
+        let logsRoot = FileManager.default.temporaryDirectory
+            .appendingPathComponent("attractor-test-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: logsRoot) }
+
+        let backend = MockCodergenBackend(result: CodergenResult(response: "retry", status: .retry))
+        let config = PipelineConfig(
+            logsRoot: logsRoot,
+            retryPolicy: .none,
+            backend: backend
+        )
+        let engine = PipelineEngine(config: config)
+
+        let start = ContinuousClock.now
+        let result = try await engine.run(dot: dot)
+        let elapsed = durationSeconds(ContinuousClock.now - start)
+
+        XCTAssertEqual(result.status, .success)
+        XCTAssertEqual(result.nodeOutcomes["task"], .partialSuccess)
+        XCTAssertGreaterThanOrEqual(
+            elapsed,
+            0.10,
+            "Graph retry_policy override should add measurable backoff delay, elapsed=\(elapsed)"
+        )
+    }
+
+    @Test
+    func testNodeRetryPolicyOverridesGraphRetryPolicy() async throws {
+        let dot = """
+        digraph test {
+            graph [
+                retry_policy.strategy="linear",
+                retry_policy.base_delay=0.30,
+                retry_policy.max_delay=0.30,
+                retry_policy.jitter=false
+            ]
+            start [shape=Mdiamond]
+            task [
+                shape=box,
+                prompt="Flaky",
+                allow_partial=true,
+                max_retries=1,
+                retry_policy.strategy="none"
+            ]
+            done [shape=Msquare]
+            start -> task -> done
+        }
+        """
+
+        let logsRoot = FileManager.default.temporaryDirectory
+            .appendingPathComponent("attractor-test-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: logsRoot) }
+
+        let backend = MockCodergenBackend(result: CodergenResult(response: "retry", status: .retry))
+        let config = PipelineConfig(
+            logsRoot: logsRoot,
+            retryPolicy: .none,
+            backend: backend
+        )
+        let engine = PipelineEngine(config: config)
+
+        let start = ContinuousClock.now
+        let result = try await engine.run(dot: dot)
+        let elapsed = durationSeconds(ContinuousClock.now - start)
+
+        XCTAssertEqual(result.status, .success)
+        XCTAssertEqual(result.nodeOutcomes["task"], .partialSuccess)
+        XCTAssertLessThan(
+            elapsed,
+            0.20,
+            "Node retry_policy override should disable graph backoff, elapsed=\(elapsed)"
+        )
+    }
+
+    private func durationSeconds(_ duration: Duration) -> Double {
+        Double(duration.components.seconds) + Double(duration.components.attoseconds) / 1e18
+    }
 }
 
 // MARK: - Test Helpers
