@@ -301,7 +301,12 @@ public final class AnthropicAdapter: ProviderAdapter, @unchecked Sendable {
         headers.set(name: "x-anthropic-billing-header", value: "cc_version=\(appVersion); cc_entrypoint=\(entrypoint); cch=00000;")
 
         var beta = betaHeaders
-        if request.model.contains("[1m]"), !beta.contains("context-1m-2025-08-07") {
+        // Auto-inject 1M context beta for models that support it.
+        let modelLower = request.model.lowercased()
+        let supports1M = modelLower.contains("[1m]")
+            || modelLower.contains("opus-4")
+            || modelLower.contains("sonnet-4")
+        if supports1M, !beta.contains("context-1m-2025-08-07") {
             beta.append("context-1m-2025-08-07")
         }
         if opts["dangerous_direct_browser_access"]?.boolValue == true {
@@ -442,10 +447,48 @@ public final class AnthropicAdapter: ProviderAdapter, @unchecked Sendable {
 
         let requestModel = canonicalAnthropicModelID(request.model)
 
+        // Anthropic requires max_tokens. Use the request value if set, otherwise
+        // default to the model's maximum output capacity, clamped to not exceed
+        // the remaining context window (context_window - estimated_input_tokens).
+        let effectiveMaxTokens: Int = {
+            let m = requestModel.lowercased()
+
+            let maxOutput: Int
+            if m.contains("opus-4") { maxOutput = 128_000 }
+            else if m.contains("sonnet-4") || m.contains("haiku-4") { maxOutput = 64_000 }
+            else { maxOutput = 8192 }
+
+            let contextWindow: Int
+            if supports1M {
+                contextWindow = 1_000_000
+            } else if m.contains("opus-4") || m.contains("sonnet-4") || m.contains("haiku-4") {
+                contextWindow = 200_000
+            } else {
+                contextWindow = 200_000
+            }
+
+            // Estimate input tokens from message content (~4 chars per token).
+            let inputChars = merged.reduce(0) { total, msg in
+                total + msg.content.reduce(0) { sum, part in
+                    switch part {
+                    case .string(let s): return sum + s.count
+                    case .object(let o):
+                        return sum + (o.values.reduce(0) { $0 + "\($1)".count })
+                    default: return sum + 100
+                    }
+                }
+            } + systemTextParts.joined().count
+            let estimatedInputTokens = max(inputChars / 4, 1000)
+
+            let remaining = contextWindow - estimatedInputTokens
+            let desired = request.maxTokens ?? maxOutput
+            return max(1024, min(desired, remaining))
+        }()
+
         var root: [String: JSONValue] = [
             "model": .string(requestModel),
             "messages": .array(merged.map { .object(["role": .string($0.role), "content": .array($0.content)]) }),
-            "max_tokens": .number(Double(request.maxTokens ?? 4096)),
+            "max_tokens": .number(Double(effectiveMaxTokens)),
         ]
 
         if stream { root["stream"] = .bool(true) }

@@ -550,6 +550,7 @@ public actor Session {
         eventEmitter: EventEmitter,
         sessionID: String
     ) async -> ToolResult {
+        fputs("[Session] executeSingleToolNonisolated: START \(toolCall.name) (\(toolCall.id))\n", stderr)
         await eventEmitter.emit(SessionEvent(
             kind: .toolCallStart,
             sessionId: sessionID,
@@ -570,6 +571,7 @@ public actor Session {
             return ToolResult(toolCallId: toolCall.id, content: .string(denial), isError: true)
         }
 
+        fputs("[Session] executeSingleToolNonisolated: emitted toolCallStart, looking up \(toolCall.name)\n", stderr)
         guard let registered = registry.get(toolCall.name) else {
             let errorMsg = "Unknown tool: \(toolCall.name)"
             await eventEmitter.emit(SessionEvent(
