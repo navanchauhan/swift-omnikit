@@ -72,7 +72,7 @@ digraph SemportThematic {
     reasoning_effort="high",
     auto_status=true,
     allow_partial=true,
-    prompt="Read .ai/semport/$target_name/thematic-spec.md and implement exactly one highest-priority unchecked checklist slice in $target_module using semantic parity with $source_ref. Discover needed files yourself via tools; do not expect preloaded file dumps. Make concrete code changes, then mark only truly completed checklist entries as [x]. Write a short implementation note section into .ai/semport/$target_name/thematic-spec.md describing what changed. Also write `.ai/semport/$target_name/implement-NNN.md` where NNN is next zero-padded index (scan implement-*.md, max+1, start 001) containing changed files, tests/build commands run, and any blockers."
+    prompt="Read .ai/semport/$target_name/thematic-spec.md and implement the highest-priority unchecked checklist slices in $target_module using semantic parity with $source_ref. Tackle as many related items as you can in one pass while keeping the build green. Discover needed files yourself via tools; do not expect preloaded file dumps. Make concrete code changes, then mark only truly completed checklist entries as [x]. Write a short implementation note section into .ai/semport/$target_name/thematic-spec.md describing what changed. Also write `.ai/semport/$target_name/implement-NNN.md` where NNN is next zero-padded index (scan implement-*.md, max+1, start 001) containing changed files, tests/build commands run, and any blockers."
   ];
 
   BuildGate [

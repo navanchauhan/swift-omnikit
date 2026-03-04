@@ -375,10 +375,18 @@ public final class PipelineEngine: @unchecked Sendable {
             // Select next edge
             if outcome.status == .fail {
                 // Failure routing
-                let nextNodeId = try resolveFailureRoute(node: node, outcome: outcome, state: state)
-                if let nextId = nextNodeId {
-                    state.lastEdge = nil
-                    state.currentNodeId = nextId
+                let failEdge = try resolveFailureEdge(node: node, outcome: outcome, state: state)
+                if let edge = failEdge {
+                    state.lastEdge = edge
+                    if edge.loopRestart {
+                        let loopCount = state.context.getInt("internal.loop_restart_count") + 1
+                        state.context.set("internal.loop_restart_count", String(loopCount))
+                        state.context.set("loop_restart", "true")
+                        state.restartTargetNodeId = edge.to
+                        state.currentNodeId = nil
+                        break
+                    }
+                    state.currentNodeId = edge.to
                 } else {
                     // No failure route - terminate with failure
                     state.pipelineStatus = .fail
@@ -820,7 +828,8 @@ public final class PipelineEngine: @unchecked Sendable {
 
     // MARK: - Failure Routing
 
-    private func resolveFailureRoute(node: Node, outcome: Outcome, state: ExecutionState) throws -> String? {
+    /// Returns the matching edge for failure routing, preserving loop_restart metadata.
+    private func resolveFailureEdge(node: Node, outcome: Outcome, state: ExecutionState) throws -> Edge? {
         // Step 1: Follow fail edge (condition="outcome=fail")
         let outgoing = state.graph.outgoingEdges(from: node.id)
         for edge in outgoing {
@@ -832,31 +841,31 @@ public final class PipelineEngine: @unchecked Sendable {
                     preferredLabel: outcome.preferredLabel,
                     context: state.context
                 ) {
-                    return edge.to
+                    return edge
                 }
             }
         }
 
-        // Step 2: Node's retry_target
+        // Step 2: Node's retry_target (synthesize edge)
         if !node.retryTarget.isEmpty, state.graph.node(node.retryTarget) != nil {
-            return node.retryTarget
+            return Edge(from: node.id, to: node.retryTarget)
         }
 
         // Step 3: Node's fallback_retry_target
         if !node.fallbackRetryTarget.isEmpty, state.graph.node(node.fallbackRetryTarget) != nil {
-            return node.fallbackRetryTarget
+            return Edge(from: node.id, to: node.fallbackRetryTarget)
         }
 
         // Step 4: Graph's retry_target
         if !state.graph.attributes.retryTarget.isEmpty,
            state.graph.node(state.graph.attributes.retryTarget) != nil {
-            return state.graph.attributes.retryTarget
+            return Edge(from: node.id, to: state.graph.attributes.retryTarget)
         }
 
         // Step 5: Graph's fallback_retry_target
         if !state.graph.attributes.fallbackRetryTarget.isEmpty,
            state.graph.node(state.graph.attributes.fallbackRetryTarget) != nil {
-            return state.graph.attributes.fallbackRetryTarget
+            return Edge(from: node.id, to: state.graph.attributes.fallbackRetryTarget)
         }
 
         // Step 6: No failure route
