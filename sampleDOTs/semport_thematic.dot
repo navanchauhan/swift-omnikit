@@ -1,7 +1,10 @@
 digraph SemportThematic {
   graph [
-    label="OmniAgentsSDK Thematic Semport (Agentic Loop)",
-    goal="Port references/openai-agents-python into OmniAgentsSDK via evolving thematic checklist and iterative implementation/validation.",
+    label="$target_name Thematic Semport (Agentic Loop)",
+    goal="Port $source_ref into $target_name via evolving thematic checklist and iterative implementation/validation.",
+    source_ref="references/openai-agents-python",
+    target_module="Sources/OmniAgentsSDK",
+    target_name="OmniAgentsSDK",
     rankdir=LR,
     default_max_retry=5,
     retry_target="PlanParallel",
@@ -14,7 +17,7 @@ digraph SemportThematic {
   EnsureWorkspace [
     shape=parallelogram,
     label="Ensure semport workspace files",
-    tool_command="set -eu\nmkdir -p .ai/semport\nif [ ! -f .ai/semport/thematic-spec.md ]; then\n  cat > .ai/semport/thematic-spec.md <<'EOF'\n# OmniAgentsSDK Thematic Semport Spec\n\n## Scope\n- Semantic port of references/openai-agents-python into Sources/OmniAgentsSDK.\n\n## Checklist\n<!-- planner maintains checklist here -->\n\n## Validation Feedback\n<!-- validator/appraiser writes concise latest loop feedback here -->\nEOF\nfi\nif [ ! -f .ai/semport/validation-feedback.md ]; then\n  cat > .ai/semport/validation-feedback.md <<'EOF'\n# Validation Feedback\n- none yet\nEOF\nfi\nprintf 'workspace ready'"
+    tool_command="set -eu\nmkdir -p .ai/semport/$target_name\nif [ ! -f .ai/semport/$target_name/thematic-spec.md ]; then\n  cat > .ai/semport/$target_name/thematic-spec.md <<'SPECEOF'\n# $target_name Thematic Semport Spec\n\n## Scope\n- Semantic port of $source_ref into $target_module.\n\n## Checklist\n<!-- planner maintains checklist here -->\n\n## Validation Feedback\n<!-- validator/appraiser writes concise latest loop feedback here -->\nSPECEOF\nfi\nif [ ! -f .ai/semport/$target_name/validation-feedback.md ]; then\n  cat > .ai/semport/$target_name/validation-feedback.md <<'FBEOF'\n# Validation Feedback\n- none yet\nFBEOF\nfi\nprintf 'workspace ready'"
   ];
 
   PlanParallel [shape=component, label="Plan Thematic Checklist (Parallel)"];
@@ -26,7 +29,7 @@ digraph SemportThematic {
     llm_model="gpt-5.2",
     reasoning_effort="high",
     auto_status=true,
-    prompt="Use tools to inspect references/openai-agents-python and Sources/OmniAgentsSDK. Propose thematic sections and a concrete markdown checklist for semantic porting. Create a numbered artifact `.ai/semport/plan-gpt-NNN.md` where NNN is next zero-padded index (scan existing plan-gpt-*.md, max+1, start 001). If .ai/semport/thematic-spec.md already exists, UPDATE it in-place and preserve completed items; do not rewrite from scratch. Consume .ai/semport/validation-feedback.md and fold its failures/gaps into checklist updates. Output concise rationale and what changed."
+    prompt="Use tools to inspect $source_ref and $target_module. Propose thematic sections and a concrete markdown checklist for semantic porting. Create a numbered artifact `.ai/semport/$target_name/plan-gpt-NNN.md` where NNN is next zero-padded index (scan existing plan-gpt-*.md, max+1, start 001). If .ai/semport/$target_name/thematic-spec.md already exists, UPDATE it in-place and preserve completed items; do not rewrite from scratch. Consume .ai/semport/$target_name/validation-feedback.md and fold its failures/gaps into checklist updates. Output concise rationale and what changed."
   ];
 
   PlanOpus [
@@ -36,7 +39,7 @@ digraph SemportThematic {
     llm_model="claude-opus-4-6",
     reasoning_effort="high",
     auto_status=true,
-    prompt="Use tools to inspect references/openai-agents-python and Sources/OmniAgentsSDK. Propose thematic sections and a concrete markdown checklist for semantic porting. Create a numbered artifact `.ai/semport/plan-opus-NNN.md` where NNN is next zero-padded index (scan existing plan-opus-*.md, max+1, start 001). If .ai/semport/thematic-spec.md already exists, UPDATE it in-place and preserve completed items; do not rewrite from scratch. Consume .ai/semport/validation-feedback.md and fold its failures/gaps into checklist updates. Output concise rationale and what changed."
+    prompt="Use tools to inspect $source_ref and $target_module. Propose thematic sections and a concrete markdown checklist for semantic porting. Create a numbered artifact `.ai/semport/$target_name/plan-opus-NNN.md` where NNN is next zero-padded index (scan existing plan-opus-*.md, max+1, start 001). If .ai/semport/$target_name/thematic-spec.md already exists, UPDATE it in-place and preserve completed items; do not rewrite from scratch. Consume .ai/semport/$target_name/validation-feedback.md and fold its failures/gaps into checklist updates. Output concise rationale and what changed."
   ];
 
   PlanGemini [
@@ -46,7 +49,7 @@ digraph SemportThematic {
     llm_model="gemini-3.1-pro-preview-customtools",
     reasoning_effort="high",
     auto_status=true,
-    prompt="Use tools to inspect references/openai-agents-python and Sources/OmniAgentsSDK. Propose thematic sections and a concrete markdown checklist for semantic porting. Create a numbered artifact `.ai/semport/plan-gemini-NNN.md` where NNN is next zero-padded index (scan existing plan-gemini-*.md, max+1, start 001). If .ai/semport/thematic-spec.md already exists, UPDATE it in-place and preserve completed items; do not rewrite from scratch. Consume .ai/semport/validation-feedback.md and fold its failures/gaps into checklist updates. Output concise rationale and what changed."
+    prompt="Use tools to inspect $source_ref and $target_module. Propose thematic sections and a concrete markdown checklist for semantic porting. Create a numbered artifact `.ai/semport/$target_name/plan-gemini-NNN.md` where NNN is next zero-padded index (scan existing plan-gemini-*.md, max+1, start 001). If .ai/semport/$target_name/thematic-spec.md already exists, UPDATE it in-place and preserve completed items; do not rewrite from scratch. Consume .ai/semport/$target_name/validation-feedback.md and fold its failures/gaps into checklist updates. Output concise rationale and what changed."
   ];
 
   PlanJoin [shape=tripleoctagon, label="Plan Join"];
@@ -58,7 +61,7 @@ digraph SemportThematic {
     llm_model="claude-opus-4-6",
     reasoning_effort="high",
     auto_status=true,
-    prompt="Using parallel planner outputs and repository inspection via tools, consolidate into .ai/semport/thematic-spec.md. Also write snapshot `.ai/semport/thematic-spec-NNN.md` where NNN is next zero-padded index (scan thematic-spec-*.md, max+1, start 001). Maintain one authoritative checklist with explicit [ ] and [x] items grouped by theme. Keep completed checks intact. Add a short 'Next implementation target' section naming exactly one checklist slice to implement next."
+    prompt="Using parallel planner outputs and repository inspection via tools, consolidate into .ai/semport/$target_name/thematic-spec.md. Also write snapshot `.ai/semport/$target_name/thematic-spec-NNN.md` where NNN is next zero-padded index (scan thematic-spec-*.md, max+1, start 001). Maintain one authoritative checklist with explicit [ ] and [x] items grouped by theme. Keep completed checks intact. Add a short 'Next implementation target' section naming exactly one checklist slice to implement next."
   ];
 
   ImplementSlice [
@@ -69,13 +72,13 @@ digraph SemportThematic {
     reasoning_effort="high",
     auto_status=true,
     allow_partial=true,
-    prompt="Read .ai/semport/thematic-spec.md and implement exactly one highest-priority unchecked checklist slice in Sources/OmniAgentsSDK using semantic parity with references/openai-agents-python. Discover needed files yourself via tools; do not expect preloaded file dumps. Make concrete code changes, then mark only truly completed checklist entries as [x]. Write a short implementation note section into .ai/semport/thematic-spec.md describing what changed. Also write `.ai/semport/implement-NNN.md` where NNN is next zero-padded index (scan implement-*.md, max+1, start 001) containing changed files, tests/build commands run, and any blockers."
+    prompt="Read .ai/semport/$target_name/thematic-spec.md and implement exactly one highest-priority unchecked checklist slice in $target_module using semantic parity with $source_ref. Discover needed files yourself via tools; do not expect preloaded file dumps. Make concrete code changes, then mark only truly completed checklist entries as [x]. Write a short implementation note section into .ai/semport/$target_name/thematic-spec.md describing what changed. Also write `.ai/semport/$target_name/implement-NNN.md` where NNN is next zero-padded index (scan implement-*.md, max+1, start 001) containing changed files, tests/build commands run, and any blockers."
   ];
 
   BuildGate [
     shape=parallelogram,
     label="Build gate (must pass)",
-    tool_command="set -eu\nswift build --target OmniAgentsSDK >/tmp/semport-thematic-build.log 2>&1 || {\n  printf 'BUILD_FAIL\\n'\n  grep 'error:' /tmp/semport-thematic-build.log | head -80 || true\n  exit 1\n}\nprintf 'BUILD_PASS'"
+    tool_command="set -eu\nswift build --target $target_name >/tmp/semport-thematic-$target_name-build.log 2>&1 || {\n  printf 'BUILD_FAIL\\n'\n  grep 'error:' /tmp/semport-thematic-$target_name-build.log | head -80 || true\n  exit 1\n}\nprintf 'BUILD_PASS'"
   ];
 
   ValidateParallel [shape=component, label="Validate Implementation (Parallel)"];
@@ -87,7 +90,7 @@ digraph SemportThematic {
     llm_model="gpt-5.2",
     reasoning_effort="high",
     auto_status=true,
-    prompt="Validate the latest implementation against .ai/semport/thematic-spec.md and references/openai-agents-python by using tools. Report missing behavior, incomplete checklist claims, and concrete evidence commands/files. Write findings to numbered artifact `.ai/semport/validation-gpt-NNN.md` where NNN is next zero-padded index (scan validation-gpt-*.md, max+1, start 001)."
+    prompt="Validate the latest implementation against .ai/semport/$target_name/thematic-spec.md and $source_ref by using tools. Report missing behavior, incomplete checklist claims, and concrete evidence commands/files. Write findings to numbered artifact `.ai/semport/$target_name/validation-gpt-NNN.md` where NNN is next zero-padded index (scan validation-gpt-*.md, max+1, start 001)."
   ];
 
   ValidateOpus [
@@ -97,7 +100,7 @@ digraph SemportThematic {
     llm_model="claude-opus-4-6",
     reasoning_effort="high",
     auto_status=true,
-    prompt="Validate the latest implementation against .ai/semport/thematic-spec.md and references/openai-agents-python by using tools. Report missing behavior, incomplete checklist claims, and concrete evidence commands/files. Write findings to numbered artifact `.ai/semport/validation-opus-NNN.md` where NNN is next zero-padded index (scan validation-opus-*.md, max+1, start 001)."
+    prompt="Validate the latest implementation against .ai/semport/$target_name/thematic-spec.md and $source_ref by using tools. Report missing behavior, incomplete checklist claims, and concrete evidence commands/files. Write findings to numbered artifact `.ai/semport/$target_name/validation-opus-NNN.md` where NNN is next zero-padded index (scan validation-opus-*.md, max+1, start 001)."
   ];
 
   ValidateGemini [
@@ -107,7 +110,7 @@ digraph SemportThematic {
     llm_model="gemini-3.1-pro-preview-customtools",
     reasoning_effort="high",
     auto_status=true,
-    prompt="Validate the latest implementation against .ai/semport/thematic-spec.md and references/openai-agents-python by using tools. Report missing behavior, incomplete checklist claims, and concrete evidence commands/files. Write findings to numbered artifact `.ai/semport/validation-gemini-NNN.md` where NNN is next zero-padded index (scan validation-gemini-*.md, max+1, start 001)."
+    prompt="Validate the latest implementation against .ai/semport/$target_name/thematic-spec.md and $source_ref by using tools. Report missing behavior, incomplete checklist claims, and concrete evidence commands/files. Write findings to numbered artifact `.ai/semport/$target_name/validation-gemini-NNN.md` where NNN is next zero-padded index (scan validation-gemini-*.md, max+1, start 001)."
   ];
 
   ValidateJoin [shape=tripleoctagon, label="Validation Join"];
@@ -119,13 +122,13 @@ digraph SemportThematic {
     llm_model="claude-opus-4-6",
     reasoning_effort="high",
     auto_status=true,
-    prompt="Consolidate validation outputs from all three validators. Write numbered consensus artifact `.ai/semport/validation-consensus-NNN.md` where NNN is next zero-padded index (scan validation-consensus-*.md, max+1, start 001). Update .ai/semport/validation-feedback.md with precise failure reasons and what to fix next. Then update .ai/semport/thematic-spec.md in-place: keep truthful [x], revert any invalid completion to [ ], and add/refine checklist items based on discovered gaps. Do not rewrite whole file if it already exists."
+    prompt="Consolidate validation outputs from all three validators. Write numbered consensus artifact `.ai/semport/$target_name/validation-consensus-NNN.md` where NNN is next zero-padded index (scan validation-consensus-*.md, max+1, start 001). Update .ai/semport/$target_name/validation-feedback.md with precise failure reasons and what to fix next. Then update .ai/semport/$target_name/thematic-spec.md in-place: keep truthful [x], revert any invalid completion to [ ], and add/refine checklist items based on discovered gaps. Do not rewrite whole file if it already exists."
   ];
 
   CheckCompletion [
     shape=parallelogram,
     label="Check if checklist fully complete",
-    tool_command="set -eu\nif rg -n '^- \\[ \\]' .ai/semport/thematic-spec.md >/dev/null 2>&1; then\n  printf 'INCOMPLETE'\n  exit 1\nfi\nprintf 'COMPLETE'"
+    tool_command="set -eu\nif rg -n '^- \\[ \\]' .ai/semport/$target_name/thematic-spec.md >/dev/null 2>&1; then\n  printf 'INCOMPLETE'\n  exit 1\nfi\nprintf 'COMPLETE'"
   ];
 
   Start -> EnsureWorkspace;

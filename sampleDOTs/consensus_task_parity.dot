@@ -28,7 +28,7 @@ digraph ConsensusTaskParity {
     shape=box,
     label="Refine DoD (Gemini)",
     llm_provider="gemini",
-    llm_model="gemini-3-flash-preview",
+    llm_model="gemini-3.1-pro-preview-customtools",
     reasoning_effort="high",
     prompt="Refine/propose DoD for TASK=$task. Write proposal text suitable for .ai/dod_gemini.md."
   ];
@@ -68,7 +68,7 @@ digraph ConsensusTaskParity {
     shape=box,
     label="Plan (Gemini)",
     llm_provider="gemini",
-    llm_model="gemini-3-flash-preview",
+    llm_model="gemini-3.1-pro-preview-customtools",
     reasoning_effort="high",
     prompt="Create implementation plan from consensus DoD for TASK=$task."
   ];
@@ -105,8 +105,8 @@ digraph ConsensusTaskParity {
   Implement [
     shape=box,
     label="Implement",
-    llm_provider="anthropic",
-    llm_model="claude-opus-4-6",
+    llm_provider="openai",
+    llm_model="gpt-5.3-codex",
     reasoning_effort="high",
     allow_partial=true,
     prompt="Execute final plan for TASK=$task and summarize concrete changes, artifacts, and constraints encountered."
@@ -127,7 +127,7 @@ digraph ConsensusTaskParity {
     shape=box,
     label="Review (Gemini)",
     llm_provider="gemini",
-    llm_model="gemini-3-flash-preview",
+    llm_model="gemini-3.1-pro-preview-customtools",
     reasoning_effort="high",
     prompt="Review implementation+verification evidence strictly. Return PASS/FAIL reasoning and required fixes."
   ];

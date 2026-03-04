@@ -8,17 +8,49 @@ public protocol GraphTransform: Sendable {
 
 // MARK: - Variable Expansion Transform
 
-/// Replaces $goal in node prompts with the graph's goal attribute.
+/// Replaces `$key` placeholders in node prompts, tool_command raw attributes,
+/// and the graph label with values from graph-level raw attributes.
+/// `$goal` is always available from `graph.attributes.goal`.
+/// Custom variables are read from `graph.rawAttributes` (e.g. `source_ref="..."` in the DOT
+/// graph block becomes `$source_ref` in prompts and tool commands).
 public struct VariableExpansionTransform: GraphTransform {
     public init() {}
 
     public func apply(_ graph: Graph) -> Graph {
-        let goal = graph.attributes.goal
+        // Build variable map: longest keys first to avoid partial replacement
+        // (e.g. $target_name before $target).
+        var vars: [String: String] = [:]
+        if !graph.attributes.goal.isEmpty {
+            vars["$goal"] = graph.attributes.goal
+        }
+        for (key, value) in graph.rawAttributes {
+            vars["$\(key)"] = value.stringValue
+        }
+        guard !vars.isEmpty else { return graph }
+
+        let sortedVars = vars.sorted { $0.key.count > $1.key.count }
+
+        func expand(_ text: String) -> String {
+            var result = text
+            for (varName, varValue) in sortedVars {
+                if result.contains(varName) {
+                    result = result.replacingOccurrences(of: varName, with: varValue)
+                }
+            }
+            return result
+        }
+
+        // Expand in node prompts and tool_command raw attributes
         for (_, node) in graph.nodes {
-            if node.prompt.contains("$goal") {
-                node.prompt = node.prompt.replacingOccurrences(of: "$goal", with: goal)
+            node.prompt = expand(node.prompt)
+            if let cmd = node.rawAttributes["tool_command"] {
+                node.rawAttributes["tool_command"] = .string(expand(cmd.stringValue))
             }
         }
+
+        // Expand in graph label
+        graph.attributes.label = expand(graph.attributes.label)
+
         return graph
     }
 }
