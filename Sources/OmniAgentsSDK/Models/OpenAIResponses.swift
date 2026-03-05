@@ -97,6 +97,18 @@ open class OmniAICoreModel: Model, @unchecked Sendable {
         let resolvedProviderName = providerName ?? client.defaultProviderName
         let requestTools = try tools.compactMap { try $0.llmDefinition() }
 
+        let unsupportedHostedTools = tools.filter { tool in
+            switch tool {
+            case .function:
+                return false
+            default:
+                return resolvedProviderName != "openai"
+            }
+        }
+        if !unsupportedHostedTools.isEmpty {
+            throw UserError(message: "Built-in hosted tools are currently only supported with the OpenAI Responses provider in OmniAgentsSDK.")
+        }
+
         let responseFormat: ResponseFormat?
         if let outputSchema, !outputSchema.isPlainText, let schema = outputSchema.jsonSchema {
             responseFormat = .jsonSchema(.object(schema), strict: outputSchema.isStrictJSONSchema)
@@ -168,6 +180,9 @@ open class OmniAICoreModel: Model, @unchecked Sendable {
 
         var scoped = providerOptions
 
+        var includeValues: [JSONValue] = []
+        var hostedToolValues: [JSONValue] = []
+
         if resolvedProviderName == "openai" {
             if tools.contains(where: { if case .webSearch = $0 { return true } else { return false } }) {
                 scoped[OpenAIProviderOptionKeys.includeNativeWebSearch] = .bool(true)
@@ -178,6 +193,59 @@ open class OmniAICoreModel: Model, @unchecked Sendable {
                     scoped[OpenAIProviderOptionKeys.webSearchExternalWebAccess] = .bool(externalWebAccess)
                 }
             }
+
+            for tool in tools {
+                switch tool {
+                case .fileSearch(let fileSearch):
+                    var hosted: [String: JSONValue] = [
+                        "type": .string("file_search"),
+                        "vector_store_ids": .array(fileSearch.vectorStoreIDs.map(JSONValue.string)),
+                    ]
+                    if let maxNumResults = fileSearch.maxNumResults {
+                        hosted["max_num_results"] = .number(Double(maxNumResults))
+                    }
+                    hostedToolValues.append(.object(hosted))
+                    if fileSearch.includeSearchResults {
+                        includeValues.append(.string("file_search_call.results"))
+                    }
+                case .computer(let computerTool):
+                    if case .instance(let computer) = computerTool.computer {
+                        let dims = computer.dimensions
+                        let hosted: [String: JSONValue] = [
+                            "type": .string("computer_use_preview"),
+                            "environment": .string(computer.environment.rawValue),
+                            "display_width": .number(Double(dims.0)),
+                            "display_height": .number(Double(dims.1)),
+                        ]
+                        hostedToolValues.append(.object(hosted))
+                    }
+                case .hostedMCP(let hostedMCP):
+                    hostedToolValues.append(.object(hostedMCP.toolConfig))
+                case .codeInterpreter(let codeInterpreter):
+                    var hosted = codeInterpreter.toolConfig
+                    if hosted["type"] == nil {
+                        hosted["type"] = .string("code_interpreter")
+                    }
+                    hostedToolValues.append(.object(hosted))
+                case .imageGeneration(let imageGeneration):
+                    var hosted = imageGeneration.toolConfig
+                    if hosted["type"] == nil {
+                        hosted["type"] = .string("image_generation")
+                    }
+                    hostedToolValues.append(.object(hosted))
+                case .shell(let shellTool):
+                    var hosted: [String: JSONValue] = ["type": .string("shell")]
+                    hosted["environment"] = .object(convertShellEnvironment(shellTool.environment))
+                    hostedToolValues.append(.object(hosted))
+                case .applyPatch:
+                    hostedToolValues.append(.object(["type": .string("apply_patch")]))
+                case .localShell:
+                    hostedToolValues.append(.object(["type": .string("local_shell")]))
+                case .webSearch, .function:
+                    break
+                }
+            }
+
             if let conversationID, !conversationID.isEmpty {
                 scoped["conversation"] = .string(conversationID)
             }
@@ -194,7 +262,52 @@ open class OmniAICoreModel: Model, @unchecked Sendable {
             }
         }
 
+        if !includeValues.isEmpty {
+            scoped["include"] = .array(includeValues)
+        }
+        if !hostedToolValues.isEmpty {
+            scoped[OpenAIProviderOptionKeys.hostedTools] = .array(hostedToolValues)
+        }
+
         return scoped.isEmpty ? nil : [resolvedProviderName: .object(scoped)]
+    }
+
+    private func convertShellEnvironment(_ environment: ShellToolEnvironment?) -> [String: JSONValue] {
+        guard let environment else {
+            return ["type": .string("local")]
+        }
+
+        switch environment {
+        case .local(let local):
+            var result: [String: JSONValue] = ["type": .string(local.type)]
+            if let skills = local.skills {
+                result["skills"] = .array(skills.map { skill in
+                    .object([
+                        "name": .string(skill.name),
+                        "description": .string(skill.description),
+                        "path": .string(skill.path),
+                    ])
+                })
+            }
+            return result
+        case .hosted(let hosted):
+            switch hosted {
+            case .containerAuto(let auto):
+                var result: [String: JSONValue] = ["type": .string(auto.type)]
+                if let fileIDs = auto.fileIDs {
+                    result["file_ids"] = .array(fileIDs.map(JSONValue.string))
+                }
+                if let memoryLimit = auto.memoryLimit {
+                    result["memory_limit"] = .string(memoryLimit)
+                }
+                return result
+            case .containerReference(let reference):
+                return [
+                    "type": .string(reference.type),
+                    "container_id": .string(reference.containerID),
+                ]
+            }
+        }
     }
 }
 

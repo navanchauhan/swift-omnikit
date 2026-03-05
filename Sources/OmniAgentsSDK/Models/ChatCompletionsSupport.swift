@@ -76,6 +76,21 @@ enum ModelConversion {
     }
 
     static func responseToModelResponse(_ response: Response) -> ModelResponse {
+        if let rawOutput = response.raw?["output"]?.arrayValue {
+            let normalized = rawOutput.compactMap { $0.objectValue }
+            if !normalized.isEmpty {
+                let usage = Usage(
+                    requests: 1,
+                    inputTokens: response.usage.inputTokens,
+                    inputTokensDetails: InputTokensDetails(cachedTokens: response.usage.cacheReadTokens ?? 0),
+                    outputTokens: response.usage.outputTokens,
+                    outputTokensDetails: OutputTokensDetails(reasoningTokens: response.usage.reasoningTokens ?? 0),
+                    totalTokens: response.usage.totalTokens
+                )
+                return ModelResponse(output: normalized, usage: usage, responseID: response.id, requestID: nil)
+            }
+        }
+
         var output: [TResponseOutputItem] = []
 
         let messageContent: [JSONValue] = response.message.content.compactMap { part in

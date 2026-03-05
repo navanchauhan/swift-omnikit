@@ -693,6 +693,10 @@ public final class OpenAIAdapter: ProviderAdapter, @unchecked Sendable {
             responseTools.append(.object(webSearchTool))
         }
 
+        if let hostedTools = providerOptions[OpenAIProviderOptionKeys.hostedTools]?.arrayValue {
+            responseTools.append(contentsOf: hostedTools)
+        }
+
         if !responseTools.isEmpty {
             root["tools"] = .array(responseTools)
 
@@ -721,6 +725,20 @@ public final class OpenAIAdapter: ProviderAdapter, @unchecked Sendable {
             return .string("required")
         case .named:
             let name = choice.toolName ?? ""
+            let hostedTypes: Set<String> = [
+                "file_search",
+                "web_search",
+                "web_search_preview",
+                "computer_use_preview",
+                "image_generation",
+                "code_interpreter",
+                "mcp",
+            ]
+            if hostedTypes.contains(name) {
+                return .object([
+                    "type": .string(name),
+                ])
+            }
             return .object([
                 "type": .string("function"),
                 "name": .string(name),

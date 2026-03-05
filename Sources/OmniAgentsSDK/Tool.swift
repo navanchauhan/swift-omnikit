@@ -182,7 +182,7 @@ public struct ComputerTool: @unchecked Sendable {
         self.onSafetyCheck = onSafetyCheck
     }
 
-    public var name: String { "computer" }
+    public var name: String { "computer_use_preview" }
 }
 
 public struct MCPToolApprovalRequest: Sendable {
@@ -673,7 +673,7 @@ public enum Tool: @unchecked Sendable {
 
     public func llmDefinition() throws -> OmniAICore.Tool? {
         switch self {
-        case .webSearch:
+        case .fileSearch, .webSearch, .computer, .hostedMCP, .codeInterpreter, .imageGeneration, .shell, .applyPatch, .localShell:
             return nil
         default:
             return try OmniAICore.Tool(name: name, description: description, parameters: .object(inputSchema))

@@ -10,11 +10,14 @@ public enum OpenAIProviderOptionKeys {
     public static let responsesTransport = "_omnikit_responses_transport"
     /// Optional WebSocket base URL override (e.g. `wss://api.openai.com/v1`).
     public static let websocketBaseURL = "_omnikit_websocket_base_url"
+    /// Hosted OpenAI Responses tools that should be injected directly into the request payload.
+    public static let hostedTools = "_omnikit_hosted_tools"
 
     static let internalKeys: Set<String> = [
         includeNativeWebSearch,
         webSearchExternalWebAccess,
         responsesTransport,
         websocketBaseURL,
+        hostedTools,
     ]
 }

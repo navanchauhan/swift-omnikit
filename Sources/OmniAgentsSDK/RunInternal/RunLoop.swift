@@ -95,7 +95,7 @@ enum AgentRunLoop {
                     agentInstance: currentAgent
                 ))
             }
-            let availableTools = allTools + handoffTools
+            let availableTools = try await prepareToolsForModel(allTools + handoffTools, contextWrapper: RunContextWrapper<Any>(context: contextWrapper.context as Any, usage: contextWrapper.usage, turnInput: contextWrapper.turnInput))
 
             let modelInputData = try await TurnPipeline.prepareModelInput(
                 items: modelInputItems,
@@ -129,6 +129,9 @@ enum AgentRunLoop {
 
             let responseItems = RunItemFactory.items(from: response, agent: currentAgent, handoffNames: Set(handoffMap.keys))
             newItems.append(contentsOf: responseItems)
+            for usedToolName in ToolPlanningRuntime.hostedToolUsedNames(from: response) {
+                await tracker.record(agentName: currentAgent.name, toolName: usedToolName)
+            }
             for item in responseItems {
                 switch item {
                 case let message as MessageOutputItem:
@@ -145,7 +148,17 @@ enum AgentRunLoop {
             }
 
             let toolCallItems = ToolPlanningRuntime.extractToolCalls(from: response)
-            if toolCallItems.isEmpty {
+            var toolOutputsForNextTurn: [TResponseInputItem] = response.toInputItems()
+            var hostedApprovalResponsesProduced = false
+            for request in ToolPlanningRuntime.hostedApprovalRequests(from: response) {
+                if let responseItem = try await executeHostedMCPApprovalRequest(request, availableTools: availableTools, agent: currentAgent, contextWrapper: contextWrapper) {
+                    newItems.append(responseItem)
+                    toolOutputsForNextTurn.append(try responseItem.toInputItem())
+                    eventSink?(.runItem(.init(name: .mcpApprovalResponse, item: responseItem)))
+                    hostedApprovalResponsesProduced = true
+                }
+            }
+            if toolCallItems.isEmpty && !hostedApprovalResponsesProduced {
                 let finalOutput = try AgentRunnerHelpers.renderFinalOutput(response: response, agent: currentAgent)
                 outputGuardrailResults += try await GuardrailRuntime.runOutputGuardrails(currentAgent.outputGuardrails, context: contextWrapper, agent: currentAgent, output: finalOutput)
                 if let globalOutputGuardrails = runConfig?.outputGuardrails {
@@ -188,13 +201,13 @@ enum AgentRunLoop {
                 )
             }
 
-            var toolOutputsForNextTurn: [TResponseInputItem] = response.toInputItems()
             var interruptions: [ToolApprovalItem] = []
             var functionToolResults: [FunctionToolResult] = []
             let toolMap = ToolPlanningRuntime.toolMap(for: availableTools)
+            var hadLocalToolWork = false
 
             for call in toolCallItems {
-                let toolName = call["name"]?.stringValue ?? "tool"
+                let toolName = ToolPlanningRuntime.toolName(for: call)
                 let callID = call["call_id"]?.stringValue ?? call["id"]?.stringValue ?? UUID().uuidString
 
                 if let handoff = handoffMap[toolName] {
@@ -240,6 +253,12 @@ enum AgentRunLoop {
                     throw UserError(message: "Unknown tool called by model: \(toolName)")
                 }
 
+                if !ToolPlanningRuntime.shouldExecuteLocally(tool) {
+                    await tracker.record(agentName: currentAgent.name, toolName: toolName)
+                    continue
+                }
+                hadLocalToolWork = true
+
                 let rawArguments = call["arguments"]?.objectValue ?? [:]
                 let needsApproval = try await ApprovalRuntime.evaluateNeedsApprovalSetting(tool: tool, runContext: contextWrapper, arguments: rawArguments, callID: callID)
                 if needsApproval {
@@ -274,7 +293,12 @@ enum AgentRunLoop {
                 await hooks?.onToolEnd(tool: tool, context: contextWrapper, result: toolResult.output, callID: callID)
                 await currentAgent.hooks?.onToolEnd(agent: currentAgent, tool: tool, context: contextWrapper, result: toolResult.output, callID: callID)
 
-                let outputItem = ToolCallOutputItem(agent: currentAgent, rawItem: ItemHelpers.toolCallOutputItem(toolCall: call, output: toolResult.output), output: toolResult.output)
+                let outputItem: ToolCallOutputItem
+                if let existing = toolResult.runItem as? ToolCallOutputItem {
+                    outputItem = existing
+                } else {
+                    outputItem = ToolCallOutputItem(agent: currentAgent, rawItem: ItemHelpers.toolCallOutputItem(toolCall: call, output: toolResult.output), output: toolResult.output)
+                }
                 newItems.append(outputItem)
                 toolOutputsForNextTurn.append(try outputItem.toInputItem())
                 eventSink?(.runItem(.init(name: .toolOutput, item: outputItem)))
@@ -303,6 +327,37 @@ enum AgentRunLoop {
                     reasoningItemIdPolicy: runConfig?.reasoningItemIdPolicy,
                     maxTurns: maxTurns,
                     interruptions: interruptions,
+                    trace: trace
+                )
+            }
+
+            if !hadLocalToolWork && !hostedApprovalResponsesProduced {
+                let finalOutput = try AgentRunnerHelpers.renderFinalOutput(response: response, agent: currentAgent)
+                outputGuardrailResults += try await GuardrailRuntime.runOutputGuardrails(currentAgent.outputGuardrails, context: contextWrapper, agent: currentAgent, output: finalOutput)
+                try await SessionPersistenceRuntime.persist(session: session, items: toolOutputsForNextTurn)
+                await hooks?.onAgentEnd(agent: currentAgent, result: finalOutput, context: contextWrapper)
+                await currentAgent.hooks?.onEnd(agent: currentAgent, output: finalOutput, context: contextWrapper)
+                return RunResult(
+                    input: input,
+                    newItems: newItems,
+                    rawResponses: rawResponses,
+                    finalOutput: finalOutput,
+                    inputGuardrailResults: inputGuardrailResults,
+                    outputGuardrailResults: outputGuardrailResults,
+                    toolInputGuardrailResults: toolInputGuardrailResults,
+                    toolOutputGuardrailResults: toolOutputGuardrailResults,
+                    contextWrapper: contextWrapper,
+                    lastAgent: currentAgent,
+                    lastProcessedResponse: .init(items: responseItems, nextStep: .finalOutput(finalOutput), response: response, toolResults: functionToolResults),
+                    toolUseTrackerSnapshot: await tracker.snapshot(),
+                    currentTurn: turn,
+                    modelInputItems: toolOutputsForNextTurn,
+                    originalInput: input,
+                    conversationID: conversationTracker.conversationID,
+                    previousResponseID: conversationTracker.previousResponseID,
+                    autoPreviousResponseID: conversationTracker.autoPreviousResponseID,
+                    reasoningItemIdPolicy: runConfig?.reasoningItemIdPolicy,
+                    maxTurns: maxTurns,
                     trace: trace
                 )
             }
@@ -430,4 +485,63 @@ enum AgentRunLoop {
 
         throw error
     }
+}
+
+private func prepareToolsForModel(_ tools: [Tool], contextWrapper: RunContextWrapper<Any>) async throws -> [Tool] {
+    var prepared: [Tool] = []
+    prepared.reserveCapacity(tools.count)
+    for tool in tools {
+        switch tool {
+        case .computer(var computerTool):
+            let resolved = try await resolveComputer(tool: computerTool, runContext: contextWrapper)
+            computerTool.computer = .instance(resolved)
+            prepared.append(.computer(computerTool))
+        default:
+            prepared.append(tool)
+        }
+    }
+    return prepared
+}
+
+private func executeHostedMCPApprovalRequest<TContext>(
+    _ request: TResponseOutputItem,
+    availableTools: [Tool],
+    agent: Agent<TContext>,
+    contextWrapper: RunContextWrapper<TContext>
+) async throws -> MCPApprovalResponseItem? {
+    let candidateTools = availableTools.compactMap { tool -> HostedMCPTool? in
+        guard case .hostedMCP(let hosted) = tool, hosted.onApprovalRequest != nil else { return nil }
+        return hosted
+    }
+    guard !candidateTools.isEmpty else {
+        return nil
+    }
+
+    let requestedToolName = request["tool_name"]?.stringValue ?? request["name"]?.stringValue
+    let hostedTool = candidateTools.first { hosted in
+        if let requestedToolName {
+            return hosted.name == requestedToolName
+        }
+        return true
+    }
+    guard let hostedTool, let callback = hostedTool.onApprovalRequest else {
+        return nil
+    }
+
+    let result = try await callback(
+        MCPToolApprovalRequest(
+            contextWrapper: RunContextWrapper<Any>(context: contextWrapper.context as Any, usage: contextWrapper.usage, turnInput: contextWrapper.turnInput),
+            data: request
+        )
+    )
+    let requestID = request["id"]?.stringValue ?? request["approval_request_id"]?.stringValue ?? ""
+    var rawItem: TResponseInputItem = [
+        "type": .string("mcp_approval_response"),
+        "approval_request_id": .string(requestID),
+        "approve": .bool(result.approve),
+    ]
+    if !result.approve, let reason = result.reason {
+        rawItem["reason"] = .string(reason)
+    }
+    return MCPApprovalResponseItem(agent: agent, rawItem: rawItem)
 }
