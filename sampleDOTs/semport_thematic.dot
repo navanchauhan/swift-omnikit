@@ -6,7 +6,7 @@ digraph SemportThematic {
     target_module="Sources/OmniAgentsSDK",
     target_name="OmniAgentsSDK",
     rankdir=LR,
-    default_max_retry=5,
+    default_max_retry=50,
     retry_target="PlanParallel",
     fallback_retry_target="Start"
   ];
