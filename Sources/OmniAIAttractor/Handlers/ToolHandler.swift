@@ -48,12 +48,22 @@ public final class ToolHandler: NodeHandler, @unchecked Sendable {
             return .fail(reason: "Failed to launch command for node \(node.id): \(error)")
         }
 
-        // Read pipe data BEFORE waitUntilExit to avoid deadlock when output
-        // exceeds the pipe buffer (~64KB). Reading first drains the buffer so
-        // the child process can continue writing.
-        let outData = stdout.fileHandleForReading.readDataToEndOfFile()
-        let errData = stderr.fileHandleForReading.readDataToEndOfFile()
-        process.waitUntilExit()
+        // Read pipe data concurrently on GCD to prevent pipe buffer deadlock
+        // when output exceeds ~64KB. Use terminationHandler for async-safe waiting.
+        let stdoutQueue = DispatchQueue(label: "tool.stdout")
+        let stderrQueue = DispatchQueue(label: "tool.stderr")
+        nonisolated(unsafe) var outData = Data()
+        nonisolated(unsafe) var errData = Data()
+        stdoutQueue.async { outData = stdout.fileHandleForReading.readDataToEndOfFile() }
+        stderrQueue.async { errData = stderr.fileHandleForReading.readDataToEndOfFile() }
+
+        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+            process.terminationHandler = { _ in
+                continuation.resume()
+            }
+        }
+        stdoutQueue.sync {}
+        stderrQueue.sync {}
 
         let outStr = String(data: outData, encoding: .utf8) ?? ""
         let errStr = String(data: errData, encoding: .utf8) ?? ""

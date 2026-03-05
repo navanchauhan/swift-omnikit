@@ -60,6 +60,13 @@ public final class CodingAgentBackend: CodergenBackend, @unchecked Sendable {
         let storageBackend = makeStorageBackend()
         let sessionID = buildSessionID(for: overrides.resumeKey)
 
+        // On loop_restart cycles, clear persisted session state so the session
+        // starts fresh instead of restoring unbounded history from prior cycles.
+        let isLoopRestart = context.getString("loop_restart") == "true"
+        if isLoopRestart {
+            try? await storageBackend.delete(sessionID: sessionID)
+        }
+
         // 4. Create the session
         let session = try Session(
             profile: profile,

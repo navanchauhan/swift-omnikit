@@ -170,28 +170,20 @@ public final class LocalExecutionEnvironment: ExecutionEnvironment, @unchecked S
             }
         }
 
-        // Wait for process on a dispatch queue thread, not the cooperative pool.
-        // Using withCheckedContinuation ensures we yield the cooperative thread
-        // while the blocking waitUntilExit runs on a GCD thread.
+        // Wait for process using terminationHandler — this does NOT block any thread.
+        // Unlike waitUntilExit() on GCD + withCheckedContinuation, terminationHandler
+        // is called by the OS directly when the process exits, avoiding cooperative
+        // thread pool starvation when multiple subprocesses run in parallel.
         await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
-            DispatchQueue.global(qos: .userInitiated).async {
-                process.waitUntilExit()
+            process.terminationHandler = { _ in
                 continuation.resume()
             }
         }
         timeoutTask.cancel()
 
-        // Wait for pipe reads to finish after process exits — also off the cooperative pool.
-        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
-            stdoutQueue.async {
-                continuation.resume()
-            }
-        }
-        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
-            stderrQueue.async {
-                continuation.resume()
-            }
-        }
+        // Wait for pipe reads to finish after process exits.
+        stdoutQueue.sync {}
+        stderrQueue.sync {}
         let stdoutData = stdoutBox.get()
         let stderrData = stderrBox.get()
 

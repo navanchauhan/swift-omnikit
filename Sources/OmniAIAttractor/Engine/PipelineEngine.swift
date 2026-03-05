@@ -126,6 +126,15 @@ public final class PipelineEngine: @unchecked Sendable {
             if let restartTarget = state.restartTargetNodeId {
                 loopRestartCount += 1
                 cycleIndex += 1
+
+                // Enforce maximum cycle limit from graph's default_max_retry.
+                let maxCycles = g.attributes.defaultMaxRetry
+                if loopRestartCount >= maxCycles {
+                    fputs("[PipelineEngine] loop_restart limit reached (\(loopRestartCount)/\(maxCycles) cycles). Stopping.\n", stderr)
+                    state.pipelineStatus = .fail
+                    return finalizeRun(state: state)
+                }
+
                 restartStartNode = restartTarget
                 continue
             }
@@ -203,6 +212,14 @@ public final class PipelineEngine: @unchecked Sendable {
             try await executeLoop(state: state)
             if let restartTarget = state.restartTargetNodeId {
                 let loopCount = max(1, state.context.getInt("internal.loop_restart_count"))
+
+                let maxCycles = g.attributes.defaultMaxRetry
+                if loopCount >= maxCycles {
+                    fputs("[PipelineEngine] loop_restart limit reached (\(loopCount)/\(maxCycles) cycles). Stopping.\n", stderr)
+                    state.pipelineStatus = .fail
+                    return finalizeRun(state: state)
+                }
+
                 let nextLogsRoot = logsRootForCycle(base: config.logsRoot, cycleIndex: loopCount)
                 let nextContext = PipelineContext()
                 nextContext.set("internal.loop_restart_count", String(loopCount))
