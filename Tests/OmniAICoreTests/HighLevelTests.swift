@@ -333,6 +333,12 @@ final class HighLevelTests {
             XCTAssertEqual(tr?.toolCallId, "c1")
             XCTAssertEqual(tr?.isError, true)
             XCTAssertTrue(tr?.content.stringValue?.contains("Invalid tool arguments") ?? false)
+
+            let repairMessages = req.messages.filter { $0.role == .developer }
+            XCTAssertEqual(repairMessages.count, 1)
+            XCTAssertTrue(repairMessages[0].text.contains("Do not repeat the same invalid call"))
+            XCTAssertTrue(repairMessages[0].text.contains("Validation error:"))
+
             return _response(provider: "test", model: req.model, text: "done")
         }
         let client = try Client(providers: ["test": adapter], defaultProvider: "test")

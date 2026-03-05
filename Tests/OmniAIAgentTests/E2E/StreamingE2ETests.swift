@@ -69,7 +69,7 @@ final class StreamingE2ETests {
 
         let toolStartEvents = events.filter { $0.kind == .toolCallStart }
         let hasToolName = toolStartEvents.contains { event in
-            event.data["tool"] != nil && !event.data["tool"]!.isEmpty
+            !(event.stringValue(for: "tool") ?? "").isEmpty
         }
         XCTAssertTrue(hasToolName, "Expected tool call event to include tool name")
 
@@ -92,7 +92,7 @@ final class StreamingE2ETests {
         XCTAssertGreaterThan(deltaEvents.count, 0, "Expected at least one text delta event")
 
         let nonEmptyDeltas = deltaEvents.filter { event in
-            let text = event.data["text"] ?? ""
+            let text = event.stringValue(for: "text") ?? ""
             return !text.isEmpty
         }
         XCTAssertGreaterThan(nonEmptyDeltas.count, 0, "Expected non-empty text in delta events")

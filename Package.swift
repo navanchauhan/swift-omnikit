@@ -296,6 +296,17 @@ let package = Package(
             ]
         ),
         .testTarget(
+            name: "OmniAgentsSDKTests",
+            dependencies: [
+                "OmniAgentsSDK",
+                .product(name: "Testing", package: "swift-testing"),
+            ],
+            swiftSettings: [
+                .unsafeFlags(["-warn-concurrency", "-strict-concurrency=complete"]),
+                .unsafeFlags(["-enable-actor-data-race-checks"], .when(configuration: .debug)),
+            ]
+        ),
+        .testTarget(
             name: "OmniAIAgentTests",
             dependencies: [
                 "OmniAIAgent",
