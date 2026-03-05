@@ -61,3 +61,9 @@ public func responsesWebSocketSession(
     ResponsesWebSocketSession(provider: provider, runConfig: runConfig)
 }
 
+public func responses_websocket_session(
+    provider: OpenAIProvider = OpenAIProvider(useResponsesWebSocket: true),
+    runConfig: RunConfig = RunConfig()
+) -> ResponsesWebSocketSession {
+    responsesWebSocketSession(provider: provider, runConfig: runConfig)
+}

@@ -132,6 +132,38 @@ public func setTracingExportAPIKey(_ key: String?) {
     GlobalConfig.shared.mutate { $0.tracingExportAPIKey = key }
 }
 
+public func set_default_openai_key(_ key: String, use_for_tracing: Bool = true) {
+    setDefaultOpenAIKey(key, useForTracing: use_for_tracing)
+}
+
+public func set_default_openai_client(_ client: Client, use_for_tracing: Bool = true) {
+    setDefaultOpenAIClient(client, useForTracing: use_for_tracing)
+}
+
+public func set_default_openai_api(_ api: OpenAIDefaultAPI) {
+    setDefaultOpenAIAPI(api)
+}
+
+public func set_default_openai_api(_ api: String) throws {
+    try setDefaultOpenAIAPI(api)
+}
+
+public func set_default_openai_responses_transport(_ transport: OpenAIResponsesTransport) {
+    setDefaultOpenAIResponsesTransport(transport)
+}
+
+public func set_default_openai_responses_transport(_ transport: String) throws {
+    try setDefaultOpenAIResponsesTransport(transport)
+}
+
+public func set_tracing_export_api_key(_ key: String?) {
+    setTracingExportAPIKey(key)
+}
+
+public func set_tracing_disabled(_ disabled: Bool) {
+    setTracingDisabled(disabled)
+}
+
 public func getGlobalConfig() -> OmniAgentsGlobalConfigSnapshot {
     GlobalConfig.shared.snapshot()
 }

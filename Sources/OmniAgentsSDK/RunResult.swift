@@ -1,5 +1,17 @@
 import Foundation
 
+public struct AgentToolInvocation: Sendable, Equatable {
+    public var toolName: String
+    public var toolCallID: String
+    public var toolArguments: String
+
+    public init(toolName: String, toolCallID: String, toolArguments: String) {
+        self.toolName = toolName
+        self.toolCallID = toolCallID
+        self.toolArguments = toolArguments
+    }
+}
+
 open class RunResultBase<TContext>: @unchecked Sendable, CustomStringConvertible {
     public var input: StringOrInputList
     public var newItems: [any RunItem]
@@ -58,6 +70,21 @@ open class RunResultBase<TContext>: @unchecked Sendable, CustomStringConvertible
         rawResponses.last?.responseID
     }
 
+    public var agentToolInvocation: AgentToolInvocation? {
+        guard let toolContext = contextWrapper as? ToolContext<TContext> else {
+            return nil
+        }
+        return AgentToolInvocation(
+            toolName: toolContext.toolName,
+            toolCallID: toolContext.toolCallID,
+            toolArguments: toolContext.toolArguments
+        )
+    }
+
+    public var agent_tool_invocation: AgentToolInvocation? {
+        agentToolInvocation
+    }
+
     public var description: String {
         prettyPrintRunResult(self)
     }
@@ -74,7 +101,7 @@ public final class RunResult<TContext>: RunResultBase<TContext> {
     public var conversationID: String?
     public var previousResponseID: String?
     public var autoPreviousResponseID: Bool
-    public var reasoningItemIDPolicy: ReasoningItemIDPolicy?
+    public var reasoningItemIdPolicy: ReasoningItemIdPolicy?
     public var maxTurns: Int
     public var interruptions: [ToolApprovalItem]
 
@@ -98,7 +125,7 @@ public final class RunResult<TContext>: RunResultBase<TContext> {
         conversationID: String? = nil,
         previousResponseID: String? = nil,
         autoPreviousResponseID: Bool = false,
-        reasoningItemIDPolicy: ReasoningItemIDPolicy? = nil,
+        reasoningItemIdPolicy: ReasoningItemIdPolicy? = nil,
         maxTurns: Int = DEFAULT_MAX_TURNS,
         interruptions: [ToolApprovalItem] = [],
         trace: Trace? = nil
@@ -113,7 +140,7 @@ public final class RunResult<TContext>: RunResultBase<TContext> {
         self.conversationID = conversationID
         self.previousResponseID = previousResponseID
         self.autoPreviousResponseID = autoPreviousResponseID
-        self.reasoningItemIDPolicy = reasoningItemIDPolicy
+        self.reasoningItemIdPolicy = reasoningItemIdPolicy
         self.maxTurns = maxTurns
         self.interruptions = interruptions
         super.init(
@@ -146,7 +173,7 @@ public final class RunResult<TContext>: RunResultBase<TContext> {
             conversationID: conversationID,
             previousResponseID: previousResponseID,
             autoPreviousResponseID: autoPreviousResponseID,
-            reasoningItemIDPolicy: reasoningItemIDPolicy,
+            reasoningItemIdPolicy: reasoningItemIdPolicy,
             inputGuardrailResults: inputGuardrailResults,
             outputGuardrailResults: outputGuardrailResults,
             toolInputGuardrailResults: toolInputGuardrailResults,

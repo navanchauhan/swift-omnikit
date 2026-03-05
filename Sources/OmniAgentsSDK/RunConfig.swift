@@ -30,7 +30,7 @@ public struct CallModelData<TContext>: @unchecked Sendable {
     }
 }
 
-public enum ReasoningItemIDPolicy: String, Sendable, Codable, Equatable {
+public enum ReasoningItemIdPolicy: String, Sendable, Codable, Equatable {
     case preserve
     case omit
 }
@@ -84,7 +84,7 @@ public struct RunConfig: @unchecked Sendable {
     public var callModelInputFilter: (@Sendable (CallModelData<Any>) async throws -> ModelInputData)?
     public var toolErrorFormatter: (@Sendable (ToolErrorFormatterArgs<Any>) async throws -> String?)?
     public var sessionSettings: SessionSettings?
-    public var reasoningItemIDPolicy: ReasoningItemIDPolicy?
+    public var reasoningItemIdPolicy: ReasoningItemIdPolicy?
 
     public init(
         model: ModelReference? = nil,
@@ -106,7 +106,7 @@ public struct RunConfig: @unchecked Sendable {
         callModelInputFilter: (@Sendable (CallModelData<Any>) async throws -> ModelInputData)? = nil,
         toolErrorFormatter: (@Sendable (ToolErrorFormatterArgs<Any>) async throws -> String?)? = nil,
         sessionSettings: SessionSettings? = nil,
-        reasoningItemIDPolicy: ReasoningItemIDPolicy? = nil
+        reasoningItemIdPolicy: ReasoningItemIdPolicy? = nil
     ) {
         self.model = model
         self.modelProvider = modelProvider
@@ -127,7 +127,7 @@ public struct RunConfig: @unchecked Sendable {
         self.callModelInputFilter = callModelInputFilter
         self.toolErrorFormatter = toolErrorFormatter
         self.sessionSettings = sessionSettings
-        self.reasoningItemIDPolicy = reasoningItemIDPolicy
+        self.reasoningItemIdPolicy = reasoningItemIdPolicy
     }
 }
 

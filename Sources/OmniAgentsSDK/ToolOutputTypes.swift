@@ -1,4 +1,5 @@
 import Foundation
+import OmniAICore
 
 public struct ToolOutputText: Codable, Sendable, Equatable {
     public var type: String
@@ -14,6 +15,8 @@ public struct ToolOutputText: Codable, Sendable, Equatable {
         case text
     }
 }
+
+public typealias ToolOutputTextDict = [String: JSONValue]
 
 public enum ToolOutputImageDetail: String, Codable, Sendable, Equatable {
     case low
@@ -41,6 +44,8 @@ public struct ToolOutputImage: Codable, Sendable, Equatable {
         case detail
     }
 }
+
+public typealias ToolOutputImageDict = [String: JSONValue]
 
 public struct ToolOutputFileContent: Codable, Sendable, Equatable {
     public var type: String
@@ -70,3 +75,5 @@ public struct ToolOutputFileContent: Codable, Sendable, Equatable {
         case filename
     }
 }
+
+public typealias ToolOutputFileContentDict = [String: JSONValue]

@@ -68,3 +68,6 @@ public func isOpenAIResponsesCompactionAwareSession(_ session: Session?) -> Bool
     session is any OpenAIResponsesCompactionAwareSession
 }
 
+public func is_openai_responses_compaction_aware_session(_ session: Session?) -> Bool {
+    isOpenAIResponsesCompactionAwareSession(session)
+}

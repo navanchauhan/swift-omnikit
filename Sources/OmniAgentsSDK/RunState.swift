@@ -13,7 +13,7 @@ public final class RunState<TContext>: @unchecked Sendable {
     public var conversationID: String?
     public var previousResponseID: String?
     public var autoPreviousResponseID: Bool
-    public var reasoningItemIDPolicy: ReasoningItemIDPolicy?
+    public var reasoningItemIdPolicy: ReasoningItemIdPolicy?
     public var inputGuardrailResults: [InputGuardrailResult<TContext>]
     public var outputGuardrailResults: [OutputGuardrailResult<TContext>]
     public var toolInputGuardrailResults: [ToolInputGuardrailResult<TContext>]
@@ -36,7 +36,7 @@ public final class RunState<TContext>: @unchecked Sendable {
         conversationID: String? = nil,
         previousResponseID: String? = nil,
         autoPreviousResponseID: Bool = false,
-        reasoningItemIDPolicy: ReasoningItemIDPolicy? = nil,
+        reasoningItemIdPolicy: ReasoningItemIdPolicy? = nil,
         inputGuardrailResults: [InputGuardrailResult<TContext>] = [],
         outputGuardrailResults: [OutputGuardrailResult<TContext>] = [],
         toolInputGuardrailResults: [ToolInputGuardrailResult<TContext>] = [],
@@ -58,7 +58,7 @@ public final class RunState<TContext>: @unchecked Sendable {
         self.conversationID = conversationID
         self.previousResponseID = previousResponseID
         self.autoPreviousResponseID = autoPreviousResponseID
-        self.reasoningItemIDPolicy = reasoningItemIDPolicy
+        self.reasoningItemIdPolicy = reasoningItemIdPolicy
         self.inputGuardrailResults = inputGuardrailResults
         self.outputGuardrailResults = outputGuardrailResults
         self.toolInputGuardrailResults = toolInputGuardrailResults
@@ -107,8 +107,8 @@ public final class RunState<TContext>: @unchecked Sendable {
         if autoPreviousResponseID {
             root["auto_previous_response_id"] = .bool(true)
         }
-        if let reasoningItemIDPolicy {
-            root["reasoning_item_id_policy"] = .string(reasoningItemIDPolicy.rawValue)
+        if let reasoningItemIdPolicy {
+            root["reasoning_item_id_policy"] = .string(reasoningItemIdPolicy.rawValue)
         }
         if let currentAgent {
             root["current_agent_name"] = .string(currentAgent.name)
@@ -160,7 +160,7 @@ public final class RunState<TContext>: @unchecked Sendable {
             conversationID: object["conversation_id"]?.stringValue,
             previousResponseID: object["previous_response_id"]?.stringValue,
             autoPreviousResponseID: object["auto_previous_response_id"]?.boolValue ?? false,
-            reasoningItemIDPolicy: object["reasoning_item_id_policy"]?.stringValue.flatMap(ReasoningItemIDPolicy.init(rawValue:)),
+            reasoningItemIdPolicy: object["reasoning_item_id_policy"]?.stringValue.flatMap(ReasoningItemIdPolicy.init(rawValue:)),
             toolUseTrackerSnapshot: object["tool_use_tracker_snapshot"]?.objectValue?.mapValues { value in
                 value.arrayValue?.compactMap(\.stringValue) ?? []
             } ?? [:],

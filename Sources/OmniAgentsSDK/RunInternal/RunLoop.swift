@@ -182,7 +182,7 @@ enum AgentRunLoop {
                     conversationID: conversationTracker.conversationID,
                     previousResponseID: conversationTracker.previousResponseID,
                     autoPreviousResponseID: conversationTracker.autoPreviousResponseID,
-                    reasoningItemIDPolicy: runConfig?.reasoningItemIDPolicy,
+                    reasoningItemIdPolicy: runConfig?.reasoningItemIdPolicy,
                     maxTurns: maxTurns,
                     trace: trace
                 )
@@ -300,7 +300,7 @@ enum AgentRunLoop {
                     conversationID: conversationTracker.conversationID,
                     previousResponseID: conversationTracker.previousResponseID,
                     autoPreviousResponseID: conversationTracker.autoPreviousResponseID,
-                    reasoningItemIDPolicy: runConfig?.reasoningItemIDPolicy,
+                    reasoningItemIdPolicy: runConfig?.reasoningItemIdPolicy,
                     maxTurns: maxTurns,
                     interruptions: interruptions,
                     trace: trace
@@ -329,7 +329,7 @@ enum AgentRunLoop {
                     conversationID: conversationTracker.conversationID,
                     previousResponseID: conversationTracker.previousResponseID,
                     autoPreviousResponseID: conversationTracker.autoPreviousResponseID,
-                    reasoningItemIDPolicy: runConfig?.reasoningItemIDPolicy,
+                    reasoningItemIdPolicy: runConfig?.reasoningItemIdPolicy,
                     maxTurns: maxTurns,
                     trace: trace
                 )
@@ -354,7 +354,7 @@ enum AgentRunLoop {
                     conversationID: conversationTracker.conversationID,
                     previousResponseID: conversationTracker.previousResponseID,
                     autoPreviousResponseID: conversationTracker.autoPreviousResponseID,
-                    reasoningItemIDPolicy: runConfig?.reasoningItemIDPolicy,
+                    reasoningItemIdPolicy: runConfig?.reasoningItemIdPolicy,
                     maxTurns: maxTurns,
                     trace: trace
                 )
@@ -380,7 +380,7 @@ enum AgentRunLoop {
                         conversationID: conversationTracker.conversationID,
                         previousResponseID: conversationTracker.previousResponseID,
                         autoPreviousResponseID: conversationTracker.autoPreviousResponseID,
-                        reasoningItemIDPolicy: runConfig?.reasoningItemIDPolicy,
+                        reasoningItemIdPolicy: runConfig?.reasoningItemIdPolicy,
                         maxTurns: maxTurns,
                         trace: trace
                     )
@@ -422,7 +422,7 @@ enum AgentRunLoop {
                 conversationID: conversationTracker.conversationID,
                 previousResponseID: conversationTracker.previousResponseID,
                 autoPreviousResponseID: conversationTracker.autoPreviousResponseID,
-                reasoningItemIDPolicy: runConfig?.reasoningItemIDPolicy,
+                reasoningItemIdPolicy: runConfig?.reasoningItemIdPolicy,
                 maxTurns: maxTurns,
                 trace: trace
             )

@@ -139,7 +139,7 @@ public struct WebSearchTool: Sendable, Equatable {
     public var name: String { "web_search" }
 }
 
-public struct AnyComputerProvider: @unchecked Sendable {
+public struct ComputerProvider: @unchecked Sendable {
     public var create: @Sendable () async throws -> any AsyncComputer
     public var dispose: (@Sendable (any AsyncComputer) async -> Void)?
 
@@ -154,7 +154,7 @@ public struct AnyComputerProvider: @unchecked Sendable {
 
 public enum ComputerConfig: @unchecked Sendable {
     case instance(any AsyncComputer)
-    case provider(AnyComputerProvider)
+    case provider(ComputerProvider)
 }
 
 public struct ComputerToolSafetyCheckData: @unchecked Sendable {
@@ -172,10 +172,12 @@ public struct ComputerToolSafetyCheckData: @unchecked Sendable {
 }
 
 public struct ComputerTool: @unchecked Sendable {
+    public let id: UUID
     public var computer: ComputerConfig
     public var onSafetyCheck: (@Sendable (ComputerToolSafetyCheckData) async throws -> Bool)?
 
-    public init(computer: ComputerConfig, onSafetyCheck: (@Sendable (ComputerToolSafetyCheckData) async throws -> Bool)? = nil) {
+    public init(id: UUID = UUID(), computer: ComputerConfig, onSafetyCheck: (@Sendable (ComputerToolSafetyCheckData) async throws -> Bool)? = nil) {
+        self.id = id
         self.computer = computer
         self.onSafetyCheck = onSafetyCheck
     }
@@ -686,6 +688,67 @@ public func defaultToolErrorFunction(
     context: ToolContext<Any>
 ) async -> String {
     "Tool \(toolName) failed: \(String(describing: error))"
+}
+
+private struct _ResolvedComputer: Sendable {
+    let computer: any AsyncComputer
+    let dispose: (@Sendable (any AsyncComputer) async -> Void)?
+}
+
+private actor _ResolvedComputerStore {
+    static let shared = _ResolvedComputerStore()
+    private var byRunContext: [ObjectIdentifier: [UUID: _ResolvedComputer]] = [:]
+
+    func get(runContext: RunContextWrapper<Any>, toolID: UUID) -> _ResolvedComputer? {
+        byRunContext[ObjectIdentifier(runContext)]?[toolID]
+    }
+
+    func set(runContext: RunContextWrapper<Any>, toolID: UUID, resolved: _ResolvedComputer) {
+        let key = ObjectIdentifier(runContext)
+        var tools = byRunContext[key] ?? [:]
+        tools[toolID] = resolved
+        byRunContext[key] = tools
+    }
+
+    func removeAll(runContext: RunContextWrapper<Any>) -> [(_ResolvedComputer, UUID)] {
+        let key = ObjectIdentifier(runContext)
+        let current = byRunContext.removeValue(forKey: key) ?? [:]
+        return current.map { ($0.value, $0.key) }
+    }
+}
+
+public func resolveComputer(tool: ComputerTool, runContext: RunContextWrapper<Any>) async throws -> any AsyncComputer {
+    if let cached = await _ResolvedComputerStore.shared.get(runContext: runContext, toolID: tool.id) {
+        return cached.computer
+    }
+
+    let resolved: _ResolvedComputer
+    switch tool.computer {
+    case .instance(let computer):
+        resolved = _ResolvedComputer(computer: computer, dispose: nil)
+    case .provider(let provider):
+        let computer = try await provider.create()
+        resolved = _ResolvedComputer(computer: computer, dispose: provider.dispose)
+    }
+    await _ResolvedComputerStore.shared.set(runContext: runContext, toolID: tool.id, resolved: resolved)
+    return resolved.computer
+}
+
+public func resolve_computer(tool: ComputerTool, run_context: RunContextWrapper<Any>) async throws -> any AsyncComputer {
+    try await resolveComputer(tool: tool, runContext: run_context)
+}
+
+public func disposeResolvedComputers(runContext: RunContextWrapper<Any>) async {
+    let resolved = await _ResolvedComputerStore.shared.removeAll(runContext: runContext)
+    for (item, _) in resolved {
+        if let dispose = item.dispose {
+            await dispose(item.computer)
+        }
+    }
+}
+
+public func dispose_resolved_computers(run_context: RunContextWrapper<Any>) async {
+    await disposeResolvedComputers(runContext: run_context)
 }
 
 public func functionTool<Parameters: Decodable & Sendable>(
