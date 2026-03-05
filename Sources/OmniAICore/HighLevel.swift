@@ -70,6 +70,17 @@ public struct GenerateResult: Sendable, Equatable {
     }
 }
 
+private struct ToolExecutionOutcome: Sendable {
+    var toolResults: [ToolResult]
+    var repairMessages: [Message]
+}
+
+private struct SingleToolExecutionOutcome: Sendable {
+    var index: Int
+    var result: ToolResult
+    var repairMessage: Message?
+}
+
 private func _standardizeMessages(prompt: String?, messages: [Message]?, system: String?) throws -> [Message] {
     if prompt != nil, messages != nil {
         throw ConfigurationError(message: "Provide either prompt or messages, not both.")
@@ -101,56 +112,95 @@ private func _makeToolResultMessages(
     }
 }
 
+private func _makeToolRepairMessage(toolCall: ToolCall, validationError: String) -> Message {
+    let renderedArguments = JSONValue.object(toolCall.arguments).description
+    return .developer(
+        """
+        The previous response attempted to call the tool \(toolCall.name) with arguments that do not match its JSON schema.
+        Call ID: \(toolCall.id)
+        Arguments: \(renderedArguments)
+        Validation error: \(validationError)
+
+        Do not repeat the same invalid call. Either emit a corrected call to \(toolCall.name) that matches the schema exactly, or continue without using that tool if it is unnecessary.
+        """
+    )
+}
+
 private func _executeToolCalls(
     tools: [Tool],
     toolCalls: [ToolCall],
     messages: [Message],
     abortSignal: AbortSignal?
-) async throws -> [ToolResult] {
+) async throws -> ToolExecutionOutcome {
     let toolsByName = Dictionary(uniqueKeysWithValues: tools.map { ($0.name, $0) })
 
     // If any tool call targets a passive tool (no execute), do not auto-execute.
     for call in toolCalls {
         if let t = toolsByName[call.name], t.execute == nil {
-            return []
+            return ToolExecutionOutcome(toolResults: [], repairMessages: [])
         }
     }
 
-    return try await withThrowingTaskGroup(of: (Int, ToolResult).self) { group in
+    return try await withThrowingTaskGroup(of: SingleToolExecutionOutcome.self) { group in
         for (idx, call) in toolCalls.enumerated() {
             group.addTask {
                 try await abortSignal?.check()
 
                 guard let tool = toolsByName[call.name] else {
-                    return (idx, ToolResult(toolCallId: call.id, content: .string("Unknown tool: \(call.name)"), isError: true))
+                    return SingleToolExecutionOutcome(
+                        index: idx,
+                        result: ToolResult(toolCallId: call.id, content: .string("Unknown tool: \(call.name)"), isError: true),
+                        repairMessage: nil
+                    )
                 }
                 guard let execute = tool.execute else {
                     // Passive tool: handled above by returning [] (no loop). Treat as unknown here defensively.
-                    return (idx, ToolResult(toolCallId: call.id, content: .string("Tool has no execute handler: \(call.name)"), isError: true))
+                    return SingleToolExecutionOutcome(
+                        index: idx,
+                        result: ToolResult(toolCallId: call.id, content: .string("Tool has no execute handler: \(call.name)"), isError: true),
+                        repairMessage: nil
+                    )
                 }
 
                 // Validate args against tool schema (best-effort).
                 do {
                     try JSONSchema(tool.parameters).validate(.object(call.arguments))
                 } catch {
-                    return (idx, ToolResult(toolCallId: call.id, content: .string("Invalid tool arguments for \(call.name): \(error)"), isError: true))
+                    let validationError = "Invalid tool arguments for \(call.name): \(error)"
+                    return SingleToolExecutionOutcome(
+                        index: idx,
+                        result: ToolResult(toolCallId: call.id, content: .string(validationError), isError: true),
+                        repairMessage: _makeToolRepairMessage(toolCall: call, validationError: validationError)
+                    )
                 }
 
                 do {
                     let ctx = ToolExecutionContext(messages: messages, abortSignal: abortSignal, toolCallId: call.id)
                     let out = try await execute(call.arguments, ctx)
-                    return (idx, ToolResult(toolCallId: call.id, content: out, isError: false))
+                    return SingleToolExecutionOutcome(
+                        index: idx,
+                        result: ToolResult(toolCallId: call.id, content: out, isError: false),
+                        repairMessage: nil
+                    )
                 } catch {
-                    return (idx, ToolResult(toolCallId: call.id, content: .string(String(describing: error)), isError: true))
+                    return SingleToolExecutionOutcome(
+                        index: idx,
+                        result: ToolResult(toolCallId: call.id, content: .string(String(describing: error)), isError: true),
+                        repairMessage: nil
+                    )
                 }
             }
         }
 
-        var results: [ToolResult?] = Array(repeating: nil, count: toolCalls.count)
-        for try await (idx, r) in group {
-            results[idx] = r
+        var results: [SingleToolExecutionOutcome?] = Array(repeating: nil, count: toolCalls.count)
+        for try await outcome in group {
+            results[outcome.index] = outcome
         }
-        return results.compactMap { $0 }
+        let ordered = results.compactMap { $0 }
+        return ToolExecutionOutcome(
+            toolResults: ordered.map(\.result),
+            repairMessages: ordered.compactMap(\.repairMessage)
+        )
     }
 }
 
@@ -253,12 +303,13 @@ public func generate(
                 && response.finishReason.reason == "tool_calls"
                 && (tools?.contains(where: { $0.execute != nil }) ?? false)
 
-            let toolResults: [ToolResult]
+            let toolExecution: ToolExecutionOutcome
             if shouldToolLoop, let tools {
-                toolResults = try await _executeToolCalls(tools: tools, toolCalls: toolCalls, messages: conversation + [response.message], abortSignal: abortSignal)
+                toolExecution = try await _executeToolCalls(tools: tools, toolCalls: toolCalls, messages: conversation + [response.message], abortSignal: abortSignal)
             } else {
-                toolResults = []
+                toolExecution = ToolExecutionOutcome(toolResults: [], repairMessages: [])
             }
+            let toolResults = toolExecution.toolResults
 
             steps.append(
                 StepResult(
@@ -299,6 +350,7 @@ public func generate(
             // Continue with tool results.
             conversation.append(response.message)
             conversation.append(contentsOf: _makeToolResultMessages(toolResults, toolCalls: toolCalls))
+            conversation.append(contentsOf: toolExecution.repairMessages)
         }
 
         // Should be unreachable.
@@ -842,12 +894,13 @@ public func stream(
                             && (stepFinish?.reason ?? response.finishReason.reason) == "tool_calls"
                             && (tools?.contains(where: { $0.execute != nil }) ?? false)
 
-                        let toolResults: [ToolResult]
+                        let toolExecution: ToolExecutionOutcome
                         if shouldToolLoop, let tools {
-                            toolResults = try await _executeToolCalls(tools: tools, toolCalls: toolCalls, messages: conversation + [response.message], abortSignal: abortSignal)
+                            toolExecution = try await _executeToolCalls(tools: tools, toolCalls: toolCalls, messages: conversation + [response.message], abortSignal: abortSignal)
                         } else {
-                            toolResults = []
+                            toolExecution = ToolExecutionOutcome(toolResults: [], repairMessages: [])
                         }
+                        let toolResults = toolExecution.toolResults
 
                         steps.append(
                             StepResult(
@@ -882,6 +935,7 @@ public func stream(
                         // Continue with tool results.
                         conversation.append(response.message)
                         conversation.append(contentsOf: _makeToolResultMessages(toolResults, toolCalls: toolCalls))
+                        conversation.append(contentsOf: toolExecution.repairMessages)
 
                         continuation.yield(StreamEvent(type: .standard(.stepFinish), finishReason: stepFinish ?? response.finishReason, usage: stepUsage ?? response.usage, response: response))
                     }

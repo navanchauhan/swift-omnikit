@@ -26,14 +26,22 @@ public struct AgentToolDefinition: Sendable {
 }
 
 public typealias ToolExecutor = @Sendable ([String: Any], ExecutionEnvironment) async throws -> String
+public typealias StreamingToolOutputEmitter = @Sendable (String) async -> Void
+public typealias StreamingToolExecutor = @Sendable ([String: Any], ExecutionEnvironment, StreamingToolOutputEmitter) async throws -> String
 
 public struct RegisteredTool: Sendable {
     public var definition: AgentToolDefinition
     public var executor: ToolExecutor
+    public var streamingExecutor: StreamingToolExecutor?
 
-    public init(definition: AgentToolDefinition, executor: @escaping ToolExecutor) {
+    public init(
+        definition: AgentToolDefinition,
+        executor: @escaping ToolExecutor,
+        streamingExecutor: StreamingToolExecutor? = nil
+    ) {
         self.definition = definition
         self.executor = executor
+        self.streamingExecutor = streamingExecutor
     }
 }
 

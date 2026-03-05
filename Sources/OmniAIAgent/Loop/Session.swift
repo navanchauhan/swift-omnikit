@@ -85,7 +85,12 @@ public actor Session {
         abortSignaled = true
         state = .closed
         processingTask?.cancel()
+        for (_, handle) in subagents {
+            await handle.session.abort()
+        }
+        subagents.removeAll()
         await persistStateIfNeeded()
+        try? await executionEnv.cleanup()
     }
 
     public func close() async {
@@ -93,11 +98,13 @@ public actor Session {
         state = .closed
         processingTask?.cancel()
         for (_, handle) in subagents {
-            await handle.session.abort()
+            await handle.session.close()
         }
+        subagents.removeAll()
         await eventEmitter.emit(SessionEvent(kind: .sessionEnd, sessionId: id, data: ["state": "closed"]))
         await eventEmitter.flush()
         await persistStateIfNeeded()
+        try? await executionEnv.cleanup()
     }
 
     public func addSystemReminder(_ reminder: String) async {
@@ -111,6 +118,10 @@ public actor Session {
 
     public func getHistory() -> [Turn] {
         history
+    }
+
+    public func workingDirectory() -> String {
+        executionEnv.workingDirectory()
     }
 
     @discardableResult
@@ -197,12 +208,12 @@ public actor Session {
         while true {
             // 1. Check limits
             if config.maxToolRoundsPerInput > 0 && roundCount >= config.maxToolRoundsPerInput {
-                await eventEmitter.emit(SessionEvent(kind: .turnLimit, sessionId: id, data: ["round": "\(roundCount)"]))
+                await eventEmitter.emit(SessionEvent(kind: .turnLimit, sessionId: id, data: ["round": roundCount]))
                 break
             }
 
             if config.maxTurns > 0 && countTurns() >= config.maxTurns {
-                await eventEmitter.emit(SessionEvent(kind: .turnLimit, sessionId: id, data: ["total_turns": "\(countTurns())"]))
+                await eventEmitter.emit(SessionEvent(kind: .turnLimit, sessionId: id, data: ["total_turns": countTurns()]))
                 break
             }
 
@@ -299,7 +310,7 @@ public actor Session {
                 sessionId: id,
                 data: [
                     "response_id": response.id,
-                    "tool_call_count": "\(response.toolCalls.count)",
+                    "tool_call_count": response.toolCalls.count,
                 ]
             ))
             if !response.text.isEmpty {
@@ -307,6 +318,7 @@ public actor Session {
                     kind: .assistantTextDelta,
                     sessionId: id,
                     data: [
+                        "text": response.text,
                         "delta": response.text,
                     ]
                 ))
@@ -317,7 +329,7 @@ public actor Session {
                 data: [
                     "text": response.text,
                     "reasoning": response.reasoning ?? "",
-                    "tool_call_count": "\(response.toolCalls.count)",
+                    "tool_call_count": response.toolCalls.count,
                 ]
             ))
 
@@ -554,7 +566,11 @@ public actor Session {
         await eventEmitter.emit(SessionEvent(
             kind: .toolCallStart,
             sessionId: sessionID,
-            data: ["tool_name": toolCall.name, "call_id": toolCall.id]
+            data: [
+                "tool": toolCall.name,
+                "tool_name": toolCall.name,
+                "call_id": toolCall.id,
+            ]
         ))
 
         if let denial = policyBlocked {
@@ -564,7 +580,8 @@ public actor Session {
                 data: [
                     "call_id": toolCall.id,
                     "error": denial,
-                    "policy_blocked": "true",
+                    "policy_blocked": true,
+                    "tool": toolCall.name,
                     "tool_name": toolCall.name,
                 ]
             ))
@@ -577,7 +594,7 @@ public actor Session {
             await eventEmitter.emit(SessionEvent(
                 kind: .toolCallEnd,
                 sessionId: sessionID,
-                data: ["call_id": toolCall.id, "error": errorMsg]
+                data: ["call_id": toolCall.id, "error": errorMsg, "tool": toolCall.name, "tool_name": toolCall.name]
             ))
             return ToolResult(toolCallId: toolCall.id, content: .string(errorMsg), isError: true)
         }
@@ -590,7 +607,7 @@ public actor Session {
             await eventEmitter.emit(SessionEvent(
                 kind: .toolCallEnd,
                 sessionId: sessionID,
-                data: ["call_id": toolCall.id, "error": validationError]
+                data: ["call_id": toolCall.id, "error": validationError, "tool": toolCall.name, "tool_name": toolCall.name]
             ))
             return ToolResult(toolCallId: toolCall.id, content: .string(validationError), isError: true)
         }
@@ -603,13 +620,30 @@ public actor Session {
             await eventEmitter.emit(SessionEvent(
                 kind: .toolCallEnd,
                 sessionId: sessionID,
-                data: ["call_id": toolCall.id, "error": conversionError]
+                data: ["call_id": toolCall.id, "error": conversionError, "tool": toolCall.name, "tool_name": toolCall.name]
             ))
             return ToolResult(toolCallId: toolCall.id, content: .string(conversionError), isError: true)
         }
 
         do {
-            let rawOutput = try await registered.executor(foundationArguments, env)
+            let rawOutput: String
+            if let streamingExecutor = registered.streamingExecutor {
+                rawOutput = try await streamingExecutor(foundationArguments, env) { delta in
+                    guard !delta.isEmpty else { return }
+                    await eventEmitter.emit(SessionEvent(
+                        kind: .toolCallOutputDelta,
+                        sessionId: sessionID,
+                        data: [
+                            "call_id": toolCall.id,
+                            "tool": toolCall.name,
+                            "tool_name": toolCall.name,
+                            "delta": delta,
+                        ]
+                    ))
+                }
+            } else {
+                rawOutput = try await registered.executor(foundationArguments, env)
+            }
             let truncatedOutput = truncateToolOutput(rawOutput, toolName: toolCall.name, config: config)
 
             // Resolve image attachment inline (no actor state needed)
@@ -636,7 +670,13 @@ public actor Session {
             await eventEmitter.emit(SessionEvent(
                 kind: .toolCallEnd,
                 sessionId: sessionID,
-                data: ["call_id": toolCall.id, "output": rawOutput, "truncated": "\(rawOutput.count != truncatedOutput.count)"]
+                data: [
+                    "call_id": toolCall.id,
+                    "tool": toolCall.name,
+                    "tool_name": toolCall.name,
+                    "output": rawOutput,
+                    "truncated": rawOutput.count != truncatedOutput.count,
+                ]
             ))
 
             return ToolResult(
@@ -651,7 +691,7 @@ public actor Session {
             await eventEmitter.emit(SessionEvent(
                 kind: .toolCallEnd,
                 sessionId: sessionID,
-                data: ["call_id": toolCall.id, "error": errorMsg]
+                data: ["call_id": toolCall.id, "error": errorMsg, "tool": toolCall.name, "tool_name": toolCall.name]
             ))
             return ToolResult(toolCallId: toolCall.id, content: .string(errorMsg), isError: true)
         }
@@ -969,7 +1009,7 @@ You are running in non-interactive (automated pipeline) mode. Complete your assi
                 await eventEmitter.emit(SessionEvent(
                     kind: .assistantTextDelta,
                     sessionId: sessionID,
-                    data: ["delta": delta]
+                    data: ["text": delta, "delta": delta]
                 ))
             }
         }
@@ -1177,7 +1217,7 @@ You are running in non-interactive (automated pipeline) mode. Complete your assi
             await eventEmitter.emit(SessionEvent(
                 kind: .warning,
                 sessionId: id,
-                data: ["message": "Context usage at ~\(pct)% of context window"]
+                data: ["message": "Context usage at ~\(pct)% of context window", "context_usage_percent": pct]
             ))
         }
     }

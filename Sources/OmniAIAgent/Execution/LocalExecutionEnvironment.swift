@@ -5,9 +5,24 @@ import Darwin
 import Glibc
 #endif
 
+
+private actor LocalExecutionEnvironmentCleanupState {
+    private var didCleanup = false
+
+    func beginCleanup() -> Bool {
+        if didCleanup {
+            return false
+        }
+        didCleanup = true
+        return true
+    }
+}
+
 public final class LocalExecutionEnvironment: ExecutionEnvironment, @unchecked Sendable {
     private let workingDir: String
     private let fileManager = FileManager.default
+    private let cleanupHandler: (@Sendable () async throws -> Void)?
+    private let cleanupState = LocalExecutionEnvironmentCleanupState()
 
     // Sensitive env var patterns to exclude
     private static let sensitivePatterns = [
@@ -22,8 +37,12 @@ public final class LocalExecutionEnvironment: ExecutionEnvironment, @unchecked S
         "XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_CACHE_HOME",
     ]
 
-    public init(workingDir: String? = nil) {
+    public init(
+        workingDir: String? = nil,
+        cleanupHandler: (@Sendable () async throws -> Void)? = nil
+    ) {
         self.workingDir = workingDir ?? FileManager.default.currentDirectoryPath
+        self.cleanupHandler = cleanupHandler
     }
 
     // MARK: - File Operations
@@ -268,7 +287,10 @@ public final class LocalExecutionEnvironment: ExecutionEnvironment, @unchecked S
     }
 
     public func cleanup() async throws {
-        // Nothing to clean up for local env
+        guard await cleanupState.beginCleanup() else { return }
+        if let cleanupHandler {
+            try await cleanupHandler()
+        }
     }
 
     // MARK: - Metadata

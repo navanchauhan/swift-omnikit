@@ -484,21 +484,22 @@ private final class ErrorTracker: @unchecked Sendable {
 
     func process(_ event: SessionEvent) {
         if event.kind == .error {
-            let detail = event.data["error"] ?? "unknown error"
+            let detail = event.stringValue(for: "error") ?? "unknown error"
             lock.lock()
             _errors.append(detail)
             lock.unlock()
             fputs("[CodingAgentBackend:ERROR] \(detail)\n", stderr)
         }
-        if event.kind == .sessionEnd, let state = event.data["state"], state == "closed",
-           let error = event.data["error"] {
+        if event.kind == .sessionEnd,
+           let state = event.stringValue(for: "state"), state == "closed",
+           let error = event.stringValue(for: "error") {
             lock.lock()
             _errors.append("Session closed with error: \(error)")
             lock.unlock()
             fputs("[CodingAgentBackend:ERROR] Session closed: \(error)\n", stderr)
         }
         if event.kind == .warning {
-            let msg = event.data["message"] ?? ""
+            let msg = event.stringValue(for: "message") ?? ""
             fputs("[CodingAgentBackend:WARN] \(msg)\n", stderr)
         }
     }

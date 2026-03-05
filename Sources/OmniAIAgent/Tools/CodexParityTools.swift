@@ -101,8 +101,31 @@ Runs a shell command and returns its output.
                 timeoutMs = min(override, maxTimeoutMs)
             }
             let workdir = args["workdir"] as? String
-            let result = try await env.execCommand(command: command, timeoutMs: timeoutMs, workingDir: workdir, envVars: nil)
-            return codexFormatExecOutput(result: result, timeoutMs: timeoutMs)
+            return try await codexExecuteCommand(
+                env: env,
+                command: command,
+                timeoutMs: timeoutMs,
+                workdir: workdir,
+                emitOutputDelta: { _ in }
+            )
+        },
+        streamingExecutor: { args, env, emitOutputDelta in
+            guard let commandArray = codexStringArray(args["command"]), !commandArray.isEmpty else {
+                throw ToolError.validationError("command is required")
+            }
+            let command = codexShellJoin(commandArray)
+            var timeoutMs = defaultTimeoutMs
+            if let override = codexIntValue(args["timeout_ms"]) {
+                timeoutMs = min(override, maxTimeoutMs)
+            }
+            let workdir = args["workdir"] as? String
+            return try await codexExecuteCommand(
+                env: env,
+                command: command,
+                timeoutMs: timeoutMs,
+                workdir: workdir,
+                emitOutputDelta: emitOutputDelta
+            )
         }
     )
 }
@@ -337,8 +360,30 @@ Runs a shell command and returns its output.
                 timeoutMs = min(override, maxTimeoutMs)
             }
             let workdir = args["workdir"] as? String
-            let result = try await env.execCommand(command: command, timeoutMs: timeoutMs, workingDir: workdir, envVars: nil)
-            return codexFormatExecOutput(result: result, timeoutMs: timeoutMs)
+            return try await codexExecuteCommand(
+                env: env,
+                command: command,
+                timeoutMs: timeoutMs,
+                workdir: workdir,
+                emitOutputDelta: { _ in }
+            )
+        },
+        streamingExecutor: { args, env, emitOutputDelta in
+            guard let command = args["command"] as? String else {
+                throw ToolError.validationError("command is required")
+            }
+            var timeoutMs = defaultTimeoutMs
+            if let override = codexIntValue(args["timeout_ms"]) {
+                timeoutMs = min(override, maxTimeoutMs)
+            }
+            let workdir = args["workdir"] as? String
+            return try await codexExecuteCommand(
+                env: env,
+                command: command,
+                timeoutMs: timeoutMs,
+                workdir: workdir,
+                emitOutputDelta: emitOutputDelta
+            )
         }
     )
 }
@@ -404,6 +449,76 @@ public func grepFilesTool() -> RegisteredTool {
     )
 }
 
+private func codexResolveShellPath(requestedShell: String?) -> String {
+    if let requestedShell, FileManager.default.isExecutableFile(atPath: requestedShell) {
+        return requestedShell
+    }
+    if let envShell = ProcessInfo.processInfo.environment["SHELL"],
+       FileManager.default.isExecutableFile(atPath: envShell) {
+        return envShell
+    }
+    if FileManager.default.isExecutableFile(atPath: "/bin/bash") {
+        return "/bin/bash"
+    }
+    return "/bin/sh"
+}
+
+private func codexRunExecSession(
+    args: [String: Any],
+    env: ExecutionEnvironment,
+    onChunk: StreamingToolOutputEmitter
+) async throws -> String {
+    guard let cmd = args["cmd"] as? String else {
+        throw ToolError.validationError("cmd is required")
+    }
+
+    let workdir = (args["workdir"] as? String) ?? env.workingDirectory()
+    let login = codexBoolValue(args["login"]) ?? true
+    let tty = codexBoolValue(args["tty"]) ?? false
+    let yieldMs = max(0, codexIntValue(args["yield_time_ms"]) ?? 5_000)
+    let maxChars = codexIntValue(args["max_output_tokens"]).map { max(500, $0 * 4) }
+    let shellPath = codexResolveShellPath(requestedShell: args["shell"] as? String)
+
+    let sessionId = try await CodexExecSessionStore.shared.create(
+        command: cmd,
+        shell: shellPath,
+        login: login,
+        workingDirectory: workdir,
+        tty: tty
+    )
+    let snapshot = try await CodexExecSessionStore.shared.read(
+        sessionId: sessionId,
+        waitMs: yieldMs,
+        maxChars: maxChars,
+        onChunk: onChunk
+    )
+    return codexExecSnapshotText(sessionId: sessionId, snapshot: snapshot)
+}
+
+private func codexWriteExecSession(
+    args: [String: Any],
+    onChunk: StreamingToolOutputEmitter
+) async throws -> String {
+    guard let sessionId = codexIntValue(args["session_id"]) else {
+        throw ToolError.validationError("session_id is required")
+    }
+    let chars = (args["chars"] as? String) ?? ""
+    let yieldMs = max(0, codexIntValue(args["yield_time_ms"]) ?? 1_000)
+    let maxChars = codexIntValue(args["max_output_tokens"]).map { max(500, $0 * 4) }
+
+    if !chars.isEmpty {
+        try await CodexExecSessionStore.shared.write(sessionId: sessionId, chars: chars)
+    }
+
+    let snapshot = try await CodexExecSessionStore.shared.read(
+        sessionId: sessionId,
+        waitMs: yieldMs,
+        maxChars: maxChars,
+        onChunk: onChunk
+    )
+    return codexExecSnapshotText(sessionId: sessionId, snapshot: snapshot)
+}
+
 // MARK: - exec_command / write_stdin
 
 public func execCommandTool() -> RegisteredTool {
@@ -440,42 +555,10 @@ Should be a short but reasonable prefix, e.g. [\"git\", \"pull\"] or [\"uv\", \"
             ] as [String: Any]
         ),
         executor: { args, env in
-            guard let cmd = args["cmd"] as? String else {
-                throw ToolError.validationError("cmd is required")
-            }
-
-            let workdir = (args["workdir"] as? String) ?? env.workingDirectory()
-            let requestedShell = args["shell"] as? String
-            let login = codexBoolValue(args["login"]) ?? true
-            let yieldMs = max(0, codexIntValue(args["yield_time_ms"]) ?? 5_000)
-            _ = codexBoolValue(args["tty"]) // Accepted for schema parity; current runtime is stream-pipe based.
-            let maxChars = codexIntValue(args["max_output_tokens"]).map { max(500, $0 * 4) }
-
-            let shellPath: String
-            if let requestedShell, FileManager.default.isExecutableFile(atPath: requestedShell) {
-                shellPath = requestedShell
-            } else if let envShell = ProcessInfo.processInfo.environment["SHELL"],
-                      FileManager.default.isExecutableFile(atPath: envShell)
-            {
-                shellPath = envShell
-            } else if FileManager.default.isExecutableFile(atPath: "/bin/bash") {
-                shellPath = "/bin/bash"
-            } else {
-                shellPath = "/bin/sh"
-            }
-
-            let sessionId = try await CodexExecSessionStore.shared.create(
-                command: cmd,
-                shell: shellPath,
-                login: login,
-                workingDirectory: workdir
-            )
-            let snapshot = try await CodexExecSessionStore.shared.read(
-                sessionId: sessionId,
-                waitMs: yieldMs,
-                maxChars: maxChars
-            )
-            return codexExecSnapshotText(sessionId: sessionId, snapshot: snapshot)
+            try await codexRunExecSession(args: args, env: env, onChunk: { _ in })
+        },
+        streamingExecutor: { args, env, emitOutputDelta in
+            try await codexRunExecSession(args: args, env: env, onChunk: emitOutputDelta)
         }
     )
 }
@@ -497,22 +580,10 @@ public func writeStdinTool() -> RegisteredTool {
             ] as [String: Any]
         ),
         executor: { args, _ in
-            guard let sessionId = codexIntValue(args["session_id"]) else {
-                throw ToolError.validationError("session_id is required")
-            }
-            let chars = (args["chars"] as? String) ?? ""
-            let yieldMs = max(0, codexIntValue(args["yield_time_ms"]) ?? 1_000)
-            let maxChars = codexIntValue(args["max_output_tokens"]).map { max(500, $0 * 4) }
-
-            if !chars.isEmpty {
-                try await CodexExecSessionStore.shared.write(sessionId: sessionId, chars: chars)
-            }
-            let snapshot = try await CodexExecSessionStore.shared.read(
-                sessionId: sessionId,
-                waitMs: yieldMs,
-                maxChars: maxChars
-            )
-            return codexExecSnapshotText(sessionId: sessionId, snapshot: snapshot)
+            try await codexWriteExecSession(args: args, onChunk: { _ in })
+        },
+        streamingExecutor: { args, _, emitOutputDelta in
+            try await codexWriteExecSession(args: args, onChunk: emitOutputDelta)
         }
     )
 }
@@ -754,14 +825,28 @@ private final class CodexExecSession: @unchecked Sendable {
     private var buffer: String = ""
     private var readOffset: String.Index
 
-    init(command: String, shell: String, login: Bool, workingDirectory: String) throws {
+    init(command: String, shell: String, login: Bool, workingDirectory: String, tty: Bool) throws {
         process = Process()
         outputPipe = Pipe()
         inputPipe = Pipe()
         readOffset = buffer.startIndex
 
-        process.executableURL = URL(fileURLWithPath: shell)
-        process.arguments = login ? ["-lc", command] : ["-c", command]
+        if tty {
+            guard let scriptPath = codexScriptPath() else {
+                throw ToolError.validationError("tty=true requires the 'script' utility to be installed")
+            }
+            process.executableURL = URL(fileURLWithPath: scriptPath)
+            #if os(macOS)
+            process.arguments = ["-q", "/dev/null", shell, login ? "-lc" : "-c", command]
+            #else
+            let shellFlag = login ? "-lc" : "-c"
+            let scriptCommand = "\(codexShellEscape(shell)) \(shellFlag) \(codexShellEscape(command))"
+            process.arguments = ["-q", "-c", scriptCommand, "/dev/null"]
+            #endif
+        } else {
+            process.executableURL = URL(fileURLWithPath: shell)
+            process.arguments = login ? ["-lc", command] : ["-c", command]
+        }
         process.currentDirectoryURL = URL(fileURLWithPath: workingDirectory)
         process.standardOutput = outputPipe
         process.standardError = outputPipe
@@ -841,14 +926,15 @@ private actor CodexExecSessionStore {
     private var sessions: [Int: CodexExecSession] = [:]
     private var nextSessionID: Int = 1
 
-    func create(command: String, shell: String, login: Bool, workingDirectory: String) throws -> Int {
+    func create(command: String, shell: String, login: Bool, workingDirectory: String, tty: Bool) throws -> Int {
         let sessionID = nextSessionID
         nextSessionID += 1
         let session = try CodexExecSession(
             command: command,
             shell: shell,
             login: login,
-            workingDirectory: workingDirectory
+            workingDirectory: workingDirectory,
+            tty: tty
         )
         sessions[sessionID] = session
         return sessionID
@@ -861,21 +947,37 @@ private actor CodexExecSessionStore {
         try session.write(chars)
     }
 
-    func read(sessionId: Int, waitMs: Int, maxChars: Int?) async throws -> CodexExecSnapshot {
+    func read(
+        sessionId: Int,
+        waitMs: Int,
+        maxChars: Int?,
+        onChunk: StreamingToolOutputEmitter
+    ) async throws -> CodexExecSnapshot {
         guard let session = sessions[sessionId] else {
             throw ToolError.validationError("Session \(sessionId) not found")
         }
 
         let deadline = Date().addingTimeInterval(Double(waitMs) / 1000.0)
         var output = session.drainNewOutput(maxChars: nil)
+        if !output.isEmpty {
+            await onChunk(output)
+        }
 
         while session.isRunning && Date() < deadline {
             try? await Task.sleep(nanoseconds: 100_000_000)
-            output += session.drainNewOutput(maxChars: nil)
+            let chunk = session.drainNewOutput(maxChars: nil)
+            if !chunk.isEmpty {
+                output += chunk
+                await onChunk(chunk)
+            }
         }
 
         if !session.isRunning {
-            output += session.drainNewOutput(maxChars: nil)
+            let chunk = session.drainNewOutput(maxChars: nil)
+            if !chunk.isEmpty {
+                output += chunk
+                await onChunk(chunk)
+            }
         }
 
         var truncatedByMaxOutputTokens = false
@@ -936,6 +1038,26 @@ private func codexFormatExecOutput(result: ExecResult, timeoutMs: Int) -> String
     }
     output += "\n[Duration: \(result.durationMs)ms]"
     return output
+}
+
+private func codexExecuteCommand(
+    env: ExecutionEnvironment,
+    command: String,
+    timeoutMs: Int,
+    workdir: String?,
+    emitOutputDelta: StreamingToolOutputEmitter
+) async throws -> String {
+    let result = try await env.execCommand(command: command, timeoutMs: timeoutMs, workingDir: workdir, envVars: nil)
+    let combinedOutput = result.combinedOutput
+    if !combinedOutput.isEmpty {
+        await emitOutputDelta(combinedOutput)
+    }
+    return codexFormatExecOutput(result: result, timeoutMs: timeoutMs)
+}
+
+private func codexScriptPath() -> String? {
+    let candidates = ["/usr/bin/script", "/bin/script"]
+    return candidates.first { FileManager.default.isExecutableFile(atPath: $0) }
 }
 
 private func codexIntValue(_ raw: Any?) -> Int? {

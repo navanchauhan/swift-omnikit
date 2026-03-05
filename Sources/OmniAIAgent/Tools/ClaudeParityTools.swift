@@ -344,8 +344,38 @@ public func claudeBashTool(defaultTimeoutMs: Int = 120_000, maxTimeoutMs: Int = 
                 """
             }
 
-            let result = try await env.execCommand(command: command, timeoutMs: timeoutMs, workingDir: nil, envVars: nil)
-            return claudeFormatExecResult(result, timeoutMs: timeoutMs)
+            return try await claudeExecuteCommand(
+                env: env,
+                command: command,
+                timeoutMs: timeoutMs,
+                emitOutputDelta: { _ in }
+            )
+        },
+        streamingExecutor: { args, env, emitOutputDelta in
+            guard let command = args["command"] as? String else {
+                throw ToolError.validationError("command is required")
+            }
+
+            let timeoutMs = min(max(1_000, claudeInt(args["timeout"]) ?? defaultTimeoutMs), maxTimeoutMs)
+            let runInBackground = claudeBool(args["run_in_background"]) ?? false
+            if runInBackground {
+                let taskID = await ClaudeBackgroundTaskStore.shared.spawn(
+                    command: command,
+                    timeoutMs: timeoutMs,
+                    env: env
+                )
+                return """
+                Background task started with ID: \(taskID)
+                Use TaskOutput with task_id="\(taskID)" to retrieve output.
+                """
+            }
+
+            return try await claudeExecuteCommand(
+                env: env,
+                command: command,
+                timeoutMs: timeoutMs,
+                emitOutputDelta: emitOutputDelta
+            )
         }
     )
 }
@@ -745,20 +775,28 @@ public func claudeTaskTool(parentSession: Session? = nil) -> RegisteredTool {
                 return "Error: Maximum subagent depth (\(maxDepth)) reached."
             }
 
+            let agentID = UUID().uuidString
             let profile = parentSession.providerProfile
             let client = parentSession.llmClient
             var subConfig = SessionConfig(maxTurns: maxTurns)
             subConfig.reasoningEffort = await parentSession.config.reasoningEffort
             subConfig.interactiveMode = false
 
+            let subEnv: ExecutionEnvironment
+            if requestedIsolation == "worktree" {
+                subEnv = try await createGitWorktreeEnvironment(from: env, agentID: agentID)
+            } else {
+                subEnv = env
+            }
+
             let subSession = try Session(
                 profile: profile,
-                environment: env,
+                environment: subEnv,
                 client: client,
                 config: subConfig,
                 depth: currentDepth + 1
             )
-            let handle = SubAgentHandle(id: UUID().uuidString, session: subSession)
+            let handle = SubAgentHandle(id: agentID, session: subSession)
             await parentSession.registerSubagent(handle)
 
             if let teamName, !teamName.isEmpty, let teammateName, !teammateName.isEmpty {
@@ -774,10 +812,9 @@ public func claudeTaskTool(parentSession: Session? = nil) -> RegisteredTool {
                 await subSession.submit(prompt)
             }
 
-            var isolationNote = ""
-            if requestedIsolation == "worktree" {
-                isolationNote = "\n[Isolation note] worktree isolation was requested; OmniKit currently runs tasks in-process and does not yet create separate worktrees."
-            }
+            let isolationNote = requestedIsolation == "worktree"
+                ? "\nIsolation: worktree at \(subEnv.workingDirectory())"
+                : ""
 
             if runInBackground {
                 return """
@@ -800,6 +837,12 @@ public func claudeTaskTool(parentSession: Session? = nil) -> RegisteredTool {
             let history = await subSession.getHistory()
             let output = claudeLastAssistantOutput(from: history)
             let body = output.isEmpty ? "[Task completed with no output]" : output
+            if requestedIsolation == "worktree" {
+                await subSession.close()
+                await parentSession.removeSubagent(handle.id)
+                await ClaudeCoordinationStore.shared.unbindAgent(agentID: handle.id)
+                return "\(body)\n\nAgent ID: \(handle.id)\nIsolation: worktree cleaned up"
+            }
             return "\(body)\n\nAgent ID: \(handle.id)\(isolationNote)"
         }
     )
@@ -2392,6 +2435,20 @@ private func claudeStripLineNumbers(_ text: String) -> String {
         }
         return line
     }.joined(separator: "\n")
+}
+
+private func claudeExecuteCommand(
+    env: ExecutionEnvironment,
+    command: String,
+    timeoutMs: Int,
+    emitOutputDelta: StreamingToolOutputEmitter
+) async throws -> String {
+    let result = try await env.execCommand(command: command, timeoutMs: timeoutMs, workingDir: nil, envVars: nil)
+    let combinedOutput = result.combinedOutput
+    if !combinedOutput.isEmpty {
+        await emitOutputDelta(combinedOutput)
+    }
+    return claudeFormatExecResult(result, timeoutMs: timeoutMs)
 }
 
 private func claudeFormatExecResult(_ result: ExecResult, timeoutMs: Int) -> String {

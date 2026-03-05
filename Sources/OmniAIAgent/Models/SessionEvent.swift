@@ -1,4 +1,5 @@
 import Foundation
+import OmniAICore
 
 public enum EventKind: String, Sendable {
     case sessionStart = "session_start"
@@ -21,13 +22,58 @@ public struct SessionEvent: Sendable {
     public var kind: EventKind
     public var timestamp: Date
     public var sessionId: String
-    public var data: [String: String]
+    public var data: [String: JSONValue]
 
-    public init(kind: EventKind, sessionId: String, data: [String: String] = [:]) {
+    public init(kind: EventKind, sessionId: String, data: [String: Any] = [:]) {
         self.kind = kind
         self.timestamp = Date()
         self.sessionId = sessionId
-        self.data = data
+        self.data = SessionEvent.convertData(data)
+    }
+
+    public func stringValue(for key: String) -> String? {
+        guard let value = data[key] else { return nil }
+        if let string = value.stringValue {
+            return string
+        }
+        if let bool = value.boolValue {
+            return bool ? "true" : "false"
+        }
+        if let number = value.doubleValue {
+            let rounded = number.rounded()
+            if rounded == number {
+                return String(Int(rounded))
+            }
+            return String(number)
+        }
+        return value.description
+    }
+
+    public func boolValue(for key: String) -> Bool? {
+        data[key]?.boolValue
+    }
+
+    public func intValue(for key: String) -> Int? {
+        guard let number = data[key]?.doubleValue else { return nil }
+        let rounded = number.rounded()
+        guard rounded == number else { return nil }
+        return Int(rounded)
+    }
+
+    public func doubleValue(for key: String) -> Double? {
+        data[key]?.doubleValue
+    }
+
+    private static func convertData(_ raw: [String: Any]) -> [String: JSONValue] {
+        raw.reduce(into: [String: JSONValue]()) { partial, pair in
+            if let jsonValue = pair.value as? JSONValue {
+                partial[pair.key] = jsonValue
+            } else if let converted = try? JSONValue(pair.value) {
+                partial[pair.key] = converted
+            } else {
+                partial[pair.key] = .string(String(describing: pair.value))
+            }
+        }
     }
 }
 

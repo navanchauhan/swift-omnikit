@@ -42,8 +42,8 @@ public func spawnAgentTool(parentSession: Session) -> RegisteredTool {
                 subEnv = env
             }
 
-            let profile = await parentSession.providerProfile
-            let client = await parentSession.llmClient
+            let profile = parentSession.providerProfile
+            let client = parentSession.llmClient
             var subConfig = SessionConfig(maxTurns: maxTurns)
             subConfig.reasoningEffort = await parentSession.config.reasoningEffort
 

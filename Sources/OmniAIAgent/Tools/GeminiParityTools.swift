@@ -411,17 +411,57 @@ public func geminiRunShellCommandTool(enableInteractiveShell: Bool = true, enabl
                 return pid.isEmpty ? "Background process started." : "Background process started. PID: \(pid)"
             }
 
-            let result = try await env.execCommand(command: command, timeoutMs: 120_000, workingDir: dirPath, envVars: nil)
-            var output = result.combinedOutput
-            if output.isEmpty { output = "(empty)" }
-
-            var lines: [String] = ["Output:", output]
-            if result.exitCode != 0 {
-                lines.append("Exit Code: \(result.exitCode)")
+            return try await geminiExecuteCommand(
+                env: env,
+                command: command,
+                dirPath: dirPath,
+                emitOutputDelta: { _ in }
+            )
+        },
+        streamingExecutor: { args, env, emitOutputDelta in
+            guard let command = args["command"] as? String else {
+                throw ToolError.validationError("command is required")
             }
-            return lines.joined(separator: "\n")
+            let dirPath = args["dir_path"] as? String
+            let isBackground = geminiBool(args["is_background"]) ?? false
+
+            if isBackground {
+                let bgCommand = "nohup bash -lc \(" + geminiShellEscape(command) + ") >/tmp/gemini_bg_\(UUID().uuidString).log 2>&1 & echo $!"
+                let started = try await env.execCommand(command: bgCommand, timeoutMs: 5_000, workingDir: dirPath, envVars: nil)
+                let pid = started.stdout.trimmingCharacters(in: .whitespacesAndNewlines)
+                return pid.isEmpty ? "Background process started." : "Background process started. PID: \(pid)"
+            }
+
+            return try await geminiExecuteCommand(
+                env: env,
+                command: command,
+                dirPath: dirPath,
+                emitOutputDelta: emitOutputDelta
+            )
         }
     )
+}
+
+private func geminiExecuteCommand(
+    env: ExecutionEnvironment,
+    command: String,
+    dirPath: String?,
+    emitOutputDelta: StreamingToolOutputEmitter
+) async throws -> String {
+    let result = try await env.execCommand(command: command, timeoutMs: 120_000, workingDir: dirPath, envVars: nil)
+    let combinedOutput = result.combinedOutput
+    if !combinedOutput.isEmpty {
+        await emitOutputDelta(combinedOutput)
+    }
+
+    var output = combinedOutput
+    if output.isEmpty { output = "(empty)" }
+
+    var lines: [String] = ["Output:", output]
+    if result.exitCode != 0 {
+        lines.append("Exit Code: \(result.exitCode)")
+    }
+    return lines.joined(separator: "\n")
 }
 
 // MARK: - google_web_search

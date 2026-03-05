@@ -170,27 +170,72 @@ public func shellTool(defaultTimeoutMs: Int = 10_000, maxTimeoutMs: Int = 600_00
                 timeoutMs = min(override, maxTimeoutMs)
             }
             let workdir = args["workdir"] as? String
-
-            let result = try await env.execCommand(
+            return try await coreExecuteCommand(
+                env: env,
                 command: command,
                 timeoutMs: timeoutMs,
-                workingDir: workdir,
-                envVars: nil
+                workdir: workdir,
+                emitOutputDelta: { _ in }
             )
-
-            var output = result.combinedOutput
-            if result.timedOut {
-                output += "\n\n[ERROR: Command timed out after \(timeoutMs)ms. Partial output is shown above. You can retry with a longer timeout by setting the timeout_ms parameter.]"
+        },
+        streamingExecutor: { args, env, emitOutputDelta in
+            let commandValue = args["command"]
+            let command: String
+            if let shellCommand = commandValue as? String {
+                command = shellCommand
+            } else if let argv = stringArrayValue(commandValue), !argv.isEmpty {
+                command = shellJoin(argv)
+            } else {
+                throw ToolError.validationError("command is required")
             }
 
-            if result.exitCode != 0 && !result.timedOut {
-                output += "\n[Exit code: \(result.exitCode)]"
+            var timeoutMs = defaultTimeoutMs
+            if let override = intValue(args["timeout_ms"]) {
+                timeoutMs = min(override, maxTimeoutMs)
             }
+            let workdir = args["workdir"] as? String
 
-            output += "\n[Duration: \(result.durationMs)ms]"
-            return output
+            return try await coreExecuteCommand(
+                env: env,
+                command: command,
+                timeoutMs: timeoutMs,
+                workdir: workdir,
+                emitOutputDelta: emitOutputDelta
+            )
         }
     )
+}
+
+private func coreExecuteCommand(
+    env: ExecutionEnvironment,
+    command: String,
+    timeoutMs: Int,
+    workdir: String?,
+    emitOutputDelta: StreamingToolOutputEmitter
+) async throws -> String {
+    let result = try await env.execCommand(
+        command: command,
+        timeoutMs: timeoutMs,
+        workingDir: workdir,
+        envVars: nil
+    )
+
+    let combinedOutput = result.combinedOutput
+    if !combinedOutput.isEmpty {
+        await emitOutputDelta(combinedOutput)
+    }
+
+    var output = combinedOutput
+    if result.timedOut {
+        output += "\n\n[ERROR: Command timed out after \(timeoutMs)ms. Partial output is shown above. You can retry with a longer timeout by setting the timeout_ms parameter.]"
+    }
+
+    if result.exitCode != 0 && !result.timedOut {
+        output += "\n[Exit code: \(result.exitCode)]"
+    }
+
+    output += "\n[Duration: \(result.durationMs)ms]"
+    return output
 }
 
 // MARK: - grep
