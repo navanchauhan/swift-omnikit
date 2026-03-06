@@ -63,21 +63,11 @@ public struct ModelCatalog: Sendable, Equatable {
         return nil
     }
 
-    // Spec-style alias.
-    public func get_model_info(_ modelIdOrAlias: String) -> ModelInfo? {
-        getModelInfo(modelIdOrAlias)
-    }
-
     public func listModels(provider: String? = nil) -> [ModelInfo] {
         if let provider {
             return models.filter { $0.provider == provider }
         }
         return models
-    }
-
-    // Spec-style alias.
-    public func list_models(provider: String? = nil) -> [ModelInfo] {
-        listModels(provider: provider)
     }
 
     public func getLatestModel(provider: String, capability: ModelCapability? = nil) -> ModelInfo? {
@@ -93,8 +83,4 @@ public struct ModelCatalog: Sendable, Equatable {
         return models.first(where: { $0.provider == provider && supports($0) })
     }
 
-    // Spec-style alias.
-    public func get_latest_model(provider: String, capability: ModelCapability? = nil) -> ModelInfo? {
-        getLatestModel(provider: provider, capability: capability)
-    }
 }

@@ -46,7 +46,7 @@ public final class CerebrasAdapter: ProviderAdapter, @unchecked Sendable {
             )
         }
 
-        let json = _ProviderHTTP.parseJSONBody(http) ?? .object([:])
+        let json = _ProviderHTTP.parseJSONBody(http)
         return try parseResponse(json: json, headers: http.headers, requestedModel: request.model)
     }
 
@@ -266,7 +266,7 @@ public final class CerebrasAdapter: ProviderAdapter, @unchecked Sendable {
                     }
 
                     let finish = FinishReason(
-                        reason: mapFinishReason(finishReasonRaw, hasToolCalls: !toolCallsForResponse.isEmpty),
+                        kind: mapFinishReason(finishReasonRaw, hasToolCalls: !toolCallsForResponse.isEmpty),
                         raw: finishReasonRaw
                     )
                     let response = Response(
@@ -344,8 +344,8 @@ public final class CerebrasAdapter: ProviderAdapter, @unchecked Sendable {
         }
 
         if let responseFormat = request.responseFormat {
-            switch responseFormat.type {
-            case "json_schema":
+            switch responseFormat.kind {
+            case .jsonSchema:
                 if let schema = responseFormat.jsonSchema {
                     root["response_format"] = .object([
                         "type": .string("json_schema"),
@@ -356,7 +356,7 @@ public final class CerebrasAdapter: ProviderAdapter, @unchecked Sendable {
                         ]),
                     ])
                 }
-            case "json":
+            case .json:
                 root["response_format"] = .object(["type": .string("json_object")])
             default:
                 break
@@ -591,7 +591,7 @@ public final class CerebrasAdapter: ProviderAdapter, @unchecked Sendable {
 
         let finishRaw = choice?["finish_reason"]?.stringValue
         let finish = FinishReason(
-            reason: mapFinishReason(finishRaw, hasToolCalls: !parsedToolCalls.isEmpty),
+            kind: mapFinishReason(finishRaw, hasToolCalls: !parsedToolCalls.isEmpty),
             raw: finishRaw
         )
         let usage = parseUsage(json["usage"])
@@ -664,21 +664,21 @@ public final class CerebrasAdapter: ProviderAdapter, @unchecked Sendable {
         )
     }
 
-    private func mapFinishReason(_ raw: String?, hasToolCalls: Bool) -> String {
+    private func mapFinishReason(_ raw: String?, hasToolCalls: Bool) -> FinishReason.Kind {
         if hasToolCalls {
-            return "tool_calls"
+            return .toolCalls
         }
         switch raw {
         case "stop":
-            return "stop"
+            return .stop
         case "length":
-            return "length"
+            return .length
         case "content_filter":
-            return "content_filter"
+            return .contentFilter
         case nil:
-            return "other"
+            return .other
         default:
-            return "other"
+            return .other
         }
     }
 

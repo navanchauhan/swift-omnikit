@@ -265,7 +265,7 @@ private enum _TextSelectionEnabledKey: EnvironmentKey {
 }
 
 private enum _NavigationTitleDisplayModeKey: EnvironmentKey {
-    static let defaultValue: String = "automatic"
+    static let defaultValue: _NavigationTitleDisplayModeKind = .automatic
 }
 
 private enum _ScrollContentBackgroundKey: EnvironmentKey {
@@ -464,7 +464,7 @@ public extension EnvironmentValues {
         set { self[_TextSelectionEnabledKey.self] = newValue }
     }
 
-    var navigationTitleDisplayMode: String {
+    var navigationTitleDisplayMode: _NavigationTitleDisplayModeKind {
         get { self[_NavigationTitleDisplayModeKey.self] }
         set { self[_NavigationTitleDisplayModeKey.self] = newValue }
     }

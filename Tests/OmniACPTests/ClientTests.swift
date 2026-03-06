@@ -168,7 +168,10 @@ private func withTestTimeout<T: Sendable>(seconds: Double, label: String, operat
             try await Task.sleep(for: .milliseconds(Int64(seconds * 1_000)))
             throw NSError(domain: "ClientTests", code: 99, userInfo: [NSLocalizedDescriptionKey: "Timed out during \(label)"])
         }
-        let result = try await group.next()!
+        guard let result = try await group.next() else {
+            group.cancelAll()
+            throw NSError(domain: "ClientTests", code: 100, userInfo: [NSLocalizedDescriptionKey: "No result produced during \(label)"])
+        }
         group.cancelAll()
         return result
     }

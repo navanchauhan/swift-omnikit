@@ -230,7 +230,7 @@ private final class TracingState: @unchecked Sendable {
     }
 }
 
-private final class DefaultTraceProvider: TraceProvider, @unchecked Sendable {
+private final class DefaultTraceProvider: TraceProvider, Sendable {
     func registerProcessor(_ processor: TracingProcessor) {
         TracingState.shared.addProcessor(processor)
     }
@@ -303,9 +303,6 @@ private struct TraceSpanAdapter: ErrorTracingSpan {
 public func genTraceID() -> String { UUID().uuidString.filter { $0 != "-" } }
 public func genSpanID() -> String { UUID().uuidString.filter { $0 != "-" } }
 
-public func gen_trace_id() -> String { genTraceID() }
-public func gen_span_id() -> String { genSpanID() }
-
 public func getTraceProvider() -> TraceProvider {
     TraceProviderStore.shared.get()
 }
@@ -314,40 +311,20 @@ public func setTraceProvider(_ provider: TraceProvider?) {
     TraceProviderStore.shared.set(provider)
 }
 
-public func set_trace_provider(_ provider: TraceProvider?) {
-    setTraceProvider(provider)
-}
-
 public func setTraceProcessors(_ processors: [TracingProcessor]) {
     getTraceProvider().setProcessors(processors)
-}
-
-public func set_trace_processors(_ processors: [TracingProcessor]) {
-    setTraceProcessors(processors)
 }
 
 public func addTraceProcessor(_ processor: TracingProcessor) {
     getTraceProvider().registerProcessor(processor)
 }
 
-public func add_trace_processor(_ processor: TracingProcessor) {
-    addTraceProcessor(processor)
-}
-
 public func getCurrentTrace() -> Trace? {
     getTraceProvider().getCurrentTrace()
 }
 
-public func get_current_trace() -> Trace? {
-    getCurrentTrace()
-}
-
 public func getCurrentSpan() -> Span? {
     getTraceProvider().getCurrentSpan()
-}
-
-public func get_current_span() -> Span? {
-    getCurrentSpan()
 }
 
 public func createTraceForRun(name: String, groupID: String? = nil, metadata: [String: JSONValue]? = nil) -> Trace {
@@ -383,16 +360,8 @@ public func agentSpan(name: String, handoffs: [String]? = nil, tools: [String]? 
     return getTraceProvider().createSpan(name: name, spanData: SpanData(kind: "agent", attributes: attributes), spanID: spanID, parent: parent, disabled: disabled)
 }
 
-public func agent_span(name: String, handoffs: [String]? = nil, tools: [String]? = nil, output_type: String? = nil, span_id: String? = nil, parent: Any? = nil, disabled: Bool = false) -> Span {
-    agentSpan(name: name, handoffs: handoffs, tools: tools, outputType: output_type, spanID: span_id, parent: parent, disabled: disabled)
-}
-
 public func customSpan(name: String, data: [String: JSONValue]? = nil, spanID: String? = nil, parent: Any? = nil, disabled: Bool = false) -> Span {
     getTraceProvider().createSpan(name: name, spanData: SpanData(kind: "custom", attributes: data ?? [:]), spanID: spanID, parent: parent, disabled: disabled)
-}
-
-public func custom_span(name: String, data: [String: JSONValue]? = nil, span_id: String? = nil, parent: Any? = nil, disabled: Bool = false) -> Span {
-    customSpan(name: name, data: data, spanID: span_id, parent: parent, disabled: disabled)
 }
 
 public func functionSpan(name: String, input: String? = nil, output: String? = nil, spanID: String? = nil, parent: Any? = nil, disabled: Bool = false) -> Span {
@@ -400,10 +369,6 @@ public func functionSpan(name: String, input: String? = nil, output: String? = n
     if let input { attributes["input"] = .string(input) }
     if let output { attributes["output"] = .string(output) }
     return getTraceProvider().createSpan(name: name, spanData: SpanData(kind: "function", attributes: attributes), spanID: spanID, parent: parent, disabled: disabled)
-}
-
-public func function_span(name: String, input: String? = nil, output: String? = nil, span_id: String? = nil, parent: Any? = nil, disabled: Bool = false) -> Span {
-    functionSpan(name: name, input: input, output: output, spanID: span_id, parent: parent, disabled: disabled)
 }
 
 public func generationSpan(input: [TResponseInputItem]? = nil, output: [TResponseOutputItem]? = nil, model: String? = nil, modelConfig: [String: JSONValue]? = nil, usage: [String: JSONValue]? = nil, spanID: String? = nil, parent: Any? = nil, disabled: Bool = false) -> Span {
@@ -416,16 +381,8 @@ public func generationSpan(input: [TResponseInputItem]? = nil, output: [TRespons
     return getTraceProvider().createSpan(name: "generation", spanData: SpanData(kind: "generation", attributes: attributes), spanID: spanID, parent: parent, disabled: disabled)
 }
 
-public func generation_span(input: [TResponseInputItem]? = nil, output: [TResponseOutputItem]? = nil, model: String? = nil, model_config: [String: JSONValue]? = nil, usage: [String: JSONValue]? = nil, span_id: String? = nil, parent: Any? = nil, disabled: Bool = false) -> Span {
-    generationSpan(input: input, output: output, model: model, modelConfig: model_config, usage: usage, spanID: span_id, parent: parent, disabled: disabled)
-}
-
 public func guardrailSpan(name: String, triggered: Bool = false, spanID: String? = nil, parent: Any? = nil, disabled: Bool = false) -> Span {
     getTraceProvider().createSpan(name: name, spanData: SpanData(kind: "guardrail", attributes: ["name": .string(name), "triggered": .bool(triggered)]), spanID: spanID, parent: parent, disabled: disabled)
-}
-
-public func guardrail_span(name: String, triggered: Bool = false, span_id: String? = nil, parent: Any? = nil, disabled: Bool = false) -> Span {
-    guardrailSpan(name: name, triggered: triggered, spanID: span_id, parent: parent, disabled: disabled)
 }
 
 public func handoffSpan(fromAgent: String? = nil, toAgent: String? = nil, spanID: String? = nil, parent: Any? = nil, disabled: Bool = false) -> Span {
@@ -435,10 +392,6 @@ public func handoffSpan(fromAgent: String? = nil, toAgent: String? = nil, spanID
     return getTraceProvider().createSpan(name: "handoff", spanData: SpanData(kind: "handoff", attributes: attributes), spanID: spanID, parent: parent, disabled: disabled)
 }
 
-public func handoff_span(from_agent: String? = nil, to_agent: String? = nil, span_id: String? = nil, parent: Any? = nil, disabled: Bool = false) -> Span {
-    handoffSpan(fromAgent: from_agent, toAgent: to_agent, spanID: span_id, parent: parent, disabled: disabled)
-}
-
 public func mcpToolsSpan(server: String? = nil, result: [String]? = nil, spanID: String? = nil, parent: Any? = nil, disabled: Bool = false) -> Span {
     var attributes: [String: JSONValue] = [:]
     if let server { attributes["server"] = .string(server) }
@@ -446,17 +399,9 @@ public func mcpToolsSpan(server: String? = nil, result: [String]? = nil, spanID:
     return getTraceProvider().createSpan(name: "mcp_list_tools", spanData: SpanData(kind: "mcp_list_tools", attributes: attributes), spanID: spanID, parent: parent, disabled: disabled)
 }
 
-public func mcp_tools_span(server: String? = nil, result: [String]? = nil, span_id: String? = nil, parent: Any? = nil, disabled: Bool = false) -> Span {
-    mcpToolsSpan(server: server, result: result, spanID: span_id, parent: parent, disabled: disabled)
-}
-
 public func speechSpan(input: String? = nil, output: String? = nil, outputFormat: String? = "pcm", model: String? = nil, modelConfig: [String: JSONValue]? = nil, firstContentAt: String? = nil, spanID: String? = nil, parent: Any? = nil, disabled: Bool = false) -> Span {
     let data = SpeechSpanData(input: input, output: output, outputFormat: outputFormat, model: model, modelConfig: modelConfig, firstContentAt: firstContentAt)
     return getTraceProvider().createSpan(name: "speech", spanData: data.asSpanData(), spanID: spanID, parent: parent, disabled: disabled)
-}
-
-public func speech_span(input: String? = nil, output: String? = nil, output_format: String? = "pcm", model: String? = nil, model_config: [String: JSONValue]? = nil, first_content_at: String? = nil, span_id: String? = nil, parent: Any? = nil, disabled: Bool = false) -> Span {
-    speechSpan(input: input, output: output, outputFormat: output_format, model: model, modelConfig: model_config, firstContentAt: first_content_at, spanID: span_id, parent: parent, disabled: disabled)
 }
 
 public func speechGroupSpan(input: String? = nil, spanID: String? = nil, parent: Any? = nil, disabled: Bool = false) -> Span {
@@ -464,15 +409,7 @@ public func speechGroupSpan(input: String? = nil, spanID: String? = nil, parent:
     return getTraceProvider().createSpan(name: "speech_group", spanData: data.asSpanData(), spanID: spanID, parent: parent, disabled: disabled)
 }
 
-public func speech_group_span(input: String? = nil, span_id: String? = nil, parent: Any? = nil, disabled: Bool = false) -> Span {
-    speechGroupSpan(input: input, spanID: span_id, parent: parent, disabled: disabled)
-}
-
 public func transcriptionSpan(input: String? = nil, inputFormat: String? = "pcm", output: String? = nil, model: String? = nil, modelConfig: [String: JSONValue]? = nil, spanID: String? = nil, parent: Any? = nil, disabled: Bool = false) -> Span {
     let data = TranscriptionSpanData(input: input, inputFormat: inputFormat, output: output, model: model, modelConfig: modelConfig)
     return getTraceProvider().createSpan(name: "transcription", spanData: data.asSpanData(), spanID: spanID, parent: parent, disabled: disabled)
-}
-
-public func transcription_span(input: String? = nil, input_format: String? = "pcm", output: String? = nil, model: String? = nil, model_config: [String: JSONValue]? = nil, span_id: String? = nil, parent: Any? = nil, disabled: Bool = false) -> Span {
-    transcriptionSpan(input: input, inputFormat: input_format, output: output, model: model, modelConfig: model_config, spanID: span_id, parent: parent, disabled: disabled)
 }

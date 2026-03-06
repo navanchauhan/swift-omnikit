@@ -141,11 +141,33 @@ public struct OpenAIBatchesService: Sendable {
     }
 }
 
+public enum OpenAISpeechResponseFormat: String, Sendable, Codable, Equatable {
+    case mp3
+    case opus
+    case aac
+    case flac
+    case wav
+    case pcm
+}
+
+public enum OpenAIAudioTextResponseFormat: String, Sendable, Codable, Equatable {
+    case json
+    case text
+    case srt
+    case verboseJSON = "verbose_json"
+    case vtt
+}
+
+public enum OpenAIImageResponseFormat: String, Sendable, Codable, Equatable {
+    case url
+    case b64JSON = "b64_json"
+}
+
 public struct OpenAISpeechRequest: Sendable {
     public var model: String
     public var input: String
     public var voice: String
-    public var responseFormat: String?
+    public var responseFormat: OpenAISpeechResponseFormat?
     public var speed: Double?
     public var providerOptions: [String: JSONValue]?
     public var timeout: Timeout?
@@ -154,7 +176,7 @@ public struct OpenAISpeechRequest: Sendable {
         model: String,
         input: String,
         voice: String,
-        responseFormat: String? = nil,
+        responseFormat: OpenAISpeechResponseFormat? = nil,
         speed: Double? = nil,
         providerOptions: [String: JSONValue]? = nil,
         timeout: Timeout? = nil
@@ -183,7 +205,7 @@ public struct OpenAITranscriptionRequest: Sendable {
     public var fileData: [UInt8]
     public var mediaType: String
     public var prompt: String?
-    public var responseFormat: String?
+    public var responseFormat: OpenAIAudioTextResponseFormat?
     public var temperature: Double?
     public var language: String?
     public var providerOptions: [String: JSONValue]?
@@ -195,7 +217,7 @@ public struct OpenAITranscriptionRequest: Sendable {
         fileData: [UInt8],
         mediaType: String,
         prompt: String? = nil,
-        responseFormat: String? = nil,
+        responseFormat: OpenAIAudioTextResponseFormat? = nil,
         temperature: Double? = nil,
         language: String? = nil,
         providerOptions: [String: JSONValue]? = nil,
@@ -230,7 +252,7 @@ public struct OpenAITranslationRequest: Sendable {
     public var fileData: [UInt8]
     public var mediaType: String
     public var prompt: String?
-    public var responseFormat: String?
+    public var responseFormat: OpenAIAudioTextResponseFormat?
     public var temperature: Double?
     public var providerOptions: [String: JSONValue]?
     public var timeout: Timeout?
@@ -241,7 +263,7 @@ public struct OpenAITranslationRequest: Sendable {
         fileData: [UInt8],
         mediaType: String,
         prompt: String? = nil,
-        responseFormat: String? = nil,
+        responseFormat: OpenAIAudioTextResponseFormat? = nil,
         temperature: Double? = nil,
         providerOptions: [String: JSONValue]? = nil,
         timeout: Timeout? = nil
@@ -273,7 +295,7 @@ public struct OpenAIImageGenerationRequest: Sendable {
     public var model: String?
     public var size: String?
     public var quality: String?
-    public var responseFormat: String?
+    public var responseFormat: OpenAIImageResponseFormat?
     public var numberOfImages: Int?
     public var user: String?
     public var providerOptions: [String: JSONValue]?
@@ -284,7 +306,7 @@ public struct OpenAIImageGenerationRequest: Sendable {
         model: String? = nil,
         size: String? = nil,
         quality: String? = nil,
-        responseFormat: String? = nil,
+        responseFormat: OpenAIImageResponseFormat? = nil,
         numberOfImages: Int? = nil,
         user: String? = nil,
         providerOptions: [String: JSONValue]? = nil,

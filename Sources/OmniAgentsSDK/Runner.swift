@@ -1,10 +1,5 @@
 import Foundation
 
-private final class _RunnerUnsafeBox<Value>: @unchecked Sendable {
-    var value: Value
-    init(_ value: Value) { self.value = value }
-}
-
 public final class AgentRunner: @unchecked Sendable {
     public init() {}
 
@@ -64,47 +59,6 @@ public final class AgentRunner: @unchecked Sendable {
         )
     }
 
-    public func runSync<TContext>(
-        _ startingAgent: Agent<TContext>,
-        input: StringOrInputList,
-        context: TContext? = nil,
-        maxTurns: Int = DEFAULT_MAX_TURNS,
-        hooks: RunHooks<TContext>? = nil,
-        runConfig: RunConfig? = nil,
-        errorHandlers: RunErrorHandlers<TContext>? = nil,
-        previousResponseID: String? = nil,
-        autoPreviousResponseID: Bool = false,
-        conversationID: String? = nil,
-        session: Session? = nil
-    ) throws -> RunResult<TContext> {
-        let semaphore = DispatchSemaphore(value: 0)
-        let resultBox = _RunnerUnsafeBox<Result<RunResult<TContext>, Error>?>(nil)
-        let contextBox = _RunnerUnsafeBox(context)
-        Task {
-            do {
-                let value = try await run(
-                    startingAgent,
-                    input: input,
-                    context: contextBox.value,
-                    maxTurns: maxTurns,
-                    hooks: hooks,
-                    runConfig: runConfig,
-                    errorHandlers: errorHandlers,
-                    previousResponseID: previousResponseID,
-                    autoPreviousResponseID: autoPreviousResponseID,
-                    conversationID: conversationID,
-                    session: session
-                )
-                resultBox.value = .success(value)
-            } catch {
-                resultBox.value = .failure(error)
-            }
-            semaphore.signal()
-        }
-        semaphore.wait()
-        return try resultBox.value!.get()
-    }
-
     public func runStreamed<TContext>(
         _ startingAgent: Agent<TContext>,
         input: StringOrInputList,
@@ -127,7 +81,7 @@ public final class AgentRunner: @unchecked Sendable {
         let streaming = RunResultStreaming<TContext>(
             input: input,
             contextWrapper: contextWrapper,
-            currentAgent: startingAgent,
+            currentAgent: AnyAgent(startingAgent),
             currentTurn: 0,
             maxTurns: maxTurns
         )
@@ -178,34 +132,6 @@ public enum Runner {
         session: Session? = nil
     ) async throws -> RunResult<TContext> {
         try await DEFAULT_AGENT_RUNNER.run(
-            startingAgent,
-            input: input,
-            context: context,
-            maxTurns: maxTurns,
-            hooks: hooks,
-            runConfig: runConfig,
-            errorHandlers: errorHandlers,
-            previousResponseID: previousResponseID,
-            autoPreviousResponseID: autoPreviousResponseID,
-            conversationID: conversationID,
-            session: session
-        )
-    }
-
-    public static func runSync<TContext>(
-        _ startingAgent: Agent<TContext>,
-        input: StringOrInputList,
-        context: TContext? = nil,
-        maxTurns: Int = DEFAULT_MAX_TURNS,
-        hooks: RunHooks<TContext>? = nil,
-        runConfig: RunConfig? = nil,
-        errorHandlers: RunErrorHandlers<TContext>? = nil,
-        previousResponseID: String? = nil,
-        autoPreviousResponseID: Bool = false,
-        conversationID: String? = nil,
-        session: Session? = nil
-    ) throws -> RunResult<TContext> {
-        try DEFAULT_AGENT_RUNNER.runSync(
             startingAgent,
             input: input,
             context: context,

@@ -64,7 +64,7 @@ public final class OpenAIAdapter: ProviderAdapter, @unchecked Sendable {
             throw err
         }
 
-        let json = _ProviderHTTP.parseJSONBody(http) ?? .object([:])
+        let json = _ProviderHTTP.parseJSONBody(http)
         return try parseResponse(json: json, headers: http.headers, requestedModel: request.model)
     }
 
@@ -262,7 +262,7 @@ public final class OpenAIAdapter: ProviderAdapter, @unchecked Sendable {
                         model: request.model,
                         provider: name,
                         message: message,
-                        finishReason: FinishReason(reason: toolCallOrder.isEmpty ? "stop" : "tool_calls", raw: nil),
+                        finishReason: FinishReason(kind: toolCallOrder.isEmpty ? .stop : .toolCalls, raw: nil),
                         usage: Usage(inputTokens: 0, outputTokens: 0),
                         raw: nil,
                         warnings: [],
@@ -467,7 +467,7 @@ public final class OpenAIAdapter: ProviderAdapter, @unchecked Sendable {
                         model: request.model,
                         provider: name,
                         message: message,
-                        finishReason: FinishReason(reason: toolCallOrder.isEmpty ? "stop" : "tool_calls", raw: nil),
+                        finishReason: FinishReason(kind: toolCallOrder.isEmpty ? .stop : .toolCalls, raw: nil),
                         usage: Usage(inputTokens: 0, outputTokens: 0),
                         raw: nil,
                         warnings: [],
@@ -660,7 +660,7 @@ public final class OpenAIAdapter: ProviderAdapter, @unchecked Sendable {
         }
 
         if let rf = request.responseFormat {
-            var rfObj: [String: JSONValue] = ["type": .string(rf.type)]
+            var rfObj: [String: JSONValue] = ["type": .string(rf.rawValue)]
             if let schema = rf.jsonSchema {
                 rfObj["json_schema"] = schema
                 rfObj["strict"] = .bool(rf.strict)
@@ -833,18 +833,18 @@ public final class OpenAIAdapter: ProviderAdapter, @unchecked Sendable {
             // Treat any response that includes function/tool calls as a tool-calls step, even if the
             // provider reports a different finish_reason (some payloads return "stop" here).
             if !toolCalls.isEmpty {
-                return FinishReason(reason: "tool_calls", raw: finishRaw)
+                return FinishReason(kind: .toolCalls, raw: finishRaw)
             }
             if let finishRaw {
-                return FinishReason(reason: mapFinishReason(finishRaw), raw: finishRaw)
+                return FinishReason(kind: mapFinishReason(finishRaw), raw: finishRaw)
             }
             if status == "incomplete" {
                 if incompleteReason == "max_output_tokens" {
-                    return FinishReason(reason: "length", raw: incompleteReason)
+                    return FinishReason(kind: .length, raw: incompleteReason)
                 }
-                return FinishReason(reason: "other", raw: incompleteReason ?? status)
+                return FinishReason(kind: .other, raw: incompleteReason ?? status)
             }
-            return FinishReason(reason: "stop", raw: status)
+            return FinishReason(kind: .stop, raw: status)
         }()
 
         let usage = parseUsage(json["usage"])
@@ -868,13 +868,13 @@ public final class OpenAIAdapter: ProviderAdapter, @unchecked Sendable {
         )
     }
 
-    private func mapFinishReason(_ raw: String) -> String {
+    private func mapFinishReason(_ raw: String) -> FinishReason.Kind {
         switch raw {
-        case "stop": return "stop"
-        case "length": return "length"
-        case "tool_calls": return "tool_calls"
-        case "content_filter": return "content_filter"
-        default: return "other"
+        case "stop": return .stop
+        case "length": return .length
+        case "tool_calls": return .toolCalls
+        case "content_filter": return .contentFilter
+        default: return .other
         }
     }
 
@@ -1043,7 +1043,7 @@ extension OpenAIAdapter: OpenAIAudioProviderAdapter {
             "voice": .string(request.voice),
         ]
         if let format = request.responseFormat {
-            root["response_format"] = .string(format)
+            root["response_format"] = .string(format.rawValue)
         }
         if let speed = request.speed {
             root["speed"] = .number(speed)
@@ -1138,7 +1138,7 @@ extension OpenAIAdapter: OpenAIImagesProviderAdapter {
             root["quality"] = .string(quality)
         }
         if let fmt = request.responseFormat {
-            root["response_format"] = .string(fmt)
+            root["response_format"] = .string(fmt.rawValue)
         }
         if let n = request.numberOfImages {
             root["n"] = .number(Double(n))
@@ -1270,7 +1270,7 @@ private extension OpenAIAdapter {
         if !(200..<300).contains(response.statusCode) {
             throw openAIHTTPError(response)
         }
-        return _ProviderHTTP.parseJSONBody(response) ?? .object([:])
+        return _ProviderHTTP.parseJSONBody(response)
     }
 
     func openAIHTTPError(_ response: HTTPResponse) -> SDKError {
@@ -1294,7 +1294,7 @@ private extension OpenAIAdapter {
         mediaType: String,
         model: String,
         prompt: String?,
-        responseFormat: String?,
+        responseFormat: OpenAIAudioTextResponseFormat?,
         temperature: Double?,
         language: String?,
         providerOptions: [String: JSONValue]?
@@ -1307,8 +1307,8 @@ private extension OpenAIAdapter {
         if let prompt, !prompt.isEmpty {
             parts.append(OpenAIMultipartPart(name: "prompt", filename: nil, contentType: nil, data: Array(prompt.utf8)))
         }
-        if let responseFormat, !responseFormat.isEmpty {
-            parts.append(OpenAIMultipartPart(name: "response_format", filename: nil, contentType: nil, data: Array(responseFormat.utf8)))
+        if let responseFormat {
+            parts.append(OpenAIMultipartPart(name: "response_format", filename: nil, contentType: nil, data: Array(responseFormat.rawValue.utf8)))
         }
         if let temperature {
             parts.append(OpenAIMultipartPart(name: "temperature", filename: nil, contentType: nil, data: Array(String(temperature).utf8)))

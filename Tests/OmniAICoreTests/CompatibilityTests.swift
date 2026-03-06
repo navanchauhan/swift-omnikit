@@ -84,14 +84,14 @@ final class CompatibilityTests {
         XCTAssertEqual(ToolChoice.required.mode, .required)
         XCTAssertEqual(ToolChoice.named("weather").toolName, "weather")
 
-        XCTAssertEqual(ResponseFormat.text.type, "text")
-        XCTAssertEqual(ResponseFormat.json.type, "json")
-        XCTAssertEqual(ResponseFormat.jsonSchema(.object(["type": .string("object")]), strict: true).type, "json_schema")
+        XCTAssertEqual(ResponseFormat.text.kind.rawValue, "text")
+        XCTAssertEqual(ResponseFormat.json.kind.rawValue, "json")
+        XCTAssertEqual(ResponseFormat.jsonSchema(.object(["type": .string("object")]), strict: true).kind.rawValue, "json_schema")
 
-        XCTAssertEqual(FinishReason.stop.reason, "stop")
-        XCTAssertEqual(FinishReason.length.reason, "length")
-        XCTAssertEqual(FinishReason.toolCalls.reason, "tool_calls")
-        XCTAssertEqual(FinishReason.contentFilter.reason, "content_filter")
+        XCTAssertEqual(FinishReason.stop.kind.rawValue, "stop")
+        XCTAssertEqual(FinishReason.length.kind.rawValue, "length")
+        XCTAssertEqual(FinishReason.toolCalls.kind.rawValue, "tool_calls")
+        XCTAssertEqual(FinishReason.contentFilter.kind.rawValue, "content_filter")
 
         let known = StreamEvent(type: .textDelta, delta: "x", textId: "t0")
         XCTAssertEqual(known.eventType, .textDelta)
@@ -215,17 +215,16 @@ final class CompatibilityTests {
     }
 
     @Test
-    func testDefaultClientSyncCompatibilityAliases() throws {
+    func testDefaultClientHelpers() async throws {
         let adapter = CompatibilityAdapter(complete: { request in
             _compatResponse(provider: "test", model: request.model, text: "ok")
         })
         let client = try Client(providers: ["test": adapter], defaultProvider: "test")
 
-        setDefaultClient(client)
-        XCTAssertEqual(try getDefaultClient().defaultProvider, "test")
-        XCTAssertEqual(try defaultClient().defaultProvider, "test")
-        XCTAssertEqual(try get_default_client().defaultProvider, "test")
-        setDefaultClient(nil)
+        await setDefaultClient(client)
+        let resolvedDefaultProvider = try await defaultClient().defaultProvider
+        XCTAssertEqual(resolvedDefaultProvider, "test")
+        await setDefaultClient(nil)
     }
 
     @Test
@@ -245,7 +244,7 @@ final class CompatibilityTests {
                 _compatResponse(provider: "test", model: request.model, text: expectedText)
             },
             stream: { request in
-                XCTAssertEqual(request.responseFormat?.type, "json_schema")
+                XCTAssertEqual(request.responseFormat?.kind.rawValue, "json_schema")
                 XCTAssertEqual(request.responseFormat?.strict, true)
 
                 let finish = _compatResponse(provider: "test", model: request.model, text: expectedText)

@@ -315,7 +315,7 @@ public func generate(
                 (maxRounds > 0)
                 && (stepIndex < maxRounds)
                 && !(toolCalls.isEmpty)
-                && response.finishReason.reason == "tool_calls"
+                && response.finishReason.kind == .toolCalls
                 && (tools?.contains(where: { $0.execute != nil }) ?? false)
 
             let toolExecution: ToolExecutionOutcome
@@ -341,7 +341,7 @@ public func generate(
 
             let stopNow =
                 toolCalls.isEmpty
-                || response.finishReason.reason != "tool_calls"
+                || response.finishReason.kind != .toolCalls
                 || maxRounds <= 0
                 || stepIndex >= maxRounds
                 || (stopWhen?(steps) ?? false)
@@ -398,8 +398,9 @@ public func generate(
             }
         }
 
-        // Should be unreachable.
-        let last = steps.last!
+        guard let last = steps.last else {
+            throw SDKError(message: "Generate operation completed without producing any steps.")
+        }
         return GenerateResult(
             text: last.text,
             reasoning: last.reasoning,
@@ -420,7 +421,7 @@ public func generate(
     return try await operation()
 }
 
-public func generate_object(
+public func generateObject(
     model: String,
     prompt: String? = nil,
     messages: [Message]? = nil,
@@ -466,7 +467,7 @@ public func generate_object(
     } else {
         tools = nil
         toolChoice = nil
-        responseFormat = ResponseFormat(type: "json_schema", jsonSchema: schema, strict: true)
+        responseFormat = ResponseFormat(kind: .jsonSchema, jsonSchema: schema, strict: true)
     }
 
     var result = try await generate(
@@ -520,48 +521,6 @@ public func generate_object(
 
     result.output = parsed
     return result
-}
-
-public func generateObject(
-    model: String,
-    prompt: String? = nil,
-    messages: [Message]? = nil,
-    system: String? = nil,
-    schema: JSONValue,
-    temperature: Double? = nil,
-    topP: Double? = nil,
-    maxTokens: Int? = nil,
-    stopSequences: [String]? = nil,
-    reasoningEffort: String? = nil,
-    metadata: [String: String]? = nil,
-    provider: String? = nil,
-    providerOptions: [String: JSONValue]? = nil,
-    maxRetries: Int = 2,
-    retryPolicy: RetryPolicy? = nil,
-    timeout: Timeout? = nil,
-    abortSignal: AbortSignal? = nil,
-    client: Client? = nil
-) async throws -> GenerateResult {
-    try await generate_object(
-        model: model,
-        prompt: prompt,
-        messages: messages,
-        system: system,
-        schema: schema,
-        temperature: temperature,
-        topP: topP,
-        maxTokens: maxTokens,
-        stopSequences: stopSequences,
-        reasoningEffort: reasoningEffort,
-        metadata: metadata,
-        provider: provider,
-        providerOptions: providerOptions,
-        maxRetries: maxRetries,
-        retryPolicy: retryPolicy,
-        timeout: timeout,
-        abortSignal: abortSignal,
-        client: client
-    )
 }
 
 private func _parseJSONObjectFromUTF8(_ text: String) -> JSONValue? {
@@ -633,7 +592,7 @@ public func streamObject(
         toolChoice: nil,
         maxToolRounds: 0,
         stopWhen: nil,
-        responseFormat: ResponseFormat(type: "json_schema", jsonSchema: schema, strict: true),
+        responseFormat: ResponseFormat(kind: .jsonSchema, jsonSchema: schema, strict: true),
         temperature: temperature,
         topP: topP,
         maxTokens: maxTokens,
@@ -681,49 +640,6 @@ public func streamObject(
     }
 
     return ObjectStreamResult(eventStream: objectStream, underlyingStream: baseStream)
-}
-
-// Spec-style alias.
-public func stream_object(
-    model: String,
-    prompt: String? = nil,
-    messages: [Message]? = nil,
-    system: String? = nil,
-    schema: JSONValue,
-    temperature: Double? = nil,
-    topP: Double? = nil,
-    maxTokens: Int? = nil,
-    stopSequences: [String]? = nil,
-    reasoningEffort: String? = nil,
-    metadata: [String: String]? = nil,
-    provider: String? = nil,
-    providerOptions: [String: JSONValue]? = nil,
-    maxRetries: Int = 2,
-    retryPolicy: RetryPolicy? = nil,
-    timeout: Timeout? = nil,
-    abortSignal: AbortSignal? = nil,
-    client: Client? = nil
-) async throws -> ObjectStreamResult<JSONValue> {
-    try await streamObject(
-        model: model,
-        prompt: prompt,
-        messages: messages,
-        system: system,
-        schema: schema,
-        temperature: temperature,
-        topP: topP,
-        maxTokens: maxTokens,
-        stopSequences: stopSequences,
-        reasoningEffort: reasoningEffort,
-        metadata: metadata,
-        provider: provider,
-        providerOptions: providerOptions,
-        maxRetries: maxRetries,
-        retryPolicy: retryPolicy,
-        timeout: timeout,
-        abortSignal: abortSignal,
-        client: client
-    )
 }
 
 private actor _StreamFinal {
@@ -936,7 +852,7 @@ public func stream(
                             (maxRounds > 0)
                             && (stepIndex < maxRounds)
                             && !(toolCalls.isEmpty)
-                            && (stepFinish?.reason ?? response.finishReason.reason) == "tool_calls"
+                            && (stepFinish?.kind ?? response.finishReason.kind) == .toolCalls
                             && (tools?.contains(where: { $0.execute != nil }) ?? false)
 
                         let toolExecution: ToolExecutionOutcome
@@ -962,7 +878,7 @@ public func stream(
 
                         let stopNow =
                             toolCalls.isEmpty
-                            || (stepFinish?.reason ?? response.finishReason.reason) != "tool_calls"
+                            || (stepFinish?.kind ?? response.finishReason.kind) != .toolCalls
                             || maxRounds <= 0
                             || stepIndex >= maxRounds
                             || (stopWhen?(steps) ?? false)

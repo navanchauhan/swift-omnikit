@@ -48,7 +48,7 @@ open class RunResultBase<TContext>: @unchecked Sendable, CustomStringConvertible
         self.trace = trace
     }
 
-    open var lastAgent: Any? { nil }
+    open var lastAgent: AnyAgent? { nil }
 
     public func releaseAgents() {
         newItems.forEach { $0.releaseAgent() }
@@ -90,8 +90,8 @@ open class RunResultBase<TContext>: @unchecked Sendable, CustomStringConvertible
     }
 }
 
-public final class RunResult<TContext>: RunResultBase<TContext> {
-    public var storedLastAgent: Any
+public final class RunResult<TContext>: RunResultBase<TContext>, @unchecked Sendable {
+    public var storedLastAgent: AnyAgent
     public var lastProcessedResponse: ProcessedResponse<TContext>?
     public var toolUseTrackerSnapshot: [String: [String]]
     public var currentTurnPersistedItemCount: Int
@@ -115,7 +115,7 @@ public final class RunResult<TContext>: RunResultBase<TContext> {
         toolInputGuardrailResults: [ToolInputGuardrailResult<TContext>],
         toolOutputGuardrailResults: [ToolOutputGuardrailResult<TContext>],
         contextWrapper: RunContextWrapper<TContext>,
-        lastAgent: Any,
+        lastAgent: AnyAgent,
         lastProcessedResponse: ProcessedResponse<TContext>? = nil,
         toolUseTrackerSnapshot: [String: [String]] = [:],
         currentTurnPersistedItemCount: Int = 0,
@@ -157,14 +157,14 @@ public final class RunResult<TContext>: RunResultBase<TContext> {
         )
     }
 
-    public override var lastAgent: Any? {
+    public override var lastAgent: AnyAgent? {
         storedLastAgent
     }
 
     public func toState() -> RunState<TContext> {
         RunState(
             currentTurn: currentTurn,
-            currentAgent: storedLastAgent as? Agent<TContext>,
+            currentAgent: storedLastAgent.typed(as: TContext.self),
             originalInput: originalInput ?? input,
             modelResponses: rawResponses,
             contextWrapper: contextWrapper,
@@ -187,8 +187,8 @@ public final class RunResult<TContext>: RunResultBase<TContext> {
     }
 }
 
-public final class RunResultStreaming<TContext>: RunResultBase<TContext> {
-    public var currentAgent: Any
+public final class RunResultStreaming<TContext>: RunResultBase<TContext>, @unchecked Sendable {
+    public var currentAgent: AnyAgent
     public var currentTurn: Int
     public var maxTurns: Int
     public var isComplete: Bool
@@ -202,23 +202,21 @@ public final class RunResultStreaming<TContext>: RunResultBase<TContext> {
     public init(
         input: StringOrInputList,
         contextWrapper: RunContextWrapper<TContext>,
-        currentAgent: Any,
+        currentAgent: AnyAgent,
         currentTurn: Int,
         maxTurns: Int,
         finalOutput: Any = NSNull(),
         trace: Trace? = nil
     ) {
-        var continuationRef: AsyncThrowingStream<AgentStreamEvent, Error>.Continuation!
-        let stream = AsyncThrowingStream<AgentStreamEvent, Error> { continuation in
-            continuationRef = continuation
-        }
+        let streamPair = makeThrowingStream(of: AgentStreamEvent.self)
+        let stream = streamPair.stream
         self.currentAgent = currentAgent
         self.currentTurn = currentTurn
         self.maxTurns = maxTurns
         self.isComplete = false
         self.interruptions = []
         self.eventStreamStorage = stream
-        self.eventContinuation = continuationRef
+        self.eventContinuation = streamPair.continuation
         super.init(
             input: input,
             newItems: [],
@@ -233,7 +231,7 @@ public final class RunResultStreaming<TContext>: RunResultBase<TContext> {
         )
     }
 
-    public override var lastAgent: Any? {
+    public override var lastAgent: AnyAgent? {
         storedResult?.lastAgent ?? currentAgent
     }
 
@@ -279,7 +277,7 @@ public final class RunResultStreaming<TContext>: RunResultBase<TContext> {
         }
         return RunState(
             currentTurn: currentTurn,
-            currentAgent: currentAgent as? Agent<TContext>,
+            currentAgent: currentAgent.typed(as: TContext.self),
             originalInput: input,
             modelResponses: rawResponses,
             contextWrapper: contextWrapper,

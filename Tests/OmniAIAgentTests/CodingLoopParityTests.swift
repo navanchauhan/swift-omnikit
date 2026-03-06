@@ -19,7 +19,10 @@ private actor CodingLoopTestAdapterState {
         if current < responses.count {
             return responses[current]
         }
-        return responses.last!
+        guard let lastResponse = responses.last else {
+            preconditionFailure("CodingLoopTestAdapterState requires at least one response")
+        }
+        return lastResponse
     }
 }
 
@@ -114,7 +117,7 @@ private func codingLoopResponse(
         model: model,
         provider: provider,
         message: Message(role: .assistant, content: parts),
-        finishReason: FinishReason(reason: finishReason, raw: finishReason),
+        finishReason: FinishReason(kind: FinishReason.Kind(rawValue: finishReason) ?? .other, raw: finishReason),
         usage: Usage(inputTokens: 1, outputTokens: 1),
         raw: nil,
         warnings: [],

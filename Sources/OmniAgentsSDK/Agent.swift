@@ -19,10 +19,10 @@ public typealias ToolsToFinalOutputFunction<TContext> = @Sendable (
 
 public struct AgentToolStreamEvent: @unchecked Sendable {
     public var event: AgentStreamEvent
-    public var agent: Any
+    public var agent: AnyAgent
     public var toolCall: TResponseOutputItem?
 
-    public init(event: AgentStreamEvent, agent: Any, toolCall: TResponseOutputItem? = nil) {
+    public init(event: AgentStreamEvent, agent: AnyAgent, toolCall: TResponseOutputItem? = nil) {
         self.event = event
         self.agent = agent
         self.toolCall = toolCall
@@ -137,7 +137,7 @@ open class AgentBase<TContext>: @unchecked Sendable {
         let mcpTools = try await getMCPTools(runContext: runContext)
         var enabledTools: [Tool] = []
         for tool in tools {
-            if try await ToolRuntime.isToolEnabled(tool, runContext: runContext, agent: self) {
+            if try await ToolRuntime.isToolEnabled(tool, runContext: runContext, agent: AnyAgent(self)) {
                 enabledTools.append(tool)
             }
         }
@@ -265,7 +265,7 @@ public final class Agent<TContext>: AgentBase<TContext>, @unchecked Sendable {
             needsApproval: .always(false),
             isAgentTool: true,
             isCodexTool: false,
-            agentInstance: self
+            agentInstance: AnyAgent(self)
         ))
     }
 

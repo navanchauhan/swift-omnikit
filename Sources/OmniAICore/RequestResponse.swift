@@ -1,38 +1,61 @@
 import Foundation
 
 public struct ResponseFormat: Sendable, Equatable {
-    public var type: String // "text", "json", "json_schema"
+    public enum Kind: String, Sendable, Codable {
+        case text = "text"
+        case json = "json"
+        case jsonSchema = "json_schema"
+    }
+
+    public var kind: Kind
     public var jsonSchema: JSONValue?
     public var strict: Bool
 
-    public init(type: String, jsonSchema: JSONValue? = nil, strict: Bool = false) {
-        self.type = type
+    public init(kind: Kind, jsonSchema: JSONValue? = nil, strict: Bool = false) {
+        self.kind = kind
         self.jsonSchema = jsonSchema
         self.strict = strict
     }
 
-    public static let text = ResponseFormat(type: "text")
-    public static let json = ResponseFormat(type: "json")
+    public var rawValue: String {
+        kind.rawValue
+    }
+
+    public static let text = ResponseFormat(kind: .text)
+    public static let json = ResponseFormat(kind: .json)
     public static func jsonSchema(_ schema: JSONValue, strict: Bool = false) -> ResponseFormat {
-        ResponseFormat(type: "json_schema", jsonSchema: schema, strict: strict)
+        ResponseFormat(kind: .jsonSchema, jsonSchema: schema, strict: strict)
     }
 }
 
 public struct FinishReason: Sendable, Equatable {
-    public var reason: String
+    public enum Kind: String, Sendable, Codable {
+        case stop = "stop"
+        case length = "length"
+        case toolCalls = "tool_calls"
+        case contentFilter = "content_filter"
+        case error = "error"
+        case other = "other"
+    }
+
+    public var kind: Kind
     public var raw: String?
 
-    public init(reason: String, raw: String? = nil) {
-        self.reason = reason
+    public init(kind: Kind, raw: String? = nil) {
+        self.kind = kind
         self.raw = raw
     }
 
-    public static let stop = FinishReason(reason: "stop")
-    public static let length = FinishReason(reason: "length")
-    public static let toolCalls = FinishReason(reason: "tool_calls")
-    public static let contentFilter = FinishReason(reason: "content_filter")
-    public static let error = FinishReason(reason: "error")
-    public static let other = FinishReason(reason: "other")
+    public var rawValue: String {
+        kind.rawValue
+    }
+
+    public static let stop = FinishReason(kind: .stop)
+    public static let length = FinishReason(kind: .length)
+    public static let toolCalls = FinishReason(kind: .toolCalls)
+    public static let contentFilter = FinishReason(kind: .contentFilter)
+    public static let error = FinishReason(kind: .error)
+    public static let other = FinishReason(kind: .other)
 }
 
 public struct Usage: Sendable, Equatable {

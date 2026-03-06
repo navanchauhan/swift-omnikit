@@ -45,7 +45,7 @@ public final class AnthropicAdapter: ProviderAdapter, @unchecked Sendable {
             throw err
         }
 
-        let json = _ProviderHTTP.parseJSONBody(http) ?? .object([:])
+        let json = _ProviderHTTP.parseJSONBody(http)
         return try parseResponse(json: json, headers: http.headers, requestedModel: request.model)
     }
 
@@ -228,7 +228,7 @@ public final class AnthropicAdapter: ProviderAdapter, @unchecked Sendable {
                             let usage = payload?["usage"]
                             if let usage { latestUsage = usage }
                         case "message_stop":
-                            let finish = FinishReason(reason: mapFinishReason(stopReasonRaw), raw: stopReasonRaw)
+                            let finish = FinishReason(kind: mapFinishReason(stopReasonRaw), raw: stopReasonRaw)
                             let usage = parseUsage(latestUsage)
                             let msg = Message(role: .assistant, content: accumulatedParts)
                             let response = Response(
@@ -251,7 +251,7 @@ public final class AnthropicAdapter: ProviderAdapter, @unchecked Sendable {
                     }
 
                     // Stream ended unexpectedly.
-                    let finish = FinishReason(reason: "other", raw: stopReasonRaw)
+                    let finish = FinishReason(kind: .other, raw: stopReasonRaw)
                     let usage = parseUsage(latestUsage)
                     let msg = Message(role: .assistant, content: accumulatedParts)
                     let response = Response(
@@ -612,7 +612,7 @@ public final class AnthropicAdapter: ProviderAdapter, @unchecked Sendable {
         }
 
         let stopRaw = json["stop_reason"]?.stringValue
-        let finish = FinishReason(reason: mapFinishReason(stopRaw), raw: stopRaw)
+        let finish = FinishReason(kind: mapFinishReason(stopRaw), raw: stopRaw)
         let usage = parseUsage(json["usage"])
 
         return Response(
@@ -628,20 +628,20 @@ public final class AnthropicAdapter: ProviderAdapter, @unchecked Sendable {
         )
     }
 
-    private func mapFinishReason(_ raw: String?) -> String {
+    private func mapFinishReason(_ raw: String?) -> FinishReason.Kind {
         switch raw {
         case "end_turn", "stop_sequence", "stop":
-            return "stop"
+            return .stop
         case "max_tokens":
-            return "length"
+            return .length
         case "tool_use":
-            return "tool_calls"
+            return .toolCalls
         case "content_filter":
-            return "content_filter"
+            return .contentFilter
         case nil:
-            return "other"
+            return .other
         default:
-            return "other"
+            return .other
         }
     }
 

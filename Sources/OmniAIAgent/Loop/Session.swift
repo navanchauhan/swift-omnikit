@@ -1266,7 +1266,7 @@ You are running in non-interactive (automated pipeline) mode. Complete your assi
         fputs("[Session] Stream finished: \(eventCount) events, types: \(eventTypes)\n", stderr)
         if accumulator.hasIncompleteToolCalls() {
             let count = accumulator.incompleteToolCallCount()
-            let finish = accumulator.response()?.finishReason.reason ?? "unknown"
+            let finish = accumulator.response()?.finishReason.rawValue ?? "unknown"
             if finish == "length" || finish == "other" {
                 throw RequestTimeoutError(
                     message: "Stream ended with \(count) incomplete tool call(s) and finishReason=\(finish); retrying request"

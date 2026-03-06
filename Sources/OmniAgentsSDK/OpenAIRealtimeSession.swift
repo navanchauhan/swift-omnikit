@@ -1,6 +1,13 @@
 import Foundation
 import OmniAICore
 
+let defaultOpenAIRealtimeSessionBaseURL: URL = {
+    guard let url = URL(string: "wss://api.openai.com/v1/realtime") else {
+        preconditionFailure("Invalid default OpenAI realtime URL")
+    }
+    return url
+}()
+
 @available(macOS 12.0, iOS 15.0, watchOS 8.0, tvOS 15.0, *)
 public struct OpenAIRealtimeSessionOptions: Sendable {
     public var model: String
@@ -99,9 +106,9 @@ public final actor OpenAIRealtimeSession<TContext: Sendable> {
         self.client = client
         self.options = options
         self.hooks = hooks
-        var continuation: AsyncThrowingStream<OpenAIRealtimeSessionEvent<TContext>, Error>.Continuation!
-        self.eventStreamStorage = AsyncThrowingStream { cont in continuation = cont }
-        self.eventContinuation = continuation
+        let eventStream = makeThrowingStream(of: OpenAIRealtimeSessionEvent<TContext>.self)
+        self.eventStreamStorage = eventStream.stream
+        self.eventContinuation = eventStream.continuation
     }
 
     public func connect() async throws {
@@ -349,7 +356,7 @@ public final actor OpenAIRealtimeSession<TContext: Sendable> {
             contextWrapper,
             toolCallID: callID,
             toolCall: toolCall,
-            agent: currentAgent,
+            agent: AnyAgent(currentAgent),
             runConfig: nil
         )
 
@@ -402,7 +409,7 @@ public final class OpenAIRealtimeRunner<TContext: Sendable>: Sendable {
     public init(
         startingAgent: Agent<TContext>,
         apiKey: String,
-        baseURL: URL = URL(string: "wss://api.openai.com/v1/realtime")!,
+        baseURL: URL? = nil,
         transport: any RealtimeWebSocketTransport = defaultRealtimeWebSocketTransport(),
         options: OpenAIRealtimeSessionOptions = OpenAIRealtimeSessionOptions(),
         hooks: RunHooks<TContext>? = nil
@@ -411,7 +418,7 @@ public final class OpenAIRealtimeRunner<TContext: Sendable>: Sendable {
         self.options = options
         self.hooks = hooks
         self.clientFactory = {
-            OpenAIRealtimeClient(apiKey: apiKey, baseURL: baseURL, transport: transport)
+            OpenAIRealtimeClient(apiKey: apiKey, baseURL: baseURL ?? defaultOpenAIRealtimeSessionBaseURL, transport: transport)
         }
     }
 
@@ -496,7 +503,10 @@ private func withRealtimeTimeout<T>(seconds: Double?, operation: @escaping @Send
             try await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
             throw ToolTimeoutError(toolName: "realtime_tool", timeoutSeconds: seconds)
         }
-        let result = try await group.next()!
+        guard let result = try await group.next() else {
+            group.cancelAll()
+            throw ToolTimeoutError(toolName: "realtime_tool", timeoutSeconds: seconds)
+        }
         group.cancelAll()
         return result.value
     }

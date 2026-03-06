@@ -34,17 +34,13 @@ public actor Client {
         self.protocolVersion = protocolVersion
         self.capabilities = capabilities
 
-        var notificationContinuation: AsyncStream<AnyMessage>.Continuation?
-        self.notificationStream = AsyncStream { cont in
-            notificationContinuation = cont
-        }
-        self.notificationContinuation = notificationContinuation!
+        let notificationPair = Self.makeAsyncStream(of: AnyMessage.self)
+        self.notificationStream = notificationPair.stream
+        self.notificationContinuation = notificationPair.continuation
 
-        var cancelContinuation: AsyncStream<String>.Continuation?
-        self.cancelRequestStream = AsyncStream { cont in
-            cancelContinuation = cont
-        }
-        self.cancelRequestContinuation = cancelContinuation!
+        let cancelPair = Self.makeAsyncStream(of: String.self)
+        self.cancelRequestStream = cancelPair.stream
+        self.cancelRequestContinuation = cancelPair.continuation
     }
 
     public func setDelegate(_ delegate: (any ClientDelegate)?) {
@@ -184,10 +180,23 @@ public actor Client {
                 try await Task.sleep(for: timeout)
                 throw ClientError.timedOut(label)
             }
-            let result = try await group.next()!
+            guard let result = try await group.next() else {
+                throw ClientError.connectionClosed
+            }
             group.cancelAll()
             return result
         }
+    }
+
+    private nonisolated static func makeAsyncStream<Element>(of _: Element.Type) -> (stream: AsyncStream<Element>, continuation: AsyncStream<Element>.Continuation) {
+        var continuation: AsyncStream<Element>.Continuation?
+        let stream = AsyncStream<Element> { cont in
+            continuation = cont
+        }
+        guard let continuation else {
+            preconditionFailure("AsyncStream continuation was not initialized")
+        }
+        return (stream, continuation)
     }
 
     private func startMessageLoop(using transport: any Transport) {

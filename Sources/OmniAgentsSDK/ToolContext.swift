@@ -6,7 +6,7 @@ open class ToolContext<TContext>: RunContextWrapper<TContext>, @unchecked Sendab
     public let toolCallID: String
     public let toolArguments: String
     public let toolCall: ToolCall?
-    public let agent: Any?
+    public let agent: AnyAgent?
     public let runConfig: RunConfig?
 
     public init(
@@ -16,7 +16,7 @@ open class ToolContext<TContext>: RunContextWrapper<TContext>, @unchecked Sendab
         toolCallID: String,
         toolArguments: String,
         toolCall: ToolCall? = nil,
-        agent: Any? = nil,
+        agent: AnyAgent? = nil,
         runConfig: RunConfig? = nil,
         turnInput: [Any] = [],
         toolInput: Any? = nil
@@ -35,7 +35,7 @@ open class ToolContext<TContext>: RunContextWrapper<TContext>, @unchecked Sendab
         _ context: RunContextWrapper<TContext>,
         toolCallID: String,
         toolCall: ToolCall? = nil,
-        agent: Any? = nil,
+        agent: AnyAgent? = nil,
         runConfig: RunConfig? = nil
     ) -> ToolContext<TContext> {
         let resolvedToolName = toolCall?.name ?? "unknown_tool"

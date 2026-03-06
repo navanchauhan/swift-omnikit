@@ -114,57 +114,67 @@ private enum _SchemaReflection {
         return .object(["type": .string("string")])
     }
 
+    private static func castPlaceholder<T>(_ value: Any, as type: T.Type) throws -> T {
+        guard let castValue = value as? T else {
+            throw ModelBehaviorError(message: "Failed to create schema placeholder for \(String(reflecting: type)).")
+        }
+        return castValue
+    }
+
     static func placeholder<T: Decodable>(for type: T.Type) throws -> T {
         switch type {
         case let stringType as String.Type:
-            return stringType.init() as! T
+            return try castPlaceholder(stringType.init(), as: T.self)
         case let substringType as Substring.Type:
-            return substringType.init() as! T
+            return try castPlaceholder(substringType.init(), as: T.self)
         case let boolType as Bool.Type:
-            return boolType.init(false) as! T
+            return try castPlaceholder(boolType.init(false), as: T.self)
         case let intType as Int.Type:
-            return intType.init() as! T
+            return try castPlaceholder(intType.init(), as: T.self)
         case let intType as Int8.Type:
-            return intType.init() as! T
+            return try castPlaceholder(intType.init(), as: T.self)
         case let intType as Int16.Type:
-            return intType.init() as! T
+            return try castPlaceholder(intType.init(), as: T.self)
         case let intType as Int32.Type:
-            return intType.init() as! T
+            return try castPlaceholder(intType.init(), as: T.self)
         case let intType as Int64.Type:
-            return intType.init() as! T
+            return try castPlaceholder(intType.init(), as: T.self)
         case let uintType as UInt.Type:
-            return uintType.init() as! T
+            return try castPlaceholder(uintType.init(), as: T.self)
         case let uintType as UInt8.Type:
-            return uintType.init() as! T
+            return try castPlaceholder(uintType.init(), as: T.self)
         case let uintType as UInt16.Type:
-            return uintType.init() as! T
+            return try castPlaceholder(uintType.init(), as: T.self)
         case let uintType as UInt32.Type:
-            return uintType.init() as! T
+            return try castPlaceholder(uintType.init(), as: T.self)
         case let uintType as UInt64.Type:
-            return uintType.init() as! T
+            return try castPlaceholder(uintType.init(), as: T.self)
         case let doubleType as Double.Type:
-            return doubleType.init() as! T
+            return try castPlaceholder(doubleType.init(), as: T.self)
         case let floatType as Float.Type:
-            return floatType.init() as! T
+            return try castPlaceholder(floatType.init(), as: T.self)
         case let decimalType as Decimal.Type:
-            return decimalType.init() as! T
+            return try castPlaceholder(decimalType.init(), as: T.self)
         case let dateType as Date.Type:
-            return dateType.init(timeIntervalSince1970: 0) as! T
+            return try castPlaceholder(dateType.init(timeIntervalSince1970: 0), as: T.self)
         case let uuidType as UUID.Type:
-            return uuidType.init() as! T
+            return try castPlaceholder(uuidType.init(), as: T.self)
         case let urlType as URL.Type:
-            return urlType.init(string: "https://example.invalid")! as! T
+            guard let url = urlType.init(string: "https://example.invalid") else {
+                throw ModelBehaviorError(message: "Failed to create schema placeholder URL.")
+            }
+            return try castPlaceholder(url, as: T.self)
         case let jsonType as JSONValue.Type:
-            return JSONValue.object([:]) as! T
+            return try castPlaceholder(JSONValue.object([:]), as: T.self)
         default:
             break
         }
 
         if let arrayType = type as? any _ArrayConstructible.Type {
-            return arrayType.makeEmptyArray() as! T
+            return try castPlaceholder(arrayType.makeEmptyArray(), as: T.self)
         }
         if let dictionaryType = type as? any _DictionaryConstructible.Type {
-            return dictionaryType.makeEmptyDictionary() as! T
+            return try castPlaceholder(dictionaryType.makeEmptyDictionary(), as: T.self)
         }
         return try T(from: _SchemaRecordingDecoder())
     }
@@ -627,46 +637,59 @@ private struct _ValueSingleValueContainer: SingleValueDecodingContainer {
     func decode<T>(_ type: T.Type) throws -> T where T : Decodable { try _DynamicJSONDecoder.decode(type, from: value) }
 }
 
+private func _checkedDecodedCast<T>(_ value: Any, to type: T.Type, codingPath: [any CodingKey]) throws -> T {
+    guard let castValue = value as? T else {
+        throw DecodingError.typeMismatch(
+            type,
+            DecodingError.Context(
+                codingPath: codingPath,
+                debugDescription: "Expected \(String(reflecting: type)) but found \(String(reflecting: Swift.type(of: value)))."
+            )
+        )
+    }
+    return castValue
+}
+
 private func _coerce<T: Decodable>(_ raw: Any, to type: T.Type, codingPath: [any CodingKey]) throws -> T {
     switch type {
     case let boolType as Bool.Type:
-        if let value = raw as? Bool { return value as! T }
-        if let number = raw as? NSNumber { return number.boolValue as! T }
+        if let value = raw as? Bool { return try _checkedDecodedCast(value, to: type, codingPath: codingPath) }
+        if let number = raw as? NSNumber { return try _checkedDecodedCast(number.boolValue, to: type, codingPath: codingPath) }
     case let stringType as String.Type:
-        if let value = raw as? String { return value as! T }
-        return String(describing: raw) as! T
+        if let value = raw as? String { return try _checkedDecodedCast(value, to: type, codingPath: codingPath) }
+        return try _checkedDecodedCast(String(describing: raw), to: type, codingPath: codingPath)
     case let doubleType as Double.Type:
-        if let number = raw as? NSNumber { return number.doubleValue as! T }
+        if let number = raw as? NSNumber { return try _checkedDecodedCast(number.doubleValue, to: type, codingPath: codingPath) }
     case let floatType as Float.Type:
-        if let number = raw as? NSNumber { return number.floatValue as! T }
+        if let number = raw as? NSNumber { return try _checkedDecodedCast(number.floatValue, to: type, codingPath: codingPath) }
     case let intType as Int.Type:
-        if let number = raw as? NSNumber { return number.intValue as! T }
+        if let number = raw as? NSNumber { return try _checkedDecodedCast(number.intValue, to: type, codingPath: codingPath) }
     case let intType as Int8.Type:
-        if let number = raw as? NSNumber { return Int8(number.intValue) as! T }
+        if let number = raw as? NSNumber { return try _checkedDecodedCast(Int8(number.intValue), to: type, codingPath: codingPath) }
     case let intType as Int16.Type:
-        if let number = raw as? NSNumber { return Int16(number.intValue) as! T }
+        if let number = raw as? NSNumber { return try _checkedDecodedCast(Int16(number.intValue), to: type, codingPath: codingPath) }
     case let intType as Int32.Type:
-        if let number = raw as? NSNumber { return Int32(number.intValue) as! T }
+        if let number = raw as? NSNumber { return try _checkedDecodedCast(Int32(number.intValue), to: type, codingPath: codingPath) }
     case let intType as Int64.Type:
-        if let number = raw as? NSNumber { return number.int64Value as! T }
+        if let number = raw as? NSNumber { return try _checkedDecodedCast(number.int64Value, to: type, codingPath: codingPath) }
     case let intType as UInt.Type:
-        if let number = raw as? NSNumber { return UInt(number.uintValue) as! T }
+        if let number = raw as? NSNumber { return try _checkedDecodedCast(UInt(number.uintValue), to: type, codingPath: codingPath) }
     case let intType as UInt8.Type:
-        if let number = raw as? NSNumber { return UInt8(number.uintValue) as! T }
+        if let number = raw as? NSNumber { return try _checkedDecodedCast(UInt8(number.uintValue), to: type, codingPath: codingPath) }
     case let intType as UInt16.Type:
-        if let number = raw as? NSNumber { return UInt16(number.uintValue) as! T }
+        if let number = raw as? NSNumber { return try _checkedDecodedCast(UInt16(number.uintValue), to: type, codingPath: codingPath) }
     case let intType as UInt32.Type:
-        if let number = raw as? NSNumber { return UInt32(number.uintValue) as! T }
+        if let number = raw as? NSNumber { return try _checkedDecodedCast(UInt32(number.uintValue), to: type, codingPath: codingPath) }
     case let intType as UInt64.Type:
-        if let number = raw as? NSNumber { return number.uint64Value as! T }
+        if let number = raw as? NSNumber { return try _checkedDecodedCast(number.uint64Value, to: type, codingPath: codingPath) }
     case let dateType as Date.Type:
         if let string = raw as? String, let date = try? Date(string, strategy: .iso8601) {
-            return date as! T
+            return try _checkedDecodedCast(date, to: type, codingPath: codingPath)
         }
     case let uuidType as UUID.Type:
-        if let string = raw as? String, let uuid = UUID(uuidString: string) { return uuid as! T }
+        if let string = raw as? String, let uuid = UUID(uuidString: string) { return try _checkedDecodedCast(uuid, to: type, codingPath: codingPath) }
     case let urlType as URL.Type:
-        if let string = raw as? String, let url = URL(string: string) { return url as! T }
+        if let string = raw as? String, let url = URL(string: string) { return try _checkedDecodedCast(url, to: type, codingPath: codingPath) }
     default:
         break
     }

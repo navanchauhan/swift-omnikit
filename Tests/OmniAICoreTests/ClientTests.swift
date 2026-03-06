@@ -73,7 +73,7 @@ final class ClientTests {
             model: "m",
             provider: "p",
             message: .assistant("ok"),
-            finishReason: FinishReason(reason: "stop", raw: "stop"),
+            finishReason: FinishReason(kind: .stop, raw: "stop"),
             usage: Usage(inputTokens: 1, outputTokens: 1)
         )
 
@@ -95,7 +95,7 @@ final class ClientTests {
             model: "m",
             provider: "p1",
             message: .assistant("one"),
-            finishReason: FinishReason(reason: "stop", raw: "stop"),
+            finishReason: FinishReason(kind: .stop, raw: "stop"),
             usage: Usage(inputTokens: 1, outputTokens: 1)
         )
         let r2 = Response(
@@ -103,7 +103,7 @@ final class ClientTests {
             model: "m",
             provider: "p2",
             message: .assistant("two"),
-            finishReason: FinishReason(reason: "stop", raw: "stop"),
+            finishReason: FinishReason(kind: .stop, raw: "stop"),
             usage: Usage(inputTokens: 1, outputTokens: 1)
         )
 

@@ -27,12 +27,8 @@ enum _ProviderHTTP {
         return nil
     }
 
-    static func parseJSONBody(_ response: HTTPResponse) -> JSONValue? {
-        do {
-            return try JSONValue.parse(response.body)
-        } catch {
-            return nil
-        }
+    static func parseJSONBody(_ response: HTTPResponse) -> JSONValue {
+        (try? JSONValue.parse(response.body)) ?? .object([:])
     }
 
     static func jsonBytes(_ value: JSONValue) throws -> [UInt8] {

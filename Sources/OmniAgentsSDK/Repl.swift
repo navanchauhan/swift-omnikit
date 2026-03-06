@@ -49,7 +49,7 @@ public func runDemoLoop<TContext>(
 
             let state = result.toState()
             history = state.modelInputItems + state.generatedItems.compactMap { try? $0.toInputItem() }
-            if let lastAgent = result.lastAgent as? Agent<TContext> {
+            if let lastAgent = result.lastAgent?.typed(as: TContext.self) {
                 currentAgent = lastAgent
             }
         } else {
@@ -65,7 +65,7 @@ public func runDemoLoop<TContext>(
                 print(String(describing: result.finalOutput))
             }
             history = result.toInputList()
-            if let lastAgent = result.lastAgent as? Agent<TContext> {
+            if let lastAgent = result.lastAgent?.typed(as: TContext.self) {
                 currentAgent = lastAgent
             }
         }

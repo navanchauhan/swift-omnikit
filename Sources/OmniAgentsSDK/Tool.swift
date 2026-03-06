@@ -11,9 +11,9 @@ public enum ToolTimeoutBehavior: String, Sendable, Codable, Equatable {
 
 public enum ToolEnabledPredicate: @unchecked Sendable {
     case always(Bool)
-    case dynamic(@Sendable (RunContextWrapper<Any>, Any) async throws -> Bool)
+    case dynamic(@Sendable (RunContextWrapper<Any>, AnyAgent) async throws -> Bool)
 
-    public func evaluate<TContext>(context: RunContextWrapper<TContext>, agent: Any) async throws -> Bool {
+    public func evaluate<TContext>(context: RunContextWrapper<TContext>, agent: AnyAgent) async throws -> Bool {
         switch self {
         case .always(let enabled):
             return enabled
@@ -74,7 +74,7 @@ public struct FunctionTool: @unchecked Sendable {
     public var timeoutErrorFunction: ToolErrorFunction?
     public var isAgentTool: Bool
     public var isCodexTool: Bool
-    public var agentInstance: Any?
+    public var agentInstance: AnyAgent?
 
     public init(
         name: String,
@@ -91,7 +91,7 @@ public struct FunctionTool: @unchecked Sendable {
         timeoutErrorFunction: ToolErrorFunction? = nil,
         isAgentTool: Bool = false,
         isCodexTool: Bool = false,
-        agentInstance: Any? = nil
+        agentInstance: AnyAgent? = nil
     ) {
         self.name = name
         self.description = description
@@ -159,11 +159,11 @@ public enum ComputerConfig: @unchecked Sendable {
 
 public struct ComputerToolSafetyCheckData: @unchecked Sendable {
     public var contextWrapper: RunContextWrapper<Any>
-    public var agent: Any
+    public var agent: AnyAgent
     public var toolCall: TResponseOutputItem
     public var safetyCheck: JSONValue?
 
-    public init(contextWrapper: RunContextWrapper<Any>, agent: Any, toolCall: TResponseOutputItem, safetyCheck: JSONValue?) {
+    public init(contextWrapper: RunContextWrapper<Any>, agent: AnyAgent, toolCall: TResponseOutputItem, safetyCheck: JSONValue?) {
         self.contextWrapper = contextWrapper
         self.agent = agent
         self.toolCall = toolCall
@@ -734,10 +734,6 @@ public func resolveComputer(tool: ComputerTool, runContext: RunContextWrapper<An
     return resolved.computer
 }
 
-public func resolve_computer(tool: ComputerTool, run_context: RunContextWrapper<Any>) async throws -> any AsyncComputer {
-    try await resolveComputer(tool: tool, runContext: run_context)
-}
-
 public func disposeResolvedComputers(runContext: RunContextWrapper<Any>) async {
     let resolved = await _ResolvedComputerStore.shared.removeAll(runContext: runContext)
     for (item, _) in resolved {
@@ -745,10 +741,6 @@ public func disposeResolvedComputers(runContext: RunContextWrapper<Any>) async {
             await dispose(item.computer)
         }
     }
-}
-
-public func dispose_resolved_computers(run_context: RunContextWrapper<Any>) async {
-    await disposeResolvedComputers(runContext: run_context)
 }
 
 public func functionTool<Parameters: Decodable & Sendable>(

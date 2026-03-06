@@ -2,7 +2,7 @@ import Foundation
 import OmniAICore
 
 public protocol RunItem: Sendable {
-    var agent: Any? { get }
+    var agent: AnyAgent? { get }
     var type: String { get }
 
     func toInputItem() throws -> TResponseInputItem
@@ -10,11 +10,10 @@ public protocol RunItem: Sendable {
 }
 
 open class RunItemBase<TRaw>: RunItem, @unchecked Sendable {
-    private var strongAgent: Any?
-    private weak var weakAgent: AnyObject?
+    private var strongAgent: AnyAgent?
 
-    public var agent: Any? {
-        strongAgent ?? weakAgent
+    public var agent: AnyAgent? {
+        strongAgent
     }
 
     public var rawItem: TRaw
@@ -27,9 +26,8 @@ open class RunItemBase<TRaw>: RunItem, @unchecked Sendable {
         Self.itemType
     }
 
-    public init(agent: Any?, rawItem: TRaw) {
+    public init(agent: AnyAgent?, rawItem: TRaw) {
         strongAgent = agent
-        weakAgent = agent as? AnyObject
         self.rawItem = rawItem
     }
 
@@ -38,9 +36,6 @@ open class RunItemBase<TRaw>: RunItem, @unchecked Sendable {
     }
 
     open func releaseAgent() {
-        if weakAgent == nil {
-            weakAgent = strongAgent as? AnyObject
-        }
         strongAgent = nil
     }
 
@@ -80,39 +75,29 @@ public final class HandoffCallItem: RunItemBase<TResponseOutputItem>, @unchecked
 }
 
 public final class HandoffOutputItem: RunItemBase<TResponseInputItem>, @unchecked Sendable {
-    private var strongSourceAgent: Any?
-    private weak var weakSourceAgent: AnyObject?
-    private var strongTargetAgent: Any?
-    private weak var weakTargetAgent: AnyObject?
+    private var strongSourceAgent: AnyAgent?
+    private var strongTargetAgent: AnyAgent?
 
-    public var sourceAgent: Any? {
-        strongSourceAgent ?? weakSourceAgent
+    public var sourceAgent: AnyAgent? {
+        strongSourceAgent
     }
 
-    public var targetAgent: Any? {
-        strongTargetAgent ?? weakTargetAgent
+    public var targetAgent: AnyAgent? {
+        strongTargetAgent
     }
 
     public override class var itemType: String {
         "handoff_output_item"
     }
 
-    public init(agent: Any?, rawItem: TResponseInputItem, sourceAgent: Any?, targetAgent: Any?) {
+    public init(agent: AnyAgent?, rawItem: TResponseInputItem, sourceAgent: AnyAgent?, targetAgent: AnyAgent?) {
         strongSourceAgent = sourceAgent
-        weakSourceAgent = sourceAgent as? AnyObject
         strongTargetAgent = targetAgent
-        weakTargetAgent = targetAgent as? AnyObject
         super.init(agent: agent, rawItem: rawItem)
     }
 
     public override func releaseAgent() {
         super.releaseAgent()
-        if weakSourceAgent == nil {
-            weakSourceAgent = strongSourceAgent as? AnyObject
-        }
-        if weakTargetAgent == nil {
-            weakTargetAgent = strongTargetAgent as? AnyObject
-        }
         strongSourceAgent = nil
         strongTargetAgent = nil
     }
@@ -128,7 +113,7 @@ public final class ToolCallItem: RunItemBase<ToolCallItemTypes>, @unchecked Send
         "tool_call_item"
     }
 
-    public init(agent: Any?, rawItem: TResponseOutputItem, description: String? = nil) {
+    public init(agent: AnyAgent?, rawItem: TResponseOutputItem, description: String? = nil) {
         self.description = description
         super.init(agent: agent, rawItem: rawItem)
     }
@@ -141,7 +126,7 @@ public final class ToolCallOutputItem: RunItemBase<ToolCallOutputTypes>, @unchec
         "tool_call_output_item"
     }
 
-    public init(agent: Any?, rawItem: TResponseInputItem, output: Any) {
+    public init(agent: AnyAgent?, rawItem: TResponseInputItem, output: Any) {
         self.output = output
         super.init(agent: agent, rawItem: rawItem)
     }
@@ -201,7 +186,7 @@ public final class ToolApprovalItem: RunItemBase<TResponseOutputItem>, @unchecke
         "tool_approval_item"
     }
 
-    public init(agent: Any?, rawItem: TResponseOutputItem, toolName: String? = nil) {
+    public init(agent: AnyAgent?, rawItem: TResponseOutputItem, toolName: String? = nil) {
         self.toolName = toolName ?? rawItem["name"]?.stringValue
         super.init(agent: agent, rawItem: rawItem)
     }

@@ -50,9 +50,9 @@ public struct ToolGuardrailFunctionOutput: @unchecked Sendable {
 
 public struct ToolInputGuardrailData<TContext>: Sendable {
     public var context: ToolContext<TContext>
-    public var agent: Agent<TContext>
+    public var agent: AnyAgent
 
-    public init(context: ToolContext<TContext>, agent: Agent<TContext>) {
+    public init(context: ToolContext<TContext>, agent: AnyAgent) {
         self.context = context
         self.agent = agent
     }
@@ -60,10 +60,10 @@ public struct ToolInputGuardrailData<TContext>: Sendable {
 
 public struct ToolOutputGuardrailData<TContext>: @unchecked Sendable {
     public var context: ToolContext<TContext>
-    public var agent: Agent<TContext>
+    public var agent: AnyAgent
     public var output: Any
 
-    public init(context: ToolContext<TContext>, agent: Agent<TContext>, output: Any) {
+    public init(context: ToolContext<TContext>, agent: AnyAgent, output: Any) {
         self.context = context
         self.agent = agent
         self.output = output

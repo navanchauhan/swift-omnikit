@@ -30,6 +30,48 @@ public struct CallModelData<TContext>: @unchecked Sendable {
     }
 }
 
+public struct AnyCallModelData: @unchecked Sendable {
+    public var modelData: ModelInputData
+    public var agent: AnyAgent
+    public var context: Any?
+
+    public init(modelData: ModelInputData, agent: AnyAgent, context: Any?) {
+        self.modelData = modelData
+        self.agent = agent
+        self.context = context
+    }
+}
+
+public struct AnyInputGuardrail: Sendable {
+    public typealias GuardrailFunction = @Sendable (RunContextWrapper<Any>, AnyAgent, StringOrInputList) -> MaybeAwaitable<GuardrailFunctionOutput>
+
+    public var guardrailFunction: GuardrailFunction
+    public var name: String?
+    public var runInParallel: Bool
+
+    public init(
+        name: String? = nil,
+        runInParallel: Bool = true,
+        guardrailFunction: @escaping GuardrailFunction
+    ) {
+        self.guardrailFunction = guardrailFunction
+        self.name = name
+        self.runInParallel = runInParallel
+    }
+}
+
+public struct AnyOutputGuardrail: Sendable {
+    public typealias GuardrailFunction = @Sendable (RunContextWrapper<Any>, AnyAgent, Any) -> MaybeAwaitable<GuardrailFunctionOutput>
+
+    public var guardrailFunction: GuardrailFunction
+    public var name: String?
+
+    public init(name: String? = nil, guardrailFunction: @escaping GuardrailFunction) {
+        self.guardrailFunction = guardrailFunction
+        self.name = name
+    }
+}
+
 public enum ReasoningItemIdPolicy: String, Sendable, Codable, Equatable {
     case preserve
     case omit
@@ -71,8 +113,8 @@ public struct RunConfig: @unchecked Sendable {
     public var handoffInputFilter: HandoffInputFilter?
     public var nestHandoffHistory: Bool
     public var handoffHistoryMapper: HandoffHistoryMapper?
-    public var inputGuardrails: [InputGuardrail<Any>]?
-    public var outputGuardrails: [OutputGuardrail<Any>]?
+    public var inputGuardrails: [AnyInputGuardrail]?
+    public var outputGuardrails: [AnyOutputGuardrail]?
     public var tracingDisabled: Bool
     public var tracing: TracingConfig?
     public var traceIncludeSensitiveData: Bool
@@ -81,7 +123,7 @@ public struct RunConfig: @unchecked Sendable {
     public var groupID: String?
     public var traceMetadata: [String: JSONValue]?
     public var sessionInputCallback: SessionInputCallback?
-    public var callModelInputFilter: (@Sendable (CallModelData<Any>) async throws -> ModelInputData)?
+    public var callModelInputFilter: (@Sendable (AnyCallModelData) async throws -> ModelInputData)?
     public var toolErrorFormatter: (@Sendable (ToolErrorFormatterArgs<Any>) async throws -> String?)?
     public var sessionSettings: SessionSettings?
     public var reasoningItemIdPolicy: ReasoningItemIdPolicy?
@@ -93,8 +135,8 @@ public struct RunConfig: @unchecked Sendable {
         handoffInputFilter: HandoffInputFilter? = nil,
         nestHandoffHistory: Bool = false,
         handoffHistoryMapper: HandoffHistoryMapper? = nil,
-        inputGuardrails: [InputGuardrail<Any>]? = nil,
-        outputGuardrails: [OutputGuardrail<Any>]? = nil,
+        inputGuardrails: [AnyInputGuardrail]? = nil,
+        outputGuardrails: [AnyOutputGuardrail]? = nil,
         tracingDisabled: Bool = false,
         tracing: TracingConfig? = nil,
         traceIncludeSensitiveData: Bool = defaultTraceIncludeSensitiveData(),
@@ -103,7 +145,7 @@ public struct RunConfig: @unchecked Sendable {
         groupID: String? = nil,
         traceMetadata: [String: JSONValue]? = nil,
         sessionInputCallback: SessionInputCallback? = nil,
-        callModelInputFilter: (@Sendable (CallModelData<Any>) async throws -> ModelInputData)? = nil,
+        callModelInputFilter: (@Sendable (AnyCallModelData) async throws -> ModelInputData)? = nil,
         toolErrorFormatter: (@Sendable (ToolErrorFormatterArgs<Any>) async throws -> String?)? = nil,
         sessionSettings: SessionSettings? = nil,
         reasoningItemIdPolicy: ReasoningItemIdPolicy? = nil

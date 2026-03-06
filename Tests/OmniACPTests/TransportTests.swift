@@ -98,9 +98,12 @@ private final class StubACPRealtimeWebSocketSession: RealtimeWebSocketSession, @
 
     init(agent: ScriptedACPRemoteAgent) {
         self.agent = agent
-        var continuationRef: AsyncThrowingStream<RealtimeWebSocketMessage, Error>.Continuation!
+        var continuationRef: AsyncThrowingStream<RealtimeWebSocketMessage, Error>.Continuation?
         self.stream = AsyncThrowingStream { continuation in
             continuationRef = continuation
+        }
+        guard let continuationRef else {
+            preconditionFailure("Failed to initialize scripted websocket stream")
         }
         self.continuation = continuationRef
     }
@@ -224,8 +227,11 @@ struct TransportTests {
     func websocket_transport_client_lifecycle_and_streaming_work() async throws {
         let agent = ScriptedACPRemoteAgent(sessionID: "sess_ws")
         let socketSession = StubACPRealtimeWebSocketSession(agent: agent)
+        guard let websocketURL = URL(string: "wss://example.invalid/acp") else {
+            throw TransportTestError.timeout("Invalid websocket test URL")
+        }
         let transport = WebSocketTransport(
-            configuration: .init(url: URL(string: "wss://example.invalid/acp")!),
+            configuration: .init(url: websocketURL),
             websocketTransport: StubACPRealtimeWebSocketTransport(session: socketSession)
         )
         let client = Client(name: "Tests", version: "1.0.0")
@@ -262,8 +268,11 @@ struct TransportTests {
     func http_sse_transport_client_lifecycle_and_streaming_work() async throws {
         let agent = ScriptedACPRemoteAgent(sessionID: "sess_http")
         let httpTransport = StubACPHTTPTransport(agent: agent)
+        guard let httpURL = URL(string: "https://example.invalid/acp") else {
+            throw TransportTestError.timeout("Invalid HTTP test URL")
+        }
         let transport = HTTPSSETransport(
-            configuration: .init(url: URL(string: "https://example.invalid/acp")!),
+            configuration: .init(url: httpURL),
             httpTransport: httpTransport
         )
         let client = Client(name: "Tests", version: "1.0.0")

@@ -373,42 +373,6 @@ public final class Client: @unchecked Sendable {
         )
     }
 
-    // Spec-style alias.
-    public static func from_env(
-        transport: OmniHTTP.HTTPTransport = OmniHTTP.URLSessionHTTPTransport(),
-        modelCatalog: ModelCatalog = .default,
-        middleware: [Middleware] = [],
-        completeMiddleware: [CompleteMiddleware] = [],
-        streamMiddleware: [StreamMiddleware] = [],
-        allowEmptyProviders: Bool = false
-    ) throws -> Client {
-        try fromEnv(
-            transport: transport,
-            modelCatalog: modelCatalog,
-            middleware: middleware,
-            completeMiddleware: completeMiddleware,
-            streamMiddleware: streamMiddleware,
-            allowEmptyProviders: allowEmptyProviders
-        )
-    }
-
-    // Spec-style alias.
-    public static func from_env_allowing_empty(
-        transport: OmniHTTP.HTTPTransport = OmniHTTP.URLSessionHTTPTransport(),
-        modelCatalog: ModelCatalog = .default,
-        middleware: [Middleware] = [],
-        completeMiddleware: [CompleteMiddleware] = [],
-        streamMiddleware: [StreamMiddleware] = []
-    ) throws -> Client {
-        try fromEnvAllowingEmpty(
-            transport: transport,
-            modelCatalog: modelCatalog,
-            middleware: middleware,
-            completeMiddleware: completeMiddleware,
-            streamMiddleware: streamMiddleware
-        )
-    }
-
     public func register(provider name: String, adapter: ProviderAdapter) {
         _withStateLock {
             providers[name] = adapter
@@ -438,27 +402,12 @@ public final class Client: @unchecked Sendable {
         modelCatalog.listModels(provider: provider)
     }
 
-    // Spec-style alias.
-    public func list_models(provider: String? = nil) -> [ModelInfo] {
-        listModels(provider: provider)
-    }
-
     public func getModelInfo(_ id: String) -> ModelInfo? {
         modelCatalog.getModelInfo(id)
     }
 
-    // Spec-style alias.
-    public func get_model_info(_ id: String) -> ModelInfo? {
-        getModelInfo(id)
-    }
-
     public func getLatestModel(provider: String, capability: ModelCapability? = nil) -> ModelInfo? {
         modelCatalog.getLatestModel(provider: provider, capability: capability)
-    }
-
-    // Spec-style alias.
-    public func get_latest_model(provider: String, capability: ModelCapability? = nil) -> ModelInfo? {
-        getLatestModel(provider: provider, capability: capability)
     }
 
     public func complete(_ request: Request) async throws -> Response {

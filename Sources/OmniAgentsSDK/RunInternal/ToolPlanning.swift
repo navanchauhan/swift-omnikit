@@ -1,6 +1,20 @@
 import Foundation
 import OmniAICore
 
+private enum _ToolCallType: String, CaseIterable, Sendable {
+    case functionCall = "function_call"
+    case computerCall = "computer_call"
+    case shellCall = "shell_call"
+    case applyPatchCall = "apply_patch_call"
+    case localShellCall = "local_shell_call"
+    case webSearchCall = "web_search_call"
+    case fileSearchCall = "file_search_call"
+    case codeInterpreterCall = "code_interpreter_call"
+    case imageGenerationCall = "image_generation_call"
+    case mcpCall = "mcp_call"
+    case mcpApprovalRequest = "mcp_approval_request"
+}
+
 enum ToolPlanningRuntime {
     static func handoffMap<TContext>(for agent: Agent<TContext>) -> [String: Handoff<TContext>] {
         Dictionary(uniqueKeysWithValues: agent.handoffs.map { ($0.toolName, $0) })
@@ -11,15 +25,9 @@ enum ToolPlanningRuntime {
     }
 
     static func extractToolCalls(from response: ModelResponse) -> [TResponseOutputItem] {
-        let executableTypes: Set<String> = [
-            "function_call",
-            "computer_call",
-            "shell_call",
-            "apply_patch_call",
-            "local_shell_call",
-        ]
+        let executableTypes: Set<_ToolCallType> = [.functionCall, .computerCall, .shellCall, .applyPatchCall, .localShellCall]
         return response.output.filter { item in
-            guard let type = item["type"]?.stringValue else { return false }
+            guard let typeRaw = item["type"]?.stringValue, let type = _ToolCallType(rawValue: typeRaw) else { return false }
             return executableTypes.contains(type)
         }
     }
@@ -28,24 +36,24 @@ enum ToolPlanningRuntime {
         if let name = item["name"]?.stringValue, !name.isEmpty {
             return name
         }
-        switch item["type"]?.stringValue {
-        case "computer_call":
+        switch _ToolCallType(rawValue: item["type"]?.stringValue ?? "") {
+        case .computerCall:
             return "computer_use_preview"
-        case "shell_call":
+        case .shellCall:
             return "shell"
-        case "apply_patch_call":
+        case .applyPatchCall:
             return "apply_patch"
-        case "local_shell_call":
+        case .localShellCall:
             return "local_shell"
-        case "web_search_call":
+        case .webSearchCall:
             return "web_search"
-        case "file_search_call":
+        case .fileSearchCall:
             return "file_search"
-        case "code_interpreter_call":
+        case .codeInterpreterCall:
             return "code_interpreter"
-        case "image_generation_call":
+        case .imageGenerationCall:
             return "image_generation"
-        case "mcp_call":
+        case .mcpCall:
             return item["tool_name"]?.stringValue ?? "hosted_mcp"
         default:
             return item["type"]?.stringValue ?? "tool"
@@ -72,23 +80,13 @@ enum ToolPlanningRuntime {
     }
 
     static func hostedApprovalRequests(from response: ModelResponse) -> [TResponseOutputItem] {
-        response.output.filter { $0["type"]?.stringValue == "mcp_approval_request" }
+        response.output.filter { _ToolCallType(rawValue: $0["type"]?.stringValue ?? "") == .mcpApprovalRequest }
     }
 
     static func hostedToolUsedNames(from response: ModelResponse) -> [String] {
-        let hostedTypes: Set<String> = [
-            "file_search_call",
-            "web_search_call",
-            "code_interpreter_call",
-            "image_generation_call",
-            "mcp_call",
-            "shell_call",
-            "apply_patch_call",
-            "local_shell_call",
-            "computer_call",
-        ]
+        let hostedTypes: Set<_ToolCallType> = [.fileSearchCall, .webSearchCall, .codeInterpreterCall, .imageGenerationCall, .mcpCall, .shellCall, .applyPatchCall, .localShellCall, .computerCall]
         return response.output.compactMap { item in
-            guard let type = item["type"]?.stringValue, hostedTypes.contains(type) else { return nil }
+            guard let typeRaw = item["type"]?.stringValue, let type = _ToolCallType(rawValue: typeRaw), hostedTypes.contains(type) else { return nil }
             return toolName(for: item)
         }
     }

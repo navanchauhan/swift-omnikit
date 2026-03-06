@@ -1,9 +1,9 @@
 import Foundation
 
 enum RunItemFactory {
-    static func items<TContext>(
+    static func items(
         from response: ModelResponse,
-        agent: Agent<TContext>,
+        agent: AnyAgent,
         handoffNames: Set<String>
     ) -> [any RunItem] {
         response.output.map { item in

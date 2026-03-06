@@ -401,11 +401,18 @@ struct MenuGestureView: View {
     }
 
     struct V: View {
+        private static let openURLTestsURL: URL = {
+            guard let url = URL(string: "https://example.com") else {
+                preconditionFailure("Invalid OmniUICore openURL test URL")
+            }
+            return url
+        }()
+
         let box: Box
         @Environment(\.openURL) private var openURL
         var body: some View {
             Button("Open") {
-                _ = openURL(URL(string: "https://example.com")!)
+                _ = openURL(Self.openURLTestsURL)
             }
             .keyboardShortcut(.defaultAction)
         }
@@ -1529,4 +1536,31 @@ struct _SplitAutomaticProbeView: View {
     let wide = runtime.debugRender(_SplitAutomaticProbeView(), size: _Size(width: 100, height: 6))
     #expect(wide.text.contains("DETAIL"))
     #expect(wide.text.contains("SIDEBAR"))
+}
+
+struct _TabViewSelectionFallbackProbe: View {
+    let selection: Binding<String>
+
+    var body: some View {
+        TabView(selection: selection) {
+            Text("First body")
+                .tabItem { Text("First") }
+                .tag("first")
+            Text("Second body")
+                .tabItem { Text("Second") }
+                .tag("second")
+        }
+    }
+}
+
+@Test func tabView_reconciles_missing_selection_to_first_available_tab() async throws {
+    let runtime = _UIRuntime()
+    var selection = "missing"
+    let binding = Binding(get: { selection }, set: { selection = $0 })
+
+    let snapshot = runtime.debugRender(_TabViewSelectionFallbackProbe(selection: binding), size: _Size(width: 30, height: 8))
+
+    #expect(snapshot.text.contains("[First]"))
+    #expect(snapshot.text.contains("First body"))
+    #expect(selection == "first")
 }

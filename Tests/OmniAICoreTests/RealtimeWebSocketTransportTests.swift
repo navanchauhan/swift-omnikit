@@ -128,7 +128,9 @@ struct RealtimeWebSocketTransportTests {
             .text("{\"type\":\"response.completed\"}"),
         ])
         let transport = StubRealtimeWebSocketTransport(session: session)
-        let url = URL(string: "wss://example.invalid/realtime")!
+        guard let url = URL(string: "wss://example.invalid/realtime") else {
+            throw NSError(domain: "RealtimeWebSocketTransportTests", code: 1, userInfo: [NSLocalizedDescriptionKey: "Invalid realtime websocket test URL"])
+        }
         var headers = HTTPHeaders()
         headers.set(name: "authorization", value: "Bearer test")
         let createEvent: JSONValue = .object([

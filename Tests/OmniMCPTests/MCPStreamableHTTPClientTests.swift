@@ -6,6 +6,13 @@ import OmniHTTP
 
 @Suite
 final class MCPStreamableHTTPClientTests {
+    private let mcpStreamableHTTPClientTestsURL: URL = {
+        guard let url = URL(string: "https://example.com/mcp") else {
+            preconditionFailure("Invalid MCP test URL")
+        }
+        return url
+    }()
+
     @Test
     func testParsesSSEStreamResult() async throws {
         let resultPayload: JSONValue = .object([
@@ -26,7 +33,7 @@ final class MCPStreamableHTTPClientTests {
         let streamResponse = HTTPStreamResponse(statusCode: 200, headers: headers, body: body)
         let transport = StubHTTPTransport(streamResponse: streamResponse)
 
-        let client = MCPStreamableHTTPClient(url: URL(string: "https://example.com/mcp")!, transport: transport)
+        let client = MCPStreamableHTTPClient(url: mcpStreamableHTTPClientTestsURL, transport: transport)
         let result = try await client.sendRequest(method: "tools/list", params: nil)
 
         XCTAssertEqual(result["tools"]?.arrayValue?.count, 0)

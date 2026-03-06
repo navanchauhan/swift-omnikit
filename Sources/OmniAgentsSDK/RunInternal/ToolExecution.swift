@@ -6,7 +6,7 @@ private struct AnySendableBox: @unchecked Sendable {
 }
 
 enum ToolRuntime {
-    static func isToolEnabled<TContext>(_ tool: Tool, runContext: RunContextWrapper<TContext>, agent: Any) async throws -> Bool {
+    static func isToolEnabled<TContext>(_ tool: Tool, runContext: RunContextWrapper<TContext>, agent: AnyAgent) async throws -> Bool {
         switch tool {
         case .function(let functionTool):
             return try await functionTool.isEnabled.evaluate(context: runContext, agent: agent)
@@ -19,7 +19,7 @@ enum ToolRuntime {
         tool: Tool,
         call: TResponseOutputItem,
         runContext: RunContextWrapper<TContext>,
-        agent: Any,
+        agent: AnyAgent,
         runConfig: RunConfig?
     ) async throws -> FunctionToolResult {
         let callID = call["call_id"]?.stringValue ?? call["id"]?.stringValue ?? UUID().uuidString
@@ -64,7 +64,7 @@ enum ToolRuntime {
         switch tool {
         case .function(let functionTool):
             for guardrail in functionTool.toolInputGuardrails ?? [] {
-                let result = try await guardrail.run(.init(context: erasedContext, agent: unsafeBitCast(agent, to: Agent<Any>.self)))
+                let result = try await guardrail.run(.init(context: erasedContext, agent: agent))
                 switch result.behavior {
                 case .allow:
                     break
@@ -80,7 +80,7 @@ enum ToolRuntime {
             }
 
             for guardrail in functionTool.toolOutputGuardrails ?? [] {
-                let result = try await guardrail.run(.init(context: erasedContext, agent: unsafeBitCast(agent, to: Agent<Any>.self), output: output))
+                let result = try await guardrail.run(.init(context: erasedContext, agent: agent, output: output))
                 switch result.behavior {
                 case .allow:
                     break
@@ -244,7 +244,7 @@ private func acknowledgeComputerSafetyChecks(
     tool: ComputerTool,
     call: TResponseOutputItem,
     runContext: RunContextWrapper<Any>,
-    agent: Any
+    agent: AnyAgent
 ) async throws -> [[String: JSONValue]] {
     guard let callback = tool.onSafetyCheck,
           let checks = call["pending_safety_checks"]?.arrayValue,
@@ -372,7 +372,10 @@ private func withTimeoutAny<T>(seconds: Double?, operation: @escaping @Sendable 
             try await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
             throw ToolTimeoutError(toolName: "tool", timeoutSeconds: seconds)
         }
-        let result = try await group.next()!
+        guard let result = try await group.next() else {
+            group.cancelAll()
+            throw ToolTimeoutError(toolName: "tool", timeoutSeconds: seconds)
+        }
         group.cancelAll()
         return result.value
     }

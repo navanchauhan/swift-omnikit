@@ -1037,7 +1037,9 @@ public struct TabView<Content: View>: View, _PrimitiveView {
             return Swift.min(Swift.max(0, localSelectionIndex), tabs.count - 1)
         }()
 
-        if let selectedValue = tabs[resolvedIndex].value, selection?.get() != selectedValue {
+        guard tabs.indices.contains(resolvedIndex) else { return source }
+        let resolvedTab = tabs[resolvedIndex]
+        if let selectedValue = resolvedTab.value, selection?.get() != selectedValue {
             selection?.set(selectedValue)
         }
 
@@ -1066,7 +1068,7 @@ public struct TabView<Content: View>: View, _PrimitiveView {
 
         return .stack(axis: .vertical, spacing: 1, children: [
             .stack(axis: .horizontal, spacing: 1, children: tabButtons),
-            tabs[resolvedIndex].content,
+            resolvedTab.content,
         ])
     }
 }

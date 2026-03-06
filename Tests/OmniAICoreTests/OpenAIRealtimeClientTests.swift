@@ -87,9 +87,12 @@ struct OpenAIRealtimeClientTests {
             ]))
         ])
         let transport = StubRealtimeClientTransport(session: session)
+        guard let realtimeURL = URL(string: "wss://example.invalid/v1/realtime") else {
+            throw NSError(domain: "OpenAIRealtimeClientTests", code: 1, userInfo: [NSLocalizedDescriptionKey: "Invalid realtime test URL"])
+        }
         let client = OpenAIRealtimeClient(
             apiKey: "sk-test",
-            baseURL: URL(string: "wss://example.invalid/v1/realtime")!,
+            baseURL: realtimeURL,
             transport: transport
         )
 

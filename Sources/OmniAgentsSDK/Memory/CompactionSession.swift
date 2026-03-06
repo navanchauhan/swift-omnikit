@@ -31,18 +31,18 @@ public final actor OpenAIResponsesCompactionSession: OpenAIResponsesCompactionAw
     }
 
     public func runCompaction(args: OpenAIResponsesCompactionArgs? = nil) async throws {
-        let mode = args?.compactionMode ?? "auto"
+        let mode = args?.compactionMode ?? .automatic
         switch mode {
-        case "input":
-            if items.count > 1 {
-                items = [items.last!]
+        case .input:
+            if items.count > 1, let lastItem = items.last {
+                items = [lastItem]
             }
-        case "previous_response_id", "auto":
+        case .previousResponseID, .automatic:
             if let responseID = args?.responseID {
                 lastResponseID = responseID
             }
-            if items.count > 1, args?.force == true {
-                items = [items.last!]
+            if items.count > 1, args?.force == true, let lastItem = items.last {
+                items = [lastItem]
             }
         default:
             break

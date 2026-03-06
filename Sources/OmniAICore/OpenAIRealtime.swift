@@ -6,35 +6,74 @@ import FoundationNetworking
 
 @available(macOS 12.0, iOS 15.0, watchOS 8.0, tvOS 15.0, *)
 public final class OpenAIRealtimeClient: @unchecked Sendable {
+    private enum ConnectionStatus {
+        case idle
+        case connecting
+        case connected
+    }
+
+    private struct State {
+        var status: ConnectionStatus = .idle
+        var websocketSession: JSONRealtimeWebSocketSession?
+        var eventContinuation: AsyncThrowingStream<RealtimeServerEvent, Error>.Continuation?
+        var receiverTask: Task<Void, Never>?
+    }
+
     private let apiKey: String
     private let baseURL: URL
     private let transport: any RealtimeWebSocketTransport
-    private var websocketSession: JSONRealtimeWebSocketSession?
-    private var eventContinuation: AsyncThrowingStream<RealtimeServerEvent, Error>.Continuation?
-    private var receiverTask: Task<Void, Never>?
+    private let stateLock = NSLock()
+    private var state = State()
     private let encoder: JSONEncoder
     private let decoder: JSONDecoder
 
-    public private(set) var isConnected: Bool = false
+    public var isConnected: Bool {
+        withStateLock { $0.status == .connected }
+    }
 
     public init(
         apiKey: String,
-        baseURL: URL = URL(string: "wss://api.openai.com/v1/realtime")!,
+        baseURL: URL? = nil,
         transport: any RealtimeWebSocketTransport = defaultRealtimeWebSocketTransport()
     ) {
         self.apiKey = apiKey
-        self.baseURL = baseURL
+        self.baseURL = baseURL ?? resolvedDefaultOpenAIRealtimeBaseURL()
         self.transport = transport
         self.encoder = JSONEncoder()
         self.decoder = JSONDecoder()
     }
 
+    public convenience init(
+        apiKey: String,
+        transport: any RealtimeWebSocketTransport = defaultRealtimeWebSocketTransport()
+    ) {
+        self.init(apiKey: apiKey, baseURL: resolvedDefaultOpenAIRealtimeBaseURL(), transport: transport)
+    }
+
     public func connect(model: String = "gpt-realtime") async throws -> AsyncThrowingStream<RealtimeServerEvent, Error> {
-        guard !isConnected else {
+        let canConnect = withStateLock { state in
+            guard state.status == .idle else { return false }
+            state.status = .connecting
+            return true
+        }
+        guard canConnect else {
             throw RealtimeError.alreadyConnected
         }
 
-        var components = URLComponents(url: baseURL, resolvingAgainstBaseURL: false)!
+        var shouldResetState = true
+        defer {
+            if shouldResetState {
+                withStateLock { state in
+                    if state.status == .connecting {
+                        state.status = .idle
+                    }
+                }
+            }
+        }
+
+        guard var components = URLComponents(url: baseURL, resolvingAgainstBaseURL: false) else {
+            throw RealtimeError.connectionFailed("Invalid realtime URL components")
+        }
         var queryItems = components.queryItems ?? []
         queryItems.append(URLQueryItem(name: "model", value: model))
         components.queryItems = queryItems
@@ -47,33 +86,47 @@ public final class OpenAIRealtimeClient: @unchecked Sendable {
         headers.set(name: "OpenAI-Beta", value: "realtime=v1")
 
         let jsonSession = try await transport.connectJSON(url: url, headers: headers, timeout: nil)
-        self.websocketSession = jsonSession
-        self.isConnected = true
 
         let stream = AsyncThrowingStream<RealtimeServerEvent, Error> { continuation in
-            self.eventContinuation = continuation
+            self.withStateLock { state in
+                state.eventContinuation = continuation
+            }
             continuation.onTermination = { [weak self] _ in
                 Task { await self?.disconnect() }
             }
         }
 
-        receiverTask = Task { [weak self] in
-            await self?.receiveMessages()
+        let receiverTask = Task { [weak self] in
+            guard let self else { return }
+            await self.receiveMessages(session: jsonSession)
         }
+
+        withStateLock { state in
+            state.websocketSession = jsonSession
+            state.receiverTask = receiverTask
+            state.status = .connected
+        }
+        shouldResetState = false
 
         return stream
     }
 
     public func disconnect() async {
-        receiverTask?.cancel()
-        receiverTask = nil
-        if let websocketSession {
+        let snapshot = withStateLock { state -> (JSONRealtimeWebSocketSession?, AsyncThrowingStream<RealtimeServerEvent, Error>.Continuation?) in
+            state.receiverTask?.cancel()
+            state.receiverTask = nil
+            let session = state.websocketSession
+            let continuation = state.eventContinuation
+            state.websocketSession = nil
+            state.eventContinuation = nil
+            state.status = .idle
+            return (session, continuation)
+        }
+
+        if let websocketSession = snapshot.0 {
             await websocketSession.close(code: .normalClosure)
         }
-        websocketSession = nil
-        isConnected = false
-        eventContinuation?.finish()
-        eventContinuation = nil
+        snapshot.1?.finish()
     }
 
     public func updateSession(_ config: RealtimeSessionConfig) async throws {
@@ -139,7 +192,10 @@ public final class OpenAIRealtimeClient: @unchecked Sendable {
     }
 
     private func send(_ event: RealtimeClientEvent) async throws {
-        guard let websocketSession, isConnected else {
+        guard let websocketSession = withStateLock({ state -> JSONRealtimeWebSocketSession? in
+            guard state.status == .connected else { return nil }
+            return state.websocketSession
+        }) else {
             throw RealtimeError.notConnected
         }
         let data = try encoder.encode(event)
@@ -147,15 +203,19 @@ public final class OpenAIRealtimeClient: @unchecked Sendable {
         try await websocketSession.send(payload)
     }
 
-    private func receiveMessages() async {
-        guard let session = websocketSession else { return }
+    private func receiveMessages(session: JSONRealtimeWebSocketSession) async {
         do {
             for try await payload in session.events() {
-                guard isConnected else { break }
+                let continuation = withStateLock { state -> AsyncThrowingStream<RealtimeServerEvent, Error>.Continuation? in
+                    guard state.status == .connected, state.websocketSession === session else { return nil }
+                    return state.eventContinuation
+                }
+                guard let continuation else { break }
+
                 do {
                     let data = try payload.data()
                     let event = try decoder.decode(RealtimeServerEvent.self, from: data)
-                    eventContinuation?.yield(event)
+                    continuation.yield(event)
                 } catch {
                     if payload["type"]?.stringValue == "error" {
                         let errorEvent = RealtimeServerEvent.error(RealtimeErrorEvent(
@@ -165,21 +225,45 @@ public final class OpenAIRealtimeClient: @unchecked Sendable {
                             param: payload["error"]?["param"]?.stringValue,
                             eventId: payload["event_id"]?.stringValue
                         ))
-                        eventContinuation?.yield(errorEvent)
+                        continuation.yield(errorEvent)
                     }
                 }
             }
-            if isConnected {
-                eventContinuation?.finish()
+            let continuation = withStateLock { state -> AsyncThrowingStream<RealtimeServerEvent, Error>.Continuation? in
+                guard state.status == .connected, state.websocketSession === session else { return nil }
+                return state.eventContinuation
             }
+            continuation?.finish()
         } catch {
-            if isConnected {
-                eventContinuation?.finish(throwing: error)
+            let continuation = withStateLock { state -> AsyncThrowingStream<RealtimeServerEvent, Error>.Continuation? in
+                guard state.status == .connected, state.websocketSession === session else { return nil }
+                return state.eventContinuation
+            }
+            continuation?.finish(throwing: error)
+        }
+
+        withStateLock { state in
+            if state.websocketSession === session {
+                state.websocketSession = nil
+                state.receiverTask = nil
+                state.eventContinuation = nil
+                state.status = .idle
             }
         }
-        isConnected = false
-        websocketSession = nil
     }
+
+    private func withStateLock<T>(_ body: (inout State) -> T) -> T {
+        stateLock.lock()
+        defer { stateLock.unlock() }
+        return body(&state)
+    }
+}
+
+private func resolvedDefaultOpenAIRealtimeBaseURL() -> URL {
+    guard let url = URL(string: "wss://api.openai.com/v1/realtime") else {
+        preconditionFailure("Invalid default OpenAI realtime URL")
+    }
+    return url
 }
 
 public enum RealtimeError: Error, Sendable {

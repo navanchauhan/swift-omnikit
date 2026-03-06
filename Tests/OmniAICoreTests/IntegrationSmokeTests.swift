@@ -189,11 +189,11 @@ final class IntegrationSmokeTests {
 
             XCTAssertFalse(
                 result.text.isEmpty,
-                "provider=\(provider) model=\(model) finish=\(result.finishReason.reason)"
+                "provider=\(provider) model=\(model) finish=\(result.finishReason.rawValue)"
             )
             XCTAssertGreaterThan(result.usage.inputTokens, 0, "provider=\(provider) model=\(model)")
             XCTAssertGreaterThan(result.usage.outputTokens, 0, "provider=\(provider) model=\(model)")
-            XCTAssertEqual(result.finishReason.reason, "stop", "provider=\(provider) model=\(model)")
+            XCTAssertEqual(result.finishReason.rawValue, "stop", "provider=\(provider) model=\(model)")
         }
     }
 
@@ -526,8 +526,8 @@ final class IntegrationSmokeTests {
             "provider=cerebras model=\(model) expected reasoning tokens/text"
         )
         XCTAssertTrue(
-            ["stop", "length", "other"].contains(result.finishReason.reason),
-            "provider=cerebras model=\(model) finish=\(result.finishReason.reason)"
+            ["stop", "length", "other"].contains(result.finishReason.rawValue),
+            "provider=cerebras model=\(model) finish=\(result.finishReason.rawValue)"
         )
     }
 
@@ -559,8 +559,8 @@ final class IntegrationSmokeTests {
             "provider=groq model=\(model) expected reasoning tokens/text"
         )
         XCTAssertTrue(
-            ["stop", "length", "other"].contains(result.finishReason.reason),
-            "provider=groq model=\(model) finish=\(result.finishReason.reason)"
+            ["stop", "length", "other"].contains(result.finishReason.rawValue),
+            "provider=groq model=\(model) finish=\(result.finishReason.rawValue)"
         )
     }
 
@@ -590,8 +590,8 @@ final class IntegrationSmokeTests {
             let trimmed = result.text.trimmingCharacters(in: .whitespacesAndNewlines)
             XCTAssertFalse(trimmed.isEmpty, "provider=anthropic model=\(model) response text is empty")
             XCTAssertTrue(
-                ["stop", "length", "other"].contains(result.finishReason.reason),
-                "provider=anthropic model=\(model) finish=\(result.finishReason.reason)"
+                ["stop", "length", "other"].contains(result.finishReason.rawValue),
+                "provider=anthropic model=\(model) finish=\(result.finishReason.rawValue)"
             )
         }
     }

@@ -2,7 +2,7 @@ import Foundation
 
 // MARK: - Attractor Errors
 
-public enum AttractorError: Error, CustomStringConvertible {
+public enum AttractorError: Error, Sendable, CustomStringConvertible {
     // Parse errors
     case parseError(String)
     case invalidDOT(String)

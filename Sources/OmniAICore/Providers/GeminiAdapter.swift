@@ -50,7 +50,7 @@ public final class GeminiAdapter: ProviderAdapter, @unchecked Sendable {
             throw err
         }
 
-        let json = _ProviderHTTP.parseJSONBody(http) ?? .object([:])
+        let json = _ProviderHTTP.parseJSONBody(http)
         return try parseResponse(json: json, headers: http.headers, requestedModel: request.model)
     }
 
@@ -181,7 +181,7 @@ public final class GeminiAdapter: ProviderAdapter, @unchecked Sendable {
                         accumulatedParts.insert(.text(accumulatedText), at: 0)
                     }
 
-                    let finish = FinishReason(reason: mapFinishReason(finishReasonRaw, hasToolCalls: accumulatedParts.contains(where: { $0.kind.rawValue == ContentKind.toolCall.rawValue })), raw: finishReasonRaw)
+                    let finish = FinishReason(kind: mapFinishReason(finishReasonRaw, hasToolCalls: accumulatedParts.contains(where: { $0.kind.rawValue == ContentKind.toolCall.rawValue })), raw: finishReasonRaw)
                     let usage = finalUsage ?? Usage(inputTokens: 0, outputTokens: 0)
                     let msg = Message(role: .assistant, content: accumulatedParts)
                     let response = Response(
@@ -326,12 +326,12 @@ public final class GeminiAdapter: ProviderAdapter, @unchecked Sendable {
 
         if let rf = request.responseFormat {
             // Gemini supports responseSchema; map json_schema best-effort.
-            if rf.type == "json_schema", let schema = rf.jsonSchema {
+            if rf.kind == .jsonSchema, let schema = rf.jsonSchema {
                 var gen = (root["generationConfig"]?.objectValue) ?? [:]
                 gen["responseMimeType"] = .string("application/json")
                 gen["responseSchema"] = schema
                 root["generationConfig"] = .object(gen)
-            } else if rf.type == "json" {
+            } else if rf.kind == .json {
                 var gen = (root["generationConfig"]?.objectValue) ?? [:]
                 gen["responseMimeType"] = .string("application/json")
                 root["generationConfig"] = .object(gen)
@@ -430,7 +430,7 @@ public final class GeminiAdapter: ProviderAdapter, @unchecked Sendable {
         }
 
         let usage = parseUsage(json["usageMetadata"])
-        let finish = FinishReason(reason: mapFinishReason(finishRaw, hasToolCalls: parts.contains(where: { $0.kind.rawValue == ContentKind.toolCall.rawValue })), raw: finishRaw)
+        let finish = FinishReason(kind: mapFinishReason(finishRaw, hasToolCalls: parts.contains(where: { $0.kind.rawValue == ContentKind.toolCall.rawValue })), raw: finishRaw)
 
         return Response(
             id: "gemini_\(UUID().uuidString)",
@@ -445,14 +445,14 @@ public final class GeminiAdapter: ProviderAdapter, @unchecked Sendable {
         )
     }
 
-    private func mapFinishReason(_ raw: String?, hasToolCalls: Bool) -> String {
-        if hasToolCalls { return "tool_calls" }
+    private func mapFinishReason(_ raw: String?, hasToolCalls: Bool) -> FinishReason.Kind {
+        if hasToolCalls { return .toolCalls }
         switch raw {
-        case "STOP": return "stop"
-        case "MAX_TOKENS": return "length"
-        case "SAFETY", "RECITATION": return "content_filter"
-        case nil: return "other"
-        default: return "other"
+        case "STOP": return .stop
+        case "MAX_TOKENS": return .length
+        case "SAFETY", "RECITATION": return .contentFilter
+        case nil: return .other
+        default: return .other
         }
     }
 
@@ -866,7 +866,7 @@ private extension GeminiAdapter {
         if !(200..<300).contains(response.statusCode) {
             throw geminiHTTPError(response)
         }
-        return _ProviderHTTP.parseJSONBody(response) ?? .object([:])
+        return _ProviderHTTP.parseJSONBody(response)
     }
 
     func geminiHTTPError(_ response: HTTPResponse) -> SDKError {

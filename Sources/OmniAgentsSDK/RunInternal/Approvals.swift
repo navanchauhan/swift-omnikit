@@ -24,7 +24,7 @@ enum ApprovalRuntime {
         "Approval rejected for tool \(toolName)."
     }
 
-    static func makeApprovalItem(agent: Any, toolName: String, callID: String, rawItem: TResponseOutputItem) -> ToolApprovalItem {
+    static func makeApprovalItem(agent: AnyAgent, toolName: String, callID: String, rawItem: TResponseOutputItem) -> ToolApprovalItem {
         var item = rawItem
         item["type"] = .string("tool_approval")
         item["name"] = .string(toolName)

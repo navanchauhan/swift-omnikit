@@ -256,7 +256,7 @@ public final class GroqAdapter: ProviderAdapter, @unchecked Sendable {
                     }
 
                     let finish = FinishReason(
-                        reason: mapFinishReason(finishReasonRaw, hasToolCalls: !toolCallsForResponse.isEmpty),
+                        kind: mapFinishReason(finishReasonRaw, hasToolCalls: !toolCallsForResponse.isEmpty),
                         raw: finishReasonRaw
                     )
                     let response = Response(
@@ -315,7 +315,7 @@ public final class GroqAdapter: ProviderAdapter, @unchecked Sendable {
             )
         }
 
-        let json = _ProviderHTTP.parseJSONBody(http) ?? .object([:])
+        let json = _ProviderHTTP.parseJSONBody(http)
         return try parseChatResponse(json: json, headers: http.headers, requestedModel: request.model)
     }
 
@@ -395,19 +395,19 @@ public final class GroqAdapter: ProviderAdapter, @unchecked Sendable {
 
         let parsedJSON = _ProviderHTTP.parseJSONBody(http)
         let transcript: String = {
-            if let text = parsedJSON?["text"]?.stringValue {
+            if let text = parsedJSON["text"]?.stringValue {
                 return text
             }
-            if let text = parsedJSON?["transcript"]?.stringValue {
+            if let text = parsedJSON["transcript"]?.stringValue {
                 return text
             }
             return String(decoding: http.body, as: UTF8.self)
         }()
 
-        let usage = parseUsage(parsedJSON?["usage"])
+        let usage = parseUsage(parsedJSON["usage"])
         return Response(
-            id: parsedJSON?["id"]?.stringValue ?? "transcription_\(UUID().uuidString)",
-            model: parsedJSON?["model"]?.stringValue ?? request.model,
+            id: parsedJSON["id"]?.stringValue ?? "transcription_\(UUID().uuidString)",
+            model: parsedJSON["model"]?.stringValue ?? request.model,
             provider: name,
             message: Message(role: .assistant, content: [.text(transcript)]),
             finishReason: .stop,
@@ -556,8 +556,8 @@ public final class GroqAdapter: ProviderAdapter, @unchecked Sendable {
         }
 
         if let responseFormat = request.responseFormat {
-            switch responseFormat.type {
-            case "json_schema":
+            switch responseFormat.kind {
+            case .jsonSchema:
                 if let schema = responseFormat.jsonSchema {
                     root["response_format"] = .object([
                         "type": .string("json_schema"),
@@ -568,7 +568,7 @@ public final class GroqAdapter: ProviderAdapter, @unchecked Sendable {
                         ]),
                     ])
                 }
-            case "json":
+            case .json:
                 root["response_format"] = .object(["type": .string("json_object")])
             default:
                 break
@@ -811,7 +811,7 @@ public final class GroqAdapter: ProviderAdapter, @unchecked Sendable {
 
         let finishRaw = choice?["finish_reason"]?.stringValue
         let finish = FinishReason(
-            reason: mapFinishReason(finishRaw, hasToolCalls: !parsedToolCalls.isEmpty),
+            kind: mapFinishReason(finishRaw, hasToolCalls: !parsedToolCalls.isEmpty),
             raw: finishRaw
         )
         let usage = parseUsage(json["usage"])
@@ -884,21 +884,21 @@ public final class GroqAdapter: ProviderAdapter, @unchecked Sendable {
         )
     }
 
-    private func mapFinishReason(_ raw: String?, hasToolCalls: Bool) -> String {
+    private func mapFinishReason(_ raw: String?, hasToolCalls: Bool) -> FinishReason.Kind {
         if hasToolCalls {
-            return "tool_calls"
+            return .toolCalls
         }
         switch raw {
         case "stop":
-            return "stop"
+            return .stop
         case "length":
-            return "length"
+            return .length
         case "content_filter":
-            return "content_filter"
+            return .contentFilter
         case nil:
-            return "other"
+            return .other
         default:
-            return "other"
+            return .other
         }
     }
 

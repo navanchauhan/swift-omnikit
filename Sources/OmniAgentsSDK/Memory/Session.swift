@@ -46,13 +46,19 @@ open class SessionABC: Session, @unchecked Sendable {
     open func clearSession() async throws {}
 }
 
+public enum OpenAIResponsesCompactionMode: String, Sendable, Codable, Equatable {
+    case input
+    case previousResponseID = "previous_response_id"
+    case automatic = "auto"
+}
+
 public struct OpenAIResponsesCompactionArgs: Sendable, Codable, Equatable {
     public var responseID: String?
-    public var compactionMode: String?
+    public var compactionMode: OpenAIResponsesCompactionMode?
     public var store: Bool?
     public var force: Bool?
 
-    public init(responseID: String? = nil, compactionMode: String? = nil, store: Bool? = nil, force: Bool? = nil) {
+    public init(responseID: String? = nil, compactionMode: OpenAIResponsesCompactionMode? = nil, store: Bool? = nil, force: Bool? = nil) {
         self.responseID = responseID
         self.compactionMode = compactionMode
         self.store = store
@@ -66,8 +72,4 @@ public protocol OpenAIResponsesCompactionAwareSession: Session {
 
 public func isOpenAIResponsesCompactionAwareSession(_ session: Session?) -> Bool {
     session is any OpenAIResponsesCompactionAwareSession
-}
-
-public func is_openai_responses_compaction_aware_session(_ session: Session?) -> Bool {
-    isOpenAIResponsesCompactionAwareSession(session)
 }

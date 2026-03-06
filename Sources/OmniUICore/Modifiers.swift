@@ -133,8 +133,8 @@ public extension View {
     func navigationTitle(_ title: Text) -> some View {
         environment(\.navigationTitle, title.content)
     }
-    func navigationBarTitleDisplayMode(_ mode: Any = ()) -> some View {
-        environment(\.navigationTitleDisplayMode, String(describing: mode))
+    func navigationBarTitleDisplayMode(_ mode: _NavigationTitleDisplayModeKind = .automatic) -> some View {
+        environment(\.navigationTitleDisplayMode, mode)
     }
 
     func onTapGesture(perform action: @escaping () -> Void) -> some View {
@@ -1048,7 +1048,7 @@ private struct _ToolbarModifier: View, _PrimitiveView {
         }
 
         if items.principal.isEmpty, let title = env.navigationTitle, !title.isEmpty {
-            let titleNode: _VNode = env.navigationTitleDisplayMode.lowercased().contains("large")
+            let titleNode: _VNode = env.navigationTitleDisplayMode == .large
                 ? .textStyled(style: .bold, child: .text(title))
                 : .text(title)
             items.principal.append(titleNode)

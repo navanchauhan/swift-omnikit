@@ -102,7 +102,7 @@ public struct RunErrorDetails: CustomStringConvertible, @unchecked Sendable {
     public var input: Any
     public var newItems: [Any]
     public var rawResponses: [Any]
-    public var lastAgent: Any?
+    public var lastAgent: AnyAgent?
     public var contextWrapper: Any?
     public var inputGuardrailResults: [Any]
     public var outputGuardrailResults: [Any]
@@ -115,7 +115,7 @@ public struct RunErrorDetails: CustomStringConvertible, @unchecked Sendable {
         input: Any,
         newItems: [Any] = [],
         rawResponses: [Any] = [],
-        lastAgent: Any? = nil,
+        lastAgent: AnyAgent? = nil,
         contextWrapper: Any? = nil,
         inputGuardrailResults: [Any] = [],
         outputGuardrailResults: [Any] = []

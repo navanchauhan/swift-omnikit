@@ -1,15 +1,13 @@
 import Foundation
 
-final class StreamingEventBuffer<Element: Sendable>: @unchecked Sendable {
+final class StreamingEventBuffer<Element: Sendable>: Sendable {
     private let continuation: AsyncThrowingStream<Element, Error>.Continuation
     let stream: AsyncThrowingStream<Element, Error>
 
     init() {
-        var continuationRef: AsyncThrowingStream<Element, Error>.Continuation!
-        self.stream = AsyncThrowingStream { continuation in
-            continuationRef = continuation
-        }
-        self.continuation = continuationRef
+        let streamPair = makeThrowingStream(of: Element.self)
+        self.stream = streamPair.stream
+        self.continuation = streamPair.continuation
     }
 
     func yield(_ element: Element) {

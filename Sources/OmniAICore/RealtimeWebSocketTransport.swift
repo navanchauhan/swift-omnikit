@@ -31,7 +31,7 @@ public protocol RealtimeWebSocketTransport: Sendable {
     ) async throws -> any RealtimeWebSocketSession
 }
 
-public final class JSONRealtimeWebSocketSession: @unchecked Sendable {
+public final class JSONRealtimeWebSocketSession: Sendable {
     public let base: any RealtimeWebSocketSession
 
     public init(base: any RealtimeWebSocketSession) {
@@ -119,11 +119,9 @@ private final class NIORealtimeWebSocketSession: RealtimeWebSocketSession, @unch
     init(socket: WebSocket, client: WebSocketClient) {
         self.socket = socket
         self.client = client
-        var continuation: AsyncThrowingStream<RealtimeWebSocketMessage, Error>.Continuation!
-        self.stream = AsyncThrowingStream { cont in
-            continuation = cont
-        }
-        self.continuation = continuation
+        let streamPair = _makeRealtimeMessageStream()
+        self.stream = streamPair.stream
+        self.continuation = streamPair.continuation
         configureCallbacks()
     }
 
@@ -206,11 +204,9 @@ private final class URLSessionRealtimeWebSocketSession: RealtimeWebSocketSession
         self.session = URLSession(configuration: .ephemeral)
         self.task = session.webSocketTask(with: request)
         self.timeout = timeout
-        var continuation: AsyncThrowingStream<RealtimeWebSocketMessage, Error>.Continuation!
-        self.stream = AsyncThrowingStream { cont in
-            continuation = cont
-        }
-        self.continuation = continuation
+        let streamPair = _makeRealtimeMessageStream()
+        self.stream = streamPair.stream
+        self.continuation = streamPair.continuation
         self.task.resume()
         startReceivingLoop()
     }
@@ -264,6 +260,20 @@ private func _toNIOWebSocketHeaders(_ headers: OmniHTTP.HTTPHeaders) -> WebSocke
         out.add(name: name, value: value)
     }
     return out
+}
+
+private func _makeRealtimeMessageStream() -> (
+    stream: AsyncThrowingStream<RealtimeWebSocketMessage, Error>,
+    continuation: AsyncThrowingStream<RealtimeWebSocketMessage, Error>.Continuation
+) {
+    var continuation: AsyncThrowingStream<RealtimeWebSocketMessage, Error>.Continuation?
+    let stream = AsyncThrowingStream<RealtimeWebSocketMessage, Error> { cont in
+        continuation = cont
+    }
+    guard let continuation else {
+        preconditionFailure("Realtime websocket stream continuation was not initialized")
+    }
+    return (stream, continuation)
 }
 
 private func _connectNIOWebSocket(

@@ -53,16 +53,26 @@ public struct FocusState<Value: Hashable> {
 
     public var projectedValue: Binding {
         if let resolved = location.resolved {
+            let runtime = resolved.runtime
+            let path = resolved.path
             return Binding(
-                get: { resolved.runtime._getState(seed: seed, path: resolved.path, initial: initial) },
-                set: { resolved.runtime._setState(seed: seed, path: resolved.path, value: $0) }
+                get: { [weak runtime] in
+                    runtime?._getState(seed: seed, path: path, initial: initial) ?? initial()
+                },
+                set: { [weak runtime] value in
+                    runtime?._setState(seed: seed, path: path, value: value)
+                }
             )
         }
         if let runtime = _UIRuntime._current, let path = _UIRuntime._currentPath {
             location.resolved = (runtime: runtime, path: path)
             return Binding(
-                get: { runtime._getState(seed: seed, path: path, initial: initial) },
-                set: { runtime._setState(seed: seed, path: path, value: $0) }
+                get: { [weak runtime] in
+                    runtime?._getState(seed: seed, path: path, initial: initial) ?? initial()
+                },
+                set: { [weak runtime] value in
+                    runtime?._setState(seed: seed, path: path, value: value)
+                }
             )
         }
         return Binding(get: { self.wrappedValue }, set: { self.wrappedValue = $0 })

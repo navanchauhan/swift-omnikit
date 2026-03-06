@@ -305,7 +305,7 @@ public struct DurationValue: Sendable, Equatable, CustomStringConvertible {
             guard let val = Int64(numStr) else { return nil }
             return DurationValue(milliseconds: val)
         }
-        let unit = trimmed.last!
+        guard let unit = trimmed.last else { return nil }
         let numStr = String(trimmed.dropLast())
         guard let val = Int64(numStr) else { return nil }
         switch unit {

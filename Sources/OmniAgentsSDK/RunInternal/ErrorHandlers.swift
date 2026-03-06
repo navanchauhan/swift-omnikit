@@ -7,14 +7,14 @@ enum ErrorHandlerRuntime {
         newItems: [any RunItem],
         rawResponses: [ModelResponse],
         history: [TResponseInputItem],
-        lastAgent: Any,
+        lastAgent: AnyAgent,
         context: RunContextWrapper<TContext>,
         handlers: RunErrorHandlers<TContext>?
     ) async throws -> RunErrorHandlerResult? {
         guard let handler = handlers?.maxTurns else {
             return nil
         }
-        guard let typedLastAgent = lastAgent as? Agent<TContext> else {
+        guard let typedLastAgent = lastAgent.typed(as: TContext.self) else {
             return nil
         }
         let runData = RunErrorData(

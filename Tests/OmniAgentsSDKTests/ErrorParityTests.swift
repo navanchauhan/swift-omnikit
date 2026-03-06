@@ -8,7 +8,7 @@ struct ErrorParityTests {
             input: "hello",
             newItems: ["a", "b"],
             rawResponses: ["r1"],
-            lastAgent: NamedAgent(name: "planner"),
+            lastAgent: AnyAgent(erasing: NamedAgent(name: "planner"), name: "planner"),
             contextWrapper: nil,
             inputGuardrailResults: ["g1"],
             outputGuardrailResults: ["g2"]

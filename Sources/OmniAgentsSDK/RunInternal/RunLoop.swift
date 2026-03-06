@@ -64,7 +64,10 @@ enum AgentRunLoop {
                 inputGuardrailResults += try await GuardrailRuntime.runInputGuardrails(
                     globalGuardrails.compactMap { guardrail in
                         InputGuardrail<TContext>(name: guardrail.name, runInParallel: guardrail.runInParallel) { context, agent, input in
-                            guardrail.guardrailFunction(RunContextWrapper<Any>(context: context.context as Any, usage: context.usage, turnInput: context.turnInput), unsafeBitCast(agent, to: Agent<Any>.self), input)
+                            let erasedContext = RunContextWrapper<Any>(context: context.context as Any, usage: context.usage, turnInput: context.turnInput)
+                            erasedContext.rebuildApprovals(from: context.serializedApprovals())
+                            erasedContext.toolInput = context.toolInput
+                            return guardrail.guardrailFunction(erasedContext, AnyAgent(agent), input)
                         }
                     },
                     context: contextWrapper,
@@ -92,7 +95,7 @@ enum AgentRunLoop {
                     isEnabled: handoff.isEnabled,
                     needsApproval: .always(false),
                     isAgentTool: true,
-                    agentInstance: currentAgent
+                    agentInstance: AnyAgent(currentAgent)
                 ))
             }
             let availableTools = try await prepareToolsForModel(allTools + handoffTools, contextWrapper: RunContextWrapper<Any>(context: contextWrapper.context as Any, usage: contextWrapper.usage, turnInput: contextWrapper.turnInput))
@@ -127,7 +130,7 @@ enum AgentRunLoop {
 
             eventSink?(.rawResponse(.init(data: ["type": .string("raw_response"), "response_id": response.responseID.map(JSONValue.string) ?? .null])))
 
-            let responseItems = RunItemFactory.items(from: response, agent: currentAgent, handoffNames: Set(handoffMap.keys))
+            let responseItems = RunItemFactory.items(from: response, agent: AnyAgent(currentAgent), handoffNames: Set(handoffMap.keys))
             newItems.append(contentsOf: responseItems)
             for usedToolName in ToolPlanningRuntime.hostedToolUsedNames(from: response) {
                 await tracker.record(agentName: currentAgent.name, toolName: usedToolName)
@@ -163,9 +166,12 @@ enum AgentRunLoop {
                 outputGuardrailResults += try await GuardrailRuntime.runOutputGuardrails(currentAgent.outputGuardrails, context: contextWrapper, agent: currentAgent, output: finalOutput)
                 if let globalOutputGuardrails = runConfig?.outputGuardrails {
                     outputGuardrailResults += try await GuardrailRuntime.runOutputGuardrails(
-                        globalOutputGuardrails.compactMap { guardrail in
-                            OutputGuardrail<TContext>(name: guardrail.name) { context, agent, output in
-                                guardrail.guardrailFunction(RunContextWrapper<Any>(context: context.context as Any, usage: context.usage, turnInput: context.turnInput), unsafeBitCast(agent, to: Agent<Any>.self), output)
+                    globalOutputGuardrails.compactMap { guardrail in
+                        OutputGuardrail<TContext>(name: guardrail.name) { context, agent, output in
+                                let erasedContext = RunContextWrapper<Any>(context: context.context as Any, usage: context.usage, turnInput: context.turnInput)
+                                erasedContext.rebuildApprovals(from: context.serializedApprovals())
+                                erasedContext.toolInput = context.toolInput
+                                return guardrail.guardrailFunction(erasedContext, AnyAgent(agent), output)
                             }
                         },
                         context: contextWrapper,
@@ -186,7 +192,7 @@ enum AgentRunLoop {
                     toolInputGuardrailResults: toolInputGuardrailResults,
                     toolOutputGuardrailResults: toolOutputGuardrailResults,
                     contextWrapper: contextWrapper,
-                    lastAgent: currentAgent,
+                    lastAgent: AnyAgent(currentAgent),
                     lastProcessedResponse: .init(items: responseItems, nextStep: .finalOutput(finalOutput), response: response),
                     toolUseTrackerSnapshot: await tracker.snapshot(),
                     currentTurn: turn,
@@ -217,7 +223,7 @@ enum AgentRunLoop {
                         "role": .string("assistant"),
                         "content": .array([.object(["type": .string("output_text"), "text": .string(handoff.getTransferMessage())])]),
                     ]
-                    let handoffOutputItem = HandoffOutputItem(agent: handoffAgent, rawItem: transferItem, sourceAgent: currentAgent, targetAgent: handoffAgent)
+                    let handoffOutputItem = HandoffOutputItem(agent: AnyAgent(handoffAgent), rawItem: transferItem, sourceAgent: AnyAgent(currentAgent), targetAgent: AnyAgent(handoffAgent))
                     newItems.append(handoffOutputItem)
                     eventSink?(.agentUpdated(.init(newAgent: handoffAgent)))
                     let handoffInputData = HandoffInputData(
@@ -264,7 +270,7 @@ enum AgentRunLoop {
                 if needsApproval {
                     let approvalStatus = contextWrapper.getApprovalStatus(toolName: toolName, callID: callID)
                     if approvalStatus == nil {
-                        let approvalItem = ApprovalRuntime.makeApprovalItem(agent: currentAgent, toolName: toolName, callID: callID, rawItem: call)
+                        let approvalItem = ApprovalRuntime.makeApprovalItem(agent: AnyAgent(currentAgent), toolName: toolName, callID: callID, rawItem: call)
                         interruptions.append(approvalItem)
                         newItems.append(approvalItem)
                         eventSink?(.runItem(.init(name: .mcpApprovalRequested, item: approvalItem)))
@@ -277,7 +283,7 @@ enum AgentRunLoop {
                         } else {
                             message = ApprovalRuntime.defaultApprovalRejectedMessage(toolName: toolName)
                         }
-                        let outputItem = ToolCallOutputItem(agent: currentAgent, rawItem: ItemHelpers.toolCallOutputItem(toolCall: call, output: message), output: message)
+                        let outputItem = ToolCallOutputItem(agent: AnyAgent(currentAgent), rawItem: ItemHelpers.toolCallOutputItem(toolCall: call, output: message), output: message)
                         newItems.append(outputItem)
                         toolOutputsForNextTurn.append(try outputItem.toInputItem())
                         eventSink?(.runItem(.init(name: .toolOutput, item: outputItem)))
@@ -287,7 +293,7 @@ enum AgentRunLoop {
 
                 await hooks?.onToolStart(tool: tool, context: contextWrapper, arguments: call["arguments"]?.stringValue ?? ItemHelpers.stringifyJSON(.object(rawArguments)), callID: callID)
                 await currentAgent.hooks?.onToolStart(agent: currentAgent, tool: tool, context: contextWrapper, arguments: call["arguments"]?.stringValue ?? ItemHelpers.stringifyJSON(.object(rawArguments)), callID: callID)
-                let toolResult = try await ToolRuntime.execute(tool: tool, call: call, runContext: contextWrapper, agent: currentAgent, runConfig: runConfig)
+                let toolResult = try await ToolRuntime.execute(tool: tool, call: call, runContext: contextWrapper, agent: AnyAgent(currentAgent), runConfig: runConfig)
                 functionToolResults.append(toolResult)
                 await tracker.record(agentName: currentAgent.name, toolName: toolName)
                 await hooks?.onToolEnd(tool: tool, context: contextWrapper, result: toolResult.output, callID: callID)
@@ -297,7 +303,7 @@ enum AgentRunLoop {
                 if let existing = toolResult.runItem as? ToolCallOutputItem {
                     outputItem = existing
                 } else {
-                    outputItem = ToolCallOutputItem(agent: currentAgent, rawItem: ItemHelpers.toolCallOutputItem(toolCall: call, output: toolResult.output), output: toolResult.output)
+                    outputItem = ToolCallOutputItem(agent: AnyAgent(currentAgent), rawItem: ItemHelpers.toolCallOutputItem(toolCall: call, output: toolResult.output), output: toolResult.output)
                 }
                 newItems.append(outputItem)
                 toolOutputsForNextTurn.append(try outputItem.toInputItem())
@@ -315,7 +321,7 @@ enum AgentRunLoop {
                     toolInputGuardrailResults: toolInputGuardrailResults,
                     toolOutputGuardrailResults: toolOutputGuardrailResults,
                     contextWrapper: contextWrapper,
-                    lastAgent: currentAgent,
+                    lastAgent: AnyAgent(currentAgent),
                     lastProcessedResponse: .init(items: responseItems, nextStep: .interruption(interruptions), response: response, toolResults: functionToolResults),
                     toolUseTrackerSnapshot: await tracker.snapshot(),
                     currentTurn: turn,
@@ -347,7 +353,7 @@ enum AgentRunLoop {
                     toolInputGuardrailResults: toolInputGuardrailResults,
                     toolOutputGuardrailResults: toolOutputGuardrailResults,
                     contextWrapper: contextWrapper,
-                    lastAgent: currentAgent,
+                    lastAgent: AnyAgent(currentAgent),
                     lastProcessedResponse: .init(items: responseItems, nextStep: .finalOutput(finalOutput), response: response, toolResults: functionToolResults),
                     toolUseTrackerSnapshot: await tracker.snapshot(),
                     currentTurn: turn,
@@ -375,7 +381,7 @@ enum AgentRunLoop {
                     toolInputGuardrailResults: toolInputGuardrailResults,
                     toolOutputGuardrailResults: toolOutputGuardrailResults,
                     contextWrapper: contextWrapper,
-                    lastAgent: currentAgent,
+                    lastAgent: AnyAgent(currentAgent),
                     lastProcessedResponse: .init(items: responseItems, nextStep: .finalOutput(output), response: response, toolResults: functionToolResults),
                     toolUseTrackerSnapshot: await tracker.snapshot(),
                     currentTurn: turn,
@@ -400,7 +406,7 @@ enum AgentRunLoop {
                     toolInputGuardrailResults: toolInputGuardrailResults,
                     toolOutputGuardrailResults: toolOutputGuardrailResults,
                     contextWrapper: contextWrapper,
-                    lastAgent: currentAgent,
+                    lastAgent: AnyAgent(currentAgent),
                     lastProcessedResponse: .init(items: responseItems, nextStep: .finalOutput(output), response: response, toolResults: functionToolResults),
                     toolUseTrackerSnapshot: await tracker.snapshot(),
                     currentTurn: turn,
@@ -426,7 +432,7 @@ enum AgentRunLoop {
                         toolInputGuardrailResults: toolInputGuardrailResults,
                         toolOutputGuardrailResults: toolOutputGuardrailResults,
                         contextWrapper: contextWrapper,
-                        lastAgent: currentAgent,
+                        lastAgent: AnyAgent(currentAgent),
                         lastProcessedResponse: .init(items: responseItems, nextStep: .finalOutput(result.finalOutput as Any), response: response, toolResults: functionToolResults),
                         toolUseTrackerSnapshot: await tracker.snapshot(),
                         currentTurn: turn,
@@ -455,7 +461,7 @@ enum AgentRunLoop {
             newItems: newItems,
             rawResponses: rawResponses,
             history: modelInputItems,
-            lastAgent: currentAgent,
+            lastAgent: AnyAgent(currentAgent),
             context: contextWrapper,
             handlers: errorHandlers
         ) {
@@ -469,7 +475,7 @@ enum AgentRunLoop {
                 toolInputGuardrailResults: toolInputGuardrailResults,
                 toolOutputGuardrailResults: toolOutputGuardrailResults,
                 contextWrapper: contextWrapper,
-                lastAgent: currentAgent,
+                lastAgent: AnyAgent(currentAgent),
                 toolUseTrackerSnapshot: await tracker.snapshot(),
                 currentTurn: maxTurns,
                 modelInputItems: modelInputItems,
@@ -543,5 +549,5 @@ private func executeHostedMCPApprovalRequest<TContext>(
     if !result.approve, let reason = result.reason {
         rawItem["reason"] = .string(reason)
     }
-    return MCPApprovalResponseItem(agent: agent, rawItem: rawItem)
+    return MCPApprovalResponseItem(agent: AnyAgent(agent), rawItem: rawItem)
 }

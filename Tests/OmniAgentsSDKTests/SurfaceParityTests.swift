@@ -26,12 +26,12 @@ private struct DummyComputer: AsyncComputer {
 
 struct SurfaceParityTests {
     @Test
-    func snake_case_config_and_session_helpers_exist_and_work() throws {
-        set_default_openai_key("sk-test", use_for_tracing: true)
-        set_default_openai_api(.responses)
-        set_default_openai_responses_transport(.http)
-        set_tracing_export_api_key("trace-key")
-        set_tracing_disabled(false)
+    func config_and_session_helpers_exist_and_work() throws {
+        setDefaultOpenAIKey("sk-test", useForTracing: true)
+        setDefaultOpenAIAPI(.responses)
+        setDefaultOpenAIResponsesTransport(.http)
+        setTracingExportAPIKey("trace-key")
+        setTracingDisabled(false)
 
         let snapshot = getGlobalConfig()
         #expect(snapshot.defaultOpenAIKey == "sk-test")
@@ -40,12 +40,27 @@ struct SurfaceParityTests {
         #expect(snapshot.tracingExportAPIKey == "trace-key")
 
         let session = OpenAIResponsesCompactionSession(sessionID: "s")
-        #expect(is_openai_responses_compaction_aware_session(session))
+        #expect(isOpenAIResponsesCompactionAwareSession(session))
     }
 
     @Test
-    func snake_case_websocket_helper_exists() {
-        let session = responses_websocket_session()
+    func compaction_session_keeps_last_item_when_compacting_input() async throws {
+        let session = OpenAIResponsesCompactionSession(sessionID: "s")
+        try await session.addItems([
+            ["id": .string("first"), "type": .string("message")],
+            ["id": .string("last"), "type": .string("message")],
+        ])
+
+        try await session.runCompaction(args: OpenAIResponsesCompactionArgs(compactionMode: .input))
+
+        let items = try await session.getItems()
+        #expect(items.count == 1)
+        #expect(items.first?["id"]?.stringValue == "last")
+    }
+
+    @Test
+    func websocket_helper_exists() {
+        let session = responsesWebSocketSession()
         #expect(session.provider.useResponsesWebSocket)
     }
 
@@ -69,7 +84,7 @@ struct SurfaceParityTests {
             toolInputGuardrailResults: [],
             toolOutputGuardrailResults: [],
             contextWrapper: ctx,
-            lastAgent: "agent"
+            lastAgent: AnyAgent(erasing: "agent", name: "agent")
         )
 
         #expect(result.agent_tool_invocation == AgentToolInvocation(toolName: "delegate", toolCallID: "call_123", toolArguments: "{\"x\":1}"))
@@ -90,29 +105,29 @@ struct SurfaceParityTests {
         let tool = ComputerTool(computer: .provider(provider))
         let context = RunContextWrapper<Any>(context: ())
 
-        _ = try await resolve_computer(tool: tool, run_context: context)
+        _ = try await resolveComputer(tool: tool, runContext: context)
         _ = try await resolveComputer(tool: tool, runContext: context)
 
         #expect(await state.createCount == 1)
-        await dispose_resolved_computers(run_context: context)
+        await disposeResolvedComputers(runContext: context)
         #expect(await state.disposeCount == 1)
     }
 
     @Test
     func tracing_helper_exports_create_expected_span_kinds() {
-        #expect(!gen_trace_id().isEmpty)
-        #expect(!gen_span_id().isEmpty)
+        #expect(!genTraceID().isEmpty)
+        #expect(!genSpanID().isEmpty)
 
-        #expect(agent_span(name: "a").data?.kind == "agent")
-        #expect(custom_span(name: "c").data?.kind == "custom")
-        #expect(function_span(name: "f").data?.kind == "function")
-        #expect(generation_span().data?.kind == "generation")
-        #expect(guardrail_span(name: "g").data?.kind == "guardrail")
-        #expect(handoff_span().data?.kind == "handoff")
-        #expect(mcp_tools_span().data?.kind == "mcp_list_tools")
-        #expect(speech_span().data?.kind == "speech")
-        #expect(speech_group_span().data?.kind == "speech_group")
-        #expect(transcription_span().data?.kind == "transcription")
+        #expect(agentSpan(name: "a").data?.kind == "agent")
+        #expect(customSpan(name: "c").data?.kind == "custom")
+        #expect(functionSpan(name: "f").data?.kind == "function")
+        #expect(generationSpan().data?.kind == "generation")
+        #expect(guardrailSpan(name: "g").data?.kind == "guardrail")
+        #expect(handoffSpan().data?.kind == "handoff")
+        #expect(mcpToolsSpan().data?.kind == "mcp_list_tools")
+        #expect(speechSpan().data?.kind == "speech")
+        #expect(speechGroupSpan().data?.kind == "speech_group")
+        #expect(transcriptionSpan().data?.kind == "transcription")
     }
 
     @Test

@@ -43,11 +43,31 @@ private final class StubRealtimeSDKSession: RealtimeWebSocketSession, @unchecked
 }
 
 private final class StubRealtimeSDKTransport: RealtimeWebSocketTransport, @unchecked Sendable {
+    private actor State {
+        var lastURL: URL?
+        var lastHeaders: OmniHTTP.HTTPHeaders?
+        func record(url: URL, headers: OmniHTTP.HTTPHeaders) {
+            lastURL = url
+            lastHeaders = headers
+        }
+        func snapshot() -> (URL?, OmniHTTP.HTTPHeaders?) { (lastURL, lastHeaders) }
+    }
+
+    private let state = State()
     let session: StubRealtimeSDKSession
-    init(session: StubRealtimeSDKSession) { self.session = session }
+
+    init(session: StubRealtimeSDKSession) {
+        self.session = session
+    }
+
     func connect(url: URL, headers: OmniHTTP.HTTPHeaders, timeout: Duration?) async throws -> any RealtimeWebSocketSession {
-        let _ = url; let _ = headers; let _ = timeout
+        let _ = timeout
+        await state.record(url: url, headers: headers)
         return session
+    }
+
+    func snapshot() async -> (URL?, OmniHTTP.HTTPHeaders?) {
+        await state.snapshot()
     }
 }
 
@@ -111,6 +131,21 @@ struct OpenAIRealtimeSessionTests {
         #expect(sent[0]["type"]?.stringValue == "session.update")
         #expect(sent[0]["session"]?["instructions"]?.stringValue == "Help the user.")
         #expect(sent[0]["session"]?["tools"]?.arrayValue?.first?["name"]?.stringValue == "echo")
+    }
+
+    @Test
+    func runner_apiKey_initializer_uses_default_realtime_url() async throws {
+        guard #available(macOS 12.0, iOS 15.0, watchOS 8.0, tvOS 15.0, *) else { return }
+        let agent = Agent<Void>(name: "assistant", instructions: .text("Help"))
+        let transport = StubRealtimeSDKTransport(session: StubRealtimeSDKSession(messages: [], keepOpen: true))
+        let runner = OpenAIRealtimeRunner(startingAgent: agent, apiKey: "sk-test", transport: transport)
+
+        let session = try await runner.run(context: ())
+        let snapshot = await transport.snapshot()
+        #expect(snapshot.0?.absoluteString == "wss://api.openai.com/v1/realtime?model=gpt-realtime")
+        #expect(snapshot.1?.firstValue(for: "Authorization") == "Bearer sk-test")
+        #expect(snapshot.1?.firstValue(for: "OpenAI-Beta") == "realtime=v1")
+        await session.close()
     }
 
     @Test

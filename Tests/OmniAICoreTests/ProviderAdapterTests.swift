@@ -1556,7 +1556,7 @@ final class ProviderAdapterTests {
 
         XCTAssertEqual(chunks.joined(), "hello")
         XCTAssertEqual(finish?.text, "hello")
-        XCTAssertEqual(finish?.finishReason.reason, "stop")
+        XCTAssertEqual(finish?.finishReason.rawValue, "stop")
     }
 
     @Test
@@ -1695,7 +1695,7 @@ final class ProviderAdapterTests {
         XCTAssertTrue(seenToolStart)
         XCTAssertTrue(seenToolDelta)
         XCTAssertTrue(seenToolEnd)
-        XCTAssertEqual(finish?.finishReason.reason, "tool_calls")
+        XCTAssertEqual(finish?.finishReason.rawValue, "tool_calls")
         XCTAssertEqual(finish?.toolCalls.first?.name, "add")
     }
 
@@ -1763,7 +1763,7 @@ final class ProviderAdapterTests {
         XCTAssertTrue(seenToolStart)
         XCTAssertTrue(seenToolDelta)
         XCTAssertTrue(seenToolEnd)
-        XCTAssertEqual(finish?.finishReason.reason, "tool_calls")
+        XCTAssertEqual(finish?.finishReason.rawValue, "tool_calls")
         XCTAssertEqual(finish?.usage.reasoningTokens, 2)
         XCTAssertEqual(finish?.toolCalls.first?.name, "add")
     }
@@ -2392,7 +2392,7 @@ final class ProviderAdapterTests {
         XCTAssertTrue(seenStart)
         XCTAssertTrue(seenDelta)
         XCTAssertTrue(seenEnd)
-        XCTAssertEqual(finish?.finishReason.reason, "tool_calls")
+        XCTAssertEqual(finish?.finishReason.rawValue, "tool_calls")
         XCTAssertEqual(finish?.toolCalls.first?.name, "add")
     }
 
@@ -2454,7 +2454,7 @@ final class ProviderAdapterTests {
         XCTAssertTrue(seenStart)
         XCTAssertTrue(seenDelta)
         XCTAssertTrue(seenEnd)
-        XCTAssertEqual(finish?.finishReason.reason, "tool_calls")
+        XCTAssertEqual(finish?.finishReason.rawValue, "tool_calls")
         XCTAssertEqual(finish?.toolCalls.first?.name, "add")
     }
 }

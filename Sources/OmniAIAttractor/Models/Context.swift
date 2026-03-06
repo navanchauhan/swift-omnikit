@@ -10,21 +10,21 @@ import Foundation
 // context is written to after all branches complete.
 public final class PipelineContext: @unchecked Sendable {
     private let lock = NSLock()
-    private var store: [String: Any]
+    private var store: [String: any Sendable]
     private var log: [String]
 
-    public init(_ initial: [String: Any] = [:]) {
+    public init(_ initial: [String: any Sendable] = [:]) {
         self.store = initial
         self.log = []
     }
 
-    public func set(_ key: String, _ value: Any) {
+    public func set<Value: Sendable>(_ key: String, _ value: Value) {
         lock.lock()
         defer { lock.unlock() }
         store[key] = value
     }
 
-    public func get(_ key: String, default defaultValue: Any? = nil) -> Any? {
+    public func get(_ key: String, default defaultValue: (any Sendable)? = nil) -> (any Sendable)? {
         lock.lock()
         defer { lock.unlock() }
         return store[key] ?? defaultValue
@@ -62,7 +62,7 @@ public final class PipelineContext: @unchecked Sendable {
         return log
     }
 
-    public func snapshot() -> [String: Any] {
+    public func snapshot() -> [String: any Sendable] {
         lock.lock()
         defer { lock.unlock() }
         return store
@@ -76,7 +76,7 @@ public final class PipelineContext: @unchecked Sendable {
         return ctx
     }
 
-    public func applyUpdates(_ updates: [String: Any]) {
+    public func applyUpdates(_ updates: [String: any Sendable]) {
         lock.lock()
         defer { lock.unlock() }
         for (key, value) in updates {

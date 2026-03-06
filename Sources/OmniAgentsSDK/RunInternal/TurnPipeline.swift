@@ -9,9 +9,8 @@ enum TurnPipeline {
     ) async throws -> ModelInputData {
         var modelData = ModelInputData(input: items, instructions: try await agent.getSystemPrompt(runContext: runContext))
         if let filter = runConfig?.callModelInputFilter {
-            modelData = try await filter(.init(modelData: modelData, agent: unsafeBitCast(agent, to: Agent<Any>.self), context: runContext.context as Any))
+            modelData = try await filter(.init(modelData: modelData, agent: AnyAgent(agent), context: runContext.context as Any))
         }
         return modelData
     }
 }
-

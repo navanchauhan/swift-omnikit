@@ -118,7 +118,7 @@ private func _response(
         model: model,
         provider: provider,
         message: Message(role: .assistant, content: parts),
-        finishReason: FinishReason(reason: finishReason, raw: finishReason),
+        finishReason: FinishReason(kind: FinishReason.Kind(rawValue: finishReason) ?? .other, raw: finishReason),
         usage: usage,
         raw: nil,
         warnings: [],
@@ -279,7 +279,7 @@ final class HighLevelTests {
                     model: req.model,
                     provider: "test",
                     message: Message(role: .assistant, content: [.toolCall(call)]),
-                    finishReason: FinishReason(reason: "tool_calls", raw: "tool_calls"),
+                    finishReason: FinishReason(kind: .toolCalls, raw: "tool_calls"),
                     usage: Usage(inputTokens: 1, outputTokens: 1),
                     raw: nil,
                     warnings: [],
@@ -740,7 +740,7 @@ final class HighLevelTests {
         }
         let client = try Client(providers: ["test": adapter], defaultProvider: "test")
 
-        let result = try await generate_object(
+        let result = try await generateObject(
             model: "m",
             prompt: "extract",
             schema: schema,
@@ -764,7 +764,7 @@ final class HighLevelTests {
         let client = try Client(providers: ["test": adapter], defaultProvider: "test")
 
         do {
-            _ = try await generate_object(
+            _ = try await generateObject(
                 model: "m",
                 prompt: "extract",
                 schema: schema,
@@ -867,7 +867,7 @@ final class HighLevelTests {
         XCTAssertEqual(result.steps[0].toolCalls.count, 1)
         XCTAssertEqual(result.steps[0].toolResults.count, 1)
         XCTAssertEqual(result.steps[0].usage.inputTokens, 10)
-        XCTAssertEqual(result.steps[1].finishReason.reason, "stop")
+        XCTAssertEqual(result.steps[1].finishReason.kind.rawValue, "stop")
 
         XCTAssertEqual(result.totalUsage.inputTokens, 11)
         XCTAssertEqual(result.totalUsage.outputTokens, 2)
