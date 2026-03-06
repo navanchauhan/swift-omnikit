@@ -2,7 +2,7 @@ import Foundation
 
 // MARK: - Exit Handler
 
-public final class ExitHandler: NodeHandler, @unchecked Sendable {
+public final class ExitHandler: NodeHandler, Sendable {
     public let handlerType: HandlerType = .exit
 
     public init() {}

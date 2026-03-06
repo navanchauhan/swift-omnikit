@@ -27,15 +27,15 @@ public func applyDiff(_ input: String, diff: String, mode: ApplyDiffMode = .defa
             return String(line.dropFirst())
         }.joined(separator: newline)
     case .default:
-        let normalizedInput = input.replacingOccurrences(of: "\r\n", with: "\n")
+        let normalizedInput = input.replacing("\r\n", with: "\n")
         let chunks = try _parseUpdateDiff(diffLines, input: normalizedInput)
         let output = try _applyChunks(normalizedInput, chunks)
-        return newline == "\n" ? output : output.replacingOccurrences(of: "\n", with: "\r\n")
+        return newline == "\n" ? output : output.replacing("\n", with: "\r\n")
     }
 }
 
 private func _normalizeDiffLines(_ diff: String) -> [String] {
-    var lines = diff.replacingOccurrences(of: "\r\n", with: "\n").components(separatedBy: "\n")
+    var lines = diff.replacing("\r\n", with: "\n").components(separatedBy: "\n")
     if lines.last == "" { lines.removeLast() }
     return lines
 }

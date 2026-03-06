@@ -67,14 +67,13 @@ public final class GeminiProfile: ProviderProfile, @unchecked Sendable {
 
         var sections: [String] = [prompt]
 
-        let dateFormatter = DateFormatter()
-        dateFormatter.dateFormat = "yyyy-MM-dd"
+        let today = Date.now.formatted(.iso8601.year().month().day())
         sections.append("""
 <env>
 Working directory: \(environment.workingDirectory())
 Platform: \(environment.platform())
 OS Version: \(environment.osVersion())
-Today's date: \(dateFormatter.string(from: Date()))
+Today's date: \(today)
 Model: \(model)
 </env>
 """)

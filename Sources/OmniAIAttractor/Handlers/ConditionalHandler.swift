@@ -4,7 +4,7 @@ import Foundation
 
 /// Pass-through handler for conditional (diamond) nodes.
 /// The engine evaluates edge conditions for routing, not this handler.
-public final class ConditionalHandler: NodeHandler, @unchecked Sendable {
+public final class ConditionalHandler: NodeHandler, Sendable {
     public let handlerType: HandlerType = .conditional
 
     public init() {}

@@ -216,7 +216,7 @@ Replaces text within a file. By default, replaces a single occurrence, but can r
                 throw ToolError.editConflict("Found \(occurrences) occurrences but expected \(expected)")
             }
 
-            let updated = content.replacingOccurrences(of: oldString, with: newString)
+            let updated = content.replacing(oldString, with: newString)
             try await env.writeFile(path: filePath, content: updated)
             return "Replaced \(occurrences) occurrence(s) in \(filePath)"
         }
@@ -770,7 +770,7 @@ public func geminiGetInternalDocsTool() -> RegisteredTool {
             if docs.isEmpty {
                 return "No documentation files found."
             }
-            let listed = docs.sorted().map { "- \($0.replacingOccurrences(of: docsRoot + "/", with: ""))" }.joined(separator: "\n")
+            let listed = docs.sorted().map { "- \($0.replacing(docsRoot + "/", with: ""))" }.joined(separator: "\n")
             return "Available documentation files:\n\n\(listed)"
         }
     )
@@ -1118,7 +1118,7 @@ private func geminiShellEscape(_ value: String) -> String {
     if value.isEmpty {
         return "''"
     }
-    return "'" + value.replacingOccurrences(of: "'", with: "'\\''") + "'"
+    return "'" + value.replacing("'", with: "'\\''") + "'"
 }
 
 private func geminiStripLineNumbers(_ text: String) -> String {
@@ -1153,7 +1153,7 @@ private func geminiSimpleGlobMatch(path: String, pattern: String) -> Bool {
         return path.hasSuffix(String(pattern.dropFirst(1)))
     }
     if pattern.contains("*") {
-        let needle = pattern.replacingOccurrences(of: "*", with: "")
+        let needle = pattern.replacing("*", with: "")
         return path.contains(needle)
     }
     return path == pattern

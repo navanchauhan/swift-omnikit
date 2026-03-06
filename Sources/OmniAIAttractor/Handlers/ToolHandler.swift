@@ -2,12 +2,11 @@ import Foundation
 
 // MARK: - Tool Handler
 
-// Safety: @unchecked Sendable — no mutable state; all state is local to execute().
-// Note: execute() blocks a cooperative thread pool thread via readDataToEndOfFile()
-// and waitUntilExit(). This is acceptable for sequential pipeline execution but
-// may cause thread starvation under ParallelHandler with many tool nodes.
-// TODO: Move Process execution to a detached task or blocking executor.
-public final class ToolHandler: NodeHandler, @unchecked Sendable {
+// Note: `ToolHandler` itself is value-free and checked `Sendable`; only the internal
+// helper boxes below use lock-backed synchronization for process integration.
+// execute() still performs blocking process I/O, but stdout/stderr are drained
+// concurrently and process termination is awaited without the fast-exit continuation race.
+public final class ToolHandler: NodeHandler, Sendable {
     public let handlerType: HandlerType = .tool
 
     public init() {}
@@ -18,8 +17,6 @@ public final class ToolHandler: NodeHandler, @unchecked Sendable {
         graph: Graph,
         logsRoot: URL
     ) async throws -> Outcome {
-        // Get command from node prompt or tool command attributes.
-        // `tool_command` is the spec key; `command` is supported for compatibility.
         var command = node.prompt
         if command.isEmpty, let cmdAttr = node.rawAttributes["tool_command"] {
             command = cmdAttr.stringValue
@@ -32,45 +29,48 @@ public final class ToolHandler: NodeHandler, @unchecked Sendable {
             return .fail(reason: "Tool node \(node.id) has no command specified")
         }
 
-        // Execute command via shell
         let process = Process()
         let stdout = Pipe()
         let stderr = Pipe()
+        let exitSignal = _ProcessExitSignal()
+        let stdoutData = _LockedDataBox()
+        let stderrData = _LockedDataBox()
 
         process.executableURL = URL(fileURLWithPath: "/bin/sh")
         process.arguments = ["-c", command]
         process.standardOutput = stdout
         process.standardError = stderr
+        process.terminationHandler = { _ in
+            exitSignal.signal()
+        }
+
+        let stdoutQueue = DispatchQueue(label: "tool.stdout")
+        let stderrQueue = DispatchQueue(label: "tool.stderr")
+        stdoutQueue.async {
+            stdoutData.store(stdout.fileHandleForReading.readDataToEndOfFile())
+        }
+        stderrQueue.async {
+            stderrData.store(stderr.fileHandleForReading.readDataToEndOfFile())
+        }
 
         do {
             try process.run()
         } catch {
+            try? stdout.fileHandleForWriting.close()
+            try? stderr.fileHandleForWriting.close()
+            stdoutQueue.sync {}
+            stderrQueue.sync {}
             return .fail(reason: "Failed to launch command for node \(node.id): \(error)")
         }
 
-        // Read pipe data concurrently on GCD to prevent pipe buffer deadlock
-        // when output exceeds ~64KB. Use terminationHandler for async-safe waiting.
-        let stdoutQueue = DispatchQueue(label: "tool.stdout")
-        let stderrQueue = DispatchQueue(label: "tool.stderr")
-        nonisolated(unsafe) var outData = Data()
-        nonisolated(unsafe) var errData = Data()
-        stdoutQueue.async { outData = stdout.fileHandleForReading.readDataToEndOfFile() }
-        stderrQueue.async { errData = stderr.fileHandleForReading.readDataToEndOfFile() }
-
-        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
-            process.terminationHandler = { _ in
-                continuation.resume()
-            }
-        }
+        await exitSignal.wait()
         stdoutQueue.sync {}
         stderrQueue.sync {}
 
-        let outStr = String(data: outData, encoding: .utf8) ?? ""
-        let errStr = String(data: errData, encoding: .utf8) ?? ""
-
+        let outStr = String(data: stdoutData.load(), encoding: .utf8) ?? ""
+        let errStr = String(data: stderrData.load(), encoding: .utf8) ?? ""
         let exitCode = process.terminationStatus
 
-        // Write logs
         let stageDir = logsRoot.appendingPathComponent(node.id)
         try FileManager.default.createDirectory(at: stageDir, withIntermediateDirectories: true)
 
@@ -88,7 +88,6 @@ public final class ToolHandler: NodeHandler, @unchecked Sendable {
                     "tool.output": outStr,
                     "tool.stderr": errStr,
                     "tool.exit_code": String(exitCode),
-                    // Legacy aliases for compatibility.
                     "tool_stdout": outStr,
                     "tool_stderr": errStr,
                     "tool_exit_code": String(exitCode),
@@ -102,11 +101,73 @@ public final class ToolHandler: NodeHandler, @unchecked Sendable {
             contextUpdates: [
                 "tool.output": outStr,
                 "tool.exit_code": "0",
-                // Legacy aliases for compatibility.
                 "tool_stdout": outStr,
                 "tool_exit_code": "0",
             ],
             notes: "Command completed successfully"
         )
+    }
+}
+
+private final class _LockedDataBox: @unchecked Sendable {
+    private let lock = NSLock()
+    private var data = Data()
+
+    func store(_ data: Data) {
+        lock.lock()
+        self.data = data
+        lock.unlock()
+    }
+
+    func load() -> Data {
+        lock.lock()
+        defer { lock.unlock() }
+        return data
+    }
+}
+
+private final class _ProcessExitSignal: @unchecked Sendable {
+    private let lock = NSLock()
+    private var hasExited = false
+    private var continuation: CheckedContinuation<Void, Never>?
+
+    func signal() {
+        lock.lock()
+        if let continuation {
+            self.continuation = nil
+            lock.unlock()
+            continuation.resume()
+            return
+        }
+        hasExited = true
+        lock.unlock()
+    }
+
+    func wait() async {
+        if takeExitedFlag() {
+            return
+        }
+        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+            if installContinuation(continuation) {
+                return
+            }
+            continuation.resume()
+        }
+    }
+
+    private func takeExitedFlag() -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return hasExited
+    }
+
+    private func installContinuation(_ continuation: CheckedContinuation<Void, Never>) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        if hasExited {
+            return false
+        }
+        self.continuation = continuation
+        return true
     }
 }

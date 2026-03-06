@@ -1,7 +1,7 @@
 import Foundation
 
 public func transformStringFunctionStyle(_ name: String) -> String {
-    let normalizedName = name.replacingOccurrences(of: " ", with: "_")
+    let normalizedName = String(name.map { $0 == " " ? "_" : $0 })
 
     let expression = "[^a-zA-Z0-9_]"
     let transformedName: String

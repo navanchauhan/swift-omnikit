@@ -6,7 +6,7 @@ import OmniAIAgent
 
 /// A CodergenBackend that uses CodingAgentLoop sessions instead of raw LLM text generation.
 /// Each pipeline node gets a full coding agent with file read/write, shell execution, grep, glob, etc.
-public final class CodingAgentBackend: CodergenBackend, @unchecked Sendable {
+public final class CodingAgentBackend: CodergenBackend, Sendable {
     private let client: Client?
     private let workingDirectory: String
 
@@ -361,7 +361,7 @@ private struct NodeOverrides: Sendable {
     var resumeKey: String?
 }
 
-private final class FilteredToolProfile: ProviderProfile, @unchecked Sendable {
+private final class FilteredToolProfile: ProviderProfile, Sendable {
     private let wrapped: ProviderProfile
     let toolRegistry: ToolRegistry
     let excludedNamesLowercased: Set<String>
@@ -411,7 +411,7 @@ private final class FilteredToolProfile: ProviderProfile, @unchecked Sendable {
     }
 }
 
-private final class MinimalProviderProfile: ProviderProfile, @unchecked Sendable {
+private final class MinimalProviderProfile: ProviderProfile, Sendable {
     let id: String
     let model: String
     let toolRegistry = ToolRegistry()

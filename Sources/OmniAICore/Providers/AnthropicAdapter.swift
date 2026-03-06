@@ -559,7 +559,7 @@ public final class AnthropicAdapter: ProviderAdapter, @unchecked Sendable {
         // Anthropic expects the base model id in the payload and the beta in headers.
         let pattern = "\\s*\\[1m\\]\\s*"
         guard let regex = try? NSRegularExpression(pattern: pattern) else {
-            return model.replacingOccurrences(of: "[1m]", with: "").trimmingCharacters(in: .whitespacesAndNewlines)
+            return model.replacing("[1m]", with: "").trimmingCharacters(in: .whitespacesAndNewlines)
         }
         let range = NSRange(location: 0, length: model.utf16.count)
         let stripped = regex.stringByReplacingMatches(in: model, options: [], range: range, withTemplate: "")

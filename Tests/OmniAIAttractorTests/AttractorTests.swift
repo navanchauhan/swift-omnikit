@@ -5,6 +5,21 @@ import Foundation
 @Suite
 final class AttractorTests {
 
+    private func withAsyncTimeout<T: Sendable>(seconds: Double, label: String, operation: @escaping @Sendable () async throws -> T) async throws -> T {
+        try await withThrowingTaskGroup(of: T.self) { group in
+            group.addTask {
+                try await operation()
+            }
+            group.addTask {
+                try await Task.sleep(for: .milliseconds(Int64(seconds * 1_000)))
+                throw NSError(domain: "AttractorTests", code: 99, userInfo: [NSLocalizedDescriptionKey: "Timed out during \(label)"])
+            }
+            let result = try await group.next()!
+            group.cancelAll()
+            return result
+        }
+    }
+
     // MARK: - DOT Parsing Tests
 
     @Test
@@ -519,8 +534,9 @@ final class AttractorTests {
         XCTAssertEqual(outcome.preferredLabel, "[A] Approve")
 
         // Verify the question was presented with correct options
-        XCTAssertEqual(interviewer.askedQuestions.count, 1)
-        let q = interviewer.askedQuestions[0]
+        let askedQuestions = await interviewer.askedQuestions
+        XCTAssertEqual(askedQuestions.count, 1)
+        let q = askedQuestions[0]
         XCTAssertEqual(q.text, "Pick a path")
         XCTAssertEqual(q.options.count, 2)
         XCTAssertEqual(q.options[0].label, "[A] Approve")
@@ -753,6 +769,50 @@ final class AttractorTests {
         XCTAssertEqual(outcome.status, .fail)
     }
 
+    @Test
+    func testToolHandlerFastExitDoesNotHang() async throws {
+        let handler = ToolHandler()
+        let node = Node(id: "tool-fast", shape: "parallelogram", prompt: "true")
+        let ctx = PipelineContext()
+        let graph = Graph()
+        let logsRoot = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+
+        let outcome = try await withAsyncTimeout(seconds: 2, label: "fast tool exit") {
+            try await handler.execute(node: node, context: ctx, graph: graph, logsRoot: logsRoot)
+        }
+        XCTAssertEqual(outcome.status, .success)
+    }
+
+    @Test
+    func testCodergenHandlerLargeStderrPreHookDoesNotDeadlock() async throws {
+        guard let python = try? findPython3ForAttractorTests() else {
+            return
+        }
+        let backend = MockCodergenBackend(result: CodergenResult(response: "done", status: .success))
+        let handler = CodergenHandler(backend: backend)
+        let node = Node(id: "codegen", shape: "box", prompt: "Do work")
+        let ctx = PipelineContext()
+        let graph = Graph(
+            id: "pipeline",
+            nodes: [
+                "start": Node(id: "start", shape: "Mdiamond"),
+                "codegen": node,
+                "done": Node(id: "done", shape: "Msquare"),
+            ],
+            edges: [Edge(from: "start", to: "codegen"), Edge(from: "codegen", to: "done")],
+            attributes: GraphAttributes(
+                toolHooksPre: "\(python) -c \"import sys; sys.stderr.write('x'*200000); print('hook-ok')\""
+            )
+        )
+        let logsRoot = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+
+        let outcome = try await withAsyncTimeout(seconds: 5, label: "codergen pre-hook") {
+            try await handler.execute(node: node, context: ctx, graph: graph, logsRoot: logsRoot)
+        }
+        XCTAssertEqual(outcome.status, .success)
+        XCTAssertEqual(ctx.getString("hook_pre_output"), "hook-ok")
+    }
+
     // MARK: - ManagerLoop Handler
 
     @Test
@@ -804,8 +864,9 @@ final class AttractorTests {
 
         let _ = try await handler.execute(node: askNode, context: ctx, graph: graph, logsRoot: logsRoot)
 
-        XCTAssertEqual(recorder.recordings.count, 1)
-        let options = recorder.recordings[0].0.options
+        let recordings = await recorder.recordings
+        XCTAssertEqual(recordings.count, 1)
+        let options = recordings[0].0.options
         XCTAssertEqual(options.count, 4)
 
         // [Y] Yes -> key "Y"
@@ -1793,4 +1854,13 @@ final class RecordingMockBackend: CodergenBackend, @unchecked Sendable {
         _models.append(model)
         lock.unlock()
     }
+}
+
+
+private func findPython3ForAttractorTests() throws -> String {
+    let candidates = ["/usr/bin/python3", "/opt/homebrew/bin/python3", "/usr/local/bin/python3"]
+    for candidate in candidates where FileManager.default.isExecutableFile(atPath: candidate) {
+        return candidate
+    }
+    throw NSError(domain: "AttractorTests", code: 3, userInfo: [NSLocalizedDescriptionKey: "python3 not found"])
 }

@@ -110,5 +110,5 @@ private func worktreeShellEscape(_ value: String) -> String {
     if value.isEmpty {
         return "''"
     }
-    return "'" + value.replacingOccurrences(of: "'", with: "'\\''") + "'"
+    return "'" + value.replacing("'", with: "'\\''") + "'"
 }

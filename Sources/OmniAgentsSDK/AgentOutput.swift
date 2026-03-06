@@ -83,7 +83,15 @@ public struct AgentOutputSchema<Output: Decodable & Sendable>: AgentOutputSchema
 }
 
 public enum AnyAgentOutputSchema {
+    private static let plainTextSchema: any AgentOutputSchemaBase = {
+        do {
+            return try AgentOutputSchema(String.self)
+        } catch {
+            preconditionFailure("Failed to create plain-text agent output schema: \(error)")
+        }
+    }()
+
     public static func plainText() -> any AgentOutputSchemaBase {
-        try! AgentOutputSchema(String.self)
+        plainTextSchema
     }
 }

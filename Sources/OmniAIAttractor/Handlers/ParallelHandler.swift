@@ -2,7 +2,7 @@ import Foundation
 
 // MARK: - Parallel Handler
 
-public final class ParallelHandler: NodeHandler, @unchecked Sendable {
+public final class ParallelHandler: NodeHandler, Sendable {
     public let handlerType: HandlerType = .parallel
     private let registry: HandlerRegistry
 

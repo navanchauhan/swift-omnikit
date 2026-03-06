@@ -1,5 +1,5 @@
 import Foundation
-import OmniUI
+import OmniSwiftUI
 import OmniUICore
 import OmniUINotcursesRenderer
 #if os(Linux)
@@ -29,12 +29,14 @@ struct KitchenSinkRoot: View {
     }
 }
 
-final class DemoModel: OmniUICore.ObservableObject {
+@Observable
+final class DemoModel {
     var name: String = ""
     var count: Int = 0
 }
 
-final class AppEnvironment: OmniUICore.ObservableObject {
+@Observable
+final class AppEnvironment {
     var banner: String = "Hello from EnvironmentObject"
 }
 
@@ -66,8 +68,8 @@ struct KitchenSinkHome: View {
     @State private var pulseScale: Bool = false
     @State private var demoTick: Int = 0
     @State private var editableRows: [Int] = [1, 2, 3, 4, 5]
-    @StateObject private var model = DemoModel()
-    @StateObject private var appEnv = AppEnvironment()
+    @State private var model = DemoModel()
+    @State private var appEnv = AppEnvironment()
 
     enum Flavor: String, Hashable {
         case vanilla = "Vanilla"
@@ -134,155 +136,173 @@ struct KitchenSinkHome: View {
         }
     }
 
+    @ViewBuilder
+    private var headerSection: some View {
+        Label("OmniUI KitchenSink", systemImage: "sparkles")
+            .bold()
+            .foregroundStyle(pulseColor)
+
+        HStack(spacing: 1) {
+            Text("[\(spinner)] \(bannerText)")
+                .foregroundStyle(.secondary)
+            Spacer()
+            Text("tick \(demoTick)")
+                .foregroundStyle(.tertiary)
+        }
+        .background(Color.blue.opacity(0.12))
+    }
+
+    @ViewBuilder
+    private var primarySections: some View {
+        Section(header: Text("State / Binding").foregroundStyle(.cyan).bold()) {
+            HStack(spacing: 1) {
+                Text("Count: \(count)")
+                Spacer()
+                Button("+") { count += 1 }
+                Button("-") { count -= 1 }
+            }
+
+            HStack(spacing: 1) {
+                Toggle("CRT", isOn: $crtMode)
+                Spacer()
+                Text(crtMode ? "ON" : "OFF")
+                    .foregroundStyle(crtMode ? .green : .secondary)
+            }
+
+            TextField("Type your name", text: $name)
+            Text("Hello, \(name.isEmpty ? "anonymous" : name)")
+                .foregroundStyle(name.isEmpty ? .secondary : .mint)
+        }
+
+        Section(header: Text("Picker").foregroundStyle(.cyan).bold()) {
+            Picker(
+                "Flavor",
+                selection: $flavor,
+                options: [
+                    (.vanilla, "Vanilla"),
+                    (.chocolate, "Chocolate"),
+                    (.strawberry, "Strawberry"),
+                ]
+            )
+        }
+
+        Section(header: Text("Shapes").foregroundStyle(.cyan).bold()) {
+            HStack(spacing: 1) {
+                Rectangle()
+                    .foregroundStyle(.teal)
+                RoundedRectangle(cornerRadius: 3)
+                    .foregroundStyle(.cyan)
+                Circle()
+                    .foregroundStyle(.mint)
+                Ellipse()
+                    .foregroundStyle(.yellow)
+                Capsule()
+                    .foregroundStyle(.orange)
+            }
+            Text("Clipped")
+                .foregroundStyle(.blue)
+                .clipShape(RoundedRectangle(cornerRadius: 2))
+        }
+
+        Section(header: Text("ZStack").foregroundStyle(.cyan).bold()) {
+            ZStack {
+                Text("Background text")
+                    .foregroundStyle(.tertiary)
+                Text("Overlay (shifted)")
+                    .foregroundStyle(.white)
+                    .background(Color.indigo.opacity(0.35))
+                    .padding(1)
+            }
+        }
+
+        Section(header: Text("List / ForEach (picked: \(pickedRow))").foregroundStyle(.cyan).bold()) {
+            List(0..<2, id: \.self) { i in
+                HStack(spacing: 1) {
+                    Text("Row \(i)")
+                        .foregroundStyle(i == pickedRow ? .green : .primary)
+                    Spacer()
+                    Button("Pick") { pickedRow = i }
+                }
+            }
+        }
+
+        Section(header: Text("Table").foregroundStyle(.cyan).bold()) {
+            Table(0..<3, id: \.self) { i in
+                HStack(spacing: 1) {
+                    Text("Cell \(i)")
+                        .foregroundStyle(.blue)
+                    Spacer()
+                    Text("Value \(i * 10)")
+                        .foregroundStyle(.secondary)
+                }
+            }
+        }
+
+        Section(header: Text("Observable / Bindable").foregroundStyle(.cyan).bold()) {
+            Text("Model.count: \(model.count)")
+            HStack(spacing: 1) {
+                Button("Model +1") { model.count += 1 }
+                Button("Model -1") { model.count -= 1 }
+            }
+            TextField(
+                "Model name",
+                text: Binding(
+                    get: { model.name },
+                    set: { model.name = $0 }
+                )
+            )
+            ObservedModelView(model: model)
+        }
+
+        Section(header: Text("Bindable shared state").foregroundStyle(.cyan).bold()) {
+            EnvironmentBannerView(env: appEnv)
+        }
+    }
+
+    @ViewBuilder
+    private var supplementalSections: some View {
+        Section(header: Text("Navigation").foregroundStyle(.cyan).bold()) {
+            NavigationLink("Open details") { KitchenSinkDetail() }
+        }
+
+        Section(header: Text("ScrollView (wheel over it)").foregroundStyle(.cyan).bold()) {
+            ScrollView {
+                VStack(spacing: 0) {
+                    ForEach(0..<20, id: \.self) { i in
+                        Text("Item \(i)")
+                            .foregroundStyle(i % 2 == 0 ? .cyan : .secondary)
+                    }
+                }
+            }
+        }
+
+        CompletionShowcase(editableRows: $editableRows, onDeleteRows: deleteEditableRows, demoTree: demoTree)
+
+        CompatibilityShowcase(
+            demoTick: demoTick,
+            pulseColor: pulseColor,
+            pulseScale: $pulseScale,
+            coordinatorURL: $coordinatorURL,
+            secureToken: $secureToken,
+            selectedTaggedRow: $selectedTaggedRow,
+            activeTab: $activeTab,
+            splitSelection: $splitSelection,
+            splitVisibility: $splitVisibility,
+            crtMode: $crtMode,
+            showTransientProbe: $showTransientProbe,
+            lastDisappearEvent: $lastDisappearEvent
+        )
+
+        Text("Renderer: native notcurses widgets.")
+            .foregroundStyle(.mint)
+    }
+
     var body: some View {
         ScrollView {
             VStack(spacing: 1) {
-                Label("OmniUI KitchenSink", systemImage: "sparkles")
-                    .bold()
-                    .foregroundStyle(pulseColor)
-
-                HStack(spacing: 1) {
-                    Text("[\(spinner)] \(bannerText)")
-                        .foregroundStyle(.secondary)
-                    Spacer()
-                    Text("tick \(demoTick)")
-                        .foregroundStyle(.tertiary)
-                }
-                .background(Color.blue.opacity(0.12))
-
-                Section(header: Text("State / Binding").foregroundStyle(.cyan).bold()) {
-                    HStack(spacing: 1) {
-                        Text("Count: \(count)")
-                        Spacer()
-                        Button("+") { count += 1 }
-                        Button("-") { count -= 1 }
-                    }
-
-                    HStack(spacing: 1) {
-                        Toggle("CRT", isOn: $crtMode)
-                        Spacer()
-                        Text(crtMode ? "ON" : "OFF")
-                            .foregroundStyle(crtMode ? .green : .secondary)
-                    }
-
-                    TextField("Type your name", text: $name)
-                    Text("Hello, \(name.isEmpty ? "anonymous" : name)")
-                        .foregroundStyle(name.isEmpty ? .secondary : .mint)
-                }
-
-                Section(header: Text("Picker").foregroundStyle(.cyan).bold()) {
-                    Picker(
-                        "Flavor",
-                        selection: $flavor,
-                        options: [
-                            (.vanilla, "Vanilla"),
-                            (.chocolate, "Chocolate"),
-                            (.strawberry, "Strawberry"),
-                        ]
-                    )
-                }
-
-                Section(header: Text("Shapes").foregroundStyle(.cyan).bold()) {
-                    HStack(spacing: 1) {
-                        Rectangle()
-                            .foregroundStyle(.teal)
-                        RoundedRectangle(cornerRadius: 3)
-                            .foregroundStyle(.cyan)
-                        Circle()
-                            .foregroundStyle(.mint)
-                        Ellipse()
-                            .foregroundStyle(.yellow)
-                        Capsule()
-                            .foregroundStyle(.orange)
-                    }
-                    Text("Clipped")
-                        .foregroundStyle(.blue)
-                        .clipShape(RoundedRectangle(cornerRadius: 2))
-                }
-
-                Section(header: Text("ZStack").foregroundStyle(.cyan).bold()) {
-                    ZStack {
-                        Text("Background text")
-                            .foregroundStyle(.tertiary)
-                        Text("Overlay (shifted)")
-                            .foregroundStyle(.white)
-                            .background(Color.indigo.opacity(0.35))
-                            .padding(1)
-                    }
-                }
-
-                Section(header: Text("List / ForEach (picked: \(pickedRow))").foregroundStyle(.cyan).bold()) {
-                    List(0..<2, id: \.self) { i in
-                        HStack(spacing: 1) {
-                            Text("Row \(i)")
-                                .foregroundStyle(i == pickedRow ? .green : .primary)
-                            Spacer()
-                            Button("Pick") { pickedRow = i }
-                        }
-                    }
-                }
-
-                Section(header: Text("Table").foregroundStyle(.cyan).bold()) {
-                    Table(0..<3, id: \.self) { i in
-                        HStack(spacing: 1) {
-                            Text("Cell \(i)")
-                                .foregroundStyle(.blue)
-                            Spacer()
-                            Text("Value \(i * 10)")
-                                .foregroundStyle(.secondary)
-                        }
-                    }
-                }
-
-                Section(header: Text("StateObject / ObservedObject").foregroundStyle(.cyan).bold()) {
-                    Text("Model.count: \(model.count)")
-                    HStack(spacing: 1) {
-                        Button("Model +1") { model.count += 1 }
-                        Button("Model -1") { model.count -= 1 }
-                    }
-                    TextField("Model name", text: $model.name)
-                    ObservedModelView(model: model)
-                }
-
-                Section(header: Text("EnvironmentObject").foregroundStyle(.cyan).bold()) {
-                    EnvironmentBannerView()
-                        .environmentObject(appEnv)
-                }
-
-                Section(header: Text("Navigation").foregroundStyle(.cyan).bold()) {
-                    NavigationLink("Open details") { KitchenSinkDetail() }
-                }
-
-                Section(header: Text("ScrollView (wheel over it)").foregroundStyle(.cyan).bold()) {
-                    ScrollView {
-                        VStack(spacing: 0) {
-                            ForEach(0..<20, id: \.self) { i in
-                                Text("Item \(i)")
-                                    .foregroundStyle(i % 2 == 0 ? .cyan : .secondary)
-                            }
-                        }
-                    }
-                }
-
-                CompletionShowcase(editableRows: $editableRows, onDeleteRows: deleteEditableRows, demoTree: demoTree)
-
-                CompatibilityShowcase(
-                    demoTick: demoTick,
-                    pulseColor: pulseColor,
-                    pulseScale: $pulseScale,
-                    coordinatorURL: $coordinatorURL,
-                    secureToken: $secureToken,
-                    selectedTaggedRow: $selectedTaggedRow,
-                    activeTab: $activeTab,
-                    splitSelection: $splitSelection,
-                    splitVisibility: $splitVisibility,
-                    crtMode: $crtMode,
-                    showTransientProbe: $showTransientProbe,
-                    lastDisappearEvent: $lastDisappearEvent
-                )
-
-                Text("Renderer: native notcurses widgets.")
-                    .foregroundStyle(.mint)
+                headerSection
+                primarySections
+                supplementalSections
             }
             .padding(1)
             .background(Color.indigo.opacity(0.08))
@@ -545,7 +565,7 @@ struct SwiftDataPanel: View {
 }
 
 struct ObservedModelView: View {
-    @ObservedObject var model: DemoModel
+    @Bindable var model: DemoModel
 
     var body: some View {
         VStack(spacing: 1) {
@@ -556,12 +576,18 @@ struct ObservedModelView: View {
 }
 
 struct EnvironmentBannerView: View {
-    @EnvironmentObject var env: AppEnvironment
+    @Bindable var env: AppEnvironment
 
     var body: some View {
         VStack(spacing: 1) {
             Text(env.banner)
-            TextField("Banner", text: $env.banner)
+            TextField(
+                "Banner",
+                text: Binding(
+                    get: { env.banner },
+                    set: { env.banner = $0 }
+                )
+            )
         }
     }
 }

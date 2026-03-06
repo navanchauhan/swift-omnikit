@@ -15,7 +15,7 @@ open class OmniAICoreModel: Model, @unchecked Sendable {
     ) {
         self.modelName = modelName
         self.providerName = providerName
-        self.client = client ?? (try! Client.fromEnvAllowingEmpty())
+        self.client = client ?? makeDefaultClient(for: String(reflecting: Self.self))
         self.providerOptions = providerOptions
     }
 

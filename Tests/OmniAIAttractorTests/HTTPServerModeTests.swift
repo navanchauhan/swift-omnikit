@@ -217,6 +217,40 @@ final class HTTPServerModeTests {
         XCTAssertEqual(response.status, 404)
     }
 
+
+    @Test
+    func testHTTPInterviewerCancellationResumesPendingQuestion() async throws {
+        let state = PipelineRunState(id: "run-1", dotSource: "digraph test { start -> done }")
+        let interviewer = HTTPServerInterviewer(runState: state)
+        let question = InterviewQuestion(
+            text: "Approve?",
+            type: .confirm,
+            defaultAnswer: .no(),
+            stage: "gate"
+        )
+
+        let answerTask = Task {
+            await interviewer.ask(question)
+        }
+
+        try await withThrowingTaskGroup(of: Void.self) { group in
+            group.addTask {
+                while await state.pendingQuestions.isEmpty {
+                    try await Task.sleep(for: .milliseconds(10))
+                }
+                await state.cancel()
+            }
+            group.addTask {
+                let answer = await answerTask.value
+                XCTAssertEqual(answer.answerValue, .no)
+                let pendingQuestions = await state.pendingQuestions
+                XCTAssertTrue(pendingQuestions.isEmpty)
+            }
+            _ = try await group.next()
+            _ = try await group.next()
+        }
+    }
+
     // MARK: - End-to-End: Pipeline completes via HTTP
 
     @Test

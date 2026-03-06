@@ -518,8 +518,7 @@ struct DOTTokenParser {
     }
 
     private func deriveClassName(from label: String) -> String {
-        label.lowercased()
-            .replacingOccurrences(of: " ", with: "-")
+        String(label.lowercased().map { $0 == " " ? "-" : $0 })
             .filter { $0.isLetter || $0.isNumber || $0 == "-" }
     }
 

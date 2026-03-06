@@ -56,10 +56,9 @@ public struct PipelineResult: Sendable {
 
 // MARK: - Pipeline Engine
 
-public final class PipelineEngine: @unchecked Sendable {
+public final class PipelineEngine: Sendable {
     private let config: PipelineConfig
     private let registry: HandlerRegistry
-    private let fm = FileManager.default
 
     public init(config: PipelineConfig) {
         self.config = config
@@ -251,7 +250,7 @@ public final class PipelineEngine: @unchecked Sendable {
 
     private func initializeRun(state: ExecutionState, startAt: String? = nil) async throws {
         // Create logs root directory
-        try fm.createDirectory(at: state.logsRoot, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: state.logsRoot, withIntermediateDirectories: true)
 
         // Set initial context
         state.context.set("graph.goal", state.graph.attributes.goal)
@@ -312,7 +311,7 @@ public final class PipelineEngine: @unchecked Sendable {
 
                 // Execute exit handler
                 let outcome = try await executeHandler(node: node, state: state)
-                recordOutcome(node: node, outcome: outcome, state: state)
+                await recordOutcome(node: node, outcome: outcome, state: state)
 
                 // Emit pipeline completed
                 if let emitter = config.eventEmitter {
@@ -350,7 +349,7 @@ public final class PipelineEngine: @unchecked Sendable {
             let outcome = try await executeWithRetry(node: node, state: state)
 
             // Record outcome
-            recordOutcome(node: node, outcome: outcome, state: state)
+            await recordOutcome(node: node, outcome: outcome, state: state)
 
             // Write status.json
             try writeStatusJSON(nodeId: currentId, outcome: outcome, state: state)
@@ -891,7 +890,7 @@ public final class PipelineEngine: @unchecked Sendable {
 
     // MARK: - Record Outcome
 
-    private func recordOutcome(node: Node, outcome: Outcome, state: ExecutionState) {
+    private func recordOutcome(node: Node, outcome: Outcome, state: ExecutionState) async {
         state.nodeOutcomes[node.id] = outcome.status
         if !state.completedNodes.contains(node.id) {
             state.completedNodes.append(node.id)
@@ -901,7 +900,7 @@ public final class PipelineEngine: @unchecked Sendable {
         // Persist node outcomes into the shared artifact store so larger stage payloads
         // can be retrieved without bloating routing context.
         let statusArtifactID = "\(node.id)-status-\(state.completedNodes.count)"
-        if let info = try? state.artifactStore.store(
+        if let info = try? await state.artifactStore.store(
             artifactId: statusArtifactID,
             name: "status:\(node.id)",
             data: outcome.toStatusJSON()
@@ -911,7 +910,7 @@ public final class PipelineEngine: @unchecked Sendable {
 
         if let response = outcome.contextUpdates["last_response"], !response.isEmpty {
             let responseArtifactID = "\(node.id)-response-\(state.completedNodes.count)"
-            if let info = try? state.artifactStore.store(
+            if let info = try? await state.artifactStore.store(
                 artifactId: responseArtifactID,
                 name: "response:\(node.id)",
                 data: response
@@ -922,7 +921,7 @@ public final class PipelineEngine: @unchecked Sendable {
 
         if let toolOutput = outcome.contextUpdates["tool.output"], !toolOutput.isEmpty {
             let toolArtifactID = "\(node.id)-tool-output-\(state.completedNodes.count)"
-            if let info = try? state.artifactStore.store(
+            if let info = try? await state.artifactStore.store(
                 artifactId: toolArtifactID,
                 name: "tool.output:\(node.id)",
                 data: toolOutput
@@ -939,7 +938,7 @@ public final class PipelineEngine: @unchecked Sendable {
             "pipeline_id": state.graph.id,
             "graph_id": state.graph.id,
             "goal": state.graph.attributes.goal,
-            "started_at": ISO8601DateFormatter().string(from: Date()),
+            "started_at": Date().ISO8601Format(),
             "node_count": state.graph.nodes.count,
             "edge_count": state.graph.edges.count,
             "cycle_index": state.cycleIndex,
@@ -958,7 +957,7 @@ public final class PipelineEngine: @unchecked Sendable {
 
     private func writeStatusJSON(nodeId: String, outcome: Outcome, state: ExecutionState) throws {
         let stageDir = state.logsRoot.appendingPathComponent(nodeId)
-        try fm.createDirectory(at: stageDir, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: stageDir, withIntermediateDirectories: true)
 
         let statusJSON = outcome.toStatusJSON()
         let data = try JSONSerialization.data(withJSONObject: statusJSON, options: [.prettyPrinted, .sortedKeys])

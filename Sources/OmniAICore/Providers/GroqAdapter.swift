@@ -324,7 +324,7 @@ public final class GroqAdapter: ProviderAdapter, @unchecked Sendable {
         let input = try extractTranscriptionInput(request: request)
         let url = try _ProviderHTTP.makeURL(baseURL: baseURL, path: "/audio/transcriptions")
 
-        let boundary = "omni_groq_\(UUID().uuidString.replacingOccurrences(of: "-", with: ""))"
+        let boundary = "omni_groq_\(UUID().uuidString.filter { $0 != "-" })"
         var multipart = MultipartFormDataBuilder(boundary: boundary)
         multipart.addField(name: "model", value: request.model)
 
@@ -1157,6 +1157,6 @@ private struct MultipartFormDataBuilder {
     }
 
     private func escape(_ value: String) -> String {
-        value.replacingOccurrences(of: "\"", with: "\\\"")
+        value.replacing("\"", with: "\\\"")
     }
 }

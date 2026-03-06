@@ -1,6 +1,6 @@
 import Foundation
 
-public struct ResponsesWebSocketSession: @unchecked Sendable {
+public struct ResponsesWebSocketSession: Sendable {
     public var provider: OpenAIProvider
     public var runConfig: RunConfig
 

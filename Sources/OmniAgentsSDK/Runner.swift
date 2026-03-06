@@ -118,7 +118,12 @@ public final class AgentRunner: @unchecked Sendable {
         session: Session? = nil,
         errorHandlers: RunErrorHandlers<TContext>? = nil
     ) -> RunResultStreaming<TContext> {
-        let contextWrapper = try! AgentRunnerHelpers.makeContextWrapper(context: context)
+        let contextWrapper: RunContextWrapper<TContext>
+        do {
+            contextWrapper = try AgentRunnerHelpers.makeContextWrapper(context: context)
+        } catch {
+            preconditionFailure("Failed to create run context for streamed agent run: \(error)")
+        }
         let streaming = RunResultStreaming<TContext>(
             input: input,
             contextWrapper: contextWrapper,

@@ -660,7 +660,7 @@ private func _coerce<T: Decodable>(_ raw: Any, to type: T.Type, codingPath: [any
     case let intType as UInt64.Type:
         if let number = raw as? NSNumber { return number.uint64Value as! T }
     case let dateType as Date.Type:
-        if let string = raw as? String, let date = ISO8601DateFormatter().date(from: string) {
+        if let string = raw as? String, let date = try? Date(string, strategy: .iso8601) {
             return date as! T
         }
     case let uuidType as UUID.Type:

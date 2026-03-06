@@ -383,19 +383,19 @@ private func normalizeUnicode(_ s: String) -> String {
     var result = s
     // Unicode dashes → ASCII hyphen
     for dash in ["\u{2010}", "\u{2011}", "\u{2012}", "\u{2013}", "\u{2014}", "\u{2015}", "\u{2212}"] {
-        result = result.replacingOccurrences(of: dash, with: "-")
+        result = result.replacing(dash, with: "-")
     }
     // Smart single quotes → ASCII apostrophe
     for q in ["\u{2018}", "\u{2019}", "\u{201A}", "\u{201B}"] {
-        result = result.replacingOccurrences(of: q, with: "'")
+        result = result.replacing(q, with: "'")
     }
     // Smart double quotes → ASCII quote
     for q in ["\u{201C}", "\u{201D}", "\u{201E}", "\u{201F}"] {
-        result = result.replacingOccurrences(of: q, with: "\"")
+        result = result.replacing(q, with: "\"")
     }
     // Non-breaking and typographic spaces → regular space
     for sp in ["\u{00A0}", "\u{2002}", "\u{2003}", "\u{2009}", "\u{200A}"] {
-        result = result.replacingOccurrences(of: sp, with: " ")
+        result = result.replacing(sp, with: " ")
     }
     return result
 }

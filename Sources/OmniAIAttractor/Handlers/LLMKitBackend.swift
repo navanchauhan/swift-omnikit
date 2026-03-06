@@ -3,7 +3,7 @@ import OmniAICore
 
 // MARK: - LLMKit Backend
 
-public final class LLMKitBackend: CodergenBackend, @unchecked Sendable {
+public final class LLMKitBackend: CodergenBackend, Sendable {
     private let client: Client?
 
     public init(client: Client? = nil) {
@@ -150,7 +150,7 @@ public final class LLMKitBackend: CodergenBackend, @unchecked Sendable {
     private func fallbackModels(for model: String, provider: String) -> [String] {
         var candidates: [String] = [model]
         if provider.lowercased() == "anthropic", model.contains("[1m]") {
-            candidates.append(model.replacingOccurrences(of: "[1m]", with: ""))
+            candidates.append(model.replacing("[1m]", with: ""))
         }
         return Array(NSOrderedSet(array: candidates)) as? [String] ?? candidates
     }

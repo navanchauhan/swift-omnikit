@@ -12,7 +12,7 @@ open class OmniAICoreProvider: ModelProvider, @unchecked Sendable {
         providerOptions: [String: JSONValue] = [:]
     ) {
         self.providerName = providerName
-        self.client = client ?? (try! Client.fromEnvAllowingEmpty())
+        self.client = client ?? makeDefaultClient(for: String(reflecting: Self.self))
         self.providerOptions = providerOptions
     }
 
@@ -65,7 +65,7 @@ public final class MultiProvider: ModelProvider, @unchecked Sendable {
         client: Client? = nil,
         defaultProviderName: String? = nil
     ) {
-        self.client = client ?? (try! Client.fromEnvAllowingEmpty())
+        self.client = client ?? makeDefaultClient(for: String(reflecting: Self.self))
         self.mapping = providerMap
         self.fallbackDefaultProviderName = defaultProviderName
     }

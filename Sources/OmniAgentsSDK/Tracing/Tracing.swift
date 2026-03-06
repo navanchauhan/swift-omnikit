@@ -164,7 +164,7 @@ public protocol TraceProvider: Sendable {
     func createSpan(name: String, spanData: SpanData?, spanID: String?, parent: Any?, disabled: Bool) -> Span
 }
 
-public final class ClosureTracingProcessor: TracingProcessor, @unchecked Sendable {
+public final class ClosureTracingProcessor: TracingProcessor, Sendable {
     private let closure: @Sendable (Trace) async -> Void
     public init(_ closure: @escaping @Sendable (Trace) async -> Void) { self.closure = closure }
     public func process(trace: Trace) async { await closure(trace) }
@@ -300,8 +300,8 @@ private struct TraceSpanAdapter: ErrorTracingSpan {
     func setError(_ error: SpanError) {}
 }
 
-public func genTraceID() -> String { UUID().uuidString.replacingOccurrences(of: "-", with: "") }
-public func genSpanID() -> String { UUID().uuidString.replacingOccurrences(of: "-", with: "") }
+public func genTraceID() -> String { UUID().uuidString.filter { $0 != "-" } }
+public func genSpanID() -> String { UUID().uuidString.filter { $0 != "-" } }
 
 public func gen_trace_id() -> String { genTraceID() }
 public func gen_span_id() -> String { genSpanID() }

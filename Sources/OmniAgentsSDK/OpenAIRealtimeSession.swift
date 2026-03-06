@@ -56,7 +56,7 @@ public struct OpenAIRealtimeSessionSnapshot: Sendable, Equatable {
 }
 
 @available(macOS 12.0, iOS 15.0, watchOS 8.0, tvOS 15.0, *)
-public enum OpenAIRealtimeSessionEvent<TContext: Sendable>: @unchecked Sendable {
+public enum OpenAIRealtimeSessionEvent<TContext: Sendable>: Sendable {
     case raw(RealtimeServerEvent)
     case textDelta(String)
     case textDone(String)
@@ -72,7 +72,7 @@ public enum OpenAIRealtimeSessionEvent<TContext: Sendable>: @unchecked Sendable 
 }
 
 @available(macOS 12.0, iOS 15.0, watchOS 8.0, tvOS 15.0, *)
-public final actor OpenAIRealtimeSession<TContext: Sendable>: @unchecked Sendable {
+public final actor OpenAIRealtimeSession<TContext: Sendable> {
     public let client: OpenAIRealtimeClient
     public let contextWrapper: RunContextWrapper<TContext>
     public let options: OpenAIRealtimeSessionOptions
@@ -363,7 +363,7 @@ public final actor OpenAIRealtimeSession<TContext: Sendable>: @unchecked Sendabl
             await emit(.toolFinished(name: name, callID: callID, output: serialized))
         } catch {
             let message = await defaultToolErrorFunction(error: error, toolName: name, callID: callID, context: ToolContext<Any>(context: contextWrapper.context as Any, toolName: name, toolCallID: callID, toolArguments: arguments))
-            try await client.sendFunctionCallOutput(callId: callID, output: "{\"error\":\"\(message.replacingOccurrences(of: "\"", with: "\\\""))\"}")
+            try await client.sendFunctionCallOutput(callId: callID, output: "{\"error\":\"\(message.replacing("\"", with: "\\\""))\"}")
             try await client.createResponse()
             await emit(.toolFailed(name: name, callID: callID, message: message))
         }
@@ -381,11 +381,11 @@ public final actor OpenAIRealtimeSession<TContext: Sendable>: @unchecked Sendabl
 }
 
 @available(macOS 12.0, iOS 15.0, watchOS 8.0, tvOS 15.0, *)
-public final class OpenAIRealtimeRunner<TContext: Sendable>: @unchecked Sendable {
+public final class OpenAIRealtimeRunner<TContext: Sendable>: Sendable {
     public let startingAgent: Agent<TContext>
     public let options: OpenAIRealtimeSessionOptions
     public let hooks: RunHooks<TContext>?
-    private let clientFactory: () throws -> OpenAIRealtimeClient
+    private let clientFactory: @Sendable () throws -> OpenAIRealtimeClient
 
     public init(
         startingAgent: Agent<TContext>,

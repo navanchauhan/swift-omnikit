@@ -72,9 +72,7 @@ public struct Tool: Sendable {
         if name.count > 64 {
             throw InvalidToolCallError(message: "Tool name too long (max 64): \(name)")
         }
-        let regex = try! NSRegularExpression(pattern: "^[A-Za-z][A-Za-z0-9_]*$", options: [])
-        let range = NSRange(location: 0, length: (name as NSString).length)
-        if regex.firstMatch(in: name, options: [], range: range) == nil {
+        if name.wholeMatch(of: #/^[A-Za-z][A-Za-z0-9_]*$/#) == nil {
             throw InvalidToolCallError(message: "Invalid tool name: \(name)")
         }
     }

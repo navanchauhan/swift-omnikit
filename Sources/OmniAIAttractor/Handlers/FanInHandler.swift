@@ -2,7 +2,7 @@ import Foundation
 
 // MARK: - Fan-In Handler
 
-public final class FanInHandler: NodeHandler, @unchecked Sendable {
+public final class FanInHandler: NodeHandler, Sendable {
     public let handlerType: HandlerType = .parallelFanIn
 
     public init() {}

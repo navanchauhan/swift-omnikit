@@ -32,6 +32,14 @@ Framework for multi-agent workflows.
 
 Current status in this repo: multi-agent orchestration is provided through `OmniAIAttractor` DOT pipelines.
 
+### OmniACPModel
+
+Typed Agent Client Protocol (ACP) model layer: JSON-RPC envelopes, ACP methods, notifications, and wire-compatible payload types.
+
+### OmniACP
+
+Actor-based Agent Client Protocol (ACP) client runtime with `stdio` and in-memory transports plus delegate-driven filesystem, permission, and terminal handling.
+
 ### OmniAIAttractor
 
 A DOT-based pipeline runner that uses directed graphs to orchestrate multi-stage AI workflows.

@@ -127,7 +127,7 @@ public func claudeEditTool() -> RegisteredTool {
 
             let newContent: String
             if replaceAll {
-                newContent = content.replacingOccurrences(of: oldString, with: newString)
+                newContent = content.replacing(oldString, with: newString)
             } else {
                 guard let range = content.range(of: oldString) else {
                     throw ToolError.editConflict("old_string not found")
@@ -2371,7 +2371,7 @@ private func claudeRenderTask(_ task: ClaudeCoordinationTask) -> String {
     if !task.blockedBy.isEmpty {
         lines.append("Blocked By: \(task.blockedBy.joined(separator: ", "))")
     }
-    lines.append("Updated: \(ISO8601DateFormatter().string(from: task.updatedAt))")
+    lines.append("Updated: \(task.updatedAt.ISO8601Format())")
     return lines.joined(separator: "\n")
 }
 
@@ -2418,7 +2418,7 @@ private func claudeShellEscape(_ value: String) -> String {
     if value.isEmpty {
         return "''"
     }
-    return "'" + value.replacingOccurrences(of: "'", with: "'\\''") + "'"
+    return "'" + value.replacing("'", with: "'\\''") + "'"
 }
 
 private func claudeStripLineNumbers(_ text: String) -> String {

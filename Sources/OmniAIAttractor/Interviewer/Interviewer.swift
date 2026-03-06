@@ -203,31 +203,16 @@ public struct CallbackInterviewer: Interviewer {
 
 // MARK: - QueueInterviewer
 
-// Safety: @unchecked Sendable — all mutable state (queue, _askedQuestions)
-// is guarded by `lock`.
-public final class QueueInterviewer: @unchecked Sendable, Interviewer {
+public actor QueueInterviewer: Interviewer {
     private var queue: [InterviewAnswer]
-    private let lock = NSLock()
-    private var _askedQuestions: [InterviewQuestion] = []
-
-    public var askedQuestions: [InterviewQuestion] {
-        lock.lock()
-        defer { lock.unlock() }
-        return _askedQuestions
-    }
+    public private(set) var askedQuestions: [InterviewQuestion] = []
 
     public init(answers: [InterviewAnswer]) {
         self.queue = answers
     }
 
     public func ask(_ question: InterviewQuestion) async -> InterviewAnswer {
-        nextAnswer(for: question)
-    }
-
-    private func nextAnswer(for question: InterviewQuestion) -> InterviewAnswer {
-        lock.lock()
-        defer { lock.unlock() }
-        _askedQuestions.append(question)
+        askedQuestions.append(question)
         if queue.isEmpty {
             return .skipped()
         }
@@ -237,18 +222,9 @@ public final class QueueInterviewer: @unchecked Sendable, Interviewer {
 
 // MARK: - RecordingInterviewer
 
-// Safety: @unchecked Sendable — all mutable state (_recordings) is guarded
-// by `lock`. The `inner` interviewer is required to be Sendable via protocol.
-public final class RecordingInterviewer: @unchecked Sendable, Interviewer {
+public actor RecordingInterviewer: Interviewer {
     private let inner: Interviewer
-    private let lock = NSLock()
-    private var _recordings: [(InterviewQuestion, InterviewAnswer)] = []
-
-    public var recordings: [(InterviewQuestion, InterviewAnswer)] {
-        lock.lock()
-        defer { lock.unlock() }
-        return _recordings
-    }
+    public private(set) var recordings: [(InterviewQuestion, InterviewAnswer)] = []
 
     public init(wrapping inner: Interviewer) {
         self.inner = inner
@@ -256,14 +232,8 @@ public final class RecordingInterviewer: @unchecked Sendable, Interviewer {
 
     public func ask(_ question: InterviewQuestion) async -> InterviewAnswer {
         let answer = await inner.ask(question)
-        record(question, answer)
+        recordings.append((question, answer))
         return answer
-    }
-
-    private func record(_ question: InterviewQuestion, _ answer: InterviewAnswer) {
-        lock.lock()
-        _recordings.append((question, answer))
-        lock.unlock()
     }
 
     public func inform(_ message: String, stage: String) async {

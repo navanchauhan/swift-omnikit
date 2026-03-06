@@ -8,6 +8,7 @@ final class HarnessModel {
     init(id: Int) { self.id = id }
 }
 
+@MainActor
 @Observable
 final class HarnessObservableModel {
     var counter: Int = 0
@@ -28,12 +29,14 @@ private struct HarnessView: View {
     @State private var picked: Color = .blue
     @State private var quickLookURL: URL? = nil
     @State private var didSeedModels: Bool = false
-    @State private var observableModel = HarnessObservableModel()
+    @State private var observableModel = MainActor.assumeIsolated { HarnessObservableModel() }
 
     @Query(sort: \HarnessModel.id, order: .reverse) private var models: [HarnessModel]
     @Environment(\.modelContext) private var modelContext
 
     var body: some View {
+        let observableModel = observableModel
+
         VStack(spacing: 1) {
             Group {
                 Toggle("Flag", isOn: $harnessFlag)
@@ -81,12 +84,14 @@ private struct HarnessView: View {
                     endRadius: 10
                 )
 
-                ShareLink(item: URL(string: "https://example.com")!) {
-                    Label("Share", systemImage: "square.and.arrow.up")
+                if let shareURL = URL(string: "https://example.com") {
+                    ShareLink(item: shareURL) {
+                        Label("Share", systemImage: "square.and.arrow.up")
+                    }
                 }
 
                 Button("QuickLook") {
-                    quickLookURL = URL(string: "file:///tmp/example.txt")
+                    quickLookURL = URL(filePath: "/tmp/example.txt")
                 }
                 .quickLookPreview($quickLookURL)
 
@@ -141,8 +146,16 @@ private struct HarnessView: View {
         .safeAreaInset(edge: .top) { Text("Inset") }
         .toolbar {
             ToolbarItemGroup(placement: .automatic) {
-                Button("Inc") { observableModel.counter += 1 }
-                Button("Toggle") { observableModel.flag.toggle() }
+                Button("Inc") {
+                    MainActor.assumeIsolated {
+                        observableModel.counter += 1
+                    }
+                }
+                Button("Toggle") {
+                    MainActor.assumeIsolated {
+                        observableModel.flag.toggle()
+                    }
+                }
             }
             ToolbarItem(placement: .confirmationAction) {
                 Button("Done") {
@@ -169,11 +182,15 @@ private struct HarnessObservableRow: View {
     @Bindable var model: HarnessObservableModel
 
     var body: some View {
-        Text("Counter \(model.counter)")
+        let model = model
+        let counter = MainActor.assumeIsolated { model.counter }
+        let flag = MainActor.assumeIsolated { model.flag }
+
+        Text("Counter \(counter)")
             .onHover { _ in }
-            .onChange(of: model.counter) { _ in }
-            .onChange(of: model.flag) { }
-            .onChange(of: model.counter, initial: true) { _, _ in }
+            .onChange(of: counter) { _ in }
+            .onChange(of: flag) { }
+            .onChange(of: counter, initial: true) { _, _ in }
             .phaseAnimator([false, true]) { content, phase in
                 content.opacity(phase ? 1 : 0.85)
             } animation: { _ in
@@ -186,11 +203,17 @@ private struct HarnessObservableRow: View {
 
 @main
 struct SwiftUICompatibilityHarnessApp: App {
-    var container: ModelContainer = {
+    var container: ModelContainer = Self.makeContainer()
+
+    private static func makeContainer() -> ModelContainer {
         let schema = Schema([HarnessModel.self])
         let config = ModelConfiguration(schema: schema, isStoredInMemoryOnly: true)
-        return try! ModelContainer(for: schema, configurations: [config])
-    }()
+        do {
+            return try ModelContainer(for: schema, configurations: [config])
+        } catch {
+            preconditionFailure("Failed to create in-memory ModelContainer for SwiftUICompatibilityHarness: \(error)")
+        }
+    }
 
     var body: some Scene {
         WindowGroup {

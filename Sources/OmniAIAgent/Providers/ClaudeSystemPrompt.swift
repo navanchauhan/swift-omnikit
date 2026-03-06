@@ -896,9 +896,7 @@ public enum ClaudeSystemPrompt {
         modelName: String,
         modelId: String
     ) -> String {
-        let dateFormatter = DateFormatter()
-        dateFormatter.dateFormat = "yyyy-MM-dd"
-        let today = dateFormatter.string(from: Date())
+        let today = Date.now.formatted(.iso8601.year().month().day())
 
         var osVersion = "Unknown"
         #if os(macOS)

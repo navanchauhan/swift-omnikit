@@ -2,7 +2,7 @@ import Foundation
 
 // MARK: - Start Handler
 
-public final class StartHandler: NodeHandler, @unchecked Sendable {
+public final class StartHandler: NodeHandler, Sendable {
     public let handlerType: HandlerType = .start
 
     public init() {}

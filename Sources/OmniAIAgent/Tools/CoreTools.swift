@@ -110,7 +110,7 @@ public func editFileTool() -> RegisteredTool {
 
             let newContent: String
             if replaceAll {
-                newContent = content.replacingOccurrences(of: oldString, with: newString)
+                newContent = content.replacing(oldString, with: newString)
                 let count = content.components(separatedBy: oldString).count - 1
                 try await env.writeFile(path: filePath, content: newContent)
                 return "Replaced \(count) occurrence(s) in \(filePath)"
@@ -545,5 +545,5 @@ private func shellEscape(_ arg: String) -> String {
     if arg.rangeOfCharacter(from: CharacterSet.alphanumerics.inverted.subtracting(CharacterSet(charactersIn: "_-./:"))) == nil {
         return arg
     }
-    return "'" + arg.replacingOccurrences(of: "'", with: "'\\''") + "'"
+    return "'" + arg.replacing("'", with: "'\\''") + "'"
 }

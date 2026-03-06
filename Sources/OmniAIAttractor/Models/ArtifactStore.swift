@@ -18,13 +18,7 @@ public struct ArtifactInfo: Sendable {
 
 // MARK: - Artifact Store
 
-// Safety: @unchecked Sendable — all mutable state (inMemory, metadata) is
-// guarded by `lock`. Note: store() performs file I/O while holding the lock,
-// which can block the cooperative thread pool. This is acceptable for the
-// current write-once/read-many access pattern but should be revisited if
-// artifact stores are shared across concurrent pipelines.
-public final class ArtifactStore: @unchecked Sendable {
-    private let lock = NSLock()
+public actor ArtifactStore {
     private var inMemory: [String: Any] = [:]
     private var metadata: [String: ArtifactInfo] = [:]
     private let logsRoot: URL
@@ -36,9 +30,6 @@ public final class ArtifactStore: @unchecked Sendable {
     }
 
     public func store(artifactId: String, name: String, data: Any) throws -> ArtifactInfo {
-        lock.lock()
-        defer { lock.unlock() }
-
         let serialized: Data
         if let d = data as? Data {
             serialized = d
@@ -63,9 +54,6 @@ public final class ArtifactStore: @unchecked Sendable {
     }
 
     public func retrieve(_ artifactId: String) -> Any? {
-        lock.lock()
-        defer { lock.unlock() }
-
         if let val = inMemory[artifactId] { return val }
 
         let file = logsRoot.appendingPathComponent("artifacts/\(artifactId).json")
@@ -74,20 +62,14 @@ public final class ArtifactStore: @unchecked Sendable {
     }
 
     public func has(_ artifactId: String) -> Bool {
-        lock.lock()
-        defer { lock.unlock() }
-        return metadata[artifactId] != nil
+        metadata[artifactId] != nil
     }
 
     public func list() -> [ArtifactInfo] {
-        lock.lock()
-        defer { lock.unlock() }
-        return Array(metadata.values)
+        Array(metadata.values)
     }
 
     public func remove(_ artifactId: String) {
-        lock.lock()
-        defer { lock.unlock() }
         inMemory.removeValue(forKey: artifactId)
         metadata.removeValue(forKey: artifactId)
         let file = logsRoot.appendingPathComponent("artifacts/\(artifactId).json")
@@ -95,8 +77,6 @@ public final class ArtifactStore: @unchecked Sendable {
     }
 
     public func clear() {
-        lock.lock()
-        defer { lock.unlock() }
         inMemory.removeAll()
         metadata.removeAll()
         let dir = logsRoot.appendingPathComponent("artifacts")

@@ -48,6 +48,14 @@ let package = Package(
             targets: ["OmniAIAttractor"]
         ),
         .library(
+            name: "OmniACPModel",
+            targets: ["OmniACPModel"]
+        ),
+        .library(
+            name: "OmniACP",
+            targets: ["OmniACP"]
+        ),
+        .library(
             name: "OmniAgentsSDK",
             targets: ["OmniAgentsSDK"]
         ),
@@ -189,8 +197,27 @@ let package = Package(
             ]
         ),
         .target(
+            name: "OmniACPModel",
+            path: "Sources/OmniACPModel",
+            swiftSettings: [
+                .swiftLanguageMode(.v6),
+                .unsafeFlags(["-warn-concurrency", "-strict-concurrency=complete"]),
+                .unsafeFlags(["-enable-actor-data-race-checks"], .when(configuration: .debug)),
+            ]
+        ),
+        .target(
+            name: "OmniACP",
+            dependencies: ["OmniACPModel"],
+            path: "Sources/OmniACP",
+            swiftSettings: [
+                .swiftLanguageMode(.v6),
+                .unsafeFlags(["-warn-concurrency", "-strict-concurrency=complete"]),
+                .unsafeFlags(["-enable-actor-data-race-checks"], .when(configuration: .debug)),
+            ]
+        ),
+        .target(
             name: "OmniAIAttractor",
-            dependencies: ["OmniAICore", "OmniAIAgent"],
+            dependencies: ["OmniAICore", "OmniAIAgent", "OmniACP"],
             path: "Sources/OmniAIAttractor",
             swiftSettings: [
                 .unsafeFlags(["-warn-concurrency", "-strict-concurrency=complete"]),
@@ -259,10 +286,11 @@ let package = Package(
         ),
         .executableTarget(
             name: "KitchenSink",
-            dependencies: ["OmniUI", "OmniUINotcursesRenderer"],
+            dependencies: ["OmniSwiftUI", "OmniUI", "OmniUINotcursesRenderer"],
             swiftSettings: [
                 .unsafeFlags(["-warn-concurrency", "-strict-concurrency=complete"]),
                 .unsafeFlags(["-enable-actor-data-race-checks"], .when(configuration: .debug)),
+                .unsafeFlags(["-Xfrontend", "-solver-expression-time-threshold=300"]),
             ]
         ),
         .executableTarget(
@@ -319,11 +347,42 @@ let package = Package(
             ]
         ),
         .testTarget(
+            name: "OmniACPModelTests",
+            dependencies: [
+                "OmniACPModel",
+                .product(name: "Testing", package: "swift-testing"),
+            ],
+            swiftSettings: [
+                .swiftLanguageMode(.v6),
+                .unsafeFlags(["-warn-concurrency", "-strict-concurrency=complete"]),
+                .unsafeFlags(["-enable-actor-data-race-checks"], .when(configuration: .debug)),
+            ]
+        ),
+        .testTarget(
+            name: "OmniACPTests",
+            dependencies: [
+                "OmniACP",
+                "OmniACPModel",
+                .product(name: "Testing", package: "swift-testing"),
+            ],
+            resources: [
+                .process("GoldenTests"),
+                .copy("Fixtures"),
+            ],
+            swiftSettings: [
+                .swiftLanguageMode(.v6),
+                .unsafeFlags(["-warn-concurrency", "-strict-concurrency=complete"]),
+                .unsafeFlags(["-enable-actor-data-race-checks"], .when(configuration: .debug)),
+            ]
+        ),
+        .testTarget(
             name: "OmniAIAttractorTests",
             dependencies: [
                 "OmniAIAttractor",
                 "OmniAICore",
                 "OmniAIAgent",
+                "OmniACP",
+                "OmniACPModel",
                 .product(name: "Testing", package: "swift-testing"),
             ],
             swiftSettings: [

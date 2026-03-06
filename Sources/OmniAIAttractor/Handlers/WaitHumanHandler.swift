@@ -2,7 +2,7 @@ import Foundation
 
 // MARK: - Wait Human Handler
 
-public final class WaitHumanHandler: NodeHandler, @unchecked Sendable {
+public final class WaitHumanHandler: NodeHandler, Sendable {
     public let handlerType: HandlerType = .waitHuman
     private let interviewer: Interviewer
 

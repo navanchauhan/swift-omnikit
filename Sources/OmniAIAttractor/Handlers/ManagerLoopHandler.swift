@@ -5,7 +5,7 @@ import Foundation
 /// Handler for stack.manager_loop nodes.
 /// Loads a child pipeline DOT from the graph's stackChildDotfile attribute,
 /// creates a child PipelineEngine, and runs the child pipeline with retry.
-public final class ManagerLoopHandler: NodeHandler, @unchecked Sendable {
+public final class ManagerLoopHandler: NodeHandler, Sendable {
     public let handlerType: HandlerType = .stackManagerLoop
     private let backend: CodergenBackend
 

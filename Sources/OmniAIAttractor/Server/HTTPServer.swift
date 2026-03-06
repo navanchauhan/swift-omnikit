@@ -5,41 +5,17 @@ import Network
 
 // MARK: - Pipeline Run State
 
-public final class PipelineRunState: @unchecked Sendable {
-    private let lock = NSLock()
-    public let id: String
-    public let dotSource: String
+public actor PipelineRunState {
+    public nonisolated let id: String
+    public nonisolated let dotSource: String
+    public nonisolated let eventEmitter: PipelineEventEmitter
+
     private var _status: PipelineRunStatus = .pending
     private var _result: PipelineResult?
     private var _error: String?
     private var _pendingQuestions: [PendingQuestion] = []
-
-    public var status: PipelineRunStatus {
-        lock.lock()
-        defer { lock.unlock() }
-        return _status
-    }
-
-    public var result: PipelineResult? {
-        lock.lock()
-        defer { lock.unlock() }
-        return _result
-    }
-
-    public var error: String? {
-        lock.lock()
-        defer { lock.unlock() }
-        return _error
-    }
-
-    public var pendingQuestions: [PendingQuestion] {
-        lock.lock()
-        defer { lock.unlock() }
-        return _pendingQuestions
-    }
     private var questionAnswers: [String: InterviewAnswer] = [:]
     private var questionContinuations: [String: CheckedContinuation<InterviewAnswer, Never>] = [:]
-    public let eventEmitter: PipelineEventEmitter
     private var task: Task<Void, Never>?
 
     public init(id: String, dotSource: String) {
@@ -58,79 +34,78 @@ public final class PipelineRunState: @unchecked Sendable {
         public let createdAt: Date
     }
 
+    public var status: PipelineRunStatus { _status }
+    public var result: PipelineResult? { _result }
+    public var error: String? { _error }
+    public var pendingQuestions: [PendingQuestion] { _pendingQuestions }
+
     func setStatus(_ s: PipelineRunStatus) {
-        lock.lock()
         _status = s
-        lock.unlock()
     }
 
     func setResult(_ r: PipelineResult) {
-        lock.lock()
         _result = r
         _status = r.status == .success ? .completed : .failed
-        lock.unlock()
     }
 
     func setError(_ e: String) {
-        lock.lock()
         _error = e
         _status = .failed
-        lock.unlock()
     }
 
     func setTask(_ t: Task<Void, Never>) {
-        lock.lock()
         task = t
-        lock.unlock()
     }
 
     func cancel() {
-        lock.lock()
         task?.cancel()
         _status = .cancelled
-        lock.unlock()
+        let pendingQuestionsByID = Dictionary(uniqueKeysWithValues: _pendingQuestions.map { ($0.id, $0.question) })
+        let pendingContinuations = questionContinuations
+        questionContinuations.removeAll()
+        for (id, question) in pendingQuestionsByID where questionAnswers[id] == nil {
+            questionAnswers[id] = question.defaultAnswer ?? .skipped()
+        }
+        _pendingQuestions.removeAll()
+
+        for (id, continuation) in pendingContinuations {
+            let answer = pendingQuestionsByID[id]?.defaultAnswer ?? .skipped()
+            continuation.resume(returning: answer)
+        }
     }
 
     func addPendingQuestion(_ q: PendingQuestion) {
-        lock.lock()
         _pendingQuestions.append(q)
-        lock.unlock()
     }
 
     func removePendingQuestion(_ qid: String) {
-        lock.lock()
         _pendingQuestions.removeAll { $0.id == qid }
-        lock.unlock()
     }
 
     func registerQuestionContinuation(_ qid: String, _ cont: CheckedContinuation<InterviewAnswer, Never>) {
-        lock.lock()
         if let answer = questionAnswers[qid] {
             questionAnswers.removeValue(forKey: qid)
-            lock.unlock()
             cont.resume(returning: answer)
+        } else if _status == .cancelled {
+            cont.resume(returning: .skipped())
         } else {
             questionContinuations[qid] = cont
-            lock.unlock()
         }
     }
 
     func submitAnswer(_ qid: String, _ answer: InterviewAnswer) {
-        lock.lock()
         if let cont = questionContinuations[qid] {
             questionContinuations.removeValue(forKey: qid)
-            lock.unlock()
             cont.resume(returning: answer)
         } else {
             questionAnswers[qid] = answer
-            lock.unlock()
         }
     }
 }
 
 // MARK: - HTTP Server Interviewer
 
-public final class HTTPServerInterviewer: @unchecked Sendable, Interviewer {
+public final class HTTPServerInterviewer: Sendable, Interviewer {
     private let runState: PipelineRunState
 
     public init(runState: PipelineRunState) {
@@ -145,7 +120,7 @@ public final class HTTPServerInterviewer: @unchecked Sendable, Interviewer {
             question: question,
             createdAt: Date()
         )
-        runState.addPendingQuestion(pending)
+        await runState.addPendingQuestion(pending)
 
         await runState.eventEmitter.emit(PipelineEvent(
             kind: .interviewStarted,
@@ -153,10 +128,12 @@ public final class HTTPServerInterviewer: @unchecked Sendable, Interviewer {
         ))
 
         let answer: InterviewAnswer = await withCheckedContinuation { continuation in
-            runState.registerQuestionContinuation(qid, continuation)
+            Task {
+                await runState.registerQuestionContinuation(qid, continuation)
+            }
         }
 
-        runState.removePendingQuestion(qid)
+        await runState.removePendingQuestion(qid)
 
         await runState.eventEmitter.emit(PipelineEvent(
             kind: .interviewCompleted,
@@ -169,10 +146,9 @@ public final class HTTPServerInterviewer: @unchecked Sendable, Interviewer {
 
 // MARK: - Attractor HTTP Server
 
-public final class AttractorHTTPServer: @unchecked Sendable {
+public actor AttractorHTTPServer {
     private let backend: CodergenBackend
     private let port: UInt16
-    private let lock = NSLock()
     private var runs: [String: PipelineRunState] = [:]
     private var listener: Any? = nil
 
@@ -181,68 +157,62 @@ public final class AttractorHTTPServer: @unchecked Sendable {
         self.port = port
     }
 
-    // MARK: - Pipeline Management
-
     public func createRun(dotSource: String) -> PipelineRunState {
         let id = UUID().uuidString.lowercased().prefix(8).description
         let state = PipelineRunState(id: id, dotSource: dotSource)
-        lock.lock()
         runs[id] = state
-        lock.unlock()
         return state
     }
 
     public func getRun(_ id: String) -> PipelineRunState? {
-        lock.lock()
-        defer { lock.unlock() }
-        return runs[id]
+        runs[id]
     }
 
-    public func startRun(_ state: PipelineRunState) {
-        state.setStatus(.running)
+    public func startRun(_ state: PipelineRunState) async {
+        await state.setStatus(.running)
         let backend = self.backend
+        let runID = state.id
+        let dotSource = state.dotSource
+        let eventEmitter = state.eventEmitter
 
         let task = Task {
             let logsRoot = FileManager.default.temporaryDirectory
-                .appendingPathComponent("attractor-server/\(state.id)")
+                .appendingPathComponent("attractor-server/\(runID)")
             let interviewer = HTTPServerInterviewer(runState: state)
 
             let config = PipelineConfig(
                 logsRoot: logsRoot,
                 backend: backend,
                 interviewer: interviewer,
-                eventEmitter: state.eventEmitter
+                eventEmitter: eventEmitter
             )
 
             let engine = PipelineEngine(config: config)
             do {
-                let result = try await engine.run(dot: state.dotSource)
-                state.setResult(result)
+                let result = try await engine.run(dot: dotSource)
+                await state.setResult(result)
             } catch {
-                state.setError(error.localizedDescription)
+                await state.setError(error.localizedDescription)
             }
         }
-        state.setTask(task)
+        await state.setTask(task)
     }
 
-    public func cancelRun(_ id: String) -> Bool {
-        guard let state = getRun(id) else { return false }
-        state.cancel()
+    public func cancelRun(_ id: String) async -> Bool {
+        guard let state = runs[id] else { return false }
+        await state.cancel()
         return true
     }
 
-    public func submitAnswer(runId: String, questionId: String, answer: InterviewAnswer) -> Bool {
-        guard let state = getRun(runId) else { return false }
-        state.submitAnswer(questionId, answer)
+    public func submitAnswer(runId: String, questionId: String, answer: InterviewAnswer) async -> Bool {
+        guard let state = runs[runId] else { return false }
+        await state.submitAnswer(questionId, answer)
         return true
     }
-
-    // MARK: - HTTP Request Handling
 
     public func handleRequest(method: String, path: String, body: Data?) async -> HTTPResponse {
         let components = path.split(separator: "/").map(String.init)
 
-        // POST /pipelines - Create and start a pipeline
         if method == "POST" && components == ["pipelines"] {
             guard let body = body,
                   let dotSource = String(data: body, encoding: .utf8),
@@ -250,35 +220,37 @@ public final class AttractorHTTPServer: @unchecked Sendable {
                 return HTTPResponse(status: 400, body: "{\"error\":\"Missing DOT source in request body\"}")
             }
             let state = createRun(dotSource: dotSource)
-            startRun(state)
+            await startRun(state)
+            let status = await state.status.rawValue
             return HTTPResponse(
                 status: 201,
-                body: "{\"id\":\"\(state.id)\",\"status\":\"\(state.status.rawValue)\"}"
+                body: "{\"id\":\"\(state.id)\",\"status\":\"\(status)\"}"
             )
         }
 
-        // GET /pipelines/{id} - Get pipeline status
         if method == "GET" && components.count == 2 && components[0] == "pipelines" {
             let id = components[1]
             guard let state = getRun(id) else {
                 return HTTPResponse(status: 404, body: "{\"error\":\"Pipeline not found\"}")
             }
+            let status = await state.status
+            let result = await state.result
+            let error = await state.error
             var json: [String: Any] = [
                 "id": state.id,
-                "status": state.status.rawValue,
+                "status": status.rawValue,
             ]
-            if let result = state.result {
+            if let result {
                 json["completed_nodes"] = result.completedNodes
                 json["node_outcomes"] = result.nodeOutcomes.mapValues { $0.rawValue }
             }
-            if let error = state.error {
+            if let error {
                 json["error"] = error
             }
             let data = try? JSONSerialization.data(withJSONObject: json, options: [.sortedKeys])
             return HTTPResponse(status: 200, body: String(data: data ?? Data(), encoding: .utf8) ?? "{}")
         }
 
-        // GET /pipelines/{id}/events - SSE event stream
         if method == "GET" && components.count == 3 && components[0] == "pipelines" && components[2] == "events" {
             let id = components[1]
             guard let state = getRun(id) else {
@@ -289,7 +261,7 @@ public final class AttractorHTTPServer: @unchecked Sendable {
             for event in events {
                 var eventData: [String: Any] = [
                     "kind": event.kind.rawValue,
-                    "timestamp": ISO8601DateFormatter().string(from: event.timestamp),
+                    "timestamp": event.timestamp.ISO8601Format(),
                 ]
                 if let nodeId = event.nodeId { eventData["node_id"] = nodeId }
                 for (k, v) in event.data { eventData[k] = v }
@@ -305,23 +277,22 @@ public final class AttractorHTTPServer: @unchecked Sendable {
             )
         }
 
-        // POST /pipelines/{id}/cancel - Cancel pipeline
         if method == "POST" && components.count == 3 && components[0] == "pipelines" && components[2] == "cancel" {
             let id = components[1]
-            if cancelRun(id) {
+            if await cancelRun(id) {
                 return HTTPResponse(status: 200, body: "{\"status\":\"cancelled\"}")
             }
             return HTTPResponse(status: 404, body: "{\"error\":\"Pipeline not found\"}")
         }
 
-        // GET /pipelines/{id}/questions - Get pending questions
         if method == "GET" && components.count == 3 && components[0] == "pipelines" && components[2] == "questions" {
             let id = components[1]
             guard let state = getRun(id) else {
                 return HTTPResponse(status: 404, body: "{\"error\":\"Pipeline not found\"}")
             }
+            let pendingQuestions = await state.pendingQuestions
             var questions: [[String: Any]] = []
-            for q in state.pendingQuestions {
+            for q in pendingQuestions {
                 var qDict: [String: Any] = [
                     "id": q.id,
                     "text": q.question.text,
@@ -337,7 +308,6 @@ public final class AttractorHTTPServer: @unchecked Sendable {
             return HTTPResponse(status: 200, body: String(data: data ?? Data(), encoding: .utf8) ?? "{}")
         }
 
-        // POST /pipelines/{id}/questions/{qid}/answer - Submit answer
         if method == "POST" && components.count == 5
             && components[0] == "pipelines" && components[2] == "questions" && components[4] == "answer" {
             let runId = components[1]
@@ -348,7 +318,7 @@ public final class AttractorHTTPServer: @unchecked Sendable {
                 return HTTPResponse(status: 400, body: "{\"error\":\"Missing 'value' in request body\"}")
             }
 
-            var answer: InterviewAnswer
+            let answer: InterviewAnswer
             if let optionKey = json["option_key"] as? String,
                let optionLabel = json["option_label"] as? String {
                 answer = .option(InterviewOption(key: optionKey, label: optionLabel))
@@ -356,19 +326,18 @@ public final class AttractorHTTPServer: @unchecked Sendable {
                 answer = .freeText(value)
             }
 
-            if submitAnswer(runId: runId, questionId: qid, answer: answer) {
+            if await submitAnswer(runId: runId, questionId: qid, answer: answer) {
                 return HTTPResponse(status: 200, body: "{\"status\":\"answered\"}")
             }
             return HTTPResponse(status: 404, body: "{\"error\":\"Pipeline or question not found\"}")
         }
 
-        // GET /pipelines/{id}/checkpoint - Get checkpoint
         if method == "GET" && components.count == 3 && components[0] == "pipelines" && components[2] == "checkpoint" {
             let id = components[1]
             guard let state = getRun(id) else {
                 return HTTPResponse(status: 404, body: "{\"error\":\"Pipeline not found\"}")
             }
-            if let result = state.result {
+            if let result = await state.result {
                 let json: [String: Any] = [
                     "completed_nodes": result.completedNodes,
                     "node_outcomes": result.nodeOutcomes.mapValues { $0.rawValue },
@@ -380,13 +349,12 @@ public final class AttractorHTTPServer: @unchecked Sendable {
             return HTTPResponse(status: 200, body: "{\"status\":\"in_progress\"}")
         }
 
-        // GET /pipelines/{id}/context - Get context
         if method == "GET" && components.count == 3 && components[0] == "pipelines" && components[2] == "context" {
             let id = components[1]
             guard let state = getRun(id) else {
                 return HTTPResponse(status: 404, body: "{\"error\":\"Pipeline not found\"}")
             }
-            if let result = state.result {
+            if let result = await state.result {
                 let data = try? JSONSerialization.data(withJSONObject: result.context, options: [.sortedKeys])
                 return HTTPResponse(status: 200, body: String(data: data ?? Data(), encoding: .utf8) ?? "{}")
             }
@@ -410,4 +378,3 @@ public struct HTTPResponse: Sendable {
         self.contentType = contentType
     }
 }
-

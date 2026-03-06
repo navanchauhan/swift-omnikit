@@ -41,7 +41,7 @@ public struct CodergenResult: Sendable {
 
 // MARK: - Codergen Handler
 
-public final class CodergenHandler: NodeHandler, @unchecked Sendable {
+public final class CodergenHandler: NodeHandler, Sendable {
     public let handlerType: HandlerType = .codergen
     private let llmBackend: CodergenBackend
 
@@ -123,6 +123,31 @@ public final class CodergenHandler: NodeHandler, @unchecked Sendable {
         }
         if let artifactPath = node.rawAttributes["artifact_path"]?.stringValue, !artifactPath.isEmpty {
             context.set("_current_node_artifact_path", artifactPath)
+        }
+        if let acpAgentPath = (node.rawAttributes["acp_agent_path"]?.stringValue).flatMap({ $0.isEmpty ? nil : $0 })
+            ?? (graph.rawAttributes["acp_agent_path"]?.stringValue).flatMap({ $0.isEmpty ? nil : $0 })
+        {
+            context.set("_current_node_acp_agent_path", acpAgentPath)
+        }
+        if let acpAgentArgs = (node.rawAttributes["acp_agent_args"]?.stringValue).flatMap({ $0.isEmpty ? nil : $0 })
+            ?? (graph.rawAttributes["acp_agent_args"]?.stringValue).flatMap({ $0.isEmpty ? nil : $0 })
+        {
+            context.set("_current_node_acp_agent_args", acpAgentArgs)
+        }
+        if let acpWorkingDirectory = (node.rawAttributes["acp_cwd"]?.stringValue).flatMap({ $0.isEmpty ? nil : $0 })
+            ?? (graph.rawAttributes["acp_cwd"]?.stringValue).flatMap({ $0.isEmpty ? nil : $0 })
+        {
+            context.set("_current_node_acp_cwd", acpWorkingDirectory)
+        }
+        if let acpTimeout = node.rawAttributes["acp_timeout_seconds"]?.stringValue
+            ?? graph.rawAttributes["acp_timeout_seconds"]?.stringValue
+        {
+            context.set("_current_node_acp_timeout_seconds", acpTimeout)
+        }
+        if let acpMode = (node.rawAttributes["acp_mode"]?.stringValue).flatMap({ $0.isEmpty ? nil : $0 })
+            ?? (graph.rawAttributes["acp_mode"]?.stringValue).flatMap({ $0.isEmpty ? nil : $0 })
+        {
+            context.set("_current_node_acp_mode", acpMode)
         }
         let resumeKey = buildNodeResumeKey(graphID: graph.id, nodeID: node.id, provider: provider, model: model, prompt: prompt)
         context.set("_current_node_resume_key", resumeKey)
@@ -234,38 +259,72 @@ public final class CodergenHandler: NodeHandler, @unchecked Sendable {
 
     // MARK: - Shell Hook Execution
 
-    // Note: Blocks a cooperative thread via readDataToEndOfFile()/waitUntilExit().
-    // Hooks are short-lived shell commands so starvation risk is low.
+    // Note: Blocks a cooperative thread while waiting for the hook process.
+    // Stdout and stderr are drained concurrently to avoid pipe deadlocks.
     private func runShellHook(_ script: String, nodeId: String) throws -> String {
         let process = Process()
         let stdout = Pipe()
         let stderr = Pipe()
+        let stdoutData = _ShellHookDataBox()
+        let stderrData = _ShellHookDataBox()
 
         process.executableURL = URL(fileURLWithPath: "/bin/sh")
         process.arguments = ["-c", script]
         process.standardOutput = stdout
         process.standardError = stderr
 
-        // Set NODE_ID environment variable for the hook
         var env = ProcessInfo.processInfo.environment
         env["ATTRACTOR_NODE_ID"] = nodeId
         process.environment = env
 
-        try process.run()
-        // Read pipe data before waitUntilExit to avoid pipe buffer deadlock.
-        let outData = stdout.fileHandleForReading.readDataToEndOfFile()
-        let errData = stderr.fileHandleForReading.readDataToEndOfFile()
-        process.waitUntilExit()
+        let stdoutQueue = DispatchQueue(label: "attractor.hook.stdout")
+        let stderrQueue = DispatchQueue(label: "attractor.hook.stderr")
+        stdoutQueue.async {
+            stdoutData.store(stdout.fileHandleForReading.readDataToEndOfFile())
+        }
+        stderrQueue.async {
+            stderrData.store(stderr.fileHandleForReading.readDataToEndOfFile())
+        }
 
-        let outStr = String(data: outData, encoding: .utf8) ?? ""
+        do {
+            try process.run()
+        } catch {
+            try? stdout.fileHandleForWriting.close()
+            try? stderr.fileHandleForWriting.close()
+            stdoutQueue.sync {}
+            stderrQueue.sync {}
+            throw error
+        }
+        process.waitUntilExit()
+        stdoutQueue.sync {}
+        stderrQueue.sync {}
+
+        let outStr = String(data: stdoutData.load(), encoding: .utf8) ?? ""
+        let errStr = String(data: stderrData.load(), encoding: .utf8) ?? ""
 
         if process.terminationStatus != 0 {
-            let errStr = String(data: errData, encoding: .utf8) ?? ""
             throw AttractorError.executionFailed(
                 "Tool hook failed for node \(nodeId) (exit \(process.terminationStatus)): \(errStr)"
             )
         }
 
-        return outStr.trimmingCharacters(in: .whitespacesAndNewlines)
+        return outStr.trimmingCharacters(in: CharacterSet.whitespacesAndNewlines)
+    }
+}
+
+private final class _ShellHookDataBox: @unchecked Sendable {
+    private let lock = NSLock()
+    private var data = Data()
+
+    func store(_ data: Data) {
+        lock.lock()
+        self.data = data
+        lock.unlock()
+    }
+
+    func load() -> Data {
+        lock.lock()
+        defer { lock.unlock() }
+        return data
     }
 }

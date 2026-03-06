@@ -35,6 +35,11 @@ private struct CLICommand {
     let backend: String
     let logsRoot: String?
     let workdir: String?
+    let acpAgent: String?
+    let acpArgs: [String]
+    let acpCwd: String?
+    let acpTimeoutSeconds: Double?
+    let acpMode: String?
     let printContext: Bool
     let interactive: Bool
     let resume: Bool
@@ -60,6 +65,11 @@ private struct CLICommand {
         var foundBackend = "agent"
         var foundLogsRoot: String?
         var foundWorkdir: String?
+        var foundACPAgent: String?
+        var foundACPArgs: [String] = []
+        var foundACPCwd: String?
+        var foundACPTimeoutSeconds: Double?
+        var foundACPMode: String?
         var foundPrintContext = false
         var foundInteractive = false
         var foundResume = false
@@ -85,6 +95,39 @@ private struct CLICommand {
                     throw ExitError(code: 2, message: "--workdir requires a value")
                 }
                 foundWorkdir = arguments[idx]
+            case "--acp-agent":
+                idx += 1
+                guard idx < arguments.count else {
+                    throw ExitError(code: 2, message: "--acp-agent requires a value")
+                }
+                foundACPAgent = arguments[idx]
+            case "--acp-arg":
+                idx += 1
+                guard idx < arguments.count else {
+                    throw ExitError(code: 2, message: "--acp-arg requires a value")
+                }
+                foundACPArgs.append(arguments[idx])
+            case "--acp-cwd":
+                idx += 1
+                guard idx < arguments.count else {
+                    throw ExitError(code: 2, message: "--acp-cwd requires a value")
+                }
+                foundACPCwd = arguments[idx]
+            case "--acp-timeout":
+                idx += 1
+                guard idx < arguments.count else {
+                    throw ExitError(code: 2, message: "--acp-timeout requires a value")
+                }
+                guard let timeout = Double(arguments[idx]), timeout > 0 else {
+                    throw ExitError(code: 2, message: "--acp-timeout must be a positive number of seconds")
+                }
+                foundACPTimeoutSeconds = timeout
+            case "--acp-mode":
+                idx += 1
+                guard idx < arguments.count else {
+                    throw ExitError(code: 2, message: "--acp-mode requires a value")
+                }
+                foundACPMode = arguments[idx]
             case "--print-context":
                 foundPrintContext = true
             case "--interactive":
@@ -114,6 +157,11 @@ private struct CLICommand {
         self.backend = foundBackend
         self.logsRoot = foundLogsRoot
         self.workdir = foundWorkdir
+        self.acpAgent = foundACPAgent
+        self.acpArgs = foundACPArgs
+        self.acpCwd = foundACPCwd
+        self.acpTimeoutSeconds = foundACPTimeoutSeconds
+        self.acpMode = foundACPMode
         self.printContext = foundPrintContext
         self.interactive = foundInteractive
         self.resume = foundResume
@@ -213,10 +261,21 @@ private struct CLICommand {
             return LLMKitBackend()
         case "agent", "coding-agent", "coding_agent":
             return CodingAgentBackend(workingDirectory: FileManager.default.currentDirectoryPath)
+        case "acp":
+            return ACPAgentBackend(
+                configuration: ACPBackendConfiguration(
+                    agentPath: acpAgent,
+                    agentArguments: acpArgs,
+                    workingDirectory: acpCwd ?? FileManager.default.currentDirectoryPath,
+                    requestTimeout: acpTimeoutSeconds.map { .milliseconds(Int64($0 * 1_000)) },
+                    modeID: acpMode
+                ),
+                interactivePermissions: interactive
+            )
         default:
             throw ExitError(
                 code: 2,
-                message: "Unknown backend '\(backend)'. Use one of: agent, cli, llmkit, mock"
+                message: "Unknown backend '\(backend)'. Use one of: acp, agent, cli, llmkit, mock"
             )
         }
     }
@@ -255,14 +314,13 @@ private struct CLICommand {
             return URL(fileURLWithPath: logsRoot, isDirectory: true)
         }
         let baseName = URL(fileURLWithPath: dotPath).deletingPathExtension().lastPathComponent
-        let stamp = ISO8601DateFormatter().string(from: Date())
-            .replacingOccurrences(of: ":", with: "-")
+        let stamp = String(Date.now.ISO8601Format().map { $0 == ":" ? "-" : $0 })
         let defaultPath = ".ai/attractor-runs/\(baseName)-\(stamp)"
         return URL(fileURLWithPath: defaultPath, isDirectory: true)
     }
 }
 
-private final class MockCodergenBackend: CodergenBackend, @unchecked Sendable {
+private final class MockCodergenBackend: CodergenBackend, Sendable {
     func run(
         prompt: String,
         model: String,
@@ -287,7 +345,7 @@ private final class MockCodergenBackend: CodergenBackend, @unchecked Sendable {
     }
 }
 
-private final class ProviderCLICodergenBackend: CodergenBackend, @unchecked Sendable {
+private final class ProviderCLICodergenBackend: CodergenBackend, Sendable {
     private let codex = CodexCLICodergenBackend()
     private let claude = ClaudeCodeCLICodergenBackend()
     private let gemini = GeminiCLICodergenBackend()
@@ -333,7 +391,7 @@ private final class ProviderCLICodergenBackend: CodergenBackend, @unchecked Send
     }
 }
 
-private final class CodexCLICodergenBackend: CodergenBackend, @unchecked Sendable {
+private final class CodexCLICodergenBackend: CodergenBackend, Sendable {
     func run(
         prompt: String,
         model: String,
@@ -348,7 +406,7 @@ private final class CodexCLICodergenBackend: CodergenBackend, @unchecked Sendabl
 
         let finalPrompt = prompt + statusInstruction
         let timeoutSeconds = resolveTimeoutSeconds(from: context)
-        let response = try runCodexExec(
+        let response = try await runCodexExec(
             prompt: finalPrompt,
             model: effectiveModel,
             timeoutSeconds: timeoutSeconds
@@ -356,7 +414,7 @@ private final class CodexCLICodergenBackend: CodergenBackend, @unchecked Sendabl
         return parseCodergenResponse(response)
     }
 
-    private func runCodexExec(prompt: String, model: String, timeoutSeconds: Int) throws -> String {
+    private func runCodexExec(prompt: String, model: String, timeoutSeconds: Int) async throws -> String {
         let tmpFile = FileManager.default.temporaryDirectory
             .appendingPathComponent("attractor-codex-\(UUID().uuidString).txt")
         defer { try? FileManager.default.removeItem(at: tmpFile) }
@@ -377,9 +435,13 @@ private final class CodexCLICodergenBackend: CodergenBackend, @unchecked Sendabl
         let stdinPipe = Pipe()
         let stdoutPipe = Pipe()
         let stderrPipe = Pipe()
+        let exitSignal = _ProcessExitSignal()
         process.standardInput = stdinPipe
         process.standardOutput = stdoutPipe
         process.standardError = stderrPipe
+        process.terminationHandler = { _ in
+            exitSignal.signal()
+        }
 
         try process.run()
 
@@ -389,11 +451,7 @@ private final class CodexCLICodergenBackend: CodergenBackend, @unchecked Sendabl
         stdinPipe.fileHandleForWriting.closeFile()
 
         // Read stdout/stderr concurrently to prevent pipe buffer deadlock
-        // when output exceeds ~64KB. Reading must start before waitUntilExit.
-        // Note: DispatchGroup.wait() blocks the calling thread. This is called
-        // from a synchronous throws function within the CLI entry point. If the
-        // caller is on the cooperative thread pool, this could starve threads;
-        // acceptable for a CLI tool with sequential execution.
+        // when output exceeds ~64KB. Reading must start before process exit.
         let stdoutReadQueue = DispatchQueue(label: "codex.stdout")
         let stderrReadQueue = DispatchQueue(label: "codex.stderr")
         // Safety: each var is only mutated from its own serial queue and read after synchronization.
@@ -402,20 +460,9 @@ private final class CodexCLICodergenBackend: CodergenBackend, @unchecked Sendabl
         stdoutReadQueue.async { stdoutData = stdoutPipe.fileHandleForReading.readDataToEndOfFile() }
         stderrReadQueue.async { stderrData = stderrPipe.fileHandleForReading.readDataToEndOfFile() }
 
-        let group = DispatchGroup()
-        group.enter()
-        DispatchQueue.global(qos: .userInitiated).async {
-            process.waitUntilExit()
-            group.leave()
-        }
-        if group.wait(timeout: .now() + .seconds(timeoutSeconds)) == .timedOut {
-            process.terminate()
-            usleep(250_000)
-            if process.isRunning {
-                #if canImport(Darwin) || canImport(Glibc)
-                _ = kill(process.processIdentifier, SIGKILL)
-                #endif
-            }
+        if await waitForExitOrTimeout(exitSignal, timeoutSeconds: timeoutSeconds) {
+            terminate(process)
+            await exitSignal.wait()
             throw ExitError(
                 code: 1,
                 message: "codex exec timed out after \(timeoutSeconds)s (model=\(model))"
@@ -470,7 +517,7 @@ private final class CodexCLICodergenBackend: CodergenBackend, @unchecked Sendabl
     }
 }
 
-private final class ClaudeCodeCLICodergenBackend: CodergenBackend, @unchecked Sendable {
+private final class ClaudeCodeCLICodergenBackend: CodergenBackend, Sendable {
     func run(
         prompt: String,
         model: String,
@@ -483,13 +530,13 @@ private final class ClaudeCodeCLICodergenBackend: CodergenBackend, @unchecked Se
         let finalPrompt = prompt + statusInstruction
         let timeoutSeconds = resolveTimeoutSeconds(from: context)
         let effectiveModel = resolveModel(requestedModel: model, provider: provider)
-        let response = try runClaudeExec(prompt: finalPrompt, model: effectiveModel, timeoutSeconds: timeoutSeconds)
+        let response = try await runClaudeExec(prompt: finalPrompt, model: effectiveModel, timeoutSeconds: timeoutSeconds)
         return parseCodergenResponseText(response)
     }
 
-    private func runClaudeExec(prompt: String, model: String, timeoutSeconds: Int) throws -> String {
+    private func runClaudeExec(prompt: String, model: String, timeoutSeconds: Int) async throws -> String {
         let command = ProcessInfo.processInfo.environment["ATTRACTOR_CLAUDE_CLI_BIN"] ?? "claude"
-        return try runCommand(
+        return try await runCommand(
             [
                 command,
                 "--print",
@@ -519,7 +566,7 @@ private final class ClaudeCodeCLICodergenBackend: CodergenBackend, @unchecked Se
     }
 }
 
-private final class GeminiCLICodergenBackend: CodergenBackend, @unchecked Sendable {
+private final class GeminiCLICodergenBackend: CodergenBackend, Sendable {
     func run(
         prompt: String,
         model: String,
@@ -532,13 +579,13 @@ private final class GeminiCLICodergenBackend: CodergenBackend, @unchecked Sendab
         let finalPrompt = prompt + statusInstruction
         let timeoutSeconds = resolveTimeoutSeconds(from: context)
         let effectiveModel = resolveModel(requestedModel: model, provider: provider)
-        let response = try runGeminiExec(prompt: finalPrompt, model: effectiveModel, timeoutSeconds: timeoutSeconds)
+        let response = try await runGeminiExec(prompt: finalPrompt, model: effectiveModel, timeoutSeconds: timeoutSeconds)
         return parseCodergenResponseText(response)
     }
 
-    private func runGeminiExec(prompt: String, model: String, timeoutSeconds: Int) throws -> String {
+    private func runGeminiExec(prompt: String, model: String, timeoutSeconds: Int) async throws -> String {
         let command = ProcessInfo.processInfo.environment["ATTRACTOR_GEMINI_CLI_BIN"] ?? "gemini"
-        return try runCommand(
+        return try await runCommand(
             [
                 command,
                 "--prompt", prompt,
@@ -589,7 +636,7 @@ private func stageStatusInstruction(stage: String) -> String {
     """
 }
 
-private func runCommand(_ argv: [String], timeoutSeconds: Int) throws -> String {
+private func runCommand(_ argv: [String], timeoutSeconds: Int) async throws -> String {
     guard !argv.isEmpty else {
         throw ExitError(code: 1, message: "No command provided")
     }
@@ -600,8 +647,12 @@ private func runCommand(_ argv: [String], timeoutSeconds: Int) throws -> String 
 
     let stdoutPipe = Pipe()
     let stderrPipe = Pipe()
+    let exitSignal = _ProcessExitSignal()
     process.standardOutput = stdoutPipe
     process.standardError = stderrPipe
+    process.terminationHandler = { _ in
+        exitSignal.signal()
+    }
 
     do {
         try process.run()
@@ -610,8 +661,7 @@ private func runCommand(_ argv: [String], timeoutSeconds: Int) throws -> String 
     }
 
     // Read stdout/stderr concurrently to prevent pipe buffer deadlock
-    // when output exceeds ~64KB. Reading must start before waitUntilExit.
-    // Note: DispatchGroup.wait() blocks the calling thread (see codex comment above).
+    // when output exceeds ~64KB. Reading must start before process exit.
     let stdoutReadQueue = DispatchQueue(label: "cmd.stdout")
     let stderrReadQueue = DispatchQueue(label: "cmd.stderr")
     // Safety: each var is only mutated from its own serial queue and read after synchronization.
@@ -620,20 +670,9 @@ private func runCommand(_ argv: [String], timeoutSeconds: Int) throws -> String 
     stdoutReadQueue.async { stdoutData = stdoutPipe.fileHandleForReading.readDataToEndOfFile() }
     stderrReadQueue.async { stderrData = stderrPipe.fileHandleForReading.readDataToEndOfFile() }
 
-    let group = DispatchGroup()
-    group.enter()
-    DispatchQueue.global(qos: .userInitiated).async {
-        process.waitUntilExit()
-        group.leave()
-    }
-    if group.wait(timeout: .now() + .seconds(timeoutSeconds)) == .timedOut {
-        process.terminate()
-        usleep(250_000)
-        if process.isRunning {
-            #if canImport(Darwin) || canImport(Glibc)
-            _ = kill(process.processIdentifier, SIGKILL)
-            #endif
-        }
+    if await waitForExitOrTimeout(exitSignal, timeoutSeconds: timeoutSeconds) {
+        terminate(process)
+        await exitSignal.wait()
         throw ExitError(
             code: 1,
             message: "Command timed out after \(timeoutSeconds)s: \(argv.joined(separator: " "))"
@@ -663,6 +702,36 @@ private func runCommand(_ argv: [String], timeoutSeconds: Int) throws -> String 
         return stderrOutput
     }
     return ""
+}
+
+private func waitForExitOrTimeout(_ exitSignal: _ProcessExitSignal, timeoutSeconds: Int) async -> Bool {
+    let outcome = _AsyncBoolSignal()
+    let exitTask = Task {
+        await exitSignal.wait()
+        outcome.signal(false)
+    }
+    let timeoutTask = Task {
+        do {
+            try await Task.sleep(for: .seconds(timeoutSeconds))
+            outcome.signal(true)
+        } catch {
+        }
+    }
+
+    let timedOut = await outcome.wait()
+    timeoutTask.cancel()
+    exitTask.cancel()
+    return timedOut
+}
+
+private func terminate(_ process: Process) {
+    process.terminate()
+    usleep(250_000)
+    if process.isRunning {
+        #if canImport(Darwin) || canImport(Glibc)
+        _ = kill(process.processIdentifier, SIGKILL)
+        #endif
+    }
 }
 
 private func parseCodergenResponseText(_ response: String) -> CodergenResult {
@@ -723,10 +792,105 @@ private struct ExitError: Error {
     let message: String
 }
 
+private final class _ProcessExitSignal: @unchecked Sendable {
+    private let lock = NSLock()
+    private var hasExited = false
+    private var continuation: CheckedContinuation<Void, Never>?
+
+    func signal() {
+        lock.lock()
+        if let continuation {
+            self.continuation = nil
+            lock.unlock()
+            continuation.resume()
+            return
+        }
+        hasExited = true
+        lock.unlock()
+    }
+
+    func wait() async {
+        if takeExitedFlag() {
+            return
+        }
+        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+            if installContinuation(continuation) {
+                return
+            }
+            continuation.resume()
+        }
+    }
+
+    private func takeExitedFlag() -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return hasExited
+    }
+
+    private func installContinuation(_ continuation: CheckedContinuation<Void, Never>) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        if hasExited {
+            return false
+        }
+        self.continuation = continuation
+        return true
+    }
+}
+
+private final class _AsyncBoolSignal: @unchecked Sendable {
+    private let lock = NSLock()
+    private var value: Bool?
+    private var continuation: CheckedContinuation<Bool, Never>?
+
+    func signal(_ newValue: Bool) {
+        lock.lock()
+        guard value == nil else {
+            lock.unlock()
+            return
+        }
+        value = newValue
+        if let continuation {
+            self.continuation = nil
+            lock.unlock()
+            continuation.resume(returning: newValue)
+            return
+        }
+        lock.unlock()
+    }
+
+    func wait() async -> Bool {
+        if let value = currentValue() {
+            return value
+        }
+
+        return await withCheckedContinuation { (continuation: CheckedContinuation<Bool, Never>) in
+            installContinuation(continuation)
+        }
+    }
+
+    private func currentValue() -> Bool? {
+        lock.lock()
+        defer { lock.unlock() }
+        return value
+    }
+
+    private func installContinuation(_ continuation: CheckedContinuation<Bool, Never>) {
+        lock.lock()
+        if let value {
+            lock.unlock()
+            continuation.resume(returning: value)
+            return
+        }
+        self.continuation = continuation
+        lock.unlock()
+    }
+}
+
 private let usageText = """
 AttractorCLI
 
 Usage:
   swift run AttractorCLI validate <dotfile>
-  swift run AttractorCLI run <dotfile> [--backend agent|cli|llmkit|mock] [--logs-root <path>] [--workdir <path>] [--interactive] [--print-context]
+  swift run AttractorCLI run <dotfile> [--backend acp|agent|cli|llmkit|mock] [--logs-root <path>] [--workdir <path>] [--acp-agent <path>] [--acp-arg <value>] [--acp-cwd <path>] [--acp-timeout <seconds>] [--acp-mode <id>] [--interactive] [--print-context]
 """
