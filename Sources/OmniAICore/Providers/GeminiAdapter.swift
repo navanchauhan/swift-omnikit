@@ -514,3 +514,515 @@ public final class GeminiAdapter: ProviderAdapter, @unchecked Sendable {
         }
     }
 }
+
+// MARK: - Embeddings + Tool Continuation + Services
+
+extension GeminiAdapter: EmbeddingProviderAdapter {
+    public func embed(request: EmbedRequest) async throws -> EmbedResponse {
+        try await request.abortSignal?.check()
+
+        guard !request.input.isEmpty else {
+            throw InvalidRequestError(message: "Embedding request requires at least one input", provider: name, statusCode: nil, errorCode: nil, retryable: false)
+        }
+
+        let model = request.model.isEmpty ? "text-embedding-004" : request.model
+        let timeout = request.timeout?.asConfig.total
+
+        if request.input.count == 1 {
+            let payload = buildGeminiEmbedRequest(
+                model: model,
+                input: request.input[0],
+                taskType: request.taskType,
+                dimensions: request.dimensions,
+                providerOptions: request.providerOptions?["gemini"]?.objectValue
+            )
+            let url = try geminiEndpoint(path: "/models/\(model):embedContent", query: ["key": apiKey])
+            let response = try await sendGeminiRequest(method: .post, url: url, body: payload, timeout: timeout)
+            let json = try parseGeminiJSONResponse(response)
+            let embedding = json["embedding"]?["values"]?.arrayValue?.compactMap { $0.doubleValue } ?? []
+            return EmbedResponse(
+                model: model,
+                provider: name,
+                embeddings: [Embedding(index: 0, vector: embedding)],
+                usage: nil,
+                raw: json
+            )
+        }
+
+        let batchPayload = buildGeminiBatchEmbedRequest(
+            model: model,
+            inputs: request.input,
+            taskType: request.taskType,
+            dimensions: request.dimensions,
+            providerOptions: request.providerOptions?["gemini"]?.objectValue
+        )
+        let url = try geminiEndpoint(path: "/models/\(model):batchEmbedContents", query: ["key": apiKey])
+        let response = try await sendGeminiRequest(method: .post, url: url, body: batchPayload, timeout: timeout)
+        let json = try parseGeminiJSONResponse(response)
+        let embeddings = (json["embeddings"]?.arrayValue ?? []).enumerated().map { idx, item in
+            Embedding(index: idx, vector: item["values"]?.arrayValue?.compactMap { $0.doubleValue } ?? [])
+        }
+        return EmbedResponse(model: model, provider: name, embeddings: embeddings, usage: nil, raw: json)
+    }
+}
+
+extension GeminiAdapter: ToolContinuationProviderAdapter {
+    public func sendToolOutputs(request: ToolContinuationRequest) async throws -> Response {
+        try await request.abortSignal?.check()
+
+        let toolResultMessages = makeToolResultMessages(toolResults: request.toolResults, toolCalls: request.toolCalls)
+        var messages = request.messages
+        messages.append(contentsOf: toolResultMessages)
+        messages.append(contentsOf: request.additionalMessages)
+
+        let req = Request(
+            model: request.model,
+            messages: messages,
+            provider: request.provider ?? name,
+            tools: request.tools,
+            toolChoice: request.toolChoice,
+            responseFormat: request.responseFormat,
+            temperature: request.temperature,
+            topP: request.topP,
+            maxTokens: request.maxTokens,
+            stopSequences: request.stopSequences,
+            reasoningEffort: request.reasoningEffort,
+            metadata: request.metadata,
+            providerOptions: request.providerOptions,
+            timeout: request.timeout,
+            abortSignal: request.abortSignal
+        )
+
+        return try await complete(request: req)
+    }
+}
+
+extension GeminiAdapter: GeminiFilesProviderAdapter {
+    public func createFile(request: GeminiFileCreateRequest) async throws -> GeminiFile {
+        let url = try geminiEndpoint(path: "/files", query: ["key": apiKey])
+        let body: JSONValue = .object([
+            "file": .object([
+                "name": request.name.map(JSONValue.string) ?? .null,
+                "displayName": request.displayName.map(JSONValue.string) ?? .null,
+                "source": request.source.map(JSONValue.string) ?? .null,
+            ].filterNonNulls()),
+        ])
+        let response = try await sendGeminiRequest(method: .post, url: url, body: body, timeout: request.timeout?.asConfig.total)
+        let json = try parseGeminiJSONResponse(response)
+        let filePayload = json["file"] ?? json
+        return parseGeminiFile(filePayload)
+    }
+
+    public func uploadFile(request: GeminiFileUploadRequest) async throws -> GeminiFile {
+        let initURL = try geminiEndpoint(path: "/files", query: ["key": apiKey], useUpload: true)
+        let metadata: JSONValue = .object([
+            "file": .object([
+                "displayName": .string(request.displayName),
+            ]),
+        ])
+        let metadataBody = try _ProviderHTTP.jsonBytes(metadata)
+
+        var headers = HTTPHeaders()
+        headers.set(name: "content-type", value: "application/json")
+        headers.set(name: "x-goog-upload-protocol", value: "resumable")
+        headers.set(name: "x-goog-upload-command", value: "start")
+        headers.set(name: "x-goog-upload-header-content-length", value: "\(request.data.count)")
+        headers.set(name: "x-goog-upload-header-content-type", value: request.mimeType)
+
+        let initResponse = try await transport.send(
+            HTTPRequest(method: .post, url: initURL, headers: headers, body: .bytes(metadataBody)),
+            timeout: request.timeout?.asConfig.total
+        )
+
+        guard (200..<300).contains(initResponse.statusCode),
+              let uploadURLString = initResponse.headers.firstValue(for: "x-goog-upload-url"),
+              let uploadURL = URL(string: uploadURLString)
+        else {
+            throw geminiHTTPError(initResponse)
+        }
+
+        var uploadHeaders = HTTPHeaders()
+        uploadHeaders.set(name: "x-goog-upload-command", value: "upload, finalize")
+        uploadHeaders.set(name: "x-goog-upload-offset", value: "0")
+        uploadHeaders.set(name: "content-length", value: "\(request.data.count)")
+
+        let uploadResponse = try await transport.send(
+            HTTPRequest(method: .post, url: uploadURL, headers: uploadHeaders, body: .bytes(request.data)),
+            timeout: request.timeout?.asConfig.total
+        )
+
+        let json = try parseGeminiJSONResponse(uploadResponse)
+        let filePayload = json["file"] ?? json
+        return parseGeminiFile(filePayload)
+    }
+
+    public func getFile(name: String) async throws -> GeminiFile {
+        let normalized = name.hasPrefix("files/") ? name : "files/\(name)"
+        let url = try geminiEndpoint(path: "/\(normalized)", query: ["key": apiKey])
+        let response = try await sendGeminiRequest(method: .get, url: url, body: nil, timeout: nil)
+        let json = try parseGeminiJSONResponse(response)
+        return parseGeminiFile(json)
+    }
+
+    public func listFiles(pageSize: Int?, pageToken: String?) async throws -> GeminiFileListResponse {
+        var query = ["key": apiKey]
+        if let pageSize { query["pageSize"] = "\(pageSize)" }
+        if let pageToken { query["pageToken"] = pageToken }
+        let url = try geminiEndpoint(path: "/files", query: query)
+        let response = try await sendGeminiRequest(method: .get, url: url, body: nil, timeout: nil)
+        let json = try parseGeminiJSONResponse(response)
+        let files = (json["files"]?.arrayValue ?? []).map(parseGeminiFile)
+        return GeminiFileListResponse(files: files, nextPageToken: json["nextPageToken"]?.stringValue)
+    }
+
+    public func deleteFile(name: String) async throws {
+        let normalized = name.hasPrefix("files/") ? name : "files/\(name)"
+        let url = try geminiEndpoint(path: "/\(normalized)", query: ["key": apiKey])
+        let response = try await sendGeminiRequest(method: .delete, url: url, body: nil, timeout: nil)
+        _ = try parseGeminiJSONResponse(response)
+    }
+}
+
+extension GeminiAdapter: GeminiFileSearchProviderAdapter {
+    public func createFileSearchStore(request: GeminiFileSearchStoreCreateRequest) async throws -> GeminiFileSearchStore {
+        let url = try geminiEndpoint(path: "/fileSearchStores", query: ["key": apiKey])
+        let body: JSONValue = .object([
+            "displayName": .string(request.displayName),
+        ])
+        let response = try await sendGeminiRequest(method: .post, url: url, body: body, timeout: request.timeout?.asConfig.total)
+        let json = try parseGeminiJSONResponse(response)
+        return parseGeminiFileSearchStore(json)
+    }
+
+    public func getFileSearchStore(name: String) async throws -> GeminiFileSearchStore {
+        let normalized = name.hasPrefix("fileSearchStores/") ? name : "fileSearchStores/\(name)"
+        let url = try geminiEndpoint(path: "/\(normalized)", query: ["key": apiKey])
+        let response = try await sendGeminiRequest(method: .get, url: url, body: nil, timeout: nil)
+        let json = try parseGeminiJSONResponse(response)
+        return parseGeminiFileSearchStore(json)
+    }
+
+    public func listFileSearchStores(pageSize: Int?, pageToken: String?) async throws -> GeminiFileSearchStoreListResponse {
+        var query = ["key": apiKey]
+        if let pageSize { query["pageSize"] = "\(pageSize)" }
+        if let pageToken { query["pageToken"] = pageToken }
+        let url = try geminiEndpoint(path: "/fileSearchStores", query: query)
+        let response = try await sendGeminiRequest(method: .get, url: url, body: nil, timeout: nil)
+        let json = try parseGeminiJSONResponse(response)
+        let stores = (json["fileSearchStores"]?.arrayValue ?? []).map(parseGeminiFileSearchStore)
+        return GeminiFileSearchStoreListResponse(stores: stores, nextPageToken: json["nextPageToken"]?.stringValue)
+    }
+
+    public func deleteFileSearchStore(name: String, force: Bool) async throws {
+        let normalized = name.hasPrefix("fileSearchStores/") ? name : "fileSearchStores/\(name)"
+        var query = ["key": apiKey]
+        if force { query["force"] = "true" }
+        let url = try geminiEndpoint(path: "/\(normalized)", query: query)
+        let response = try await sendGeminiRequest(method: .delete, url: url, body: nil, timeout: nil)
+        _ = try parseGeminiJSONResponse(response)
+    }
+
+    public func importFileToSearchStore(request: GeminiFileSearchImportRequest) async throws -> GeminiOperation {
+        let normalized = request.storeName.hasPrefix("fileSearchStores/") ? request.storeName : "fileSearchStores/\(request.storeName)"
+        let url = try geminiEndpoint(path: "/\(normalized):importFile", query: ["key": apiKey])
+        var body: [String: JSONValue] = [
+            "fileName": .string(request.fileName),
+        ]
+
+        if !request.customMetadata.isEmpty {
+            let meta = request.customMetadata.map { metadata in
+                JSONValue.object([
+                    "key": .string(metadata.key),
+                    "stringValue": metadata.stringValue.map(JSONValue.string) ?? .null,
+                    "numericValue": metadata.numberValue.map { .number(Double($0)) } ?? .null,
+                ].filterNonNulls())
+            }
+            body["customMetadata"] = .array(meta)
+        }
+
+        if let chunking = request.chunkingConfig {
+            body["chunkingConfig"] = .object([
+                "chunkSize": .number(Double(chunking.chunkSize)),
+                "chunkOverlap": .number(Double(chunking.chunkOverlap)),
+            ])
+        }
+
+        let response = try await sendGeminiRequest(method: .post, url: url, body: .object(body), timeout: request.timeout?.asConfig.total)
+        let json = try parseGeminiJSONResponse(response)
+        return parseGeminiOperation(json)
+    }
+
+    public func getDocument(name: String) async throws -> GeminiFileSearchDocument {
+        let url = try geminiEndpoint(path: "/\(name)", query: ["key": apiKey])
+        let response = try await sendGeminiRequest(method: .get, url: url, body: nil, timeout: nil)
+        let json = try parseGeminiJSONResponse(response)
+        return parseGeminiFileSearchDocument(json)
+    }
+
+    public func listDocuments(storeName: String, pageSize: Int?, pageToken: String?) async throws -> GeminiFileSearchDocumentListResponse {
+        let normalized = storeName.hasPrefix("fileSearchStores/") ? storeName : "fileSearchStores/\(storeName)"
+        var query = ["key": apiKey]
+        if let pageSize { query["pageSize"] = "\(pageSize)" }
+        if let pageToken { query["pageToken"] = pageToken }
+        let url = try geminiEndpoint(path: "/\(normalized)/documents", query: query)
+        let response = try await sendGeminiRequest(method: .get, url: url, body: nil, timeout: nil)
+        let json = try parseGeminiJSONResponse(response)
+        let docs = (json["documents"]?.arrayValue ?? []).map(parseGeminiFileSearchDocument)
+        return GeminiFileSearchDocumentListResponse(documents: docs, nextPageToken: json["nextPageToken"]?.stringValue)
+    }
+
+    public func deleteDocument(name: String, force: Bool) async throws {
+        var query = ["key": apiKey]
+        if force { query["force"] = "true" }
+        let url = try geminiEndpoint(path: "/\(name)", query: query)
+        let response = try await sendGeminiRequest(method: .delete, url: url, body: nil, timeout: nil)
+        _ = try parseGeminiJSONResponse(response)
+    }
+}
+
+extension GeminiAdapter: GeminiTokensProviderAdapter {
+    public func countTokens(request: GeminiTokenCountRequest) async throws -> GeminiTokenCountResponse {
+        let req = Request(model: request.model, messages: request.messages)
+        let payloadBytes = try buildRequestBody(request: req, stream: false)
+        let generatePayload = try JSONValue.parse(payloadBytes)
+        let body: JSONValue = .object([
+            "generateContentRequest": generatePayload,
+        ])
+
+        let url = try geminiEndpoint(path: "/models/\(request.model):countTokens", query: ["key": apiKey])
+        let response = try await sendGeminiRequest(method: .post, url: url, body: body, timeout: request.timeout?.asConfig.total)
+        let json = try parseGeminiJSONResponse(response)
+        let totalTokens = json["totalTokens"]?.doubleValue.map(Int.init) ?? 0
+        let cachedTokens = json["cachedContentTokenCount"]?.doubleValue.map(Int.init)
+        return GeminiTokenCountResponse(totalTokens: totalTokens, cachedContentTokens: cachedTokens, raw: json)
+    }
+}
+
+extension GeminiAdapter: GeminiLiveProviderAdapter {
+    public func connectLive(config: GeminiLiveConfig) async throws -> GeminiLiveSession {
+        let wsURL = try geminiLiveURL()
+        let headers = HTTPHeaders()
+        let session = try await defaultRealtimeWebSocketTransport().connectJSON(url: wsURL, headers: headers, timeout: nil)
+        let liveSession = GeminiLiveSession(session: session)
+
+        var setup: [String: JSONValue] = ["model": .string(config.model)]
+        if let instruction = config.systemInstruction, !instruction.isEmpty {
+            setup["systemInstruction"] = .object([
+                "parts": .array([.object(["text": .string(instruction)])]),
+            ])
+        }
+
+        var generationConfig: [String: JSONValue] = [:]
+        if let temperature = config.temperature {
+            generationConfig["temperature"] = .number(temperature)
+        }
+        if let topP = config.topP {
+            generationConfig["topP"] = .number(topP)
+        }
+        if let topK = config.topK {
+            generationConfig["topK"] = .number(Double(topK))
+        }
+        if let maxOutputTokens = config.maxOutputTokens {
+            generationConfig["maxOutputTokens"] = .number(Double(maxOutputTokens))
+        }
+        if !config.responseModalities.isEmpty {
+            generationConfig["responseModalities"] = .array(config.responseModalities.map { .string($0) })
+        }
+        if !generationConfig.isEmpty {
+            setup["generationConfig"] = .object(generationConfig)
+        }
+        if !config.tools.isEmpty {
+            setup["tools"] = .array(config.tools)
+        }
+
+        let setupMessage: JSONValue = .object(["setup": .object(setup)])
+        try await liveSession.send(setupMessage)
+        return liveSession
+    }
+}
+
+private extension GeminiAdapter {
+    func geminiEndpoint(path: String, query: [String: String], useUpload: Bool = false) throws -> URL {
+        let base = baseURL.hasSuffix("/") ? String(baseURL.dropLast()) : baseURL
+        let version = "v1beta"
+        let prefix = useUpload ? "\(base)/upload/\(version)" : "\(base)/\(version)"
+        let normalizedPath = path.hasPrefix("/") ? path : "/\(path)"
+        return try _ProviderHTTP.makeURL(baseURL: prefix, path: normalizedPath, query: query)
+    }
+
+    func sendGeminiRequest(method: HTTPMethod, url: URL, body: JSONValue?, timeout: Duration?) async throws -> HTTPResponse {
+        var headers = HTTPHeaders()
+        if body != nil {
+            headers.set(name: "content-type", value: "application/json")
+        }
+        let bytes: [UInt8]? = try body.map { try _ProviderHTTP.jsonBytes($0) }
+        return try await transport.send(
+            HTTPRequest(method: method, url: url, headers: headers, body: bytes.map { .bytes($0) } ?? .none),
+            timeout: timeout
+        )
+    }
+
+    func parseGeminiJSONResponse(_ response: HTTPResponse) throws -> JSONValue {
+        if !(200..<300).contains(response.statusCode) {
+            throw geminiHTTPError(response)
+        }
+        return _ProviderHTTP.parseJSONBody(response) ?? .object([:])
+    }
+
+    func geminiHTTPError(_ response: HTTPResponse) -> SDKError {
+        let json = _ProviderHTTP.parseJSONBody(response)
+        let msg = _ProviderHTTP.errorMessage(from: json).message ?? "Gemini error"
+        let code = _ProviderHTTP.errorMessage(from: json).code
+        let retryAfter = _ProviderHTTP.parseRetryAfterSeconds(response.headers)
+        return _ErrorMapping.sdkErrorFromHTTP(
+            provider: name,
+            statusCode: response.statusCode,
+            message: msg,
+            errorCode: code,
+            retryAfter: retryAfter,
+            raw: json
+        )
+    }
+
+    func buildGeminiEmbedRequest(
+        model: String,
+        input: String,
+        taskType: String?,
+        dimensions: Int?,
+        providerOptions: [String: JSONValue]?
+    ) -> JSONValue {
+        var root: [String: JSONValue] = [
+            "model": .string("models/\(model)"),
+            "content": .object([
+                "parts": .array([.object(["text": .string(input)])]),
+            ]),
+        ]
+        if let taskType {
+            root["taskType"] = .string(taskType)
+        }
+        if let dimensions {
+            root["outputDimensionality"] = .number(Double(dimensions))
+        }
+        if let providerOptions {
+            for (k, v) in providerOptions { root[k] = v }
+        }
+        return .object(root)
+    }
+
+    func buildGeminiBatchEmbedRequest(
+        model: String,
+        inputs: [String],
+        taskType: String?,
+        dimensions: Int?,
+        providerOptions: [String: JSONValue]?
+    ) -> JSONValue {
+        let requests = inputs.map { input -> JSONValue in
+            buildGeminiEmbedRequest(
+                model: model,
+                input: input,
+                taskType: taskType,
+                dimensions: dimensions,
+                providerOptions: nil
+            )
+        }
+        var root: [String: JSONValue] = ["requests": .array(requests)]
+        if let providerOptions {
+            for (k, v) in providerOptions { root[k] = v }
+        }
+        return .object(root)
+    }
+
+    func parseGeminiFile(_ json: JSONValue) -> GeminiFile {
+        GeminiFile(
+            name: json["name"]?.stringValue ?? "files/\(UUID().uuidString)",
+            displayName: json["displayName"]?.stringValue,
+            mimeType: json["mimeType"]?.stringValue,
+            sizeBytes: parseInt64(json["sizeBytes"]),
+            createTime: parseDate(json["createTime"]?.stringValue),
+            updateTime: parseDate(json["updateTime"]?.stringValue),
+            expirationTime: parseDate(json["expirationTime"]?.stringValue),
+            sha256Hash: json["sha256Hash"]?.stringValue,
+            uri: json["uri"]?.stringValue,
+            downloadUri: json["downloadUri"]?.stringValue,
+            state: json["state"]?.stringValue,
+            source: json["source"]?.stringValue
+        )
+    }
+
+    func parseGeminiFileSearchStore(_ json: JSONValue) -> GeminiFileSearchStore {
+        GeminiFileSearchStore(
+            name: json["name"]?.stringValue ?? "fileSearchStores/\(UUID().uuidString)",
+            displayName: json["displayName"]?.stringValue,
+            createTime: parseDate(json["createTime"]?.stringValue),
+            updateTime: parseDate(json["updateTime"]?.stringValue),
+            activeDocumentsCount: parseInt64(json["activeDocumentsCount"]),
+            pendingDocumentsCount: parseInt64(json["pendingDocumentsCount"]),
+            failedDocumentsCount: parseInt64(json["failedDocumentsCount"]),
+            sizeBytes: parseInt64(json["sizeBytes"])
+        )
+    }
+
+    func parseGeminiFileSearchDocument(_ json: JSONValue) -> GeminiFileSearchDocument {
+        GeminiFileSearchDocument(
+            name: json["name"]?.stringValue ?? "documents/\(UUID().uuidString)",
+            displayName: json["displayName"]?.stringValue,
+            createTime: parseDate(json["createTime"]?.stringValue),
+            updateTime: parseDate(json["updateTime"]?.stringValue),
+            state: json["state"]?.stringValue,
+            sizeBytes: parseInt64(json["sizeBytes"]),
+            mimeType: json["mimeType"]?.stringValue,
+            customMetadata: parseGeminiMetadata(json["customMetadata"])
+        )
+    }
+
+    func parseGeminiOperation(_ json: JSONValue) -> GeminiOperation {
+        GeminiOperation(
+            name: json["name"]?.stringValue ?? "operations/\(UUID().uuidString)",
+            done: json["done"]?.boolValue,
+            metadata: json["metadata"],
+            response: json["response"],
+            error: json["error"]
+        )
+    }
+
+    func parseGeminiMetadata(_ json: JSONValue?) -> [GeminiCustomMetadata] {
+        guard let array = json?.arrayValue else { return [] }
+        return array.map { item in
+            GeminiCustomMetadata(
+                key: item["key"]?.stringValue ?? "",
+                stringValue: item["stringValue"]?.stringValue,
+                numberValue: parseInt64(item["numericValue"])
+            )
+        }
+    }
+
+    func parseInt64(_ value: JSONValue?) -> Int64? {
+        if let num = value?.doubleValue { return Int64(num) }
+        if let str = value?.stringValue, let num = Int64(str) { return num }
+        return nil
+    }
+
+    func parseDate(_ string: String?) -> Date? {
+        guard let string else { return nil }
+        return try? Date(string, strategy: .iso8601)
+    }
+
+    func geminiLiveURL() throws -> URL {
+        let base = baseURL.hasSuffix("/") ? String(baseURL.dropLast()) : baseURL
+        let wsBase = base.replacingOccurrences(of: "https://", with: "wss://")
+            .replacingOccurrences(of: "http://", with: "ws://")
+        let path = "/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent"
+        let url = try _ProviderHTTP.makeURL(baseURL: wsBase, path: path, query: ["key": apiKey])
+        return url
+    }
+}
+
+private extension Dictionary where Key == String, Value == JSONValue {
+    func filterNonNulls() -> [String: JSONValue] {
+        var out: [String: JSONValue] = [:]
+        for (key, value) in self where value != .null {
+            out[key] = value
+        }
+        return out
+    }
+}

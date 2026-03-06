@@ -16,6 +16,12 @@ public struct AgentToolDefinition: Sendable {
         }
     }
 
+    public init(name: String, description: String, parameters: JSONValue) {
+        self.name = name
+        self.description = description
+        self.parameters = parameters
+    }
+
     public func toLLMKitDefinition() -> Tool {
         do {
             return try Tool(name: name, description: description, parameters: parameters)

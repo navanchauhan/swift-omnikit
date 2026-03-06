@@ -903,3 +903,466 @@ public final class OpenAIAdapter: ProviderAdapter, @unchecked Sendable {
         )
     }
 }
+
+// MARK: - Embeddings + Tool Continuation + Services
+
+extension OpenAIAdapter: EmbeddingProviderAdapter {
+    public func embed(request: EmbedRequest) async throws -> EmbedResponse {
+        try await request.abortSignal?.check()
+
+        guard !request.input.isEmpty else {
+            throw InvalidRequestError(message: "Embedding request requires at least one input", provider: name, statusCode: nil, errorCode: nil, retryable: false)
+        }
+
+        let url = try _ProviderHTTP.makeURL(baseURL: baseURL, path: "/embeddings")
+        var root: [String: JSONValue] = [
+            "model": .string(request.model),
+            "input": .array(request.input.map { .string($0) }),
+        ]
+
+        if let dims = request.dimensions {
+            root["dimensions"] = .number(Double(dims))
+        }
+        if let user = request.user, !user.isEmpty {
+            root["user"] = .string(user)
+        }
+
+        if let options = request.providerOptions?["openai"]?.objectValue {
+            for (k, v) in options { root[k] = v }
+        }
+
+        let body = try _ProviderHTTP.jsonBytes(.object(root))
+        let headers = openAIHeaders(contentType: "application/json")
+
+        let timeout = request.timeout?.asConfig.total
+        let http = try await transport.send(
+            HTTPRequest(method: .post, url: url, headers: headers, body: .bytes(body)),
+            timeout: timeout
+        )
+
+        let json = try parseOpenAIJSONResponse(http)
+        let data = json["data"]?.arrayValue ?? []
+        let embeddings: [Embedding] = data.enumerated().compactMap { idx, item in
+            let vector = item["embedding"]?.arrayValue?.compactMap { $0.doubleValue } ?? []
+            let index = item["index"]?.doubleValue.map { Int($0) } ?? idx
+            return Embedding(index: index, vector: vector)
+        }
+
+        let usageObj = json["usage"]
+        let usage: EmbedUsage? = {
+            guard let usageObj else { return nil }
+            let prompt = usageObj["prompt_tokens"]?.doubleValue.map(Int.init) ?? 0
+            let total = usageObj["total_tokens"]?.doubleValue.map(Int.init) ?? prompt
+            return EmbedUsage(promptTokens: prompt, totalTokens: total, raw: usageObj)
+        }()
+
+        return EmbedResponse(
+            model: json["model"]?.stringValue ?? request.model,
+            provider: name,
+            embeddings: embeddings,
+            usage: usage,
+            raw: json
+        )
+    }
+}
+
+extension OpenAIAdapter: ToolContinuationProviderAdapter {
+    public func sendToolOutputs(request: ToolContinuationRequest) async throws -> Response {
+        try await request.abortSignal?.check()
+
+        let toolResultMessages = makeToolResultMessages(toolResults: request.toolResults, toolCalls: request.toolCalls)
+        var messages: [Message] = []
+        if request.previousResponseId == nil {
+            messages.append(contentsOf: request.messages)
+        }
+        messages.append(contentsOf: toolResultMessages)
+        messages.append(contentsOf: request.additionalMessages)
+
+        let req = Request(
+            model: request.model,
+            messages: messages,
+            provider: request.provider ?? name,
+            previousResponseId: request.previousResponseId,
+            tools: request.tools,
+            toolChoice: request.toolChoice,
+            responseFormat: request.responseFormat,
+            temperature: request.temperature,
+            topP: request.topP,
+            maxTokens: request.maxTokens,
+            stopSequences: request.stopSequences,
+            reasoningEffort: request.reasoningEffort,
+            metadata: request.metadata,
+            providerOptions: request.providerOptions,
+            timeout: request.timeout,
+            abortSignal: request.abortSignal
+        )
+
+        return try await complete(request: req)
+    }
+}
+
+@available(macOS 12.0, iOS 15.0, watchOS 8.0, tvOS 15.0, *)
+extension OpenAIAdapter: RealtimeProviderAdapter {
+    public func makeRealtimeClient() throws -> OpenAIRealtimeClient {
+        let realtimeURL = try makeRealtimeURL()
+        return OpenAIRealtimeClient(
+            apiKey: apiKey,
+            baseURL: realtimeURL,
+            transport: defaultRealtimeWebSocketTransport()
+        )
+    }
+
+    private func makeRealtimeURL() throws -> URL {
+        let url = try _ProviderHTTP.makeURL(baseURL: baseURL, path: "/realtime")
+        guard var components = URLComponents(url: url, resolvingAgainstBaseURL: false) else {
+            throw OmniHTTPError.invalidURL(url.absoluteString)
+        }
+        switch components.scheme?.lowercased() {
+        case "wss", "ws":
+            break
+        case "https":
+            components.scheme = "wss"
+        case "http":
+            components.scheme = "ws"
+        default:
+            throw OmniHTTPError.invalidURL(url.absoluteString)
+        }
+        guard let wsURL = components.url else {
+            throw OmniHTTPError.invalidURL(url.absoluteString)
+        }
+        return wsURL
+    }
+}
+
+extension OpenAIAdapter: OpenAIAudioProviderAdapter {
+    public func createSpeech(request: OpenAISpeechRequest) async throws -> OpenAISpeechResponse {
+        let url = try _ProviderHTTP.makeURL(baseURL: baseURL, path: "/audio/speech")
+        var root: [String: JSONValue] = [
+            "model": .string(request.model),
+            "input": .string(request.input),
+            "voice": .string(request.voice),
+        ]
+        if let format = request.responseFormat {
+            root["response_format"] = .string(format)
+        }
+        if let speed = request.speed {
+            root["speed"] = .number(speed)
+        }
+        if let options = request.providerOptions?["openai"]?.objectValue {
+            for (k, v) in options { root[k] = v }
+        }
+
+        let body = try _ProviderHTTP.jsonBytes(.object(root))
+        let headers = openAIHeaders(contentType: "application/json")
+        let timeout = request.timeout?.asConfig.total
+        let http = try await transport.send(
+            HTTPRequest(method: .post, url: url, headers: headers, body: .bytes(body)),
+            timeout: timeout
+        )
+
+        guard (200..<300).contains(http.statusCode) else {
+            throw openAIHTTPError(http)
+        }
+
+        let mediaType = http.headers.firstValue(for: "content-type")
+        let audio = AudioData(data: http.body, mediaType: mediaType)
+        return OpenAISpeechResponse(audio: audio)
+    }
+
+    public func createTranscription(request: OpenAITranscriptionRequest) async throws -> OpenAITranscriptionResponse {
+        let url = try _ProviderHTTP.makeURL(baseURL: baseURL, path: "/audio/transcriptions")
+        let timeout = request.timeout?.asConfig.total
+        let (body, contentType) = buildAudioMultipartBody(
+            fileName: request.fileName,
+            fileData: request.fileData,
+            mediaType: request.mediaType,
+            model: request.model,
+            prompt: request.prompt,
+            responseFormat: request.responseFormat,
+            temperature: request.temperature,
+            language: request.language,
+            providerOptions: request.providerOptions?["openai"]?.objectValue
+        )
+
+        let headers = openAIHeaders(contentType: contentType)
+        let http = try await transport.send(
+            HTTPRequest(method: .post, url: url, headers: headers, body: .bytes(body)),
+            timeout: timeout
+        )
+
+        let json = try parseOpenAIJSONResponse(http)
+        let text = json["text"]?.stringValue ?? ""
+        return OpenAITranscriptionResponse(text: text, raw: json)
+    }
+
+    public func createTranslation(request: OpenAITranslationRequest) async throws -> OpenAITranslationResponse {
+        let url = try _ProviderHTTP.makeURL(baseURL: baseURL, path: "/audio/translations")
+        let timeout = request.timeout?.asConfig.total
+        let (body, contentType) = buildAudioMultipartBody(
+            fileName: request.fileName,
+            fileData: request.fileData,
+            mediaType: request.mediaType,
+            model: request.model,
+            prompt: request.prompt,
+            responseFormat: request.responseFormat,
+            temperature: request.temperature,
+            language: nil,
+            providerOptions: request.providerOptions?["openai"]?.objectValue
+        )
+
+        let headers = openAIHeaders(contentType: contentType)
+        let http = try await transport.send(
+            HTTPRequest(method: .post, url: url, headers: headers, body: .bytes(body)),
+            timeout: timeout
+        )
+
+        let json = try parseOpenAIJSONResponse(http)
+        let text = json["text"]?.stringValue ?? ""
+        return OpenAITranslationResponse(text: text, raw: json)
+    }
+}
+
+extension OpenAIAdapter: OpenAIImagesProviderAdapter {
+    public func generateImages(request: OpenAIImageGenerationRequest) async throws -> OpenAIImageGenerationResponse {
+        let url = try _ProviderHTTP.makeURL(baseURL: baseURL, path: "/images/generations")
+        var root: [String: JSONValue] = [
+            "prompt": .string(request.prompt),
+        ]
+        if let model = request.model {
+            root["model"] = .string(model)
+        }
+        if let size = request.size {
+            root["size"] = .string(size)
+        }
+        if let quality = request.quality {
+            root["quality"] = .string(quality)
+        }
+        if let fmt = request.responseFormat {
+            root["response_format"] = .string(fmt)
+        }
+        if let n = request.numberOfImages {
+            root["n"] = .number(Double(n))
+        }
+        if let user = request.user {
+            root["user"] = .string(user)
+        }
+        if let options = request.providerOptions?["openai"]?.objectValue {
+            for (k, v) in options { root[k] = v }
+        }
+
+        let body = try _ProviderHTTP.jsonBytes(.object(root))
+        let headers = openAIHeaders(contentType: "application/json")
+        let timeout = request.timeout?.asConfig.total
+        let http = try await transport.send(
+            HTTPRequest(method: .post, url: url, headers: headers, body: .bytes(body)),
+            timeout: timeout
+        )
+
+        let json = try parseOpenAIJSONResponse(http)
+        let images: [OpenAIImage] = (json["data"]?.arrayValue ?? []).map { item in
+            OpenAIImage(
+                url: item["url"]?.stringValue,
+                base64: item["b64_json"]?.stringValue,
+                revisedPrompt: item["revised_prompt"]?.stringValue
+            )
+        }
+        let created = json["created"]?.doubleValue.map(Int.init)
+        return OpenAIImageGenerationResponse(created: created, images: images, raw: json)
+    }
+}
+
+extension OpenAIAdapter: OpenAIModerationsProviderAdapter {
+    public func createModeration(request: OpenAIModerationRequest) async throws -> OpenAIModerationResponse {
+        let url = try _ProviderHTTP.makeURL(baseURL: baseURL, path: "/moderations")
+        var root: [String: JSONValue] = [
+            "input": .array(request.input.map { .string($0) }),
+        ]
+        if let model = request.model {
+            root["model"] = .string(model)
+        }
+        if let options = request.providerOptions?["openai"]?.objectValue {
+            for (k, v) in options { root[k] = v }
+        }
+
+        let body = try _ProviderHTTP.jsonBytes(.object(root))
+        let headers = openAIHeaders(contentType: "application/json")
+        let timeout = request.timeout?.asConfig.total
+        let http = try await transport.send(
+            HTTPRequest(method: .post, url: url, headers: headers, body: .bytes(body)),
+            timeout: timeout
+        )
+
+        let json = try parseOpenAIJSONResponse(http)
+        let results = json["results"]?.arrayValue ?? []
+        return OpenAIModerationResponse(model: json["model"]?.stringValue, results: results, raw: json)
+    }
+}
+
+extension OpenAIAdapter: OpenAIBatchesProviderAdapter {
+    public func createBatch(request: OpenAIBatchRequest) async throws -> OpenAIBatchResponse {
+        let url = try _ProviderHTTP.makeURL(baseURL: baseURL, path: "/batches")
+        var root: [String: JSONValue] = [
+            "input_file_id": .string(request.inputFileId),
+            "endpoint": .string(request.endpoint),
+            "completion_window": .string(request.completionWindow),
+        ]
+        if let metadata = request.metadata {
+            root["metadata"] = .object(metadata.mapValues { .string($0) })
+        }
+
+        let body = try _ProviderHTTP.jsonBytes(.object(root))
+        let headers = openAIHeaders(contentType: "application/json")
+        let timeout = request.timeout?.asConfig.total
+        let http = try await transport.send(
+            HTTPRequest(method: .post, url: url, headers: headers, body: .bytes(body)),
+            timeout: timeout
+        )
+
+        let json = try parseOpenAIJSONResponse(http)
+        return parseBatchResponse(json)
+    }
+
+    public func retrieveBatch(id: String) async throws -> OpenAIBatchResponse {
+        let url = try _ProviderHTTP.makeURL(baseURL: baseURL, path: "/batches/\(id)")
+        let headers = openAIHeaders(contentType: "application/json")
+        let http = try await transport.send(
+            HTTPRequest(method: .get, url: url, headers: headers, body: .none),
+            timeout: nil
+        )
+        let json = try parseOpenAIJSONResponse(http)
+        return parseBatchResponse(json)
+    }
+
+    public func cancelBatch(id: String) async throws -> OpenAIBatchResponse {
+        let url = try _ProviderHTTP.makeURL(baseURL: baseURL, path: "/batches/\(id)/cancel")
+        let headers = openAIHeaders(contentType: "application/json")
+        let http = try await transport.send(
+            HTTPRequest(method: .post, url: url, headers: headers, body: .none),
+            timeout: nil
+        )
+        let json = try parseOpenAIJSONResponse(http)
+        return parseBatchResponse(json)
+    }
+}
+
+private struct OpenAIMultipartPart {
+    let name: String
+    let filename: String?
+    let contentType: String?
+    let data: [UInt8]
+}
+
+private extension OpenAIAdapter {
+    func openAIHeaders(contentType: String) -> HTTPHeaders {
+        var headers = HTTPHeaders()
+        headers.set(name: "authorization", value: "Bearer \(apiKey)")
+        headers.set(name: "content-type", value: contentType)
+        if let organizationID {
+            headers.set(name: "openai-organization", value: organizationID)
+        }
+        if let projectID {
+            headers.set(name: "openai-project", value: projectID)
+        }
+        return headers
+    }
+
+    func parseOpenAIJSONResponse(_ response: HTTPResponse) throws -> JSONValue {
+        if !(200..<300).contains(response.statusCode) {
+            throw openAIHTTPError(response)
+        }
+        return _ProviderHTTP.parseJSONBody(response) ?? .object([:])
+    }
+
+    func openAIHTTPError(_ response: HTTPResponse) -> SDKError {
+        let json = _ProviderHTTP.parseJSONBody(response)
+        let msg = _ProviderHTTP.errorMessage(from: json).message ?? "OpenAI error"
+        let code = _ProviderHTTP.errorMessage(from: json).code
+        let retryAfter = _ProviderHTTP.parseRetryAfterSeconds(response.headers)
+        return _ErrorMapping.sdkErrorFromHTTP(
+            provider: name,
+            statusCode: response.statusCode,
+            message: msg,
+            errorCode: code,
+            retryAfter: retryAfter,
+            raw: json
+        )
+    }
+
+    func buildAudioMultipartBody(
+        fileName: String,
+        fileData: [UInt8],
+        mediaType: String,
+        model: String,
+        prompt: String?,
+        responseFormat: String?,
+        temperature: Double?,
+        language: String?,
+        providerOptions: [String: JSONValue]?
+    ) -> (body: [UInt8], contentType: String) {
+        var parts: [OpenAIMultipartPart] = [
+            OpenAIMultipartPart(name: "file", filename: fileName, contentType: mediaType, data: fileData),
+            OpenAIMultipartPart(name: "model", filename: nil, contentType: nil, data: Array(model.utf8)),
+        ]
+
+        if let prompt, !prompt.isEmpty {
+            parts.append(OpenAIMultipartPart(name: "prompt", filename: nil, contentType: nil, data: Array(prompt.utf8)))
+        }
+        if let responseFormat, !responseFormat.isEmpty {
+            parts.append(OpenAIMultipartPart(name: "response_format", filename: nil, contentType: nil, data: Array(responseFormat.utf8)))
+        }
+        if let temperature {
+            parts.append(OpenAIMultipartPart(name: "temperature", filename: nil, contentType: nil, data: Array(String(temperature).utf8)))
+        }
+        if let language, !language.isEmpty {
+            parts.append(OpenAIMultipartPart(name: "language", filename: nil, contentType: nil, data: Array(language.utf8)))
+        }
+
+        if let providerOptions {
+            for (key, value) in providerOptions {
+                let stringValue = _ProviderHTTP.stringifyJSON(value)
+                parts.append(OpenAIMultipartPart(name: key, filename: nil, contentType: nil, data: Array(stringValue.utf8)))
+            }
+        }
+
+        let boundary = "omnikit-\(UUID().uuidString)"
+        var body: [UInt8] = []
+        let lineBreak = "\r\n"
+
+        func append(_ string: String) {
+            body.append(contentsOf: Array(string.utf8))
+        }
+
+        for part in parts {
+            append("--\(boundary)\(lineBreak)")
+            var disposition = "Content-Disposition: form-data; name=\"\(part.name)\""
+            if let filename = part.filename {
+                disposition += "; filename=\"\(filename)\""
+            }
+            append(disposition + lineBreak)
+            if let contentType = part.contentType {
+                append("Content-Type: \(contentType)\(lineBreak)")
+            }
+            append(lineBreak)
+            body.append(contentsOf: part.data)
+            append(lineBreak)
+        }
+
+        append("--\(boundary)--\(lineBreak)")
+        return (body, "multipart/form-data; boundary=\(boundary)")
+    }
+
+    func parseBatchResponse(_ json: JSONValue) -> OpenAIBatchResponse {
+        OpenAIBatchResponse(
+            id: json["id"]?.stringValue ?? "batch_\(UUID().uuidString)",
+            status: json["status"]?.stringValue,
+            inputFileId: json["input_file_id"]?.stringValue,
+            outputFileId: json["output_file_id"]?.stringValue,
+            errorFileId: json["error_file_id"]?.stringValue,
+            createdAt: json["created_at"]?.doubleValue.map(Int.init),
+            completedAt: json["completed_at"]?.doubleValue.map(Int.init),
+            expiresAt: json["expires_at"]?.doubleValue.map(Int.init),
+            metadata: json["metadata"],
+            raw: json
+        )
+    }
+}

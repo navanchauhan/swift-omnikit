@@ -42,7 +42,7 @@ private struct CLICommand {
     let acpMode: String?
     let printContext: Bool
     let interactive: Bool
-    let resume: Bool
+    let autoresume: Bool
 
     init(arguments: [String]) throws {
         guard let first = arguments.first else {
@@ -72,7 +72,7 @@ private struct CLICommand {
         var foundACPMode: String?
         var foundPrintContext = false
         var foundInteractive = false
-        var foundResume = false
+        var foundAutoResume = true
 
         while idx < arguments.count {
             let arg = arguments[idx]
@@ -133,7 +133,9 @@ private struct CLICommand {
             case "--interactive":
                 foundInteractive = true
             case "--resume":
-                foundResume = true
+                foundAutoResume = true
+            case "--no-resume":
+                foundAutoResume = false
             case "-h", "--help":
                 throw ExitError(code: 0, message: usageText)
             default:
@@ -164,7 +166,7 @@ private struct CLICommand {
         self.acpMode = foundACPMode
         self.printContext = foundPrintContext
         self.interactive = foundInteractive
-        self.resume = foundResume
+        self.autoresume = foundAutoResume
     }
 
     func run() async throws {
@@ -210,23 +212,62 @@ private struct CLICommand {
 
         let backendInstance = try makeBackend()
         let interviewer: Interviewer = interactive ? ConsoleInterviewer() : AutoApproveInterviewer()
-        let logs = try resolveLogsRoot()
+
+        let normalizedDotPath = normalizePath(dotPath)
+        let normalizedWorkdir = normalizePath(FileManager.default.currentDirectoryPath)
+        let resumeSelection = autoresume
+            ? try findLatestIncompleteRun(dotPath: normalizedDotPath, backend: backend.lowercased(), workdir: normalizedWorkdir)
+            : nil
+
+        let logs: URL
+        let checkpoint: Checkpoint?
+        var manifest: RunManifest
+        if let selection = resumeSelection {
+            logs = selection.logsRoot
+            checkpoint = selection.checkpoint
+            manifest = selection.manifest
+            manifest.currentNode = checkpoint?.currentNode
+            manifest.updatedAt = Date()
+            manifest.completionState = .running
+            fputs("[AttractorCLI] Autoresuming run from \(logs.path)\n", stderr)
+        } else {
+            logs = try resolveLogsRoot()
+            checkpoint = nil
+            manifest = RunManifest(
+                dotPath: normalizedDotPath,
+                backend: backend.lowercased(),
+                workingDirectory: normalizedWorkdir,
+                logsRoot: logs.path
+            )
+        }
+
+        let manifestURL = logs.appendingPathComponent("run.manifest.json")
+        let lockURL = logs.appendingPathComponent("run.lock")
+        let manifestWriter = RunManifestWriter(manifest: manifest, manifestURL: manifestURL, lockURL: lockURL)
+        try manifestWriter.start()
+
+        let eventEmitter = PipelineEventEmitter()
+        await eventEmitter.on { event in
+            manifestWriter.record(event)
+        }
 
         let config = PipelineConfig(
             logsRoot: logs,
             backend: backendInstance,
-            interviewer: interviewer
+            interviewer: interviewer,
+            eventEmitter: eventEmitter
         )
         let engine = PipelineEngine(config: config)
 
         let result: PipelineResult
-        if resume, let checkpoint = try findLatestCheckpoint() {
+        if let checkpoint {
             fputs("[AttractorCLI] Resuming from checkpoint: \(checkpoint.currentNode)\n", stderr)
             fputs("[AttractorCLI] Completed nodes: \(checkpoint.completedNodes.joined(separator: ", "))\n", stderr)
             result = try await engine.resume(dot: dot, checkpoint: checkpoint)
         } else {
             result = try await engine.run(dot: dot)
         }
+        manifestWriter.finish(status: result.status)
 
         print("status=\(result.status.rawValue)")
         print("logs=\(result.logsRoot.path)")
@@ -280,8 +321,11 @@ private struct CLICommand {
         }
     }
 
-    private func findLatestCheckpoint() throws -> Checkpoint? {
-        let baseName = URL(fileURLWithPath: dotPath).deletingPathExtension().lastPathComponent
+    private func findLatestIncompleteRun(
+        dotPath: String,
+        backend: String,
+        workdir: String
+    ) throws -> RunSelection? {
         let runsDir = URL(fileURLWithPath: ".ai/attractor-runs", isDirectory: true)
         guard FileManager.default.fileExists(atPath: runsDir.path) else { return nil }
 
@@ -291,22 +335,40 @@ private struct CLICommand {
             options: [.skipsHiddenFiles]
         )
 
-        // Find the most recent run directory matching our dotfile name
-        let matching = contents
-            .filter { $0.lastPathComponent.hasPrefix(baseName) }
-            .sorted { a, b in
-                let aDate = (try? a.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) ?? .distantPast
-                let bDate = (try? b.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) ?? .distantPast
-                return aDate > bDate
+        var best: RunSelection?
+        for runDir in contents {
+            let manifestURL = runDir.appendingPathComponent("run.manifest.json")
+            guard FileManager.default.fileExists(atPath: manifestURL.path),
+                  let manifest = try? RunManifest.load(from: manifestURL)
+            else {
+                continue
             }
 
-        for runDir in matching {
-            let checkpointURL = runDir.appendingPathComponent("checkpoint.json")
-            if FileManager.default.fileExists(atPath: checkpointURL.path) {
-                return try Checkpoint.load(from: checkpointURL)
+            guard normalizePath(manifest.dotPath) == dotPath,
+                  manifest.backend.lowercased() == backend.lowercased(),
+                  normalizePath(manifest.workingDirectory) == workdir
+            else {
+                continue
+            }
+
+            if manifest.completionState == .completed {
+                continue
+            }
+
+            let logsRoot = URL(fileURLWithPath: manifest.logsRoot, isDirectory: true)
+            let checkpointURL = logsRoot.appendingPathComponent("checkpoint.json")
+            guard FileManager.default.fileExists(atPath: checkpointURL.path),
+                  let checkpoint = try? Checkpoint.load(from: checkpointURL)
+            else {
+                continue
+            }
+
+            let updatedAt = manifest.updatedAt
+            if best == nil || updatedAt > best!.manifest.updatedAt {
+                best = RunSelection(manifest: manifest, logsRoot: logsRoot, checkpoint: checkpoint)
             }
         }
-        return nil
+        return best
     }
 
     private func resolveLogsRoot() throws -> URL {
@@ -317,6 +379,92 @@ private struct CLICommand {
         let stamp = String(Date.now.ISO8601Format().map { $0 == ":" ? "-" : $0 })
         let defaultPath = ".ai/attractor-runs/\(baseName)-\(stamp)"
         return URL(fileURLWithPath: defaultPath, isDirectory: true)
+    }
+
+    private func normalizePath(_ path: String) -> String {
+        URL(fileURLWithPath: path).standardizedFileURL.path
+    }
+}
+
+private struct RunSelection {
+    let manifest: RunManifest
+    let logsRoot: URL
+    let checkpoint: Checkpoint
+}
+
+private final class RunManifestWriter: @unchecked Sendable {
+    private let lock = NSLock()
+    private var manifest: RunManifest
+    private let manifestURL: URL
+    private let lockURL: URL
+
+    init(manifest: RunManifest, manifestURL: URL, lockURL: URL) {
+        self.manifest = manifest
+        self.manifestURL = manifestURL
+        self.lockURL = lockURL
+    }
+
+    func start() throws {
+        let dir = manifestURL.deletingLastPathComponent()
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        manifest.updatedAt = Date()
+        try manifest.save(to: manifestURL)
+        touchLock()
+    }
+
+    func record(_ event: PipelineEvent) {
+        lock.lock()
+        defer { lock.unlock() }
+
+        switch event.kind {
+        case .stageStarted, .stageCompleted, .stageFailed:
+            manifest.currentNode = event.nodeId ?? manifest.currentNode
+        case .pipelineCompleted:
+            manifest.completionState = .completed
+        case .pipelineFailed:
+            manifest.completionState = .failed
+        default:
+            break
+        }
+        manifest.updatedAt = event.timestamp
+
+        try? manifest.save(to: manifestURL)
+        if manifest.completionState == .completed {
+            removeLock()
+        } else {
+            touchLock()
+        }
+    }
+
+    func finish(status: OutcomeStatus) {
+        lock.lock()
+        defer { lock.unlock() }
+        manifest.updatedAt = Date()
+        switch status {
+        case .success:
+            manifest.completionState = .completed
+        default:
+            manifest.completionState = .failed
+        }
+        try? manifest.save(to: manifestURL)
+        if manifest.completionState == .completed {
+            removeLock()
+        } else {
+            touchLock()
+        }
+    }
+
+    private func touchLock() {
+        if !FileManager.default.fileExists(atPath: lockURL.path) {
+            FileManager.default.createFile(atPath: lockURL.path, contents: Data())
+            return
+        }
+        let attrs: [FileAttributeKey: Any] = [.modificationDate: Date()]
+        try? FileManager.default.setAttributes(attrs, ofItemAtPath: lockURL.path)
+    }
+
+    private func removeLock() {
+        try? FileManager.default.removeItem(at: lockURL)
     }
 }
 
@@ -892,5 +1040,5 @@ AttractorCLI
 
 Usage:
   swift run AttractorCLI validate <dotfile>
-  swift run AttractorCLI run <dotfile> [--backend acp|agent|cli|llmkit|mock] [--logs-root <path>] [--workdir <path>] [--acp-agent <path-or-url>] [--acp-arg <value>] [--acp-cwd <path>] [--acp-timeout <seconds>] [--acp-mode <id>] [--interactive] [--print-context]
+  swift run AttractorCLI run <dotfile> [--backend acp|agent|cli|llmkit|mock] [--logs-root <path>] [--workdir <path>] [--acp-agent <path-or-url>] [--acp-arg <value>] [--acp-cwd <path>] [--acp-timeout <seconds>] [--acp-mode <id>] [--interactive] [--print-context] [--no-resume]
 """

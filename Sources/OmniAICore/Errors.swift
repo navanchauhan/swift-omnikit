@@ -87,6 +87,20 @@ public final class UnsupportedToolChoiceError: SDKError, @unchecked Sendable {
     public override var retryable: Bool { false }
 }
 
+public final class UnsupportedCapabilityError: SDKError, @unchecked Sendable {
+    public let provider: String?
+    public let capability: String
+
+    public override var retryable: Bool { false }
+
+    public init(provider: String?, capability: String) {
+        self.provider = provider
+        self.capability = capability
+        let providerLabel = provider.map { " provider '\($0)'" } ?? " configured provider"
+        super.init(message: "Unsupported capability '\(capability)' for\(providerLabel).")
+    }
+}
+
 enum _ErrorMapping {
     static func sdkErrorFromHTTP(
         provider: String,

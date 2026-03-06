@@ -14,6 +14,8 @@ public struct SessionSnapshot: Codable, Sendable {
     public var workingDirectory: String
     public var state: SessionState
     public var history: [PersistedTurn]
+    public var responseTimeline: [ResponseTimelineEntry]
+    public var pendingTimelineTurns: [PersistedTurn]
     public var steeringQueue: [String]
     public var followupQueue: [String]
     public var config: SessionConfig
@@ -27,6 +29,8 @@ public struct SessionSnapshot: Codable, Sendable {
         workingDirectory: String,
         state: SessionState,
         history: [PersistedTurn],
+        responseTimeline: [ResponseTimelineEntry] = [],
+        pendingTimelineTurns: [PersistedTurn] = [],
         steeringQueue: [String],
         followupQueue: [String],
         config: SessionConfig,
@@ -39,11 +43,63 @@ public struct SessionSnapshot: Codable, Sendable {
         self.workingDirectory = workingDirectory
         self.state = state
         self.history = history
+        self.responseTimeline = responseTimeline
+        self.pendingTimelineTurns = pendingTimelineTurns
         self.steeringQueue = steeringQueue
         self.followupQueue = followupQueue
         self.config = config
         self.abortSignaled = abortSignaled
         self.updatedAt = updatedAt
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case sessionID
+        case providerID
+        case model
+        case workingDirectory
+        case state
+        case history
+        case responseTimeline
+        case pendingTimelineTurns
+        case steeringQueue
+        case followupQueue
+        case config
+        case abortSignaled
+        case updatedAt
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        sessionID = try container.decode(String.self, forKey: .sessionID)
+        providerID = try container.decode(String.self, forKey: .providerID)
+        model = try container.decode(String.self, forKey: .model)
+        workingDirectory = try container.decode(String.self, forKey: .workingDirectory)
+        state = try container.decode(SessionState.self, forKey: .state)
+        history = try container.decode([PersistedTurn].self, forKey: .history)
+        responseTimeline = try container.decodeIfPresent([ResponseTimelineEntry].self, forKey: .responseTimeline) ?? []
+        pendingTimelineTurns = try container.decodeIfPresent([PersistedTurn].self, forKey: .pendingTimelineTurns) ?? []
+        steeringQueue = try container.decode([String].self, forKey: .steeringQueue)
+        followupQueue = try container.decode([String].self, forKey: .followupQueue)
+        config = try container.decode(SessionConfig.self, forKey: .config)
+        abortSignaled = try container.decode(Bool.self, forKey: .abortSignaled)
+        updatedAt = try container.decode(Date.self, forKey: .updatedAt)
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(sessionID, forKey: .sessionID)
+        try container.encode(providerID, forKey: .providerID)
+        try container.encode(model, forKey: .model)
+        try container.encode(workingDirectory, forKey: .workingDirectory)
+        try container.encode(state, forKey: .state)
+        try container.encode(history, forKey: .history)
+        try container.encode(responseTimeline, forKey: .responseTimeline)
+        try container.encode(pendingTimelineTurns, forKey: .pendingTimelineTurns)
+        try container.encode(steeringQueue, forKey: .steeringQueue)
+        try container.encode(followupQueue, forKey: .followupQueue)
+        try container.encode(config, forKey: .config)
+        try container.encode(abortSignaled, forKey: .abortSignaled)
+        try container.encode(updatedAt, forKey: .updatedAt)
     }
 }
 

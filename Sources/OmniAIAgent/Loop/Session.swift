@@ -1,5 +1,6 @@
 import Foundation
 import OmniAICore
+import OmniMCP
 
 private struct EmptyStreamResponseError: Error {}
 
@@ -20,6 +21,11 @@ public actor Session {
     public let llmClient: Client
     private var steeringQueue: [String] = []
     private var followupQueue: [String] = []
+    private var responseTimeline: [ResponseTimelineEntry] = []
+    private var pendingTimelineTurns: [PersistedTurn] = []
+    private var mcpServers: [any MCPServer] = []
+    private var mcpToolNames: Set<String> = []
+    private var mcpInitialized = false
     private var subagents: [String: SubAgentHandle] = [:]
     public private(set) var abortSignaled: Bool = false
     private let depth: Int
@@ -49,6 +55,10 @@ public actor Session {
         self.depth = depth
         self.storageBackend = storageBackend
         self.autoRestoreFromStorage = autoRestoreFromStorage
+        let mcpPolicy = config.mcp.connectionPolicy
+        self.mcpServers = try config.mcp.servers.map { config in
+            try MCPServerFactory.makeServer(config: config, policy: mcpPolicy)
+        }
 
         if let client = client {
             self.llmClient = client
@@ -70,6 +80,23 @@ public actor Session {
 
     public func updateConfig(_ mutator: (inout SessionConfig) -> Void) async {
         mutator(&config)
+        do {
+            let oldServers = mcpServers
+            mcpServers = try config.mcp.servers.map { config in
+                try MCPServerFactory.makeServer(config: config, policy: self.config.mcp.connectionPolicy)
+            }
+            mcpToolNames.removeAll()
+            mcpInitialized = false
+            for server in oldServers {
+                await server.cleanup()
+            }
+        } catch {
+            await eventEmitter.emit(SessionEvent(
+                kind: .warning,
+                sessionId: id,
+                data: ["message": "Failed to update MCP configuration: \(error)"]
+            ))
+        }
         await persistStateIfNeeded()
     }
 
@@ -91,6 +118,7 @@ public actor Session {
             await handle.session.abort()
         }
         subagents.removeAll()
+        await cleanupMCPServers()
         await persistStateIfNeeded()
         try? await executionEnv.cleanup()
     }
@@ -103,6 +131,7 @@ public actor Session {
             await handle.session.close()
         }
         subagents.removeAll()
+        await cleanupMCPServers()
         await eventEmitter.emit(SessionEvent(kind: .sessionEnd, sessionId: id, data: ["state": "closed"]))
         await eventEmitter.flush()
         await persistStateIfNeeded()
@@ -110,7 +139,7 @@ public actor Session {
     }
 
     public func addSystemReminder(_ reminder: String) async {
-        history.append(.system(SystemTurn(content: wrapSystemReminder(reminder))))
+        appendTurn(.system(SystemTurn(content: wrapSystemReminder(reminder))))
         await persistStateIfNeeded()
     }
 
@@ -120,6 +149,29 @@ public actor Session {
 
     public func getHistory() -> [Turn] {
         history
+    }
+
+    public func listResponseTimeline() -> [ResponseTimelineEntry] {
+        responseTimeline
+    }
+
+    public func rewind(toResponseID responseId: String) async throws {
+        guard let index = responseTimeline.firstIndex(where: { $0.responseId == responseId }) else {
+            throw SessionTimelineError.responseNotFound(responseId)
+        }
+
+        let truncatedTimeline = Array(responseTimeline.prefix(index + 1))
+        responseTimeline = truncatedTimeline
+        pendingTimelineTurns.removeAll()
+        history = rebuildHistory(from: truncatedTimeline, pending: [])
+        steeringQueue.removeAll()
+        followupQueue.removeAll()
+        abortSignaled = false
+        lastToolCallSignature = nil
+        consecutiveIdenticalToolCallCount = 0
+        state = .idle
+
+        await persistStateIfNeeded()
     }
 
     public func workingDirectory() -> String {
@@ -142,10 +194,32 @@ public actor Session {
                 ]
             ))
         }
-        history = snapshot.history.map { $0.toTurn() }
+        responseTimeline = snapshot.responseTimeline
+        pendingTimelineTurns = snapshot.pendingTimelineTurns
+        if !responseTimeline.isEmpty || !pendingTimelineTurns.isEmpty {
+            history = rebuildHistory(from: responseTimeline, pending: pendingTimelineTurns)
+        } else {
+            history = snapshot.history.map { $0.toTurn() }
+            let rebuilt = rebuildTimeline(from: history)
+            responseTimeline = rebuilt.timeline
+            pendingTimelineTurns = rebuilt.pending
+        }
         steeringQueue = snapshot.steeringQueue
         followupQueue = snapshot.followupQueue
         config = snapshot.config
+        do {
+            mcpServers = try config.mcp.servers.map { config in
+                try MCPServerFactory.makeServer(config: config, policy: self.config.mcp.connectionPolicy)
+            }
+            mcpToolNames.removeAll()
+            mcpInitialized = false
+        } catch {
+            await eventEmitter.emit(SessionEvent(
+                kind: .warning,
+                sessionId: id,
+                data: ["message": "Failed to restore MCP configuration: \(error)"]
+            ))
+        }
         state = snapshot.state
         abortSignaled = snapshot.abortSignaled
         await eventEmitter.emit(SessionEvent(
@@ -181,6 +255,7 @@ public actor Session {
                 ))
             }
         }
+        await loadMCPToolsIfNeeded()
         fputs("[Session] step: recoverPendingToolCalls\n", stderr)
         await recoverPendingToolCallsIfNeeded()
 
@@ -191,7 +266,7 @@ public actor Session {
         let resumeContinuation = shouldTreatAsResumeContinuation(userInput: userInput)
         state = .processing
         if !resumeContinuation {
-            history.append(.user(UserTurn(content: userInput)))
+            appendTurn(.user(UserTurn(content: userInput)))
             await persistStateIfNeeded()
             await eventEmitter.emit(SessionEvent(kind: .userInput, sessionId: id, data: ["content": userInput]))
         } else {
@@ -297,21 +372,22 @@ public actor Session {
             }
 
             // 4. Record assistant turn
+            let resolvedResponseId = resolveResponseId(response)
             let assistantTurn = AssistantTurn(
                 content: response.text,
                 toolCalls: response.toolCalls,
                 reasoning: response.reasoning,
                 rawContentParts: response.message.content,
                 usage: response.usage,
-                responseId: response.id
+                responseId: resolvedResponseId
             )
-            history.append(.assistant(assistantTurn))
+            appendTurn(.assistant(assistantTurn))
             await persistStateIfNeeded()
             await eventEmitter.emit(SessionEvent(
                 kind: .assistantTextStart,
                 sessionId: id,
                 data: [
-                    "response_id": response.id,
+                    "response_id": resolvedResponseId,
                     "tool_call_count": response.toolCalls.count,
                 ]
             ))
@@ -337,6 +413,7 @@ public actor Session {
 
             // 5. If no tool calls, natural completion
             if response.toolCalls.isEmpty {
+                finalizeTimelineEntry(responseId: resolvedResponseId)
                 break
             }
 
@@ -345,7 +422,7 @@ public actor Session {
             fputs("[Session] step: executeToolCalls (\(response.toolCalls.count) calls, round \(roundCount))\n", stderr)
             let results = await executeToolCalls(response.toolCalls)
             fputs("[Session] step: toolCalls complete, persisting\n", stderr)
-            history.append(.toolResults(ToolResultsTurn(results: results)))
+            appendTurn(.toolResults(ToolResultsTurn(results: results)))
             await persistStateIfNeeded()
             fputs("[Session] step: persisted, draining steering\n", stderr)
 
@@ -356,11 +433,13 @@ public actor Session {
             if config.enableLoopDetection {
                 if detectLoop(window: config.loopDetectionWindow) {
                     let warning = "Loop detected: the last \(config.loopDetectionWindow) tool calls follow a repeating pattern. Try a different approach."
-                    history.append(.steering(SteeringTurn(content: warning)))
+                    appendTurn(.steering(SteeringTurn(content: warning)))
                     await persistStateIfNeeded()
                     await eventEmitter.emit(SessionEvent(kind: .loopDetection, sessionId: id, data: ["message": warning]))
                 }
             }
+
+            finalizeTimelineEntry(responseId: resolvedResponseId)
 
             // Context window awareness
             fputs("[Session] step: checkContextUsage\n", stderr)
@@ -393,7 +472,10 @@ public actor Session {
         ))
 
         let results = await executeToolCalls(pending)
-        history.append(.toolResults(ToolResultsTurn(results: results)))
+        appendTurn(.toolResults(ToolResultsTurn(results: results)))
+        if let responseId = latestAssistantResponseId() {
+            finalizeTimelineEntry(responseId: responseId)
+        }
         await persistStateIfNeeded()
     }
 
@@ -445,6 +527,8 @@ public actor Session {
             workingDirectory: executionEnv.workingDirectory(),
             state: state,
             history: history.map(PersistedTurn.init),
+            responseTimeline: responseTimeline,
+            pendingTimelineTurns: pendingTimelineTurns,
             steeringQueue: steeringQueue,
             followupQueue: followupQueue,
             config: config,
@@ -469,10 +553,107 @@ public actor Session {
     private func drainSteering() async {
         while !steeringQueue.isEmpty {
             let msg = steeringQueue.removeFirst()
-            history.append(.steering(SteeringTurn(content: msg)))
+            appendTurn(.steering(SteeringTurn(content: msg)))
             await persistStateIfNeeded()
             await eventEmitter.emit(SessionEvent(kind: .steeringInjected, sessionId: id, data: ["content": msg]))
         }
+    }
+
+    // MARK: - MCP
+
+    private func loadMCPToolsIfNeeded(force: Bool = false) async {
+        guard !config.mcp.servers.isEmpty else { return }
+        if mcpInitialized && !force { return }
+
+        if mcpServers.isEmpty {
+            do {
+                mcpServers = try config.mcp.servers.map { config in
+                    try MCPServerFactory.makeServer(config: config, policy: self.config.mcp.connectionPolicy)
+                }
+            } catch {
+                await eventEmitter.emit(SessionEvent(
+                    kind: .warning,
+                    sessionId: id,
+                    data: ["message": "Failed to configure MCP servers: \(error)"]
+                ))
+                return
+            }
+        }
+
+        var newToolNames: Set<String> = []
+        do {
+            for server in mcpServers {
+                let definitions = try await server.listTools()
+                for definition in definitions {
+                    let registered = buildMCPRegisteredTool(definition, server: server)
+                    providerProfile.toolRegistry.register(registered)
+                    newToolNames.insert(definition.name)
+                }
+            }
+            for name in mcpToolNames where !newToolNames.contains(name) {
+                providerProfile.toolRegistry.unregister(name)
+            }
+            mcpToolNames = newToolNames
+            mcpInitialized = true
+        } catch {
+            await eventEmitter.emit(SessionEvent(
+                kind: .warning,
+                sessionId: id,
+                data: ["message": "Failed to load MCP tools: \(error)"]
+            ))
+        }
+    }
+
+    private func buildMCPRegisteredTool(_ definition: MCPToolDefinition, server: MCPServer) -> RegisteredTool {
+        let schemaValue = ensureStrictJSONSchema(definition.inputSchema)
+        let schemaObject: JSONValue
+        if case .object = schemaValue {
+            schemaObject = schemaValue
+        } else {
+            schemaObject = .object([
+                "type": .string("object"),
+                "properties": .object([:]),
+                "additionalProperties": .bool(false),
+            ])
+        }
+        let toolDefinition = AgentToolDefinition(
+            name: definition.name,
+            description: definition.description,
+            parameters: schemaObject
+        )
+        return RegisteredTool(
+            definition: toolDefinition,
+            executor: { arguments, _ in
+                let jsonArgs = (try? JSONValue(arguments)) ?? .object([:])
+                let result = try await server.callTool(name: definition.name, arguments: jsonArgs)
+                let rendered = Self.renderMCPToolOutput(result.content)
+                if result.isError {
+                    throw MCPToolExecutionError(message: rendered)
+                }
+                return rendered
+            }
+        )
+    }
+
+    private nonisolated static func renderMCPToolOutput(_ value: JSONValue) -> String {
+        if case .string(let text) = value {
+            return text
+        }
+        if let data = try? value.data(prettyPrinted: true),
+           let string = String(data: data, encoding: .utf8) {
+            return string
+        }
+        return value.description
+    }
+
+    private func cleanupMCPServers() async {
+        for server in mcpServers {
+            await server.cleanup()
+        }
+    }
+
+    private struct MCPToolExecutionError: Error, Sendable {
+        let message: String
     }
 
     // MARK: - Tool Execution
@@ -702,6 +883,67 @@ public actor Session {
     private func toolCallSignature(_ toolCall: ToolCall) -> String {
         let args = JSONValue.object(toolCall.arguments).description
         return "\(toolCall.name)::\(args)"
+    }
+
+    // MARK: - Timeline
+
+    private func appendTurn(_ turn: Turn) {
+        history.append(turn)
+        pendingTimelineTurns.append(PersistedTurn(turn))
+    }
+
+    private func finalizeTimelineEntry(responseId: String) {
+        guard !pendingTimelineTurns.isEmpty else { return }
+        let containsResponse = pendingTimelineTurns.contains { turn in
+            guard case .assistant(let assistant) = turn else { return false }
+            return assistant.responseId == responseId
+        }
+        guard containsResponse else { return }
+        responseTimeline.append(ResponseTimelineEntry(responseId: responseId, turns: pendingTimelineTurns))
+        pendingTimelineTurns.removeAll()
+    }
+
+    private func rebuildHistory(from timeline: [ResponseTimelineEntry], pending: [PersistedTurn]) -> [Turn] {
+        var turns: [Turn] = []
+        for entry in timeline {
+            turns.append(contentsOf: entry.turns.map { $0.toTurn() })
+        }
+        turns.append(contentsOf: pending.map { $0.toTurn() })
+        return turns
+    }
+
+    private func rebuildTimeline(from history: [Turn]) -> (timeline: [ResponseTimelineEntry], pending: [PersistedTurn]) {
+        var timeline: [ResponseTimelineEntry] = []
+        var buffer: [PersistedTurn] = []
+        var activeResponseId: String?
+        var activeTimestamp: Date = Date()
+
+        for turn in history {
+            if case .assistant(let assistant) = turn {
+                if let activeResponseId, !buffer.isEmpty {
+                    timeline.append(ResponseTimelineEntry(responseId: activeResponseId, turns: buffer, createdAt: activeTimestamp))
+                    buffer.removeAll(keepingCapacity: true)
+                }
+                let responseId = assistant.responseId ?? "local-\(UUID().uuidString)"
+                activeResponseId = responseId
+                activeTimestamp = assistant.timestamp
+            }
+            buffer.append(PersistedTurn(turn))
+        }
+
+        if let activeResponseId, !buffer.isEmpty {
+            timeline.append(ResponseTimelineEntry(responseId: activeResponseId, turns: buffer, createdAt: activeTimestamp))
+            buffer.removeAll()
+        }
+
+        return (timeline, buffer)
+    }
+
+    private func resolveResponseId(_ response: Response) -> String {
+        if !response.id.isEmpty {
+            return response.id
+        }
+        return "local-\(UUID().uuidString)"
     }
 
     // MARK: - History Conversion

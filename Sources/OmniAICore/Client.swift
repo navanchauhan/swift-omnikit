@@ -166,6 +166,14 @@ public final class Client: @unchecked Sendable {
         _withStateLock { _middleware }
     }
 
+    public var openai: OpenAIServiceNamespace {
+        OpenAIServiceNamespace(client: self)
+    }
+
+    public var gemini: GeminiServiceNamespace {
+        GeminiServiceNamespace(client: self)
+    }
+
     public static func fromEnv(
         environment: [String: String],
         transport: OmniHTTP.HTTPTransport = OmniHTTP.URLSessionHTTPTransport(),
@@ -524,22 +532,42 @@ public final class Client: @unchecked Sendable {
         return try body()
     }
 
-    private func resolveAdapter(for request: Request) throws -> ProviderAdapter {
+    func resolveAdapter(provider: String?) throws -> ProviderAdapter {
         try _withStateLock {
-            if let p = request.provider {
-                guard let a = providers[p] else {
-                    throw ConfigurationError(message: "Provider '\(p)' not configured")
+            if let provider {
+                guard let adapter = providers[provider] else {
+                    throw ConfigurationError(message: "Provider '\(provider)' not configured")
                 }
-                return a
+                return adapter
             }
             guard let def = _defaultProvider else {
-                throw ConfigurationError(message: "No default provider configured and request.provider is nil")
+                throw ConfigurationError(message: "No default provider configured and provider is nil")
             }
-            guard let a = providers[def] else {
+            guard let adapter = providers[def] else {
                 throw ConfigurationError(message: "Default provider '\(def)' not configured")
             }
-            return a
+            return adapter
         }
+    }
+
+    private func resolveAdapter(for request: Request) throws -> ProviderAdapter {
+        try resolveAdapter(provider: request.provider)
+    }
+
+    public func embed(_ request: EmbedRequest) async throws -> EmbedResponse {
+        let adapter = try resolveAdapter(provider: request.provider)
+        guard let embeddingAdapter = adapter as? EmbeddingProviderAdapter else {
+            throw UnsupportedCapabilityError(provider: request.provider ?? defaultProvider, capability: "embeddings")
+        }
+        return try await embeddingAdapter.embed(request: request)
+    }
+
+    public func sendToolOutputs(_ request: ToolContinuationRequest) async throws -> Response {
+        let adapter = try resolveAdapter(provider: request.provider)
+        guard let continuationAdapter = adapter as? ToolContinuationProviderAdapter else {
+            throw UnsupportedCapabilityError(provider: request.provider ?? defaultProvider, capability: "tool_continuation")
+        }
+        return try await continuationAdapter.sendToolOutputs(request: request)
     }
 
     private static func withInactivityWatchdog(

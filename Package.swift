@@ -56,6 +56,10 @@ let package = Package(
             targets: ["OmniACP"]
         ),
         .library(
+            name: "OmniMCP",
+            targets: ["OmniMCP"]
+        ),
+        .library(
             name: "OmniAgentsSDK",
             targets: ["OmniAgentsSDK"]
         ),
@@ -82,6 +86,10 @@ let package = Package(
         .executable(
             name: "AttractorCLI",
             targets: ["AttractorCLI"]
+        ),
+        .executable(
+            name: "OmniAICode",
+            targets: ["OmniAICode"]
         ),
     ],
     dependencies: [
@@ -190,7 +198,7 @@ let package = Package(
         ),
         .target(
             name: "OmniAIAgent",
-            dependencies: ["OmniAICore"],
+            dependencies: ["OmniAICore", "OmniMCP"],
             path: "Sources/OmniAIAgent",
             resources: [
                 .process("Resources"),
@@ -220,6 +228,16 @@ let package = Package(
             ]
         ),
         .target(
+            name: "OmniMCP",
+            dependencies: ["OmniAICore", "OmniHTTP"],
+            path: "Sources/OmniMCP",
+            swiftSettings: [
+                .swiftLanguageMode(.v6),
+                .unsafeFlags(["-warn-concurrency", "-strict-concurrency=complete"]),
+                .unsafeFlags(["-enable-actor-data-race-checks"], .when(configuration: .debug)),
+            ]
+        ),
+        .target(
             name: "OmniAIAttractor",
             dependencies: ["OmniAICore", "OmniAIAgent", "OmniACP"],
             path: "Sources/OmniAIAttractor",
@@ -230,7 +248,7 @@ let package = Package(
         ),
         .target(
             name: "OmniAgentsSDK",
-            dependencies: ["OmniAICore"],
+            dependencies: ["OmniAICore", "OmniMCP"],
             path: "Sources/OmniAgentsSDK",
             swiftSettings: [
                 .swiftLanguageMode(.v6),
@@ -315,6 +333,15 @@ let package = Package(
                 .unsafeFlags(["-enable-actor-data-race-checks"], .when(configuration: .debug)),
             ]
         ),
+        .executableTarget(
+            name: "OmniAICode",
+            dependencies: ["OmniAIAgent", "OmniAICore", "OmniMCP"],
+            path: "Sources/OmniAICode",
+            swiftSettings: [
+                .unsafeFlags(["-warn-concurrency", "-strict-concurrency=complete"]),
+                .unsafeFlags(["-enable-actor-data-race-checks"], .when(configuration: .debug)),
+            ]
+        ),
         .testTarget(
             name: "OmniKitTests",
             dependencies: [
@@ -334,6 +361,19 @@ let package = Package(
             dependencies: [
                 "OmniAICore",
                 .product(name: "Testing", package: "swift-testing"),
+            ]
+        ),
+        .testTarget(
+            name: "OmniMCPTests",
+            dependencies: [
+                "OmniMCP",
+                "OmniHTTP",
+                "OmniAICore",
+                .product(name: "Testing", package: "swift-testing"),
+            ],
+            swiftSettings: [
+                .unsafeFlags(["-warn-concurrency", "-strict-concurrency=complete"]),
+                .unsafeFlags(["-enable-actor-data-race-checks"], .when(configuration: .debug)),
             ]
         ),
         .testTarget(

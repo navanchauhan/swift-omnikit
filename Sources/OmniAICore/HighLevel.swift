@@ -250,6 +250,7 @@ public func generate(
 
     let operation: @Sendable () async throws -> GenerateResult = {
         var conversation = initialMessages
+        var pendingContinuation: ToolContinuationRequest?
         var steps: [StepResult] = []
         var totalUsage = Usage(inputTokens: 0, outputTokens: 0)
 
@@ -289,10 +290,24 @@ public func generate(
             }
         }
 
+        func callToolContinuation(_ request: ToolContinuationRequest) async throws -> Response {
+            return try await retry(policy: policy, abortSignal: abortSignal) {
+                try await _withOptionalTimeout(perStepTimeout) {
+                    try await resolvedClient.sendToolOutputs(request)
+                }
+            }
+        }
+
         for stepIndex in 0..<(maxRounds + 1) {
             try await abortSignal?.check()
 
-            let response = try await callLLM(conversation, stepIndex: stepIndex)
+            let response: Response
+            if let continuation = pendingContinuation {
+                pendingContinuation = nil
+                response = try await callToolContinuation(continuation)
+            } else {
+                response = try await callLLM(conversation, stepIndex: stepIndex)
+            }
             totalUsage = totalUsage + response.usage
 
             let toolCalls = response.toolCalls
@@ -348,9 +363,39 @@ public func generate(
             }
 
             // Continue with tool results.
-            conversation.append(response.message)
-            conversation.append(contentsOf: _makeToolResultMessages(toolResults, toolCalls: toolCalls))
-            conversation.append(contentsOf: toolExecution.repairMessages)
+            let baseConversation = conversation + [response.message]
+            let toolResultMessages = makeToolResultMessages(toolResults: toolResults, toolCalls: toolCalls)
+            let nextConversation = baseConversation + toolResultMessages + toolExecution.repairMessages
+            conversation = nextConversation
+
+            let supportsContinuation: Bool = {
+                guard let adapter = try? resolvedClient.resolveAdapter(provider: provider) else { return false }
+                return adapter is ToolContinuationProviderAdapter
+            }()
+
+            if supportsContinuation {
+                pendingContinuation = ToolContinuationRequest(
+                    model: model,
+                    provider: provider,
+                    previousResponseId: response.id,
+                    messages: baseConversation,
+                    toolCalls: toolCalls,
+                    toolResults: toolResults,
+                    additionalMessages: toolExecution.repairMessages,
+                    tools: tools,
+                    toolChoice: effectiveToolChoice(stepIndex: stepIndex + 1),
+                    responseFormat: responseFormat,
+                    temperature: temperature,
+                    topP: topP,
+                    maxTokens: maxTokens,
+                    stopSequences: stopSequences,
+                    reasoningEffort: reasoningEffort,
+                    metadata: metadata,
+                    providerOptions: providerOptions,
+                    timeout: perStepTimeout.map { Timeout.config(TimeoutConfig(total: $0)) },
+                    abortSignal: abortSignal
+                )
+            }
         }
 
         // Should be unreachable.

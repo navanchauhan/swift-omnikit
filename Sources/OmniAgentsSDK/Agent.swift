@@ -1,5 +1,6 @@
 import Foundation
 import OmniAICore
+import OmniMCP
 
 public struct ToolsToFinalOutputResult: @unchecked Sendable {
     public var isFinalOutput: Bool
@@ -85,13 +86,51 @@ open class AgentBase<TContext>: @unchecked Sendable {
     }
 
     open func getMCPTools(runContext: RunContextWrapper<TContext>) async throws -> [Tool] {
-        try await MCPUtil.getAllFunctionTools(
-            servers: mcpServers,
-            convertSchemasToStrict: mcpConfig.convertSchemasToStrict,
-            runContext: RunContextWrapper<Any>(context: runContext.context as Any, usage: runContext.usage, turnInput: runContext.turnInput),
-            agent: self,
-            failureErrorFunction: mcpConfig.failureErrorFunction
-        )
+        let discovered = try await MCPToolDiscovery.discoverTools(servers: mcpServers)
+        var tools: [Tool] = []
+        tools.reserveCapacity(discovered.count)
+
+        for tool in discovered {
+            let schemaValue = mcpConfig.convertSchemasToStrict ? ensureStrictJSONSchema(tool.inputSchema) : tool.inputSchema
+            let schemaObject: [String: JSONValue]
+            if case .object(let object) = schemaValue {
+                schemaObject = object
+            } else {
+                schemaObject = ensureStrictJSONSchema([
+                    "type": .string("object"),
+                    "properties": .object([:]),
+                    "additionalProperties": .bool(false),
+                ])
+            }
+
+            let functionTool = FunctionTool(
+                name: tool.name,
+                description: tool.description,
+                paramsJSONSchema: schemaObject,
+                onInvokeTool: { _, rawArguments in
+                    let parsedArguments: JSONValue = {
+                        if let data = rawArguments.data(using: .utf8),
+                           let json = try? JSONValue.parse(data) {
+                            return json
+                        }
+                        return .object([:])
+                    }()
+
+                    let result = try await tool.call(arguments: parsedArguments)
+                    if result.isError {
+                        let message = ItemHelpers.stringifyJSON(result.content)
+                        throw UserError(message: message)
+                    }
+                    return result.content
+                },
+                strictJSONSchema: false,
+                timeoutErrorFunction: mcpConfig.failureErrorFunction,
+                isCodexTool: true
+            )
+            tools.append(.function(functionTool))
+        }
+
+        return tools
     }
 
     open func getAllTools(runContext: RunContextWrapper<TContext>) async throws -> [Tool] {

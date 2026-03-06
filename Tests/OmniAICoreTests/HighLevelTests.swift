@@ -54,6 +54,54 @@ private final class MockAdapter: ProviderAdapter, @unchecked Sendable {
     }
 }
 
+private actor _ContinuationState {
+    var completeCount: Int = 0
+    var continuationCount: Int = 0
+    var lastContinuation: ToolContinuationRequest?
+
+    func recordComplete() { completeCount += 1 }
+    func recordContinuation(_ request: ToolContinuationRequest) {
+        continuationCount += 1
+        lastContinuation = request
+    }
+}
+
+private final class MockContinuationAdapter: ProviderAdapter, ToolContinuationProviderAdapter, @unchecked Sendable {
+    let name: String
+    let state = _ContinuationState()
+    private let completeHandler: @Sendable (Request) async throws -> Response
+    private let continuationHandler: @Sendable (ToolContinuationRequest) async throws -> Response
+
+    init(
+        name: String = "test",
+        complete: @Sendable @escaping (Request) async throws -> Response,
+        continuation: @Sendable @escaping (ToolContinuationRequest) async throws -> Response
+    ) {
+        self.name = name
+        self.completeHandler = complete
+        self.continuationHandler = continuation
+    }
+
+    func complete(request: Request) async throws -> Response {
+        await state.recordComplete()
+        return try await completeHandler(request)
+    }
+
+    func stream(request: Request) async throws -> AsyncThrowingStream<StreamEvent, Error> {
+        let resp = try await complete(request: request)
+        return AsyncThrowingStream { continuation in
+            continuation.yield(StreamEvent(type: .standard(.streamStart)))
+            continuation.yield(StreamEvent(type: .standard(.finish), finishReason: resp.finishReason, usage: resp.usage, response: resp))
+            continuation.finish()
+        }
+    }
+
+    func sendToolOutputs(request: ToolContinuationRequest) async throws -> Response {
+        await state.recordContinuation(request)
+        return try await continuationHandler(request)
+    }
+}
+
 private func _response(
     provider: String,
     model: String,
@@ -209,6 +257,58 @@ final class HighLevelTests {
         let c2Start = snap.starts["c2"]!
         XCTAssertLessThan(c2Start, c1End)
         XCTAssertLessThan(c1Start, c1End)
+    }
+
+    @Test
+    func testGenerateUsesToolContinuationAdapterWhenAvailable() async throws {
+        let toolSchema: JSONValue = .object([
+            "type": .string("object"),
+            "properties": .object(["x": .object(["type": .string("integer")])]),
+            "required": .array([.string("x")]),
+        ])
+
+        let tool = try Tool(name: "demo", description: "t", parameters: toolSchema) { _, _ in
+            .number(42)
+        }
+
+        let adapter = MockContinuationAdapter(
+            complete: { req in
+                let call = ToolCall(id: "call_1", name: "demo", arguments: ["x": .number(1)], rawArguments: nil)
+                return Response(
+                    id: "resp_1",
+                    model: req.model,
+                    provider: "test",
+                    message: Message(role: .assistant, content: [.toolCall(call)]),
+                    finishReason: FinishReason(reason: "tool_calls", raw: "tool_calls"),
+                    usage: Usage(inputTokens: 1, outputTokens: 1),
+                    raw: nil,
+                    warnings: [],
+                    rateLimit: nil
+                )
+            },
+            continuation: { continuation in
+                XCTAssertEqual(continuation.previousResponseId, "resp_1")
+                XCTAssertEqual(continuation.toolResults.count, 1)
+                return _response(provider: "test", model: continuation.model, text: "done", finishReason: "stop")
+            }
+        )
+
+        let client = try Client(providers: ["test": adapter], defaultProvider: "test")
+        let result = try await generate(
+            model: "m",
+            prompt: "hi",
+            tools: [tool],
+            maxToolRounds: 1,
+            provider: "test",
+            retryPolicy: RetryPolicy(maxRetries: 0, baseDelaySeconds: 0.0, jitter: false),
+            client: client
+        )
+
+        XCTAssertEqual(result.text, "done")
+        let completeCount = await adapter.state.completeCount
+        let continuationCount = await adapter.state.continuationCount
+        XCTAssertEqual(completeCount, 1)
+        XCTAssertEqual(continuationCount, 1)
     }
 
     @Test
