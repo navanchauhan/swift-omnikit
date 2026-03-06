@@ -15,7 +15,7 @@ public struct Text: View, _PrimitiveView {
     }
 
     func _makeNode(_ ctx: inout _BuildContext) -> _VNode {
-        .text(content)
+        _applyTextEnvironment(content: content, env: _currentEnvironmentValues(for: ctx))
     }
 }
 
@@ -134,6 +134,226 @@ public struct GeometryReader<Content: View>: View, _PrimitiveView {
         let rs = _UIRuntime._currentRenderSize ?? _Size(width: 0, height: 0)
         let proxy = GeometryProxy(size: CGSize(width: CGFloat(rs.width), height: CGFloat(rs.height)))
         return ctx.buildChild(content(proxy))
+    }
+}
+
+public struct NavigationView<Content: View>: View, _PrimitiveView {
+    public typealias Body = Never
+
+    let content: Content
+
+    public init(@ViewBuilder content: () -> Content) {
+        self.content = content()
+    }
+
+    func _makeNode(_ ctx: inout _BuildContext) -> _VNode {
+        let env = _currentEnvironmentValues(for: ctx)
+        let root = ctx.buildChild(NavigationStack { content })
+        switch env.navigationViewStyleKind {
+        case .automatic, .default:
+            return root
+        case .column, .doubleColumn:
+            return .stack(axis: .horizontal, spacing: 1, children: [
+                .style(fg: .secondary, bg: nil, child: .text("▏")),
+                root,
+            ])
+        }
+    }
+}
+
+public struct DatePicker<Label: View>: View, _PrimitiveView {
+    public typealias Body = Never
+
+    let label: Label
+    let selection: Binding<Date>
+
+    public init(selection: Binding<Date>, @ViewBuilder label: () -> Label) {
+        self.label = label()
+        self.selection = selection
+    }
+
+    public init(_ title: String, selection: Binding<Date>) where Label == Text {
+        self.label = Text(title)
+        self.selection = selection
+    }
+
+    func _makeNode(_ ctx: inout _BuildContext) -> _VNode {
+        let env = _currentEnvironmentValues(for: ctx)
+        let renderedLabel = _menuLabelText(from: ctx.buildChild(label))
+        let title = renderedLabel.isEmpty ? "Date" : renderedLabel
+        let calendar = Calendar.current
+        let formatted = _formattedDatePickerDate(selection.wrappedValue, style: env.datePickerStyleKind)
+        let controls = HStack(spacing: 1) {
+            Button("-") {
+                selection.wrappedValue = calendar.date(byAdding: .day, value: -1, to: selection.wrappedValue) ?? selection.wrappedValue
+            }
+            Text(formatted)
+            Button("+") {
+                selection.wrappedValue = calendar.date(byAdding: .day, value: 1, to: selection.wrappedValue) ?? selection.wrappedValue
+            }
+        }
+        switch env.datePickerStyleKind {
+        case .graphical:
+            return ctx.buildChild(
+                GroupBox {
+                    VStack(alignment: .leading, spacing: 1) {
+                        HStack(spacing: 1) { Image(systemName: "calendar"); Text(title) }
+                        controls
+                    }
+                }
+            )
+        case .compact, .field, .stepperField, .automatic:
+            return ctx.buildChild(
+                HStack(spacing: 1) {
+                    Text("\(title):")
+                    controls
+                }
+            )
+        }
+    }
+}
+
+public struct Gauge<Label: View, CurrentValueLabel: View>: View, _PrimitiveView {
+    public typealias Body = Never
+
+    let value: Double
+    let bounds: ClosedRange<Double>
+    let label: Label
+    let currentValueLabel: CurrentValueLabel
+
+    public init(value: Double, in bounds: ClosedRange<Double> = 0...1, @ViewBuilder label: () -> Label, @ViewBuilder currentValueLabel: () -> CurrentValueLabel) {
+        self.value = value
+        self.bounds = bounds
+        self.label = label()
+        self.currentValueLabel = currentValueLabel()
+    }
+
+    public init(value: Double, in bounds: ClosedRange<Double> = 0...1, @ViewBuilder label: () -> Label) where CurrentValueLabel == EmptyView {
+        self.value = value
+        self.bounds = bounds
+        self.label = label()
+        self.currentValueLabel = EmptyView()
+    }
+
+    func _makeNode(_ ctx: inout _BuildContext) -> _VNode {
+        let env = _currentEnvironmentValues(for: ctx)
+        _ = env.gaugeStyleKind
+        let denom = bounds.upperBound - bounds.lowerBound
+        let pct = denom == 0 ? 0 : Swift.max(0, Swift.min(1, (value - bounds.lowerBound) / denom))
+        let renderedLabel = _menuLabelText(from: ctx.buildChild(label))
+        let renderedCurrentValue = _menuLabelText(from: ctx.buildChild(currentValueLabel))
+        let percentText = Int((pct * 100).rounded()).formatted(.number)
+        let summary = renderedCurrentValue.isEmpty ? "\(percentText)%" : renderedCurrentValue
+        let title = renderedLabel.isEmpty ? "Gauge" : renderedLabel
+        return ctx.buildChild(
+            VStack(alignment: .leading, spacing: 1) {
+                Text(title)
+                ProgressView(value: pct, total: 1)
+                Text(summary).foregroundStyle(.secondary)
+            }
+        )
+    }
+}
+
+public enum AsyncImagePhase {
+    case empty
+    case success(Image)
+    case failure(String)
+}
+
+public struct AsyncImage<Content: View>: View, _PrimitiveView {
+    public typealias Body = Never
+
+    @State private var didAttemptLoad = false
+    @State private var didLoadSucceed = false
+    @State private var failureDescription: String? = nil
+
+    let url: URL?
+    let content: (AsyncImagePhase) -> Content
+
+    public init(url: URL?, @ViewBuilder content: @escaping (AsyncImagePhase) -> Content) {
+        self.url = url
+        self.content = content
+    }
+
+    public init(url: URL?) where Content == Image {
+        self.url = url
+        self.content = { phase in
+            switch phase {
+            case .success(let image):
+                return image
+            case .empty, .failure:
+                return Image(systemName: "photo")
+            }
+        }
+    }
+
+    func _makeNode(_ ctx: inout _BuildContext) -> _VNode {
+        if let url, !didAttemptLoad, !didLoadSucceed, failureDescription == nil {
+            let path = ctx.path
+            ctx.runtime._registerTask(path: path) {
+                didAttemptLoad = true
+                do {
+                    if url.isFileURL {
+                        _ = try Data(contentsOf: url)
+                    } else {
+                        _ = try await URLSession.shared.data(from: url)
+                    }
+                    didLoadSucceed = true
+                    failureDescription = nil
+                } catch {
+                    failureDescription = error.localizedDescription
+                }
+            }
+        }
+        let phase: AsyncImagePhase
+        if let failureDescription {
+            phase = .failure(failureDescription)
+        } else if didLoadSucceed {
+            phase = .success(Image(systemName: "photo"))
+        } else {
+            phase = .empty
+        }
+        return ctx.buildChild(content(phase))
+    }
+}
+
+public struct TimelineView<Content: View>: View, _PrimitiveView {
+    public typealias Body = Never
+
+    @State private var now: Date = Date()
+
+    public struct Context: Sendable {
+        public enum Cadence: Sendable {
+            case live
+            case seconds
+            case minutes
+        }
+
+        public let date: Date
+        public let cadence: Cadence
+    }
+
+    let content: (Context) -> Content
+
+    public init(content: @escaping (Context) -> Content) {
+        self.content = content
+    }
+
+    public init(_ schedule: Any = (), content: @escaping (Context) -> Content) {
+        _ = schedule
+        self.content = content
+    }
+
+    func _makeNode(_ ctx: inout _BuildContext) -> _VNode {
+        let path = ctx.path
+        ctx.runtime._registerTask(path: path) {
+            while true {
+                try? await Task.sleep(nanoseconds: 1_000_000_000)
+                now = Date()
+            }
+        }
+        return ctx.buildChild(content(Context(date: now, cadence: .live)))
     }
 }
 
@@ -286,6 +506,7 @@ public struct List<Content: View>: View, _PrimitiveView {
 
     func _makeNode(_ ctx: inout _BuildContext) -> _VNode {
         let runtime = ctx.runtime
+        let env = _currentEnvironmentValues(for: ctx)
         let controlPath = ctx.path
         let isFocused = runtime._isFocused(path: controlPath)
         let id = runtime._registerAction({}, path: actionScopePath)
@@ -294,27 +515,50 @@ public struct List<Content: View>: View, _PrimitiveView {
         let rows = customRowBuilder?(&ctx) ?? _flatten(ctx.buildChild(content))
         let selected = selection?.get()
         var rowIndex = 0
+        var renderedRows: [_VNode] = []
+        renderedRows.reserveCapacity(rows.count * 2)
 
-        let renderedRows: [_VNode] = rows.map { row in
-            guard
-                let selection,
-                case .tagged(let value, let label) = row
-            else { return row }
+        for (index, row) in rows.enumerated() {
+            var rowNode: _VNode
+            if let selection, case .tagged(let value, let label) = row {
+                let path = controlPath + [10_000 + rowIndex]
+                rowIndex += 1
+                let actionID = runtime._registerAction({
+                    runtime._setFocus(path: path)
+                    selection.set(value)
+                }, path: actionScopePath)
+                runtime._registerFocusable(path: path, activate: actionID)
 
-            let path = controlPath + [10_000 + rowIndex]
-            rowIndex += 1
-            let actionID = runtime._registerAction({
-                runtime._setFocus(path: path)
-                selection.set(value)
-            }, path: actionScopePath)
-            runtime._registerFocusable(path: path, activate: actionID)
-
-            var rowLabel = label
-            if selected == value {
-                let tint = (_UIRuntime._currentEnvironment ?? runtime._baseEnvironment).tint ?? .accentColor
-                rowLabel = .style(fg: tint, bg: nil, child: rowLabel)
+                var rowLabel = label
+                if selected == value {
+                    let tint = env.tint ?? .accentColor
+                    if env.listStyleKind == .sidebar {
+                        rowLabel = .style(fg: Color.white, bg: tint, child: .edgePadding(top: 0, leading: 1, bottom: 0, trailing: 1, child: rowLabel))
+                    } else {
+                        rowLabel = .style(fg: tint, bg: nil, child: rowLabel)
+                    }
+                }
+                rowNode = .button(id: actionID, isFocused: runtime._isFocused(path: path), label: rowLabel)
+            } else {
+                rowNode = row
             }
-            return .button(id: actionID, isFocused: runtime._isFocused(path: path), label: rowLabel)
+
+            if let listRowBackground = env.listRowBackground {
+                rowNode = .background(child: rowNode, background: ctx.buildChild(listRowBackground.view))
+            }
+            if env.listStyleKind == .sidebar {
+                rowNode = .edgePadding(top: 0, leading: 1, bottom: 0, trailing: 1, child: rowNode)
+            }
+            renderedRows.append(rowNode)
+            if env.listRowSeparatorVisibility != .hidden, index != rows.count - 1 {
+                renderedRows.append(.divider)
+            }
+        }
+
+        var contentNode: _VNode = .stack(axis: .vertical, spacing: 0, children: renderedRows)
+        if env.scrollContentBackgroundVisibility != .hidden {
+            let backgroundColor: Color = env.listStyleKind == .sidebar ? Color.gray.opacity(0.12) : Color.gray.opacity(0.06)
+            contentNode = .style(fg: nil, bg: backgroundColor, child: contentNode)
         }
 
         return .scrollView(
@@ -323,7 +567,7 @@ public struct List<Content: View>: View, _PrimitiveView {
             isFocused: isFocused,
             axis: .vertical,
             offset: offset,
-            content: .stack(axis: .vertical, spacing: 0, children: renderedRows)
+            content: contentNode
         )
     }
 }
@@ -340,13 +584,14 @@ public struct Form<Content: View>: View, _PrimitiveView {
     func _makeNode(_ ctx: inout _BuildContext) -> _VNode {
         let env = _UIRuntime._currentEnvironment ?? ctx.runtime._baseEnvironment
         let isGrouped = env.formStyleKind == .grouped
+        let shouldShowBackground = env.scrollContentBackgroundVisibility != .hidden
 
         if isGrouped {
             return ctx.buildChild(
                 ScrollView {
                     VStack(alignment: .leading, spacing: 1) { content }
                         .padding(1)
-                        .background(Color.gray.opacity(0.08))
+                        .background(shouldShowBackground ? Color.gray.opacity(0.08) : .clear)
                 }
             )
         }
@@ -355,6 +600,7 @@ public struct Form<Content: View>: View, _PrimitiveView {
             ScrollView {
                 VStack(alignment: .leading, spacing: 0) { content }
                     .padding(1)
+                    .background(shouldShowBackground ? Color.gray.opacity(0.04) : .clear)
             }
         )
     }
@@ -469,12 +715,47 @@ public struct ForEach<Data: RandomAccessCollection, ID: Hashable, Content: View>
     }
 }
 
+public struct NavigationPath: Hashable, @unchecked Sendable {
+    public struct CodableRepresentation: Codable, Hashable, Sendable {
+        public init() {}
+    }
+
+    var elements: [AnyHashable]
+
+    public init() {
+        self.elements = []
+    }
+
+    public init<S: Sequence>(_ elements: S) where S.Element: Hashable {
+        self.elements = elements.map(AnyHashable.init)
+    }
+
+    public var count: Int { elements.count }
+    public var isEmpty: Bool { elements.isEmpty }
+
+    public mutating func append<V: Hashable>(_ value: V) {
+        elements.append(AnyHashable(value))
+    }
+
+    public mutating func removeLast(_ count: Int = 1) {
+        guard count > 0 else { return }
+        elements.removeLast(Swift.min(count, elements.count))
+    }
+}
+
 public struct NavigationStack<Content: View>: View, _PrimitiveView {
     public typealias Body = Never
 
+    let path: Binding<NavigationPath>?
     let content: Content
 
     public init(@ViewBuilder content: () -> Content) {
+        self.path = nil
+        self.content = content()
+    }
+
+    public init(path: Binding<NavigationPath>, @ViewBuilder content: () -> Content) {
+        self.path = path
         self.content = content()
     }
 
@@ -482,32 +763,78 @@ public struct NavigationStack<Content: View>: View, _PrimitiveView {
         let runtime = ctx.runtime
         let stackPath = ctx.path
         runtime._registerNavStackRoot(path: stackPath)
-        let depth = runtime._navDepth(stackPath: stackPath)
 
+        let rootNode = ctx.buildChild(content)
+
+        if let path {
+            let desiredElements = path.wrappedValue.elements
+            while runtime._navDepth(stackPath: stackPath) > desiredElements.count {
+                runtime._navPop(stackPath: stackPath)
+            }
+            if runtime._navDepth(stackPath: stackPath) < desiredElements.count {
+                for value in desiredElements.dropFirst(runtime._navDepth(stackPath: stackPath)) {
+                    guard let resolved = runtime._resolveNavDestination(stackPath: stackPath, value: value) else { break }
+                    runtime._navPush(stackPath: stackPath, view: resolved)
+                }
+            }
+            if runtime._navDepth(stackPath: stackPath) < desiredElements.count {
+                var next = path.wrappedValue
+                while next.count > runtime._navDepth(stackPath: stackPath) {
+                    next.removeLast()
+                }
+                path.wrappedValue = next
+            }
+        }
+
+        let depth = runtime._navDepth(stackPath: stackPath)
         let top: AnyView? = runtime._navTop(stackPath: stackPath)
 
         if depth == 0 {
-            // Root: render content normally (no chrome).
-            return ctx.buildChild(content)
+            return rootNode
         }
 
-        // Pushed destinations should be able to dismiss (pop) via `@Environment(\.dismiss)`.
         let current = _UIRuntime._currentEnvironment ?? runtime._baseEnvironment
         var next = current
-        next.dismiss = DismissAction { runtime._navPop(stackPath: stackPath) }
-        let mode = PresentationMode(dismiss: { runtime._navPop(stackPath: stackPath) })
+        next.dismiss = DismissAction {
+            runtime._navPop(stackPath: stackPath)
+            if let path, runtime._navDepth(stackPath: stackPath) < path.wrappedValue.count {
+                var updated = path.wrappedValue
+                while updated.count > runtime._navDepth(stackPath: stackPath) {
+                    updated.removeLast()
+                }
+                path.wrappedValue = updated
+            }
+        }
+        let mode = PresentationMode(dismiss: {
+            runtime._navPop(stackPath: stackPath)
+            if let path, runtime._navDepth(stackPath: stackPath) < path.wrappedValue.count {
+                var updated = path.wrappedValue
+                while updated.count > runtime._navDepth(stackPath: stackPath) {
+                    updated.removeLast()
+                }
+                path.wrappedValue = updated
+            }
+        })
         next.presentationMode = Binding(get: { mode }, set: { _ in })
 
-        // Pushed: show a back button and render the pushed destination "full screen" within this stack.
         return .stack(axis: .vertical, spacing: 1, children: _flatten(.group([
             ctx.buildChild(
                 HStack(spacing: 1) {
-                    Button("Back") { runtime._navPop(stackPath: stackPath) }
+                    Button("Back") {
+                        runtime._navPop(stackPath: stackPath)
+                        if let path, runtime._navDepth(stackPath: stackPath) < path.wrappedValue.count {
+                            var updated = path.wrappedValue
+                            while updated.count > runtime._navDepth(stackPath: stackPath) {
+                                updated.removeLast()
+                            }
+                            path.wrappedValue = updated
+                        }
+                    }
                     Spacer()
                 }
             ),
             _UIRuntime.$_currentEnvironment.withValue(next) {
-                top.map { ctx.buildChild($0) } ?? ctx.buildChild(content)
+                top.map { ctx.buildChild($0) } ?? rootNode
             },
         ])))
     }
@@ -516,58 +843,80 @@ public struct NavigationStack<Content: View>: View, _PrimitiveView {
 public struct NavigationLink<Label: View, Destination: View>: View, _PrimitiveView {
     public typealias Body = Never
 
-    let destination: () -> Destination
+    let makeDestination: (() -> AnyView)?
+    let navValue: AnyHashable?
     let label: Label
     let actionScopePath: [Int]
-    let stackPath: [Int]
 
     public init(destination: @escaping () -> Destination, @ViewBuilder label: () -> Label) {
-        self.destination = destination
+        self.makeDestination = { AnyView(destination()) }
+        self.navValue = nil
         self.label = label()
         self.actionScopePath = _UIRuntime._currentPath ?? []
-        self.stackPath = _UIRuntime._currentPath ?? []
     }
 
     public init(destination: Destination, @ViewBuilder label: () -> Label) {
-        self.destination = { destination }
+        self.makeDestination = { AnyView(destination) }
+        self.navValue = nil
         self.label = label()
         self.actionScopePath = _UIRuntime._currentPath ?? []
-        self.stackPath = _UIRuntime._currentPath ?? []
     }
 
     public init(_ title: String, destination: @escaping () -> Destination) where Label == Text {
-        self.destination = destination
+        self.makeDestination = { AnyView(destination()) }
+        self.navValue = nil
         self.label = Text(title)
         self.actionScopePath = _UIRuntime._currentPath ?? []
-        self.stackPath = _UIRuntime._currentPath ?? []
     }
 
     public init(_ title: String, destination: Destination) where Label == Text {
-        self.destination = { destination }
+        self.makeDestination = { AnyView(destination) }
+        self.navValue = nil
         self.label = Text(title)
         self.actionScopePath = _UIRuntime._currentPath ?? []
-        self.stackPath = _UIRuntime._currentPath ?? []
+    }
+
+    public init<V: Hashable>(value: V, @ViewBuilder label: () -> Label) where Destination == EmptyView {
+        self.makeDestination = nil
+        self.navValue = AnyHashable(value)
+        self.label = label()
+        self.actionScopePath = _UIRuntime._currentPath ?? []
+    }
+
+    public init<V: Hashable>(_ title: String, value: V) where Label == Text, Destination == EmptyView {
+        self.makeDestination = nil
+        self.navValue = AnyHashable(value)
+        self.label = Text(title)
+        self.actionScopePath = _UIRuntime._currentPath ?? []
     }
 
     func _makeNode(_ ctx: inout _BuildContext) -> _VNode {
+        let env = _currentEnvironmentValues(for: ctx)
+        let labelNode = ctx.buildChild(label)
+        guard env.isEnabled, _UIRuntime._hitTestingEnabled else {
+            return _disabledButtonNode(label: labelNode)
+        }
         guard let stackPath = ctx.runtime._nearestNavStackRoot(from: ctx.path) else {
-            // Render as a button that does nothing if not inside a NavigationStack.
             let runtime = ctx.runtime
             let controlPath = ctx.path
             let isFocused = runtime._isFocused(path: controlPath)
             let id = runtime._registerAction({ runtime._setFocus(path: controlPath) }, path: actionScopePath)
             runtime._registerFocusable(path: controlPath, activate: id)
-            return .button(id: id, isFocused: isFocused, label: ctx.buildChild(label))
+            return _applyControlPadding(.button(id: id, isFocused: isFocused, label: labelNode), env: env)
         }
         let runtime = ctx.runtime
         let controlPath = ctx.path
         let isFocused = runtime._isFocused(path: controlPath)
         let id = runtime._registerAction({
             runtime._setFocus(path: controlPath)
-            runtime._navPush(stackPath: stackPath, view: AnyView(destination()))
+            if let makeDestination {
+                runtime._navPush(stackPath: stackPath, view: makeDestination())
+            } else if let navValue, let resolved = runtime._resolveNavDestination(stackPath: stackPath, value: navValue) {
+                runtime._navPush(stackPath: stackPath, view: resolved)
+            }
         }, path: actionScopePath)
         runtime._registerFocusable(path: controlPath, activate: id)
-        return .button(id: id, isFocused: isFocused, label: ctx.buildChild(label))
+        return _applyControlPadding(.button(id: id, isFocused: isFocused, label: labelNode), env: env)
     }
 }
 
@@ -955,13 +1304,9 @@ public struct Table<Data: RandomAccessCollection, ID: Hashable, RowContent: View
     }
 
     func _makeNode(_ ctx: inout _BuildContext) -> _VNode {
-        // Placeholder: render as a List-style scrollable set of rows.
         ctx.buildChild(
-            ScrollView {
-                VStack(spacing: 0) {
-                    ForEach(data, id: id, content: rowContent)
-                }
-            }
+            List(data, id: id, rowContent: rowContent)
+                .listStyle(.plain)
         )
     }
 }
@@ -1076,15 +1421,32 @@ public struct Button<Label: View>: View, _PrimitiveView {
         if let captureID = _UIRuntime._currentMenuCaptureID {
             let labelNode = ctx.buildChild(label)
             let text = _menuLabelText(from: labelNode)
+            let env = _UIRuntime._currentEnvironment ?? runtime._baseEnvironment
             runtime._registerMenuCaptureItem(
-                _UIRuntime._MenuCaptureItem(label: text, actionScopePath: actionScopePath, action: action),
+                _UIRuntime._MenuCaptureItem(
+                    label: text,
+                    role: role,
+                    actionScopePath: actionScopePath,
+                    env: env,
+                    action: action
+                ),
                 captureID: captureID
             )
             return .empty
         }
 
+        let env = _currentEnvironmentValues(for: ctx)
+        var labelNode = ctx.buildChild(label)
+        if role == .destructive {
+            labelNode = .style(fg: .red, bg: nil, child: labelNode)
+        }
+
+        guard env.isEnabled else {
+            return _applyControlPadding(_disabledButtonNode(label: labelNode), env: env)
+        }
+
         guard _UIRuntime._hitTestingEnabled else {
-            return ctx.buildChild(label)
+            return _applyControlPadding(labelNode, env: env)
         }
 
         let controlPath = ctx.path
@@ -1094,11 +1456,23 @@ public struct Button<Label: View>: View, _PrimitiveView {
             action()
         }, path: actionScopePath)
         runtime._registerFocusable(path: controlPath, activate: id)
-        var labelNode = ctx.buildChild(label)
-        if role == .destructive {
-            labelNode = .style(fg: .red, bg: nil, child: labelNode)
-        }
-        return .button(id: id, isFocused: isFocused, label: labelNode)
+
+        let node: _VNode = {
+            switch env.buttonStyleKind {
+            case .plain:
+                let plainLabel: _VNode = isFocused
+                    ? .stack(axis: .horizontal, spacing: 0, children: [.text("> "), labelNode])
+                    : labelNode
+                return .tapTarget(id: id, child: plainLabel)
+            case .borderedProminent, .primaryFill:
+                let tint = env.tint ?? (role == .destructive ? .red : .accentColor)
+                let prominentLabel: _VNode = .style(fg: Color.white, bg: tint, child: labelNode)
+                return .button(id: id, isFocused: isFocused, label: prominentLabel)
+            case .automatic, .bordered:
+                return .button(id: id, isFocused: isFocused, label: labelNode)
+            }
+        }()
+        return _applyControlPadding(node, env: env)
     }
 }
 
@@ -1119,8 +1493,12 @@ public struct Label<Title: View, Icon: View>: View, _PrimitiveView {
     }
 
     func _makeNode(_ ctx: inout _BuildContext) -> _VNode {
+        let env = _currentEnvironmentValues(for: ctx)
         let iconNode = ctx.buildChild(icon)
         let titleNode = ctx.buildChild(title)
+        if env.labelStyleKind == .iconOnly {
+            return iconNode
+        }
         return .stack(axis: .horizontal, spacing: 1, children: [iconNode, titleNode])
     }
 }
@@ -1146,6 +1524,13 @@ public struct Toggle<Label: View>: View, _PrimitiveView {
 
     func _makeNode(_ ctx: inout _BuildContext) -> _VNode {
         let runtime = ctx.runtime
+        let env = _currentEnvironmentValues(for: ctx)
+        let labelNode = ctx.buildChild(label)
+
+        guard env.isEnabled, _UIRuntime._hitTestingEnabled else {
+            return _applyControlPadding(_disabledToggleNode(label: labelNode, isOn: isOn.wrappedValue), env: env)
+        }
+
         let controlPath = ctx.path
         let isFocused = runtime._isFocused(path: controlPath)
         let id = runtime._registerAction({
@@ -1153,8 +1538,23 @@ public struct Toggle<Label: View>: View, _PrimitiveView {
             isOn.wrappedValue.toggle()
         }, path: actionScopePath)
         runtime._registerFocusable(path: controlPath, activate: id)
-        let labelNode = ctx.buildChild(label)
-        return .toggle(id: id, isFocused: isFocused, isOn: isOn.wrappedValue, label: labelNode)
+
+        let node: _VNode = {
+            if env.toggleStyleKind == .switch {
+                let stateNode = _VNode.style(
+                    fg: isOn.wrappedValue ? .white : .secondary,
+                    bg: isOn.wrappedValue ? (env.tint ?? .accentColor) : nil,
+                    child: .text(isOn.wrappedValue ? " ON " : " OFF ")
+                )
+                let body = _VNode.stack(axis: .horizontal, spacing: 1, children: [labelNode, stateNode])
+                if isFocused {
+                    return .tapTarget(id: id, child: .stack(axis: .horizontal, spacing: 0, children: [.text("> "), body]))
+                }
+                return .tapTarget(id: id, child: body)
+            }
+            return .toggle(id: id, isFocused: isFocused, isOn: isOn.wrappedValue, label: labelNode)
+        }()
+        return _applyControlPadding(node, env: env)
     }
 }
 
@@ -1179,26 +1579,60 @@ public struct TextField: View, _PrimitiveView {
 
     func _makeNode(_ ctx: inout _BuildContext) -> _VNode {
         let runtime = ctx.runtime
+        let env = _currentEnvironmentValues(for: ctx)
         let controlPath = ctx.path
         let isFocused = runtime._isFocused(path: controlPath)
         var cursor = runtime._getTextCursor(path: controlPath)
+        let keyboardType = env.textInputKeyboardType
+        let capitalization = env.textInputAutocapitalization
+        let contentType = env.textContentType
+        let autocorrectionDisabled = env.autocorrectionDisabled ?? true
 
-        // Focus action (place cursor at end if this field hasn't been edited yet).
+        guard env.isEnabled, _UIRuntime._hitTestingEnabled else {
+            return _applyControlPadding(_disabledTextFieldNode(placeholder: placeholder, text: text.wrappedValue), env: env)
+        }
+
         let id = runtime._registerAction({
             runtime._ensureTextCursorAtEndIfUnset(path: controlPath, text: text.wrappedValue)
             runtime._setFocus(path: controlPath)
         }, path: actionScopePath)
         runtime._registerFocusable(path: controlPath, activate: id)
 
-        // Keyboard handler. Keep it intentionally small for now.
         runtime._registerTextEditor(path: controlPath, _TextEditor(handle: { ev in
-            // Cursor in scalar space (works for ASCII and most simple scalars; not grapheme-perfect).
             var scalars = Array(text.wrappedValue.unicodeScalars)
             cursor = min(max(0, cursor), scalars.count)
 
             func save() {
                 text.wrappedValue = String(String.UnicodeScalarView(scalars))
                 runtime._setTextCursor(path: controlPath, cursor)
+            }
+
+            func isURLField() -> Bool {
+                keyboardType == .URL || contentType == .URL
+            }
+
+            func shouldUppercase(_ scalar: UnicodeScalar) -> Bool {
+                guard !isURLField() else { return false }
+                guard let capitalization else { return false }
+                guard CharacterSet.lowercaseLetters.contains(scalar) || CharacterSet.uppercaseLetters.contains(scalar) else { return false }
+                switch capitalization {
+                case .never:
+                    return false
+                case .characters:
+                    return true
+                case .words:
+                    guard cursor > 0 else { return true }
+                    return CharacterSet.whitespacesAndNewlines.contains(scalars[cursor - 1])
+                case .sentences:
+                    guard cursor > 0 else { return true }
+                    let previous = scalars[cursor - 1]
+                    if CharacterSet.whitespacesAndNewlines.contains(previous) {
+                        if cursor == 1 { return true }
+                        let prior = scalars[cursor - 2]
+                        return prior == UnicodeScalar(".") || prior == UnicodeScalar("!") || prior == UnicodeScalar("?")
+                    }
+                    return previous == UnicodeScalar(".") || previous == UnicodeScalar("!") || previous == UnicodeScalar("?")
+                }
             }
 
             switch ev {
@@ -1228,21 +1662,38 @@ public struct TextField: View, _PrimitiveView {
                 scalars.remove(at: cursor)
                 save()
             case .char(let codepoint):
-                guard let scalar = UnicodeScalar(codepoint) else { return }
+                guard var scalar = UnicodeScalar(codepoint) else { return }
                 let v = scalar.value
                 guard v >= 32 && v != 127 else { return }
+                if isURLField() {
+                    if CharacterSet.whitespacesAndNewlines.contains(scalar) { return }
+                    if let lower = UnicodeScalar(String(scalar).lowercased()) { scalar = lower }
+                }
+                if shouldUppercase(scalar), let upper = UnicodeScalar(String(scalar).uppercased()) {
+                    scalar = upper
+                }
                 scalars.insert(scalar, at: cursor)
                 cursor += 1
+                if !autocorrectionDisabled, scalar == UnicodeScalar(" "), cursor >= 4 {
+                    let window = String(String.UnicodeScalarView(Array(scalars[(cursor - 4)..<(cursor - 1)])))
+                    if window == "teh" {
+                        scalars.replaceSubrange((cursor - 4)..<(cursor - 1), with: [UnicodeScalar("t"), UnicodeScalar("h"), UnicodeScalar("e")].compactMap { $0 })
+                    }
+                }
                 save()
             }
         }))
 
-        return .textField(
-            id: id,
-            placeholder: placeholder,
-            text: text.wrappedValue,
-            cursor: runtime._getTextCursor(path: controlPath),
-            isFocused: isFocused
+        return _applyControlPadding(
+            .textField(
+                id: id,
+                placeholder: placeholder,
+                text: text.wrappedValue,
+                cursor: runtime._getTextCursor(path: controlPath),
+                isFocused: isFocused,
+                style: env.textFieldStyleKind
+            ),
+            env: env
         )
     }
 }
@@ -1265,9 +1716,9 @@ public struct SecureField: View, _PrimitiveView {
 
     func _makeNode(_ ctx: inout _BuildContext) -> _VNode {
         let node = ctx.buildChild(TextField(placeholder, text: text))
-        if case .textField(let id, let placeholder, _, let cursor, let isFocused) = node {
+        if case .textField(let id, let placeholder, _, let cursor, let isFocused, let style) = node {
             let masked = String(repeating: "•", count: text.wrappedValue.count)
-            return .textField(id: id, placeholder: placeholder, text: masked, cursor: cursor, isFocused: isFocused)
+            return .textField(id: id, placeholder: placeholder, text: masked, cursor: cursor, isFocused: isFocused, style: style)
         }
         return node
     }
@@ -1300,6 +1751,7 @@ public struct Picker<SelectionValue: Hashable>: View, _PrimitiveView {
 
     func _makeNode(_ ctx: inout _BuildContext) -> _VNode {
         let runtime = ctx.runtime
+        let env = _currentEnvironmentValues(for: ctx)
         let controlPath = ctx.path
 
         let values: [SelectionValue]
@@ -1320,10 +1772,37 @@ public struct Picker<SelectionValue: Hashable>: View, _PrimitiveView {
         let safeValues = values.isEmpty ? [selection.wrappedValue] : values
         let safeLabels = labelsText.isEmpty ? [String(describing: selection.wrappedValue)] : labelsText
         let selectedIndex = safeValues.firstIndex(of: selection.wrappedValue) ?? 0
-        let isExpanded = runtime._isPickerExpanded(path: controlPath)
+        let isExpanded = env.isEnabled && runtime._isPickerExpanded(path: controlPath)
 
         // Paths for focusability inside the picker: header is 0, options are 1...N.
         let headerPath = controlPath + [0]
+
+        guard env.isEnabled, _UIRuntime._hitTestingEnabled else {
+            let valueText = (selectedIndex < safeLabels.count) ? safeLabels[selectedIndex] : String(describing: selection.wrappedValue)
+            return _applyControlPadding(_disabledMenuNode(title: title, value: valueText), env: env)
+        }
+
+        if env.pickerStyleKind == .segmented {
+            var segmentNodes: [_VNode] = []
+            segmentNodes.reserveCapacity(safeValues.count)
+            for (idx, value) in safeValues.enumerated() {
+                let optionPath = controlPath + [1 + idx]
+                let optionID = runtime._registerAction({
+                    runtime._setFocus(path: optionPath)
+                    selection.wrappedValue = value
+                }, path: actionScopePath)
+                runtime._registerFocusable(path: optionPath, activate: optionID)
+                let optionLabel = (idx < safeLabels.count) ? safeLabels[idx] : String(describing: value)
+                let labelNode: _VNode = value == selection.wrappedValue
+                    ? .style(fg: Color.white, bg: env.tint ?? .accentColor, child: .text(optionLabel))
+                    : .text(optionLabel)
+                segmentNodes.append(.button(id: optionID, isFocused: runtime._isFocused(path: optionPath), label: labelNode))
+            }
+            return _applyControlPadding(
+                .stack(axis: .horizontal, spacing: 1, children: segmentNodes),
+                env: env
+            )
+        }
 
         // Header button.
         let valueText = (selectedIndex < safeLabels.count) ? safeLabels[selectedIndex] : String(describing: selection.wrappedValue)
@@ -1359,13 +1838,16 @@ public struct Picker<SelectionValue: Hashable>: View, _PrimitiveView {
             }
         }
 
-        return .menu(
-            id: toggleExpandedID,
-            isFocused: headerIsFocused,
-            isExpanded: isExpanded,
-            title: title,
-            value: valueText,
-            items: items
+        return _applyControlPadding(
+            .menu(
+                id: toggleExpandedID,
+                isFocused: headerIsFocused,
+                isExpanded: isExpanded,
+                title: title,
+                value: valueText,
+                items: items
+            ),
+            env: env
         )
     }
 }
@@ -1384,8 +1866,12 @@ public struct Menu<Content: View, Label: View>: View, _PrimitiveView {
     }
 
     func _makeNode(_ ctx: inout _BuildContext) -> _VNode {
+        let env = _currentEnvironmentValues(for: ctx)
+        guard env.isEnabled else {
+            return _applyControlPadding(_disabledButtonNode(label: ctx.buildChild(label)), env: env)
+        }
         guard _UIRuntime._hitTestingEnabled else {
-            return ctx.buildChild(label)
+            return _applyControlPadding(ctx.buildChild(label), env: env)
         }
 
         let runtime = ctx.runtime
@@ -1436,20 +1922,23 @@ public struct Menu<Content: View, Label: View>: View, _PrimitiveView {
                     runtime._setFocus(path: optionPath)
                     runtime._closePicker(path: controlPath)
                     runtime._setFocus(path: headerPath)
-                    entry.action()
+                    runtime._invokeCapturedMenuItem(entry)
                 }, path: entry.actionScopePath)
                 runtime._registerFocusable(path: optionPath, activate: optionID)
                 items.append((id: optionID, isSelected: false, isFocused: optionIsFocused, label: entry.label))
             }
         }
 
-        return .menu(
-            id: toggleExpandedID,
-            isFocused: headerIsFocused,
-            isExpanded: isExpanded,
-            title: "",
-            value: labelText,
-            items: items
+        return _applyControlPadding(
+            .menu(
+                id: toggleExpandedID,
+                isFocused: headerIsFocused,
+                isExpanded: isExpanded,
+                title: "",
+                value: labelText,
+                items: items
+            ),
+            env: env
         )
     }
 }
@@ -1523,6 +2012,14 @@ private func _collectTaggedPickerOptions<T: Hashable>(node: _VNode, valueType: T
             walk(child)
         case .style(_, _, let child):
             walk(child)
+        case .hover(_, let child):
+            walk(child)
+        case .offset(_, _, let child):
+            walk(child)
+        case .opacity(_, let child):
+            walk(child)
+        case .gradient:
+            break
         default:
             break
         }
@@ -1536,6 +2033,115 @@ public extension View {
     func padding(_ amount: Int = 1) -> some View {
         _EdgePadding(content: AnyView(self), top: amount, leading: amount, bottom: amount, trailing: amount)
     }
+}
+
+
+private func _formattedDatePickerDate(_ date: Date, style: _DatePickerStyleKind) -> String {
+    switch style {
+    case .graphical:
+        return date.formatted(date: .complete, time: .omitted)
+    case .compact:
+        return date.formatted(date: .numeric, time: .omitted)
+    case .field, .stepperField:
+        return date.formatted(date: .abbreviated, time: .omitted)
+    case .automatic:
+        return date.formatted(date: .abbreviated, time: .omitted)
+    }
+}
+
+
+private func _currentEnvironmentValues(for ctx: _BuildContext) -> EnvironmentValues {
+    _UIRuntime._currentEnvironment ?? ctx.runtime._baseEnvironment
+}
+
+private func _applyTextEnvironment(content: String, env: EnvironmentValues) -> _VNode {
+    let rawLines = _wrapTextContent(content, lineLimit: env.lineLimit)
+    let aligned = _alignTextLines(rawLines, alignment: env.multilineTextAlignment)
+    let baseNode: _VNode
+    if aligned.count <= 1 {
+        baseNode = .text(aligned.first ?? "")
+    } else {
+        baseNode = .stack(axis: .vertical, spacing: 0, children: aligned.map(_VNode.text))
+    }
+
+    var node = baseNode
+    if env.textSelectionEnabled {
+        node = .textStyled(style: .underline, child: node)
+    }
+    guard let font = env.font else { return node }
+    let lowercased = font.name.lowercased()
+    if lowercased.contains("large") || lowercased.contains("title") || lowercased.contains("headline") || lowercased.contains("bold") || lowercased.contains("heavy") || lowercased.contains("black") || lowercased.contains("semibold") {
+        node = .textStyled(style: .bold, child: node)
+    }
+    if lowercased.contains("caption") || lowercased.contains("subheadline") {
+        node = .style(fg: .secondary, bg: nil, child: node)
+    }
+    return node
+}
+
+private func _wrapTextContent(_ content: String, lineLimit: Int?) -> [String] {
+    let raw = content.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
+    let limit = lineLimit ?? Int.max
+    if raw.isEmpty { return [""] }
+    return Array(raw.prefix(limit))
+}
+
+private func _alignTextLines(_ lines: [String], alignment: TextAlignment) -> [String] {
+    guard lines.count > 1 else { return lines }
+    let width = lines.map { $0.count }.max() ?? 0
+    guard width > 0 else { return lines }
+    return lines.map { line in
+        let pad = max(0, width - line.count)
+        switch alignment {
+        case .leading:
+            return line
+        case .center:
+            return String(repeating: " ", count: pad / 2) + line
+        case .trailing:
+            return String(repeating: " ", count: pad) + line
+        }
+    }
+}
+
+private func _controlPaddingAmount(for size: ControlSize) -> Int {
+    switch size {
+    case .mini, .small, .regular:
+        return 0
+    case .large:
+        return 1
+    }
+}
+
+private func _applyControlPadding(_ node: _VNode, env: EnvironmentValues) -> _VNode {
+    let pad = _controlPaddingAmount(for: env.controlSize)
+    guard pad > 0 else { return node }
+    return .edgePadding(top: 0, leading: pad, bottom: 0, trailing: pad, child: node)
+}
+
+private func _disabledButtonNode(label: _VNode) -> _VNode {
+    .style(
+        fg: .secondary,
+        bg: nil,
+        child: .stack(axis: .horizontal, spacing: 1, children: [.text("["), label, .text("]")])
+    )
+}
+
+private func _disabledToggleNode(label: _VNode, isOn: Bool) -> _VNode {
+    .style(
+        fg: .secondary,
+        bg: nil,
+        child: .stack(axis: .horizontal, spacing: 1, children: [.text(isOn ? "[x]" : "[ ]"), label])
+    )
+}
+
+private func _disabledTextFieldNode(placeholder: String, text: String) -> _VNode {
+    let display = text.isEmpty ? placeholder : text
+    return .style(fg: .secondary, bg: nil, child: .text("[\(display)]"))
+}
+
+private func _disabledMenuNode(title: String, value: String) -> _VNode {
+    let display = title.isEmpty ? value : "\(title): \(value)"
+    return .style(fg: .secondary, bg: nil, child: .text("[ \(display) v ]"))
 }
 
 // Int-based padding lives here for convenience; edge-based padding is implemented in `Modifiers.swift`.
@@ -1582,6 +2188,8 @@ private func _menuLabelText(from node: _VNode) -> String {
         case .textStyled(_, let child):
             walk(child)
         case .style(_, _, let child):
+            walk(child)
+        case .hover(_, let child):
             walk(child)
         case .contentShapeRect(let child):
             walk(child)

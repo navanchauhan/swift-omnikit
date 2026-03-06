@@ -12,7 +12,7 @@ enum _DebugLayout {
 
     struct Overlay {
         var zIndex: Int
-        var draw: (_ canvas: inout [[_CanvasCell]], _ hitRegions: inout [(_Rect, _ActionID)], _ scrollRegions: inout [_ScrollRegion]) -> Void
+        var draw: (_ canvas: inout [[_CanvasCell]], _ hitRegions: inout [(_Rect, _ActionID)], _ hoverRegions: inout [(_Rect, _HoverID)], _ scrollRegions: inout [_ScrollRegion]) -> Void
     }
 
     struct Result {
@@ -20,6 +20,7 @@ enum _DebugLayout {
         var cells: [String]
         var styledCells: [StyledCell]
         var hitRegions: [(_Rect, _ActionID)]
+        var hoverRegions: [(_Rect, _HoverID)]
         var scrollRegions: [_ScrollRegion]
         var scrollTargets: [_ScrollTarget]
         var shapeRegions: [(_Rect, _ShapeNode)]
@@ -31,6 +32,7 @@ enum _DebugLayout {
             count: rect.size.height
         )
         var hits: [(_Rect, _ActionID)] = []
+        var hovers: [(_Rect, _HoverID)] = []
         var scrolls: [_ScrollRegion] = []
         var shapes: [(_Rect, _ShapeNode)] = []
         var overlays: [Overlay] = []
@@ -40,6 +42,7 @@ enum _DebugLayout {
             maxSize: rect.size,
             canvas: &canvas,
             hitRegions: &hits,
+            hoverRegions: &hovers,
             scrollRegions: &scrolls,
             shapeRegions: &shapes,
             renderShapeGlyphs: renderShapeGlyphs,
@@ -49,7 +52,7 @@ enum _DebugLayout {
 
         // Draw overlays last so they appear "above" later siblings in stacks.
         for o in overlays.sorted(by: { $0.zIndex < $1.zIndex }) {
-            o.draw(&canvas, &hits, &scrolls)
+            o.draw(&canvas, &hits, &hovers, &scrolls)
         }
 
         let lines = canvas.map { $0.map(\.ch).joined() }
@@ -61,6 +64,7 @@ enum _DebugLayout {
             cells: cells,
             styledCells: styledCells,
             hitRegions: hits,
+            hoverRegions: hovers,
             scrollRegions: scrolls,
             scrollTargets: scrollTargets,
             shapeRegions: shapes
@@ -93,6 +97,10 @@ enum _DebugLayout {
             return true
         case .style(_, _, let child):
             return hasContentShapeRect(child)
+        case .offset(_, _, let child):
+            return hasContentShapeRect(child)
+        case .opacity(_, let child):
+            return hasContentShapeRect(child)
         case .background(let child, let bg):
             return hasContentShapeRect(child) || hasContentShapeRect(bg)
         case .overlay(let child, let ov):
@@ -108,6 +116,8 @@ enum _DebugLayout {
         case .tagged(_, let label):
             return hasContentShapeRect(label)
         case .shadow(let child, _, _, _, _):
+            return hasContentShapeRect(child)
+        case .hover(_, let child):
             return hasContentShapeRect(child)
         case .clip(_, let child):
             return hasContentShapeRect(child)
@@ -129,6 +139,7 @@ enum _DebugLayout {
         maxSize: _Size,
         canvas: inout [[_CanvasCell]],
         hitRegions: inout [(_Rect, _ActionID)],
+        hoverRegions: inout [(_Rect, _HoverID)],
         scrollRegions: inout [_ScrollRegion],
         shapeRegions: inout [(_Rect, _ShapeNode)],
         renderShapeGlyphs: Bool,
@@ -146,6 +157,7 @@ enum _DebugLayout {
             return draw(
                 node: child, origin: origin, maxSize: maxSize,
                 canvas: &canvas, hitRegions: &hitRegions,
+                hoverRegions: &hoverRegions,
                 scrollRegions: &scrollRegions, shapeRegions: &shapeRegions,
                 renderShapeGlyphs: renderShapeGlyphs,
                 overlays: &overlays, style: style
@@ -185,12 +197,95 @@ enum _DebugLayout {
                 maxSize: maxSize,
                 canvas: &canvas,
                 hitRegions: &hitRegions,
+                hoverRegions: &hoverRegions,
                 scrollRegions: &scrollRegions,
                 shapeRegions: &shapeRegions,
                 renderShapeGlyphs: renderShapeGlyphs,
                 overlays: &overlays,
                 style: merged
             )
+
+        case .gradient(let gradient):
+            let first = gradient.colors.first ?? .secondary
+            let last = gradient.colors.last ?? first
+            let horizontal: Bool = {
+                switch gradient.kind {
+                case .linear(let startPoint, let endPoint):
+                    return abs(endPoint.x - startPoint.x) >= abs(endPoint.y - startPoint.y)
+                case .radial:
+                    return false
+                }
+            }()
+            if horizontal {
+                for x in 0..<maxSize.width {
+                    let color = x < maxSize.width / 2 ? first : last
+                    for y in 0..<maxSize.height {
+                        let px = origin.x + x
+                        let py = origin.y + y
+                        guard py >= 0, py < canvas.count, px >= 0, px < (canvas.first?.count ?? 0) else { continue }
+                        canvas[py][px].bg = color
+                    }
+                }
+            } else {
+                for y in 0..<maxSize.height {
+                    let color = y < maxSize.height / 2 ? first : last
+                    for x in 0..<maxSize.width {
+                        let px = origin.x + x
+                        let py = origin.y + y
+                        guard py >= 0, py < canvas.count, px >= 0, px < (canvas.first?.count ?? 0) else { continue }
+                        canvas[py][px].bg = color
+                    }
+                }
+            }
+            return maxSize
+
+        case .offset(let x, let y, let child):
+            return draw(
+                node: child,
+                origin: _Point(x: origin.x + x, y: origin.y + y),
+                maxSize: maxSize,
+                canvas: &canvas,
+                hitRegions: &hitRegions,
+                hoverRegions: &hoverRegions,
+                scrollRegions: &scrollRegions,
+                shapeRegions: &shapeRegions,
+                renderShapeGlyphs: renderShapeGlyphs,
+                overlays: &overlays,
+                style: style
+            )
+
+        case .opacity(_, let child):
+            return draw(
+                node: child,
+                origin: origin,
+                maxSize: maxSize,
+                canvas: &canvas,
+                hitRegions: &hitRegions,
+                hoverRegions: &hoverRegions,
+                scrollRegions: &scrollRegions,
+                shapeRegions: &shapeRegions,
+                renderShapeGlyphs: renderShapeGlyphs,
+                overlays: &overlays,
+                style: style
+            )
+
+        case .hover(let id, let child):
+            let s = draw(
+                node: child,
+                origin: origin,
+                maxSize: maxSize,
+                canvas: &canvas,
+                hitRegions: &hitRegions,
+                hoverRegions: &hoverRegions,
+                scrollRegions: &scrollRegions,
+                shapeRegions: &shapeRegions,
+                renderShapeGlyphs: renderShapeGlyphs,
+                overlays: &overlays,
+                style: style
+            )
+            let rect = _Rect(origin: origin, size: _Size(width: min(maxSize.width, max(1, s.width)), height: min(maxSize.height, max(1, s.height))))
+            hoverRegions.append((rect, id))
+            return s
 
         case .contentShapeRect(let child):
             // Rendering is unaffected; this node only influences hit-testing.
@@ -200,6 +295,7 @@ enum _DebugLayout {
                 maxSize: maxSize,
                 canvas: &canvas,
                 hitRegions: &hitRegions,
+                hoverRegions: &hoverRegions,
                 scrollRegions: &scrollRegions,
                 shapeRegions: &shapeRegions,
                 renderShapeGlyphs: renderShapeGlyphs,
@@ -215,6 +311,7 @@ enum _DebugLayout {
                 maxSize: maxSize,
                 canvas: &canvas,
                 hitRegions: &hitRegions,
+                hoverRegions: &hoverRegions,
                 scrollRegions: &scrollRegions,
                 shapeRegions: &shapeRegions,
                 renderShapeGlyphs: renderShapeGlyphs,
@@ -230,6 +327,7 @@ enum _DebugLayout {
                 maxSize: maxSize,
                 canvas: &canvas,
                 hitRegions: &hitRegions,
+                hoverRegions: &hoverRegions,
                 scrollRegions: &scrollRegions,
                 shapeRegions: &shapeRegions,
                 renderShapeGlyphs: renderShapeGlyphs,
@@ -244,6 +342,7 @@ enum _DebugLayout {
                 maxSize: maxSize,
                 canvas: &canvas,
                 hitRegions: &hitRegions,
+                hoverRegions: &hoverRegions,
                 scrollRegions: &scrollRegions,
                 shapeRegions: &shapeRegions,
                 renderShapeGlyphs: renderShapeGlyphs,
@@ -256,6 +355,7 @@ enum _DebugLayout {
                 maxSize: maxSize,
                 canvas: &canvas,
                 hitRegions: &hitRegions,
+                hoverRegions: &hoverRegions,
                 scrollRegions: &scrollRegions,
                 shapeRegions: &shapeRegions,
                 renderShapeGlyphs: renderShapeGlyphs,
@@ -270,6 +370,7 @@ enum _DebugLayout {
                 maxSize: maxSize,
                 canvas: &canvas,
                 hitRegions: &hitRegions,
+                hoverRegions: &hoverRegions,
                 scrollRegions: &scrollRegions,
                 shapeRegions: &shapeRegions,
                 renderShapeGlyphs: renderShapeGlyphs,
@@ -282,6 +383,7 @@ enum _DebugLayout {
                 maxSize: base,
                 canvas: &canvas,
                 hitRegions: &hitRegions,
+                hoverRegions: &hoverRegions,
                 scrollRegions: &scrollRegions,
                 shapeRegions: &shapeRegions,
                 renderShapeGlyphs: renderShapeGlyphs,
@@ -297,6 +399,7 @@ enum _DebugLayout {
                 maxSize: maxSize,
                 canvas: &canvas,
                 hitRegions: &hitRegions,
+                hoverRegions: &hoverRegions,
                 scrollRegions: &scrollRegions,
                 shapeRegions: &shapeRegions,
                 renderShapeGlyphs: renderShapeGlyphs,
@@ -311,6 +414,7 @@ enum _DebugLayout {
                 maxSize: maxSize,
                 canvas: &canvas,
                 hitRegions: &hitRegions,
+                hoverRegions: &hoverRegions,
                 scrollRegions: &scrollRegions,
                 shapeRegions: &shapeRegions,
                 renderShapeGlyphs: renderShapeGlyphs,
@@ -325,6 +429,7 @@ enum _DebugLayout {
                 maxSize: maxSize,
                 canvas: &canvas,
                 hitRegions: &hitRegions,
+                hoverRegions: &hoverRegions,
                 scrollRegions: &scrollRegions,
                 shapeRegions: &shapeRegions,
                 renderShapeGlyphs: renderShapeGlyphs,
@@ -359,6 +464,7 @@ enum _DebugLayout {
                 maxSize: innerMax,
                 canvas: &canvas,
                 hitRegions: &hitRegions,
+                hoverRegions: &hoverRegions,
                 scrollRegions: &scrollRegions,
                 shapeRegions: &shapeRegions,
                 renderShapeGlyphs: renderShapeGlyphs,
@@ -384,6 +490,7 @@ enum _DebugLayout {
                 maxSize: inner.size,
                 canvas: &canvas,
                 hitRegions: &hitRegions,
+                hoverRegions: &hoverRegions,
                 scrollRegions: &scrollRegions,
                 shapeRegions: &shapeRegions,
                 renderShapeGlyphs: renderShapeGlyphs,
@@ -405,6 +512,7 @@ enum _DebugLayout {
                     maxSize: maxSize,
                     canvas: &canvas,
                     hitRegions: &hitRegions,
+                    hoverRegions: &hoverRegions,
                     scrollRegions: &scrollRegions,
                     shapeRegions: &shapeRegions,
                     renderShapeGlyphs: renderShapeGlyphs,
@@ -425,6 +533,7 @@ enum _DebugLayout {
                     maxSize: maxSize,
                     canvas: &canvas,
                     hitRegions: &hitRegions,
+                    hoverRegions: &hoverRegions,
                     scrollRegions: &scrollRegions,
                     shapeRegions: &shapeRegions,
                     renderShapeGlyphs: renderShapeGlyphs,
@@ -587,6 +696,10 @@ enum _DebugLayout {
 	                    return measure(child, maxSize)
 	                case .style(_, _, let child):
 	                    return measure(child, maxSize)
+	                case .offset(_, _, let child):
+	                    return measure(child, maxSize)
+	                case .opacity(_, let child):
+	                    return measure(child, maxSize)
 	                case .contentShapeRect(let child):
 	                    return measure(child, maxSize)
 	                case .clip(_, let child):
@@ -625,6 +738,8 @@ enum _DebugLayout {
                 case .image(let name):
                     let s = _DebugLayout.imageString(name)
                     return _Size(width: min(s.count, maxSize.width), height: 1)
+                case .gradient:
+                    return maxSize
                 case .shape:
                     return _Size(width: min(maxSize.width, 11), height: min(maxSize.height, 5))
                 case .spacer:
@@ -673,13 +788,15 @@ enum _DebugLayout {
                     return _Size(width: min(maxSize.width, xPad + 4 + l.width), height: 1)
                 case .tapTarget(_, let child):
                     return measure(child, maxSize)
+                case .hover(_, let child):
+                    return measure(child, maxSize)
                 case .toggle(_, let isFocused, _, let label):
                     let xPad = isFocused ? 1 : 0
                     let boxCount = 4
                     let labelMax = _Size(width: max(0, maxSize.width - boxCount - xPad), height: 1)
                     let l = measure(label, labelMax)
                     return _Size(width: min(maxSize.width, xPad + boxCount + l.width), height: 1)
-                case .textField(_, let placeholder, let text, _, _):
+                case .textField(_, let placeholder, let text, _, _, let style):
                     let display = text.isEmpty ? placeholder : text
                     let prefixCount = 2
                     let s = prefixCount + 2 + display.count
@@ -705,6 +822,12 @@ enum _DebugLayout {
                 case .scrollView(_, _, _, let scrollAxis, _, _):
                     return scrollAxis == axis
                 case .style(_, _, let child):
+                    return isFlexibleCandidate(child)
+                case .hover(_, let child):
+                    return isFlexibleCandidate(child)
+                case .offset(_, _, let child):
+                    return isFlexibleCandidate(child)
+                case .opacity(_, let child):
                     return isFlexibleCandidate(child)
                 case .contentShapeRect(let child):
                     return isFlexibleCandidate(child)
@@ -807,6 +930,7 @@ enum _DebugLayout {
                             maxSize: proposed,
                             canvas: &canvas,
                             hitRegions: &hitRegions,
+                            hoverRegions: &hoverRegions,
                             scrollRegions: &scrollRegions,
                             shapeRegions: &shapeRegions,
                             renderShapeGlyphs: renderShapeGlyphs,
@@ -821,6 +945,7 @@ enum _DebugLayout {
                         maxSize: remaining,
                         canvas: &canvas,
                         hitRegions: &hitRegions,
+                        hoverRegions: &hoverRegions,
                         scrollRegions: &scrollRegions,
                         shapeRegions: &shapeRegions,
                         renderShapeGlyphs: renderShapeGlyphs,
@@ -862,6 +987,7 @@ enum _DebugLayout {
                 maxSize: labelMax,
                 canvas: &canvas,
                 hitRegions: &hitRegions,
+                hoverRegions: &hoverRegions,
                 scrollRegions: &scrollRegions,
                 shapeRegions: &shapeRegions,
                 renderShapeGlyphs: renderShapeGlyphs,
@@ -883,6 +1009,7 @@ enum _DebugLayout {
                 maxSize: maxSize,
                 canvas: &canvas,
                 hitRegions: &hitRegions,
+                hoverRegions: &hoverRegions,
                 scrollRegions: &scrollRegions,
                 shapeRegions: &shapeRegions,
                 renderShapeGlyphs: renderShapeGlyphs,
@@ -914,6 +1041,7 @@ enum _DebugLayout {
                 maxSize: labelMax,
                 canvas: &canvas,
                 hitRegions: &hitRegions,
+                hoverRegions: &hoverRegions,
                 scrollRegions: &scrollRegions,
                 shapeRegions: &shapeRegions,
                 renderShapeGlyphs: renderShapeGlyphs,
@@ -925,7 +1053,7 @@ enum _DebugLayout {
             hitRegions.append((rect, id))
             return _Size(width: width, height: 1)
 
-        case .textField(let id, let placeholder, let text, let cursor, let isFocused):
+        case .textField(let id, let placeholder, let text, let cursor, let isFocused, let style):
             let display = text.isEmpty ? placeholder : text
             let prefix = isFocused ? "> " : "  "
             let cpos = max(0, min(cursor, display.unicodeScalars.count))
@@ -935,7 +1063,14 @@ enum _DebugLayout {
                 scalars.insert("|", at: cpos)
                 return String(String.UnicodeScalarView(scalars))
             }()
-            let s = prefix + "[" + withCursor + "]"
+            let s: String = {
+                switch style {
+                case .plain:
+                    return prefix + withCursor
+                case .automatic, .roundedBorder:
+                    return prefix + "[" + withCursor + "]"
+                }
+            }()
             let clipped = String(s.prefix(maxSize.width))
             for (i, ch) in clipped.enumerated() {
                 put(String(ch), at: _Point(x: origin.x + i, y: origin.y), canvas: &canvas)
@@ -960,6 +1095,12 @@ enum _DebugLayout {
 	                        return m(child, maxSize)
 	                    case .style(_, _, let child):
 	                        return m(child, maxSize)
+	                    case .hover(_, let child):
+	                        return m(child, maxSize)
+	                    case .offset(_, _, let child):
+	                        return m(child, maxSize)
+	                    case .opacity(_, let child):
+	                        return m(child, maxSize)
 	                    case .contentShapeRect(let child):
 	                        return m(child, maxSize)
 	                    case .clip(_, let child):
@@ -976,6 +1117,8 @@ enum _DebugLayout {
 	                        return m(child, maxSize)
 	                    case .tagged(_, let label):
 	                        return m(label, maxSize)
+	                    case .gradient:
+	                        return maxSize
 	                    case .frame(_, _, let minWidth, let maxWidth, let minHeight, let maxHeight, let child):
 	                        let s = m(child, maxSize)
 	                        let w = max(minWidth ?? 0, min(maxSize.width, maxWidth == Int.max ? maxSize.width : min(s.width, maxWidth ?? s.width)))
@@ -1049,7 +1192,7 @@ enum _DebugLayout {
                         let labelMax = _Size(width: max(0, maxSize.width - boxCount - xPad), height: 1)
                         let l = m(label, labelMax)
                         return _Size(width: min(maxSize.width, xPad + boxCount + l.width), height: 1)
-                    case .textField(_, let placeholder, let text, _, _):
+                    case .textField(_, let placeholder, let text, _, _, let style):
                         let display = text.isEmpty ? placeholder : text
                         let prefixCount = 2
                         let s = prefixCount + 2 + display.count
@@ -1104,6 +1247,7 @@ enum _DebugLayout {
                 count: viewportSize.height
             )
             var subHits: [(_Rect, _ActionID)] = []
+            var subHovers: [(_Rect, _HoverID)] = []
             var subScrolls: [_ScrollRegion] = []
             var subOverlays: [Overlay] = []
             var subShapes: [(_Rect, _ShapeNode)] = []
@@ -1113,6 +1257,7 @@ enum _DebugLayout {
                 maxSize: _Size(width: viewportSize.width, height: viewportSize.height + yOff),
                 canvas: &sub,
                 hitRegions: &subHits,
+                hoverRegions: &subHovers,
                 scrollRegions: &subScrolls,
                 shapeRegions: &subShapes,
                 renderShapeGlyphs: renderShapeGlyphs,
@@ -1122,7 +1267,7 @@ enum _DebugLayout {
 
             // Apply overlays (e.g. Picker dropdown) within the scroll view, then clip via composition.
             for o in subOverlays.sorted(by: { $0.zIndex < $1.zIndex }) {
-                o.draw(&sub, &subHits, &subScrolls)
+                o.draw(&sub, &subHits, &subHovers, &subScrolls)
             }
 
             // Composite subcanvas into the main canvas and translate hit regions.
@@ -1208,7 +1353,7 @@ enum _DebugLayout {
             )
 
             let overlayItems = items
-            overlays.append(Overlay(zIndex: 1000, draw: { canvas, hitRegions, _ in
+            overlays.append(Overlay(zIndex: 1000, draw: { canvas, hitRegions, _, _ in
                 guard overlayMax.width > 0, overlayMax.height > 0 else { return }
 
                 // Dropdown box (simple ASCII).

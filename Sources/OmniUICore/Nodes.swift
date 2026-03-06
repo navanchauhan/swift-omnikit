@@ -29,6 +29,10 @@ struct _ActionID: Hashable {
     let raw: Int
 }
 
+struct _HoverID: Hashable {
+    let raw: Int
+}
+
 enum _Axis: Sendable {
     case horizontal
     case vertical
@@ -51,11 +55,15 @@ indirect enum _VNode {
     case spacer
     case stack(axis: _Axis, spacing: Int, children: [_VNode])
     case zstack(children: [_VNode])
+    case gradient(_GradientNode)
     case shape(_ShapeNode)
+    case offset(x: Int, y: Int, child: _VNode)
+    case opacity(CGFloat, child: _VNode)
     case button(id: _ActionID, isFocused: Bool, label: _VNode)
     case tapTarget(id: _ActionID, child: _VNode)
+    case hover(id: _HoverID, child: _VNode)
     case toggle(id: _ActionID, isFocused: Bool, isOn: Bool, label: _VNode)
-    case textField(id: _ActionID, placeholder: String, text: String, cursor: Int, isFocused: Bool)
+    case textField(id: _ActionID, placeholder: String, text: String, cursor: Int, isFocused: Bool, style: _TextFieldStyleKind)
     case scrollView(id: _ActionID, path: [Int], isFocused: Bool, axis: _Axis, offset: Int, content: _VNode)
     case identified(id: AnyHashable, readerScopePath: [Int]?, child: _VNode)
     case onDelete(actionScopePath: [Int], action: (IndexSet) -> Void, child: _VNode)
@@ -78,6 +86,21 @@ public enum _ShapeKind: Hashable, Sendable {
     case ellipse
     case capsule
     case path
+}
+
+public enum _GradientKind: Hashable, Sendable {
+    case linear(startPoint: UnitPoint, endPoint: UnitPoint)
+    case radial(center: UnitPoint, startRadius: CGFloat, endRadius: CGFloat)
+}
+
+public struct _GradientNode: Hashable, Sendable {
+    public var kind: _GradientKind
+    public var colors: [Color]
+
+    public init(kind: _GradientKind, colors: [Color]) {
+        self.kind = kind
+        self.colors = colors
+    }
 }
 
 public struct _ShapeNode: Hashable, Sendable {

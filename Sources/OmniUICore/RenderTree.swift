@@ -32,6 +32,7 @@ public struct RenderSnapshot: Sendable {
     public let activeTextField: _TextFieldInfo?
 
     let hitRegions: [(_Rect, _ActionID)]
+    let hoverRegions: [(_Rect, _HoverID)]
     public let scrollRegions: [_ScrollRegion]
     let runtime: _UIRuntime
 
@@ -45,6 +46,12 @@ public struct RenderSnapshot: Sendable {
         let p = _Point(x: x, y: y)
         guard let r = scrollRegions.last(where: { $0.rect.contains(p) }) else { return }
         runtime._scroll(path: r.path, deltaY: deltaY, maxOffset: r.maxOffsetY)
+    }
+
+    public func hover(x: Int, y: Int) {
+        let p = _Point(x: x, y: y)
+        let id = hoverRegions.last(where: { $0.0.contains(p) })?.1
+        runtime.updateHover(id)
     }
 
     public func type(_ s: String) {
@@ -90,6 +97,7 @@ enum _RenderLayout {
     struct Result {
         var ops: [RenderOp]
         var hitRegions: [(_Rect, _ActionID)]
+        var hoverRegions: [(_Rect, _HoverID)]
         var scrollRegions: [_ScrollRegion]
         var scrollTargets: [_ScrollTarget]
         var shapeRegions: [(_Rect, _ShapeNode)]
@@ -103,6 +111,7 @@ enum _RenderLayout {
         var fg: Color?
         var bg: Color?
         var textStyle: TextStyle = .none
+        var opacity: CGFloat = 1.0
     }
 
     private struct _Ctx {
@@ -121,6 +130,7 @@ enum _RenderLayout {
     static func layout(node: _VNode, size: _Size) -> Result {
         var ops: [RenderOp] = []
         var hits: [(_Rect, _ActionID)] = []
+        var hovers: [(_Rect, _HoverID)] = []
         var scrolls: [_ScrollRegion] = []
         var scrollTargets: [_ScrollTarget] = []
         var shapes: [(_Rect, _ShapeNode)] = []
@@ -136,6 +146,7 @@ enum _RenderLayout {
             ctx: &ctx,
             ops: &ops,
             hitRegions: &hits,
+            hoverRegions: &hovers,
             scrollRegions: &scrolls,
             scrollTargets: &scrollTargets,
             shapeRegions: &shapes,
@@ -191,6 +202,7 @@ enum _RenderLayout {
         return Result(
             ops: out,
             hitRegions: hits,
+            hoverRegions: hovers,
             scrollRegions: scrolls,
             scrollTargets: scrollTargets,
             shapeRegions: shapes,
@@ -208,6 +220,7 @@ enum _RenderLayout {
         ctx: inout _Ctx,
         ops: inout [RenderOp],
         hitRegions: inout [(_Rect, _ActionID)],
+        hoverRegions: inout [(_Rect, _HoverID)],
         scrollRegions: inout [_ScrollRegion],
         scrollTargets: inout [_ScrollTarget],
         shapeRegions: inout [(_Rect, _ShapeNode)],
@@ -219,10 +232,19 @@ enum _RenderLayout {
     ) -> _Size {
         guard maxSize.width > 0, maxSize.height > 0 else { return _Size(width: 0, height: 0) }
 
+        func resolvedColor(_ color: Color?, fallback: Color?) -> Color? {
+            let base = color ?? fallback
+            guard let base else { return nil }
+            if ctx.style.opacity >= 0.999 { return base }
+            return base.opacity(ctx.style.opacity)
+        }
+
         func emitGlyph(_ s: String, at p: _Point) {
             guard p.x >= 0, p.y >= 0, p.x < ctx.size.width, p.y < ctx.size.height else { return }
             let egc = _sanitizeCell(s)
-            ops.append(RenderOp(zIndex: ctx.z, kind: .glyph(x: p.x, y: p.y, egc: egc, fg: ctx.style.fg, bg: ctx.style.bg), textStyle: ctx.style.textStyle))
+            let fg = resolvedColor(ctx.style.fg, fallback: ctx.style.opacity < 0.999 ? .primary : nil)
+            let bg = resolvedColor(ctx.style.bg, fallback: nil)
+            ops.append(RenderOp(zIndex: ctx.z, kind: .glyph(x: p.x, y: p.y, egc: egc, fg: fg, bg: bg), textStyle: ctx.style.textStyle))
         }
 
         func emitText(_ text: String, at p: _Point) {
@@ -235,7 +257,8 @@ enum _RenderLayout {
         }
 
         func emitFillRect(_ r: _Rect, _ color: Color) {
-            ops.append(RenderOp(zIndex: ctx.z, kind: .fillRect(rect: r, color: color)))
+            let resolved = ctx.style.opacity >= 0.999 ? color : color.opacity(ctx.style.opacity)
+            ops.append(RenderOp(zIndex: ctx.z, kind: .fillRect(rect: r, color: resolved)))
         }
 
         switch node {
@@ -249,26 +272,26 @@ enum _RenderLayout {
             if let bg = ctx.style.bg {
                 emitFillRect(_Rect(origin: origin, size: maxSize), bg)
             }
-            return draw(node: child, origin: origin, maxSize: maxSize, ctx: &ctx, ops: &ops, hitRegions: &hitRegions, scrollRegions: &scrollRegions, scrollTargets: &scrollTargets, shapeRegions: &shapeRegions, cursorPosition: &cursorPosition, activeMenu: &activeMenu, activePicker: &activePicker, activeTextField: &activeTextField,
+            return draw(node: child, origin: origin, maxSize: maxSize, ctx: &ctx, ops: &ops, hitRegions: &hitRegions, hoverRegions: &hoverRegions, scrollRegions: &scrollRegions, scrollTargets: &scrollTargets, shapeRegions: &shapeRegions, cursorPosition: &cursorPosition, activeMenu: &activeMenu, activePicker: &activePicker, activeTextField: &activeTextField,
                 scrollContext: scrollContext)
 
         case .textStyled(let style, let child):
             let prev = ctx.style.textStyle
             ctx.style.textStyle = prev.union(style)
             defer { ctx.style.textStyle = prev }
-            return draw(node: child, origin: origin, maxSize: maxSize, ctx: &ctx, ops: &ops, hitRegions: &hitRegions, scrollRegions: &scrollRegions, scrollTargets: &scrollTargets, shapeRegions: &shapeRegions, cursorPosition: &cursorPosition, activeMenu: &activeMenu, activePicker: &activePicker, activeTextField: &activeTextField,
+            return draw(node: child, origin: origin, maxSize: maxSize, ctx: &ctx, ops: &ops, hitRegions: &hitRegions, hoverRegions: &hoverRegions, scrollRegions: &scrollRegions, scrollTargets: &scrollTargets, shapeRegions: &shapeRegions, cursorPosition: &cursorPosition, activeMenu: &activeMenu, activePicker: &activePicker, activeTextField: &activeTextField,
                 scrollContext: scrollContext)
 
         case .contentShapeRect(let child):
             // Rendering is unaffected; this node only influences hit-testing.
-            return draw(node: child, origin: origin, maxSize: maxSize, ctx: &ctx, ops: &ops, hitRegions: &hitRegions, scrollRegions: &scrollRegions, scrollTargets: &scrollTargets, shapeRegions: &shapeRegions, cursorPosition: &cursorPosition, activeMenu: &activeMenu, activePicker: &activePicker, activeTextField: &activeTextField,
+            return draw(node: child, origin: origin, maxSize: maxSize, ctx: &ctx, ops: &ops, hitRegions: &hitRegions, hoverRegions: &hoverRegions, scrollRegions: &scrollRegions, scrollTargets: &scrollTargets, shapeRegions: &shapeRegions, cursorPosition: &cursorPosition, activeMenu: &activeMenu, activePicker: &activePicker, activeTextField: &activeTextField,
                 scrollContext: scrollContext)
 
         case .clip(_, let child):
             let sz = measure(child, maxSize)
             let rect = _Rect(origin: origin, size: sz)
             ops.append(RenderOp(zIndex: ctx.z, kind: .pushClip(rect: rect)))
-            _ = draw(node: child, origin: origin, maxSize: sz, ctx: &ctx, ops: &ops, hitRegions: &hitRegions, scrollRegions: &scrollRegions, scrollTargets: &scrollTargets, shapeRegions: &shapeRegions, cursorPosition: &cursorPosition, activeMenu: &activeMenu, activePicker: &activePicker, activeTextField: &activeTextField,
+            _ = draw(node: child, origin: origin, maxSize: sz, ctx: &ctx, ops: &ops, hitRegions: &hitRegions, hoverRegions: &hoverRegions, scrollRegions: &scrollRegions, scrollTargets: &scrollTargets, shapeRegions: &shapeRegions, cursorPosition: &cursorPosition, activeMenu: &activeMenu, activePicker: &activePicker, activeTextField: &activeTextField,
                 scrollContext: scrollContext)
             ops.append(RenderOp(zIndex: ctx.z, kind: .popClip))
             return sz
@@ -276,7 +299,7 @@ enum _RenderLayout {
         case .shadow(let child, let color, let radius, let x, let y):
             // Simple, terminal-friendly shadow/glow: draw the glyphs behind the child at a few offsets.
             guard color.alpha > 0, (radius > 0 || x != 0 || y != 0) else {
-                return draw(node: child, origin: origin, maxSize: maxSize, ctx: &ctx, ops: &ops, hitRegions: &hitRegions, scrollRegions: &scrollRegions, scrollTargets: &scrollTargets, shapeRegions: &shapeRegions, cursorPosition: &cursorPosition, activeMenu: &activeMenu, activePicker: &activePicker, activeTextField: &activeTextField,
+                return draw(node: child, origin: origin, maxSize: maxSize, ctx: &ctx, ops: &ops, hitRegions: &hitRegions, hoverRegions: &hoverRegions, scrollRegions: &scrollRegions, scrollTargets: &scrollTargets, shapeRegions: &shapeRegions, cursorPosition: &cursorPosition, activeMenu: &activeMenu, activePicker: &activePicker, activeTextField: &activeTextField,
                 scrollContext: scrollContext)
             }
 
@@ -301,6 +324,7 @@ enum _RenderLayout {
                 var shadowOps: [RenderOp] = []
                 shadowOps.reserveCapacity(64)
                 var dummyHits: [(_Rect, _ActionID)] = []
+                var dummyHovers: [(_Rect, _HoverID)] = []
                 var dummyScrolls: [_ScrollRegion] = []
                 var dummyScrollTargets: [_ScrollTarget] = []
                 var dummyShapes: [(_Rect, _ShapeNode)] = []
@@ -319,6 +343,7 @@ enum _RenderLayout {
                         ctx: &shadowCtx,
                         ops: &shadowOps,
                         hitRegions: &dummyHits,
+                        hoverRegions: &dummyHovers,
                         scrollRegions: &dummyScrolls,
                         scrollTargets: &dummyScrollTargets,
                         shapeRegions: &dummyShapes,
@@ -343,23 +368,38 @@ enum _RenderLayout {
                 }
             }
 
-            return draw(node: child, origin: origin, maxSize: maxSize, ctx: &ctx, ops: &ops, hitRegions: &hitRegions, scrollRegions: &scrollRegions, scrollTargets: &scrollTargets, shapeRegions: &shapeRegions, cursorPosition: &cursorPosition, activeMenu: &activeMenu, activePicker: &activePicker, activeTextField: &activeTextField,
+            return draw(node: child, origin: origin, maxSize: maxSize, ctx: &ctx, ops: &ops, hitRegions: &hitRegions, hoverRegions: &hoverRegions, scrollRegions: &scrollRegions, scrollTargets: &scrollTargets, shapeRegions: &shapeRegions, cursorPosition: &cursorPosition, activeMenu: &activeMenu, activePicker: &activePicker, activeTextField: &activeTextField,
+                scrollContext: scrollContext)
+
+        case .gradient(let gradient):
+            _emitGradientOps(gradient, rect: _Rect(origin: origin, size: maxSize), zIndex: ctx.z, ops: &ops)
+            return maxSize
+
+        case .offset(let x, let y, let child):
+            return draw(node: child, origin: _Point(x: origin.x + x, y: origin.y + y), maxSize: maxSize, ctx: &ctx, ops: &ops, hitRegions: &hitRegions, hoverRegions: &hoverRegions, scrollRegions: &scrollRegions, scrollTargets: &scrollTargets, shapeRegions: &shapeRegions, cursorPosition: &cursorPosition, activeMenu: &activeMenu, activePicker: &activePicker, activeTextField: &activeTextField,
+                scrollContext: scrollContext)
+
+        case .opacity(let alpha, let child):
+            let prev = ctx.style.opacity
+            ctx.style.opacity = max(0, min(1, prev * alpha))
+            defer { ctx.style.opacity = prev }
+            return draw(node: child, origin: origin, maxSize: maxSize, ctx: &ctx, ops: &ops, hitRegions: &hitRegions, hoverRegions: &hoverRegions, scrollRegions: &scrollRegions, scrollTargets: &scrollTargets, shapeRegions: &shapeRegions, cursorPosition: &cursorPosition, activeMenu: &activeMenu, activePicker: &activePicker, activeTextField: &activeTextField,
                 scrollContext: scrollContext)
 
         case .background(let child, let background):
             let sz = measure(child, maxSize)
-            _ = draw(node: background, origin: origin, maxSize: sz, ctx: &ctx, ops: &ops, hitRegions: &hitRegions, scrollRegions: &scrollRegions, scrollTargets: &scrollTargets, shapeRegions: &shapeRegions, cursorPosition: &cursorPosition, activeMenu: &activeMenu, activePicker: &activePicker, activeTextField: &activeTextField,
+            _ = draw(node: background, origin: origin, maxSize: sz, ctx: &ctx, ops: &ops, hitRegions: &hitRegions, hoverRegions: &hoverRegions, scrollRegions: &scrollRegions, scrollTargets: &scrollTargets, shapeRegions: &shapeRegions, cursorPosition: &cursorPosition, activeMenu: &activeMenu, activePicker: &activePicker, activeTextField: &activeTextField,
                 scrollContext: scrollContext)
-            _ = draw(node: child, origin: origin, maxSize: sz, ctx: &ctx, ops: &ops, hitRegions: &hitRegions, scrollRegions: &scrollRegions, scrollTargets: &scrollTargets, shapeRegions: &shapeRegions, cursorPosition: &cursorPosition, activeMenu: &activeMenu, activePicker: &activePicker, activeTextField: &activeTextField,
+            _ = draw(node: child, origin: origin, maxSize: sz, ctx: &ctx, ops: &ops, hitRegions: &hitRegions, hoverRegions: &hoverRegions, scrollRegions: &scrollRegions, scrollTargets: &scrollTargets, shapeRegions: &shapeRegions, cursorPosition: &cursorPosition, activeMenu: &activeMenu, activePicker: &activePicker, activeTextField: &activeTextField,
                 scrollContext: scrollContext)
             return sz
 
         case .overlay(let child, let overlay):
-            let sz = draw(node: child, origin: origin, maxSize: maxSize, ctx: &ctx, ops: &ops, hitRegions: &hitRegions, scrollRegions: &scrollRegions, scrollTargets: &scrollTargets, shapeRegions: &shapeRegions, cursorPosition: &cursorPosition, activeMenu: &activeMenu, activePicker: &activePicker, activeTextField: &activeTextField,
+            let sz = draw(node: child, origin: origin, maxSize: maxSize, ctx: &ctx, ops: &ops, hitRegions: &hitRegions, hoverRegions: &hoverRegions, scrollRegions: &scrollRegions, scrollTargets: &scrollTargets, shapeRegions: &shapeRegions, cursorPosition: &cursorPosition, activeMenu: &activeMenu, activePicker: &activePicker, activeTextField: &activeTextField,
                 scrollContext: scrollContext)
             let prevZ = ctx.z
             ctx.z = prevZ + 1000
-            _ = draw(node: overlay, origin: origin, maxSize: sz, ctx: &ctx, ops: &ops, hitRegions: &hitRegions, scrollRegions: &scrollRegions, scrollTargets: &scrollTargets, shapeRegions: &shapeRegions, cursorPosition: &cursorPosition, activeMenu: &activeMenu, activePicker: &activePicker, activeTextField: &activeTextField,
+            _ = draw(node: overlay, origin: origin, maxSize: sz, ctx: &ctx, ops: &ops, hitRegions: &hitRegions, hoverRegions: &hoverRegions, scrollRegions: &scrollRegions, scrollTargets: &scrollTargets, shapeRegions: &shapeRegions, cursorPosition: &cursorPosition, activeMenu: &activeMenu, activePicker: &activePicker, activeTextField: &activeTextField,
                 scrollContext: scrollContext)
             ctx.z = prevZ
             return sz
@@ -385,7 +425,7 @@ enum _RenderLayout {
                 return maxSize.height
             }()
             let innerMax = _Size(width: targetW, height: targetH)
-            let s = draw(node: child, origin: origin, maxSize: innerMax, ctx: &ctx, ops: &ops, hitRegions: &hitRegions, scrollRegions: &scrollRegions, scrollTargets: &scrollTargets, shapeRegions: &shapeRegions, cursorPosition: &cursorPosition, activeMenu: &activeMenu, activePicker: &activePicker, activeTextField: &activeTextField,
+            let s = draw(node: child, origin: origin, maxSize: innerMax, ctx: &ctx, ops: &ops, hitRegions: &hitRegions, hoverRegions: &hoverRegions, scrollRegions: &scrollRegions, scrollTargets: &scrollTargets, shapeRegions: &shapeRegions, cursorPosition: &cursorPosition, activeMenu: &activeMenu, activePicker: &activePicker, activeTextField: &activeTextField,
                 scrollContext: scrollContext)
             let outW = max(minWidth ?? 0, min(s.width, maxSize.width))
             let outH = max(minHeight ?? 0, min(s.height, maxSize.height))
@@ -396,18 +436,18 @@ enum _RenderLayout {
                 origin: _Point(x: origin.x + leading, y: origin.y + top),
                 size: _Size(width: max(0, maxSize.width - leading - trailing), height: max(0, maxSize.height - top - bottom))
             )
-            let s = draw(node: child, origin: inner.origin, maxSize: inner.size, ctx: &ctx, ops: &ops, hitRegions: &hitRegions, scrollRegions: &scrollRegions, scrollTargets: &scrollTargets, shapeRegions: &shapeRegions, cursorPosition: &cursorPosition, activeMenu: &activeMenu, activePicker: &activePicker, activeTextField: &activeTextField,
+            let s = draw(node: child, origin: inner.origin, maxSize: inner.size, ctx: &ctx, ops: &ops, hitRegions: &hitRegions, hoverRegions: &hoverRegions, scrollRegions: &scrollRegions, scrollTargets: &scrollTargets, shapeRegions: &shapeRegions, cursorPosition: &cursorPosition, activeMenu: &activeMenu, activePicker: &activePicker, activeTextField: &activeTextField,
                 scrollContext: scrollContext)
             return _Size(width: min(maxSize.width, s.width + leading + trailing), height: min(maxSize.height, s.height + top + bottom))
 
         case .tagged(_, let label):
-            return draw(node: label, origin: origin, maxSize: maxSize, ctx: &ctx, ops: &ops, hitRegions: &hitRegions, scrollRegions: &scrollRegions, scrollTargets: &scrollTargets, shapeRegions: &shapeRegions, cursorPosition: &cursorPosition, activeMenu: &activeMenu, activePicker: &activePicker, activeTextField: &activeTextField,
+            return draw(node: label, origin: origin, maxSize: maxSize, ctx: &ctx, ops: &ops, hitRegions: &hitRegions, hoverRegions: &hoverRegions, scrollRegions: &scrollRegions, scrollTargets: &scrollTargets, shapeRegions: &shapeRegions, cursorPosition: &cursorPosition, activeMenu: &activeMenu, activePicker: &activePicker, activeTextField: &activeTextField,
                 scrollContext: scrollContext)
 
         case .group(let nodes):
             var used = _Size(width: 0, height: 0)
             for n in nodes {
-                let s = draw(node: n, origin: origin, maxSize: maxSize, ctx: &ctx, ops: &ops, hitRegions: &hitRegions, scrollRegions: &scrollRegions, scrollTargets: &scrollTargets, shapeRegions: &shapeRegions, cursorPosition: &cursorPosition, activeMenu: &activeMenu, activePicker: &activePicker, activeTextField: &activeTextField,
+                let s = draw(node: n, origin: origin, maxSize: maxSize, ctx: &ctx, ops: &ops, hitRegions: &hitRegions, hoverRegions: &hoverRegions, scrollRegions: &scrollRegions, scrollTargets: &scrollTargets, shapeRegions: &shapeRegions, cursorPosition: &cursorPosition, activeMenu: &activeMenu, activePicker: &activePicker, activeTextField: &activeTextField,
                 scrollContext: scrollContext)
                 used.width = max(used.width, s.width)
                 used.height = max(used.height, s.height)
@@ -417,7 +457,7 @@ enum _RenderLayout {
         case .zstack(let children):
             var used = _Size(width: 0, height: 0)
             for n in children {
-                let s = draw(node: n, origin: origin, maxSize: maxSize, ctx: &ctx, ops: &ops, hitRegions: &hitRegions, scrollRegions: &scrollRegions, scrollTargets: &scrollTargets, shapeRegions: &shapeRegions, cursorPosition: &cursorPosition, activeMenu: &activeMenu, activePicker: &activePicker, activeTextField: &activeTextField,
+                let s = draw(node: n, origin: origin, maxSize: maxSize, ctx: &ctx, ops: &ops, hitRegions: &hitRegions, hoverRegions: &hoverRegions, scrollRegions: &scrollRegions, scrollTargets: &scrollTargets, shapeRegions: &shapeRegions, cursorPosition: &cursorPosition, activeMenu: &activeMenu, activePicker: &activePicker, activeTextField: &activeTextField,
                 scrollContext: scrollContext)
                 used.width = max(used.width, s.width)
                 used.height = max(used.height, s.height)
@@ -456,6 +496,10 @@ enum _RenderLayout {
                 case .scrollView(_, _, _, let scrollAxis, _, _):
                     return scrollAxis == axis
                 case .style(_, _, let child):
+                    return isFlexibleCandidate(child)
+                case .offset(_, _, let child):
+                    return isFlexibleCandidate(child)
+                case .opacity(_, let child):
                     return isFlexibleCandidate(child)
                 case .contentShapeRect(let child):
                     return isFlexibleCandidate(child)
@@ -546,6 +590,7 @@ enum _RenderLayout {
                             ctx: &ctx,
                             ops: &ops,
                             hitRegions: &hitRegions,
+                            hoverRegions: &hoverRegions,
                             scrollRegions: &scrollRegions,
                             scrollTargets: &scrollTargets,
                             shapeRegions: &shapeRegions,
@@ -564,6 +609,7 @@ enum _RenderLayout {
                         ctx: &ctx,
                         ops: &ops,
                         hitRegions: &hitRegions,
+                        hoverRegions: &hoverRegions,
                         scrollRegions: &scrollRegions,
                         scrollTargets: &scrollTargets,
                         shapeRegions: &shapeRegions,
@@ -600,7 +646,7 @@ enum _RenderLayout {
             emitGlyph("[", at: _Point(x: x0, y: origin.y))
             let labelOrigin = _Point(x: x0 + 2, y: origin.y)
             let labelMax = _Size(width: max(0, maxSize.width - (isFocused ? 5 : 4)), height: 1)
-            let labelSize = draw(node: label, origin: labelOrigin, maxSize: labelMax, ctx: &ctx, ops: &ops, hitRegions: &hitRegions, scrollRegions: &scrollRegions, scrollTargets: &scrollTargets, shapeRegions: &shapeRegions, cursorPosition: &cursorPosition, activeMenu: &activeMenu, activePicker: &activePicker, activeTextField: &activeTextField,
+            let labelSize = draw(node: label, origin: labelOrigin, maxSize: labelMax, ctx: &ctx, ops: &ops, hitRegions: &hitRegions, hoverRegions: &hoverRegions, scrollRegions: &scrollRegions, scrollTargets: &scrollTargets, shapeRegions: &shapeRegions, cursorPosition: &cursorPosition, activeMenu: &activeMenu, activePicker: &activePicker, activeTextField: &activeTextField,
                 scrollContext: scrollContext)
             emitGlyph("]", at: _Point(x: x0 + 1 + labelSize.width + 2, y: origin.y))
             let buttonWidth = min(maxSize.width, (isFocused ? 1 : 0) + 4 + labelSize.width)
@@ -611,13 +657,20 @@ enum _RenderLayout {
 
         case .tapTarget(let id, let child):
             let wantsFullHitRect = hasContentShapeRect(child)
-            let s = draw(node: child, origin: origin, maxSize: maxSize, ctx: &ctx, ops: &ops, hitRegions: &hitRegions, scrollRegions: &scrollRegions, scrollTargets: &scrollTargets, shapeRegions: &shapeRegions, cursorPosition: &cursorPosition, activeMenu: &activeMenu, activePicker: &activePicker, activeTextField: &activeTextField,
+            let s = draw(node: child, origin: origin, maxSize: maxSize, ctx: &ctx, ops: &ops, hitRegions: &hitRegions, hoverRegions: &hoverRegions, scrollRegions: &scrollRegions, scrollTargets: &scrollTargets, shapeRegions: &shapeRegions, cursorPosition: &cursorPosition, activeMenu: &activeMenu, activePicker: &activePicker, activeTextField: &activeTextField,
                 scrollContext: scrollContext)
             let w = min(maxSize.width, max(1, s.width))
             let h = min(maxSize.height, max(1, s.height))
             let hitWidth = wantsFullHitRect ? maxSize.width : w
             let rect = _Rect(origin: origin, size: _Size(width: min(maxSize.width, hitWidth), height: h))
             hitRegions.append((rect, id))
+            return s
+
+        case .hover(let id, let child):
+            let s = draw(node: child, origin: origin, maxSize: maxSize, ctx: &ctx, ops: &ops, hitRegions: &hitRegions, hoverRegions: &hoverRegions, scrollRegions: &scrollRegions, scrollTargets: &scrollTargets, shapeRegions: &shapeRegions, cursorPosition: &cursorPosition, activeMenu: &activeMenu, activePicker: &activePicker, activeTextField: &activeTextField,
+                scrollContext: scrollContext)
+            let rect = _Rect(origin: origin, size: _Size(width: min(maxSize.width, max(1, s.width)), height: min(maxSize.height, max(1, s.height))))
+            hoverRegions.append((rect, id))
             return s
 
         case .toggle(let id, let isFocused, let isOn, let label):
@@ -627,14 +680,14 @@ enum _RenderLayout {
             emitText(box, at: _Point(x: x0, y: origin.y))
             let labelOrigin = _Point(x: x0 + box.count, y: origin.y)
             let labelMax = _Size(width: max(0, maxSize.width - box.count - (isFocused ? 1 : 0)), height: 1)
-            let labelSize = draw(node: label, origin: labelOrigin, maxSize: labelMax, ctx: &ctx, ops: &ops, hitRegions: &hitRegions, scrollRegions: &scrollRegions, scrollTargets: &scrollTargets, shapeRegions: &shapeRegions, cursorPosition: &cursorPosition, activeMenu: &activeMenu, activePicker: &activePicker, activeTextField: &activeTextField,
+            let labelSize = draw(node: label, origin: labelOrigin, maxSize: labelMax, ctx: &ctx, ops: &ops, hitRegions: &hitRegions, hoverRegions: &hoverRegions, scrollRegions: &scrollRegions, scrollTargets: &scrollTargets, shapeRegions: &shapeRegions, cursorPosition: &cursorPosition, activeMenu: &activeMenu, activePicker: &activePicker, activeTextField: &activeTextField,
                 scrollContext: scrollContext)
             let width = min(maxSize.width, (isFocused ? 1 : 0) + box.count + labelSize.width)
             let rect = _Rect(origin: origin, size: _Size(width: width, height: 1))
             hitRegions.append((rect, id))
             return _Size(width: width, height: 1)
 
-        case .textField(let id, let placeholder, let text, let cursor, let isFocused):
+        case .textField(let id, let placeholder, let text, let cursor, let isFocused, let style):
             let display = text.isEmpty ? placeholder : text
             let prefix = isFocused ? "> " : "  "
             let cpos = max(0, min(cursor, display.unicodeScalars.count))
@@ -644,20 +697,27 @@ enum _RenderLayout {
                 scalars.insert("|", at: cpos)
                 return String(String.UnicodeScalarView(scalars))
             }()
-            let s = prefix + "[" + withCursor + "]"
+            let s: String = {
+                switch style {
+                case .plain:
+                    return prefix + withCursor
+                case .automatic, .roundedBorder:
+                    return prefix + "[" + withCursor + "]"
+                }
+            }()
             let renderedWidth = min(maxSize.width, s.count)
             let rect = _Rect(origin: origin, size: _Size(width: renderedWidth, height: 1))
             emitText(String(s.prefix(maxSize.width)), at: origin)
-            // Track hardware cursor position: prefix + "[" + chars before cursor pipe.
             if isFocused {
-                let cursorX = origin.x + prefix.count + 1 + cpos
+                let styleLead = style == .plain ? 0 : 1
+                let cursorX = origin.x + prefix.count + styleLead + cpos
                 if cursorX < origin.x + maxSize.width {
                     cursorPosition = _Point(x: cursorX, y: origin.y)
                 }
                 activeTextField = _TextFieldInfo(
-                    origin: _Point(x: origin.x + prefix.count + 1, y: origin.y),
+                    origin: _Point(x: origin.x + prefix.count + (style == .plain ? 0 : 1), y: origin.y),
                     boundingRect: rect,
-                    width: max(0, maxSize.width - prefix.count - 2),
+                    width: max(0, maxSize.width - prefix.count - (style == .plain ? 0 : 2)),
                     text: text,
                     cursorOffset: cpos,
                     actionID: id.raw
@@ -705,6 +765,7 @@ enum _RenderLayout {
                 ctx: &ctx,
                 ops: &ops,
                 hitRegions: &hitRegions,
+                hoverRegions: &hoverRegions,
                 scrollRegions: &scrollRegions,
                 scrollTargets: &scrollTargets,
                 shapeRegions: &shapeRegions,
@@ -726,6 +787,7 @@ enum _RenderLayout {
                 ctx: &ctx,
                 ops: &ops,
                 hitRegions: &hitRegions,
+                hoverRegions: &hoverRegions,
                 scrollRegions: &scrollRegions,
                 scrollTargets: &scrollTargets,
                 shapeRegions: &shapeRegions,
@@ -761,6 +823,7 @@ enum _RenderLayout {
                 ctx: &ctx,
                 ops: &ops,
                 hitRegions: &hitRegions,
+                hoverRegions: &hoverRegions,
                 scrollRegions: &scrollRegions,
                 scrollTargets: &scrollTargets,
                 shapeRegions: &shapeRegions,
@@ -878,6 +941,12 @@ enum _RenderLayout {
             return true
         case .style(_, _, let child):
             return hasContentShapeRect(child)
+        case .hover(_, let child):
+            return hasContentShapeRect(child)
+        case .offset(_, _, let child):
+            return hasContentShapeRect(child)
+        case .opacity(_, let child):
+            return hasContentShapeRect(child)
         case .background(let child, let bg):
             return hasContentShapeRect(child) || hasContentShapeRect(bg)
         case .overlay(let child, let ov):
@@ -895,6 +964,8 @@ enum _RenderLayout {
         case .textStyled(_, let child):
             return hasContentShapeRect(child)
         case .shadow(let child, _, _, _, _):
+            return hasContentShapeRect(child)
+        case .hover(_, let child):
             return hasContentShapeRect(child)
         case .clip(_, let child):
             return hasContentShapeRect(child)
@@ -923,6 +994,8 @@ enum _RenderLayout {
         case .clip(_, let child):
             return measure(child, maxSize)
         case .shadow(let child, _, _, _, _):
+            return measure(child, maxSize)
+        case .hover(_, let child):
             return measure(child, maxSize)
         case .background(let child, _):
             return measure(child, maxSize)
@@ -959,6 +1032,12 @@ enum _RenderLayout {
                 u.height = max(u.height, s.height)
             }
             return u
+        case .gradient:
+            return maxSize
+        case .offset(_, _, let child):
+            return measure(child, maxSize)
+        case .opacity(_, let child):
+            return measure(child, maxSize)
         case .text(let s):
             return _Size(width: min(s.count, maxSize.width), height: 1)
         case .image(let name):
@@ -1000,16 +1079,19 @@ enum _RenderLayout {
             return _Size(width: min(maxSize.width, xPad + 4 + l.width), height: 1)
         case .tapTarget(_, let child):
             return measure(child, maxSize)
+        case .hover(_, let child):
+            return measure(child, maxSize)
         case .toggle(_, let isFocused, _, let label):
             let xPad = isFocused ? 1 : 0
             let boxCount = 4
             let labelMax = _Size(width: max(0, maxSize.width - boxCount - xPad), height: 1)
             let l = measure(label, labelMax)
             return _Size(width: min(maxSize.width, xPad + boxCount + l.width), height: 1)
-        case .textField(_, let placeholder, let text, _, _):
+        case .textField(_, let placeholder, let text, _, _, let style):
             let display = text.isEmpty ? placeholder : text
             let prefixCount = 2
-            let s = prefixCount + 2 + display.count
+            let boxExtra = style == .plain ? 0 : 2
+            let s = prefixCount + boxExtra + display.count
             return _Size(width: min(maxSize.width, s), height: 1)
         case .scrollView:
             return _Size(width: maxSize.width, height: maxSize.height)
@@ -1020,6 +1102,65 @@ enum _RenderLayout {
             return _Size(width: min(w, maxSize.width), height: 1)
         case .divider:
             return _Size(width: maxSize.width, height: 1)
+        }
+    }
+}
+
+private func _interpolateColor(_ colors: [Color], t: CGFloat) -> Color? {
+    guard !colors.isEmpty else { return nil }
+    if colors.count == 1 { return colors[0] }
+    let clamped = min(max(0, t), 1)
+    let scaled = clamped * CGFloat(colors.count - 1)
+    let lowerIndex = Int(floor(scaled))
+    let upperIndex = min(colors.count - 1, lowerIndex + 1)
+    let fraction = scaled - CGFloat(lowerIndex)
+    guard let lower = _resolveColorToRGB(colors[lowerIndex]), let upper = _resolveColorToRGB(colors[upperIndex]) else {
+        return colors[lowerIndex]
+    }
+    let r = CGFloat(lower.r) + (CGFloat(upper.r) - CGFloat(lower.r)) * fraction
+    let g = CGFloat(lower.g) + (CGFloat(upper.g) - CGFloat(lower.g)) * fraction
+    let b = CGFloat(lower.b) + (CGFloat(upper.b) - CGFloat(lower.b)) * fraction
+    return Color(red: r / 255.0, green: g / 255.0, blue: b / 255.0)
+}
+
+private func _emitGradientOps(_ gradient: _GradientNode, rect: _Rect, zIndex: Int, ops: inout [RenderOp]) {
+    guard rect.size.width > 0, rect.size.height > 0 else { return }
+    switch gradient.kind {
+    case .linear(let startPoint, let endPoint):
+        let dx = abs(endPoint.x - startPoint.x)
+        let dy = abs(endPoint.y - startPoint.y)
+        if dx >= dy {
+            let width = max(1, rect.size.width)
+            for column in 0..<width {
+                let t = CGFloat(column) / CGFloat(max(1, width - 1))
+                if let color = _interpolateColor(gradient.colors, t: t) {
+                    ops.append(RenderOp(zIndex: zIndex, kind: .fillRect(rect: _Rect(origin: _Point(x: rect.origin.x + column, y: rect.origin.y), size: _Size(width: 1, height: rect.size.height)), color: color)))
+                }
+            }
+        } else {
+            let height = max(1, rect.size.height)
+            for row in 0..<height {
+                let t = CGFloat(row) / CGFloat(max(1, height - 1))
+                if let color = _interpolateColor(gradient.colors, t: t) {
+                    ops.append(RenderOp(zIndex: zIndex, kind: .fillRect(rect: _Rect(origin: _Point(x: rect.origin.x, y: rect.origin.y + row), size: _Size(width: rect.size.width, height: 1)), color: color)))
+                }
+            }
+        }
+    case .radial(let center, let startRadius, let endRadius):
+        let start = max(0, startRadius)
+        let end = max(start + 0.001, endRadius)
+        let centerX = CGFloat(rect.origin.x) + CGFloat(rect.size.width - 1) * center.x
+        let centerY = CGFloat(rect.origin.y) + CGFloat(rect.size.height - 1) * center.y
+        for row in 0..<rect.size.height {
+            for column in 0..<rect.size.width {
+                let x = CGFloat(rect.origin.x + column)
+                let y = CGFloat(rect.origin.y + row)
+                let distance = hypot(x - centerX, y - centerY)
+                let t = (distance - start) / (end - start)
+                if let color = _interpolateColor(gradient.colors, t: t) {
+                    ops.append(RenderOp(zIndex: zIndex, kind: .fillRect(rect: _Rect(origin: _Point(x: rect.origin.x + column, y: rect.origin.y + row), size: _Size(width: 1, height: 1)), color: color)))
+                }
+            }
         }
     }
 }
@@ -1043,6 +1184,8 @@ private func _imageString(_ name: String) -> String {
     case "xmark": return "✕"
     case "plus": return "+"
     case "minus": return "−"
+    case "magnifyingglass": return "⌕"
+    case "photo": return "▧"
     case "arrow.up": return "↑"
     case "arrow.down": return "↓"
     case "arrow.left": return "←"

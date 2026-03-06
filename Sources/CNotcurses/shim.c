@@ -14,6 +14,7 @@
 uint32_t omni_nckey_button1(void) { return (uint32_t)NCKEY_BUTTON1; }
 uint32_t omni_nckey_button2(void) { return (uint32_t)NCKEY_BUTTON2; }
 uint32_t omni_nckey_button3(void) { return (uint32_t)NCKEY_BUTTON3; }
+uint32_t omni_nckey_motion(void) { return (uint32_t)NCKEY_MOTION; }
 uint32_t omni_nckey_scroll_up(void) { return (uint32_t)NCKEY_SCROLL_UP; }
 uint32_t omni_nckey_scroll_down(void) { return (uint32_t)NCKEY_SCROLL_DOWN; }
 uint32_t omni_nckey_esc(void) { return (uint32_t)NCKEY_ESC; }

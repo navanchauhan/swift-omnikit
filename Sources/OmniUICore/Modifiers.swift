@@ -1,25 +1,36 @@
 import Foundation
 
 public extension View {
-    func font(_ font: Font?) -> some View { _Passthrough(self) }
+    func font(_ font: Font?) -> some View {
+        environment(\.font, font)
+    }
     func foregroundStyle(_ color: Color) -> some View { _Style(content: AnyView(self), fg: color, bg: nil) }
     func foregroundColor(_ color: Color) -> some View { _Style(content: AnyView(self), fg: color, bg: nil) }
     func fontWeight(_ weight: Font.Weight?) -> some View {
-        if weight == .bold || weight == .heavy || weight == .black || weight == .semibold {
+        switch weight {
+        case .bold, .heavy, .black, .semibold, .medium:
             return AnyView(_TextStyleModifier(content: AnyView(self), style: .bold))
+        case .light, .thin, .ultraLight:
+            return AnyView(_Style(content: AnyView(self), fg: .secondary, bg: nil))
+        case .regular, .none:
+            return AnyView(self)
         }
-        return AnyView(_Passthrough(self))
     }
     func bold() -> some View { _TextStyleModifier(content: AnyView(self), style: .bold) }
     func italic() -> some View { _TextStyleModifier(content: AnyView(self), style: .italic) }
     func underline() -> some View { _TextStyleModifier(content: AnyView(self), style: .underline) }
     func strikethrough() -> some View { _TextStyleModifier(content: AnyView(self), style: .struck) }
-    func multilineTextAlignment(_ alignment: TextAlignment) -> some View { _Passthrough(self) }
-    func lineLimit(_ limit: Int?) -> some View { _Passthrough(self) }
-    func monospacedDigit() -> some View { _Passthrough(self) }
+    func multilineTextAlignment(_ alignment: TextAlignment) -> some View {
+        environment(\.multilineTextAlignment, alignment)
+    }
+    func lineLimit(_ limit: Int?) -> some View {
+        environment(\.lineLimit, limit)
+    }
+    func monospacedDigit() -> some View {
+        environment(\.monospacedDigits, true)
+    }
     func textSelection(_ selection: TextSelection) -> some View {
-        _ = selection
-        return _Passthrough(self)
+        environment(\.textSelectionEnabled, selection == .enabled)
     }
     func accentColor(_ color: Color?) -> some View {
         tint(color)
@@ -40,17 +51,16 @@ public extension View {
     func shadow(color: Color, radius: CGFloat, x: CGFloat = 0, y: CGFloat = 0) -> some View {
         _Shadow(content: AnyView(self), color: color, radius: radius, x: x, y: y)
     }
-    func opacity(_ value: CGFloat) -> some View { _Passthrough(self) }
+    func opacity(_ value: CGFloat) -> some View {
+        _OpacityModifier(content: AnyView(self), opacity: value)
+    }
     func offset(x: CGFloat = 0, y: CGFloat = 0) -> some View {
-        _ = x
-        _ = y
-        return _Passthrough(self)
+        _OffsetModifier(content: AnyView(self), x: x, y: y)
     }
     func transition(_ t: AnyTransition) -> some View {
-        _ = t
-        return _Passthrough(self)
+        _TransitionModifier(content: AnyView(self), transition: t)
     }
-    func ignoresSafeArea() -> some View { _Passthrough(self) }
+    func ignoresSafeArea() -> some View { _IgnoresSafeAreaModifier(content: AnyView(self)) }
     func clipShape<S: Shape>(_ shape: S, style: FillStyle = FillStyle()) -> some View {
         _ = style
         let kind: _ShapeKind = {
@@ -71,17 +81,18 @@ public extension View {
         _ = eoFill
         return _ContentShapeRect(content: AnyView(self))
     }
-    func mask<M: View>(_ mask: M) -> some View { _Passthrough(self) }
+    func mask<M: View>(_ mask: M) -> some View {
+        _MaskModifier(content: AnyView(self), mask: AnyView(mask))
+    }
     func labelsHidden() -> some View {
         _LabelsHidden(content: AnyView(self), hidden: true)
     }
 
     // Liquid Glass (compile-only stubs)
-    func glassEffect() -> some View { _Passthrough(self) }
-    func glassEffect(_ style: GlassEffect) -> some View { _Passthrough(self) }
+    func glassEffect() -> some View { _GlassEffectModifier(content: AnyView(self), style: .regular, shape: nil) }
+    func glassEffect(_ style: GlassEffect) -> some View { _GlassEffectModifier(content: AnyView(self), style: style, shape: nil) }
     func glassEffect(in shape: GlassEffectShape) -> some View {
-        _ = shape
-        return _Passthrough(self)
+        _GlassEffectModifier(content: AnyView(self), style: .regular, shape: shape)
     }
 
     func background<B: View>(_ background: B) -> some View { _Background(content: AnyView(self), background: AnyView(background)) }
@@ -113,10 +124,18 @@ public extension View {
     func navigationTitle(_ title: String) -> some View {
         environment(\.navigationTitle, title)
     }
+    func navigationTransition(_ transition: NavigationTransition) -> some View {
+        _NavigationTransitionModifier(content: AnyView(self), transition: transition)
+    }
+    func contentTransition(_ transition: ContentTransition) -> some View {
+        _ContentTransitionModifier(content: AnyView(self), transition: transition)
+    }
     func navigationTitle(_ title: Text) -> some View {
         environment(\.navigationTitle, title.content)
     }
-    func navigationBarTitleDisplayMode(_ mode: Any = ()) -> some View { _Passthrough(self) }
+    func navigationBarTitleDisplayMode(_ mode: Any = ()) -> some View {
+        environment(\.navigationTitleDisplayMode, String(describing: mode))
+    }
 
     func onTapGesture(perform action: @escaping () -> Void) -> some View {
         _TapGesture(content: AnyView(self), count: 1, action: action, actionScopePath: _UIRuntime._currentPath ?? [])
@@ -139,7 +158,18 @@ public extension View {
         }
     }
 
-    func listStyle<S: ListStyle>(_ style: S) -> some View { _Passthrough(self) }
+    func listStyle<S: ListStyle>(_ style: S) -> some View {
+        let kind: _ListStyleKind
+        switch style {
+        case is SidebarListStyle:
+            kind = .sidebar
+        case is PlainListStyle:
+            kind = .plain
+        default:
+            kind = .automatic
+        }
+        return environment(\.listStyleKind, kind)
+    }
     func formStyle<S: FormStyle>(_ style: S) -> some View {
         let kind: _FormStyleKind
         switch style {
@@ -150,32 +180,148 @@ public extension View {
         }
         return environment(\.formStyleKind, kind)
     }
-    func pickerStyle<S: PickerStyle>(_ style: S) -> some View { _Passthrough(self) }
-    func buttonStyle<S: ButtonStyle>(_ style: S) -> some View { _Passthrough(self) }
-    func textFieldStyle<S: TextFieldStyle>(_ style: S) -> some View { _Passthrough(self) }
-    func toggleStyle<S: ToggleStyle>(_ style: S) -> some View { _Passthrough(self) }
-    func labelStyle<S: LabelStyle>(_ style: S) -> some View { _Passthrough(self) }
-    func scrollContentBackground(_ visibility: Visibility) -> some View { _Passthrough(self) }
-    func listRowSeparator(_ visibility: Visibility) -> some View { _Passthrough(self) }
+    func pickerStyle<S: PickerStyle>(_ style: S) -> some View {
+        let kind: _PickerStyleKind
+        switch style {
+        case is SegmentedPickerStyle:
+            kind = .segmented
+        case is MenuPickerStyle:
+            kind = .menu
+        default:
+            kind = .automatic
+        }
+        return environment(\.pickerStyleKind, kind)
+    }
+    func buttonStyle<S: ButtonStyle>(_ style: S) -> some View {
+        let kind: _ButtonStyleKind
+        switch style {
+        case is PlainButtonStyle:
+            kind = .plain
+        case is BorderedProminentButtonStyle:
+            kind = .borderedProminent
+        case is PrimaryFillButtonStyle:
+            kind = .primaryFill
+        case is BorderedButtonStyle:
+            kind = .bordered
+        default:
+            kind = .automatic
+        }
+        return environment(\.buttonStyleKind, kind)
+    }
+    func textFieldStyle<S: TextFieldStyle>(_ style: S) -> some View {
+        let kind: _TextFieldStyleKind
+        switch style {
+        case is PlainTextFieldStyle:
+            kind = .plain
+        case is RoundedBorderTextFieldStyle:
+            kind = .roundedBorder
+        default:
+            kind = .automatic
+        }
+        return environment(\.textFieldStyleKind, kind)
+    }
+    func datePickerStyle<S: DatePickerStyle>(_ style: S) -> some View {
+        let kind: _DatePickerStyleKind
+        switch style {
+        case is CompactDatePickerStyle:
+            kind = .compact
+        case is GraphicalDatePickerStyle:
+            kind = .graphical
+        case is FieldDatePickerStyle:
+            kind = .field
+        case is StepperFieldDatePickerStyle:
+            kind = .stepperField
+        default:
+            kind = .automatic
+        }
+        return environment(\.datePickerStyleKind, kind)
+    }
+    func gaugeStyle<S: GaugeStyle>(_ style: S) -> some View {
+        let kind: _GaugeStyleKind = style is DefaultGaugeStyle ? .default : .automatic
+        return environment(\.gaugeStyleKind, kind)
+    }
+    func toggleStyle<S: ToggleStyle>(_ style: S) -> some View {
+        let kind: _ToggleStyleKind = style is SwitchToggleStyle ? .switch : .automatic
+        return environment(\.toggleStyleKind, kind)
+    }
+    func labelStyle<S: LabelStyle>(_ style: S) -> some View {
+        let kind: _LabelStyleKind = style is IconOnlyLabelStyle ? .iconOnly : .automatic
+        return environment(\.labelStyleKind, kind)
+    }
+    func navigationViewStyle<S: NavigationViewStyle>(_ style: S) -> some View {
+        let kind: _NavigationViewStyleKind
+        switch style {
+        case is ColumnNavigationViewStyle:
+            kind = .column
+        case is DoubleColumnNavigationViewStyle:
+            kind = .doubleColumn
+        case is DefaultNavigationViewStyle:
+            kind = .default
+        default:
+            kind = .automatic
+        }
+        return environment(\.navigationViewStyleKind, kind)
+    }
+    func scrollContentBackground(_ visibility: Visibility) -> some View {
+        environment(\.scrollContentBackgroundVisibility, visibility)
+    }
+    func listRowSeparator(_ visibility: Visibility) -> some View {
+        environment(\.listRowSeparatorVisibility, visibility)
+    }
     func listRowBackground<B: View>(_ background: B?) -> some View {
-        _ = background
-        return _Passthrough(self)
+        if let background {
+            return AnyView(environment(\.listRowBackground, _ListRowBackgroundValue(AnyView(background))))
+        }
+        return AnyView(environment(\.listRowBackground, nil))
     }
     func toolbar<Content: View>(@ViewBuilder content: () -> Content) -> some View {
         _ToolbarModifier(content: AnyView(self), toolbar: AnyView(content()))
     }
     func toolbar(removing placements: ToolbarPlacement...) -> some View {
-        _ = placements
-        return _Passthrough(self)
+        let existing = (_UIRuntime._currentEnvironment ?? EnvironmentValues()).toolbarRemovedPlacements
+        return environment(\.toolbarRemovedPlacements, existing.union(placements))
     }
-    func toolbar(_ any: Any = ()) -> some View { _Passthrough(self) }
-    func toolbarBackground(_ any: Any = (), for: Any = ()) -> some View { _Passthrough(self) }
-    func controlSize(_ size: ControlSize) -> some View { _Passthrough(self) }
+    func toolbar(_ any: Any = ()) -> some View {
+        if let visibility = any as? Visibility {
+            return AnyView(environment(\.toolbarVisibility, visibility))
+        }
+        if let color = any as? Color {
+            var next = (_UIRuntime._currentEnvironment ?? EnvironmentValues()).toolbarBackgroundStyle
+            next.color = color
+            next.material = nil
+            return AnyView(environment(\.toolbarBackgroundStyle, next))
+        }
+        if let material = any as? Material {
+            var next = (_UIRuntime._currentEnvironment ?? EnvironmentValues()).toolbarBackgroundStyle
+            next.material = material
+            next.color = nil
+            return AnyView(environment(\.toolbarBackgroundStyle, next))
+        }
+        return AnyView(self)
+    }
+    func toolbarBackground(_ any: Any = (), for: Any = ()) -> some View {
+        _ = `for`
+        let current = (_UIRuntime._currentEnvironment ?? EnvironmentValues()).toolbarBackgroundStyle
+        var next = current
+        if let visibility = any as? Visibility {
+            next.visibility = visibility
+        } else if let color = any as? Color {
+            next.color = color
+            next.material = nil
+        } else if let material = any as? Material {
+            next.material = material
+            next.color = nil
+        }
+        return environment(\.toolbarBackgroundStyle, next)
+    }
+    func controlSize(_ size: ControlSize) -> some View {
+        environment(\.controlSize, size)
+    }
     func modelContainer(_ any: Any) -> some View {
         if let container = any as? ModelContainer {
             return AnyView(modelContainer(container))
         }
-        return AnyView(_Passthrough(self))
+        return AnyView(self)
     }
     func modelContainer(_ container: ModelContainer) -> some View {
         _ModelContainerProvider(content: AnyView(self), container: container)
@@ -190,10 +336,11 @@ public extension View {
     func keyboardShortcut(_ shortcut: KeyboardShortcut) -> some View {
         _KeyboardShortcutBinder(content: AnyView(self), shortcut: shortcut)
     }
-    func help(_ text: String) -> some View { _Passthrough(self) }
+    func help(_ text: String) -> some View {
+        _HelpModifier(content: AnyView(self), text: text)
+    }
     func onExitCommand(perform action: @escaping () -> Void) -> some View {
-        _ = action
-        return _Passthrough(self)
+        _OnExitCommandBinder(content: AnyView(self), action: action, actionScopePath: _UIRuntime._currentPath ?? [])
     }
 
     func sheet<Content: View>(isPresented: Binding<Bool>, @ViewBuilder content: () -> Content) -> some View {
@@ -201,6 +348,43 @@ public extension View {
     }
     func sheet<Content: View>(isPresented: Binding<Bool>, onDismiss: (() -> Void)?, @ViewBuilder content: () -> Content) -> some View {
         _Sheet(content: AnyView(self), isPresented: isPresented, onDismiss: onDismiss, sheet: AnyView(content()))
+    }
+    func sheet<Item: Identifiable, Content: View>(item: Binding<Item?>, onDismiss: (() -> Void)? = nil, @ViewBuilder content: @escaping (Item) -> Content) -> some View {
+        _ItemPresentationOverlay(content: AnyView(self), item: item, onDismiss: onDismiss, title: "Sheet", showsScrim: true, presented: { AnyView(content($0)) })
+    }
+    func fullScreenCover<Content: View>(isPresented: Binding<Bool>, onDismiss: (() -> Void)? = nil, @ViewBuilder content: () -> Content) -> some View {
+        _PresentationOverlay(content: AnyView(self), isPresented: isPresented, onDismiss: onDismiss, title: "Full Screen", showsScrim: true, presented: AnyView(content()))
+    }
+    func popover<Content: View>(isPresented: Binding<Bool>, attachmentAnchor: Any = (), arrowEdge: Edge = .top, @ViewBuilder content: () -> Content) -> some View {
+        _ = attachmentAnchor
+        _ = arrowEdge
+        return _PresentationOverlay(content: AnyView(self), isPresented: isPresented, onDismiss: nil, title: "Popover", showsScrim: false, presented: AnyView(content()))
+    }
+    func popover<Item: Identifiable, Content: View>(item: Binding<Item?>, attachmentAnchor: Any = (), arrowEdge: Edge = .top, @ViewBuilder content: @escaping (Item) -> Content) -> some View {
+        _ = attachmentAnchor
+        _ = arrowEdge
+        return _ItemPresentationOverlay(content: AnyView(self), item: item, onDismiss: nil, title: "Popover", showsScrim: false, presented: { AnyView(content($0)) })
+    }
+    func confirmationDialog<Actions: View>(_ title: String, isPresented: Binding<Bool>, titleVisibility: Visibility = .automatic, @ViewBuilder actions: () -> Actions) -> some View {
+        _ConfirmationDialog(content: AnyView(self), title: title, isPresented: isPresented, titleVisibility: titleVisibility, actions: AnyView(actions()), message: nil)
+    }
+    func confirmationDialog<Actions: View, Message: View>(_ title: String, isPresented: Binding<Bool>, titleVisibility: Visibility = .automatic, @ViewBuilder actions: () -> Actions, @ViewBuilder message: () -> Message) -> some View {
+        _ConfirmationDialog(content: AnyView(self), title: title, isPresented: isPresented, titleVisibility: titleVisibility, actions: AnyView(actions()), message: AnyView(message()))
+    }
+    func confirmationDialog<Data, Actions: View>(_ title: String, isPresented: Binding<Bool>, titleVisibility: Visibility = .automatic, presenting data: Data, @ViewBuilder actions: (Data) -> Actions) -> some View {
+        _ConfirmationDialog(content: AnyView(self), title: title, isPresented: isPresented, titleVisibility: titleVisibility, actions: AnyView(actions(data)), message: nil)
+    }
+    func confirmationDialog<Data, Actions: View, Message: View>(_ title: String, isPresented: Binding<Bool>, titleVisibility: Visibility = .automatic, presenting data: Data, @ViewBuilder actions: (Data) -> Actions, @ViewBuilder message: (Data) -> Message) -> some View {
+        _ConfirmationDialog(content: AnyView(self), title: title, isPresented: isPresented, titleVisibility: titleVisibility, actions: AnyView(actions(data)), message: AnyView(message(data)))
+    }
+    func navigationDestination<Value: Hashable, Destination: View>(for value: Value.Type, @ViewBuilder destination: @escaping (Value) -> Destination) -> some View {
+        _NavigationDestinationResolver(content: AnyView(self), valueType: value, destination: { AnyView(destination($0)) })
+    }
+    func navigationDestination<Destination: View>(isPresented: Binding<Bool>, @ViewBuilder destination: () -> Destination) -> some View {
+        _NavigationDestinationBool(content: AnyView(self), isPresented: isPresented, destination: AnyView(destination()), ownerKeyOverride: nil)
+    }
+    func navigationDestination<Item: Identifiable, Destination: View>(item: Binding<Item?>, @ViewBuilder destination: @escaping (Item) -> Destination) -> some View {
+        _NavigationDestinationItem(content: AnyView(self), item: item, destination: { AnyView(destination($0)) })
     }
     func alert<Content: View>(isPresented: Binding<Bool>, @ViewBuilder content: () -> Content) -> some View {
         _Alert(content: AnyView(self), isPresented: isPresented, alert: AnyView(content()))
@@ -254,33 +438,47 @@ public extension View {
     func onSubmit(_ action: @escaping () -> Void) -> some View {
         _OnSubmitBinder(content: AnyView(self), action: action, actionScopePath: _UIRuntime._currentPath ?? [])
     }
-    func submitLabel(_ label: SubmitLabel) -> some View { _Passthrough(self) }
+    func submitLabel(_ label: SubmitLabel) -> some View {
+        environment(\.submitLabel, label)
+    }
 
-    func keyboardType(_ type: UIKeyboardType) -> some View { _Passthrough(self) }
-    func textInputAutocapitalization(_ style: TextInputAutocapitalization?) -> some View { _Passthrough(self) }
-    func textContentType(_ type: UITextContentType?) -> some View { _Passthrough(self) }
-    func disableAutocorrection(_ disable: Bool? = true) -> some View { _Passthrough(self) }
+    func keyboardType(_ type: UIKeyboardType) -> some View {
+        environment(\.textInputKeyboardType, type)
+    }
+    func textInputAutocapitalization(_ style: TextInputAutocapitalization?) -> some View {
+        environment(\.textInputAutocapitalization, style)
+    }
+    func textContentType(_ type: UITextContentType?) -> some View {
+        environment(\.textContentType, type)
+    }
+    func disableAutocorrection(_ disable: Bool? = true) -> some View {
+        environment(\.autocorrectionDisabled, disable)
+    }
     func autocorrectionDisabled(_ disabled: Bool = true) -> some View {
         disableAutocorrection(disabled)
     }
 
-    func searchable(text: Binding<String>) -> some View { _Passthrough(self) }
-    func refreshable(action: @escaping () async -> Void) -> some View { _Passthrough(self) }
+    func searchable(text: Binding<String>) -> some View {
+        _SearchableModifier(content: AnyView(self), text: text)
+    }
+    func refreshable(action: @escaping () async -> Void) -> some View {
+        _RefreshableModifier(content: AnyView(self), action: action, actionScopePath: _UIRuntime._currentPath ?? [])
+    }
 
-    func disabled(_ disabled: Bool) -> some View { _Passthrough(self) }
+    func disabled(_ disabled: Bool) -> some View {
+        _DisabledModifier(content: AnyView(self), disabled: disabled)
+    }
 
     func hidden() -> some View {
         _Hidden(content: AnyView(self))
     }
 
     func quickLookPreview(_ url: Binding<URL?>) -> some View {
-        _ = url
-        return _Passthrough(self)
+        _QuickLookPreviewModifier(content: AnyView(self), url: url)
     }
 
     func onHover(perform action: @escaping (Bool) -> Void) -> some View {
-        _ = action
-        return _Passthrough(self)
+        _HoverModifier(content: AnyView(self), action: action, actionScopePath: _UIRuntime._currentPath ?? [])
     }
 
     func frame(
@@ -353,13 +551,11 @@ public extension View {
     }
 
     func presentationDetents(_ detents: Set<PresentationDetent>) -> some View {
-        _ = detents
-        return _Passthrough(self)
+        environment(\.presentationDetents, detents)
     }
 
     func presentationDragIndicator(_ visibility: Visibility) -> some View {
-        _ = visibility
-        return _Passthrough(self)
+        environment(\.presentationDragIndicatorVisibility, visibility)
     }
 
     func navigationSplitViewColumnWidth(min: CGFloat? = nil, ideal: CGFloat, max maxWidth: CGFloat? = nil) -> some View {
@@ -382,8 +578,7 @@ public extension View {
     }
 
     func previewDisplayName(_ name: String) -> some View {
-        _ = name
-        return _Passthrough(self)
+        _PreviewDisplayNameModifier(content: AnyView(self), name: name)
     }
 }
 
@@ -415,6 +610,7 @@ private struct _Sheet: View, _PrimitiveView {
     let sheet: AnyView
 
     func _makeNode(_ ctx: inout _BuildContext) -> _VNode {
+        let env = _UIRuntime._currentEnvironment ?? ctx.runtime._baseEnvironment
         if isPresented.wrappedValue {
             let dismiss = {
                 if isPresented.wrappedValue {
@@ -426,19 +622,210 @@ private struct _Sheet: View, _PrimitiveView {
                 ZStack {
                     // Dim background.
                     Color.gray.opacity(0.35)
-                    VStack(spacing: 1) {
-                        HStack(spacing: 1) {
-                            Text("Sheet")
-                            Spacer()
-                            Button("Close") { dismiss() }
-                        }
+                    _presentationChrome(title: "Sheet", dismiss: dismiss, env: _UIRuntime._currentEnvironment ?? ctx.runtime._baseEnvironment) {
                         sheet
                     }
-                    .padding(1)
                 }
             ), dismiss: dismiss)
         }
         return ctx.buildChild(content)
+    }
+}
+
+
+private struct _PresentationOverlay: View, _PrimitiveView {
+    typealias Body = Never
+    let content: AnyView
+    let isPresented: Binding<Bool>
+    let onDismiss: (() -> Void)?
+    let title: String
+    let showsScrim: Bool
+    let presented: AnyView
+
+    func _makeNode(_ ctx: inout _BuildContext) -> _VNode {
+        let env = _UIRuntime._currentEnvironment ?? ctx.runtime._baseEnvironment
+        if isPresented.wrappedValue {
+            let dismiss = {
+                if isPresented.wrappedValue {
+                    isPresented.wrappedValue = false
+                    onDismiss?()
+                }
+            }
+            ctx.runtime._registerOverlay(view: AnyView(
+                ZStack {
+                    if showsScrim {
+                        Color.gray.opacity(0.35)
+                    }
+                    _presentationChrome(title: title, dismiss: dismiss, env: env) {
+                        presented
+                    }
+                }
+            ), dismiss: dismiss)
+        }
+        return ctx.buildChild(content)
+    }
+}
+
+private struct _ItemPresentationOverlay<Item: Identifiable>: View, _PrimitiveView {
+    typealias Body = Never
+    let content: AnyView
+    let item: Binding<Item?>
+    let onDismiss: (() -> Void)?
+    let title: String
+    let showsScrim: Bool
+    let presented: (Item) -> AnyView
+
+    func _makeNode(_ ctx: inout _BuildContext) -> _VNode {
+        let env = _UIRuntime._currentEnvironment ?? ctx.runtime._baseEnvironment
+        if let current = item.wrappedValue {
+            let dismiss = {
+                if item.wrappedValue != nil {
+                    item.wrappedValue = nil
+                    onDismiss?()
+                }
+            }
+            ctx.runtime._registerOverlay(view: AnyView(
+                ZStack {
+                    if showsScrim {
+                        Color.gray.opacity(0.35)
+                    }
+                    _presentationChrome(title: title, dismiss: dismiss, env: env) {
+                        presented(current)
+                    }
+                }
+            ), dismiss: dismiss)
+        }
+        return ctx.buildChild(content)
+    }
+}
+
+private struct _ConfirmationDialog: View, _PrimitiveView {
+    typealias Body = Never
+
+    let content: AnyView
+    let title: String
+    let isPresented: Binding<Bool>
+    let titleVisibility: Visibility
+    let actions: AnyView
+    let message: AnyView?
+
+    func _makeNode(_ ctx: inout _BuildContext) -> _VNode {
+        let env = _UIRuntime._currentEnvironment ?? ctx.runtime._baseEnvironment
+        if isPresented.wrappedValue {
+            let runtime = ctx.runtime
+            let captureID = runtime._beginMenuCapture()
+            _UIRuntime.$_currentMenuCaptureID.withValue(captureID) {
+                var actionsCtx = _BuildContext(runtime: runtime, path: ctx.path + [91_000], nextChildIndex: 0)
+                _ = _BuildContext.withRuntime(runtime, path: actionsCtx.path) {
+                    OmniUICore._makeNode(actions, &actionsCtx)
+                }
+            }
+            let captured = runtime._endMenuCapture(captureID)
+            let dismiss = {
+                if isPresented.wrappedValue {
+                    isPresented.wrappedValue = false
+                }
+            }
+            let shouldShowTitle = titleVisibility != .hidden && !title.isEmpty
+            let messageView = message ?? AnyView(EmptyView())
+            ctx.runtime._registerOverlay(view: AnyView(
+                ZStack {
+                    Color.gray.opacity(0.35)
+                    _presentationChrome(title: shouldShowTitle ? title : "", dismiss: dismiss, env: env) {
+                        VStack(spacing: 1) {
+                            messageView
+                            if captured.isEmpty {
+                                Button("OK") { dismiss() }
+                            } else {
+                                ForEach(0..<captured.count, id: \.self) { idx in
+                                    let entry = captured[idx]
+                                    Button(entry.label) {
+                                        dismiss()
+                                        runtime._invokeCapturedMenuItem(entry)
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            ), dismiss: dismiss)
+        }
+        return ctx.buildChild(content)
+    }
+}
+
+
+private struct _NavigationDestinationResolver<Value: Hashable>: View, _PrimitiveView {
+    typealias Body = Never
+
+    let content: AnyView
+    let valueType: Value.Type
+    let destination: (Value) -> AnyView
+
+    func _makeNode(_ ctx: inout _BuildContext) -> _VNode {
+        if let stackPath = ctx.runtime._nearestNavStackRoot(from: ctx.path) {
+            ctx.runtime._registerNavDestinationResolver(stackPath: stackPath, valueType: valueType, destination: destination)
+        }
+        return ctx.buildChild(content)
+    }
+}
+
+private struct _NavigationDestinationBool: View, _PrimitiveView {
+    typealias Body = Never
+
+    let content: AnyView
+    let isPresented: Binding<Bool>
+    let destination: AnyView
+    let ownerKeyOverride: String?
+
+    func _makeNode(_ ctx: inout _BuildContext) -> _VNode {
+        guard let stackPath = ctx.runtime._nearestNavStackRoot(from: ctx.path) else {
+            return ctx.buildChild(content)
+        }
+        let ownerKey = ownerKeyOverride ?? ctx.runtime._viewPathKey(path: ctx.path)
+        let isActive = ctx.runtime._navContainsOwner(stackPath: stackPath, ownerKey: ownerKey)
+
+        if isPresented.wrappedValue {
+            if !isActive {
+                ctx.runtime._navPush(
+                    stackPath: stackPath,
+                    view: destination,
+                    ownerKey: ownerKey,
+                    onPop: {
+                        if isPresented.wrappedValue {
+                            isPresented.wrappedValue = false
+                        }
+                    }
+                )
+            }
+        } else if isActive {
+            ctx.runtime._navRemoveOwned(stackPath: stackPath, ownerKey: ownerKey)
+        }
+        return ctx.buildChild(content)
+    }
+}
+
+private struct _NavigationDestinationItem<Item: Identifiable>: View, _PrimitiveView {
+    typealias Body = Never
+
+    let content: AnyView
+    let item: Binding<Item?>
+    let destination: (Item) -> AnyView
+
+    func _makeNode(_ ctx: inout _BuildContext) -> _VNode {
+        let isPresented = Binding<Bool>(
+            get: { item.wrappedValue != nil },
+            set: { presented in
+                if !presented {
+                    item.wrappedValue = nil
+                }
+            }
+        )
+        let ownerKey = ctx.runtime._viewPathKey(path: ctx.path)
+        let target = item.wrappedValue.map(destination) ?? AnyView(EmptyView())
+        return ctx.buildChild(
+            _NavigationDestinationBool(content: content, isPresented: isPresented, destination: target, ownerKeyOverride: ownerKey)
+        )
     }
 }
 
@@ -558,6 +945,35 @@ private struct _AlertFromType: View, _PrimitiveView {
     }
 }
 
+private func _presentationChrome<Content: View>(title: String, dismiss: @escaping () -> Void, env: EnvironmentValues, @ViewBuilder content: () -> Content) -> some View {
+    VStack(spacing: 1) {
+        if env.presentationDragIndicatorVisibility != .hidden {
+            Text("──")
+                .foregroundStyle(.secondary)
+        }
+        HStack(spacing: 1) {
+            if !title.isEmpty {
+                Text(title)
+            }
+            Spacer()
+            Button("Close") { dismiss() }
+        }
+        content()
+    }
+    .padding(1)
+    .background(_presentationBackgroundColor(env: env))
+}
+
+private func _presentationBackgroundColor(env: EnvironmentValues) -> Color {
+    if env.presentationDetents.contains(.large) {
+        return Color.gray.opacity(0.18)
+    }
+    if env.presentationDetents.contains(.medium) {
+        return Color.gray.opacity(0.12)
+    }
+    return Color.gray.opacity(0.10)
+}
+
 private struct _TapGesture: View, _PrimitiveView {
     typealias Body = Never
     let content: AnyView
@@ -627,25 +1043,32 @@ private struct _ToolbarModifier: View, _PrimitiveView {
         var items = _collectToolbarItems(from: toolbarNode)
         let env = _UIRuntime._currentEnvironment ?? ctx.runtime._baseEnvironment
 
-        if items.principal.isEmpty, let title = env.navigationTitle, !title.isEmpty {
-            items.principal.append(.text(title))
+        if env.toolbarRemovedPlacements.contains(.sidebarToggle) {
+            items.leading.removeAll()
         }
 
-        guard !items.isEmpty else { return baseNode }
+        if items.principal.isEmpty, let title = env.navigationTitle, !title.isEmpty {
+            let titleNode: _VNode = env.navigationTitleDisplayMode.lowercased().contains("large")
+                ? .textStyled(style: .bold, child: .text(title))
+                : .text(title)
+            items.principal.append(titleNode)
+        }
+
+        guard env.toolbarVisibility != .hidden, !items.isEmpty else { return baseNode }
 
         var root: [_VNode] = []
-        if let top = _toolbarTopBar(items: items) {
+        if let top = _toolbarTopBar(items: items, env: env) {
             root.append(top)
         }
         root.append(baseNode)
-        if let bottom = _toolbarBottomBar(items: items) {
+        if let bottom = _toolbarBottomBar(items: items, env: env) {
             root.append(bottom)
         }
         return .stack(axis: .vertical, spacing: 0, children: root)
     }
 }
 
-private func _toolbarTopBar(items: _ToolbarLayoutItems) -> _VNode? {
+private func _toolbarTopBar(items: _ToolbarLayoutItems, env: EnvironmentValues) -> _VNode? {
     if items.leading.isEmpty && items.principal.isEmpty && items.trailing.isEmpty {
         return nil
     }
@@ -665,18 +1088,46 @@ private func _toolbarTopBar(items: _ToolbarLayoutItems) -> _VNode? {
         row.append(.stack(axis: .horizontal, spacing: 1, children: items.trailing))
     }
 
-    return .stack(axis: .vertical, spacing: 0, children: [
+    let bar = _VNode.stack(axis: .vertical, spacing: 0, children: [
         .stack(axis: .horizontal, spacing: 1, children: row),
         .divider,
     ])
+    return _applyToolbarBackground(to: bar, env: env)
 }
 
-private func _toolbarBottomBar(items: _ToolbarLayoutItems) -> _VNode? {
+private func _toolbarBottomBar(items: _ToolbarLayoutItems, env: EnvironmentValues) -> _VNode? {
     guard !items.bottom.isEmpty else { return nil }
-    return .stack(axis: .vertical, spacing: 0, children: [
+    let bar = _VNode.stack(axis: .vertical, spacing: 0, children: [
         .divider,
         .stack(axis: .horizontal, spacing: 1, children: items.bottom),
     ])
+    return _applyToolbarBackground(to: bar, env: env)
+}
+
+private func _applyToolbarBackground(to node: _VNode, env: EnvironmentValues) -> _VNode {
+    let style = env.toolbarBackgroundStyle
+    guard style.visibility != .hidden else { return node }
+    if let color = style.color {
+        return .background(child: node, background: .style(fg: nil, bg: color, child: .empty))
+    }
+    if let material = style.material {
+        let backgroundColor: Color
+        switch material.raw {
+        case Material.bar.raw:
+            backgroundColor = Color.gray.opacity(0.18)
+        case Material.background.raw:
+            backgroundColor = Color.gray.opacity(0.10)
+        case Material.ultraThinMaterial.raw:
+            backgroundColor = Color.gray.opacity(0.14)
+        default:
+            backgroundColor = Color.gray.opacity(0.22)
+        }
+        return .background(child: node, background: .style(fg: nil, bg: backgroundColor, child: .empty))
+    }
+    if style.visibility == .visible {
+        return .background(child: node, background: .style(fg: nil, bg: Color.gray.opacity(0.10), child: .empty))
+    }
+    return node
 }
 
 private struct _Frame: View, _PrimitiveView {
@@ -1069,6 +1520,295 @@ private struct _ModelContainerBuilder: View, _PrimitiveView {
 }
 
 /// Used for API compatibility: modifiers that we don't yet model in the node tree.
+private struct _TransitionModifier: View, _PrimitiveView {
+    typealias Body = Never
+
+    let content: AnyView
+    let transition: AnyTransition
+
+    func _makeNode(_ ctx: inout _BuildContext) -> _VNode {
+        let raw = transition.rawValue.lowercased()
+        let base = ctx.buildChild(content)
+        if raw.contains("move(") {
+            if raw.contains("top") {
+                return .offset(x: 0, y: -1, child: base)
+            }
+            if raw.contains("bottom") {
+                return .offset(x: 0, y: 1, child: base)
+            }
+            if raw.contains("leading") {
+                return .offset(x: -1, y: 0, child: base)
+            }
+            if raw.contains("trailing") {
+                return .offset(x: 1, y: 0, child: base)
+            }
+        }
+        if raw.contains("opacity") {
+            return .opacity(0.85, child: base)
+        }
+        return base
+    }
+}
+
+private struct _IgnoresSafeAreaModifier: View, _PrimitiveView {
+    typealias Body = Never
+
+    let content: AnyView
+
+    func _makeNode(_ ctx: inout _BuildContext) -> _VNode {
+        ctx.buildChild(content)
+    }
+}
+
+private struct _GlassEffectModifier: View, _PrimitiveView {
+    typealias Body = Never
+
+    let content: AnyView
+    let style: GlassEffect
+    let shape: GlassEffectShape?
+
+    func _makeNode(_ ctx: inout _BuildContext) -> _VNode {
+        _ = style
+        let child = ctx.buildChild(content)
+        let clipped: _VNode = {
+            guard let shape else { return child }
+            if shape.rawValue.contains("capsule") {
+                return .clip(kind: .capsule, child: child)
+            }
+            if shape.rawValue.contains("cornerRadius"),
+               let radiusStart = shape.rawValue.firstIndex(of: ":"),
+               let radiusEnd = shape.rawValue.firstIndex(of: ")"),
+               let radius = Int(shape.rawValue[shape.rawValue.index(after: radiusStart)..<radiusEnd]) {
+                return .clip(kind: .roundedRectangle(cornerRadius: radius), child: child)
+            }
+            return .clip(kind: .rectangle, child: child)
+        }()
+        return .background(child: .shadow(child: clipped, color: .white.opacity(0.08), radius: 1, x: 0, y: 0), background: ctx.buildChild(Color.gray.opacity(0.16)))
+    }
+}
+
+private struct _NavigationTransitionModifier: View, _PrimitiveView {
+    typealias Body = Never
+
+    let content: AnyView
+    let transition: NavigationTransition
+
+    func _makeNode(_ ctx: inout _BuildContext) -> _VNode {
+        _ = transition
+        return .style(fg: (_UIRuntime._currentEnvironment ?? ctx.runtime._baseEnvironment).tint ?? .accentColor, bg: nil, child: ctx.buildChild(content))
+    }
+}
+
+private struct _ContentTransitionModifier: View, _PrimitiveView {
+    typealias Body = Never
+
+    let content: AnyView
+    let transition: ContentTransition
+
+    func _makeNode(_ ctx: inout _BuildContext) -> _VNode {
+        _ = transition
+        return .textStyled(style: .italic, child: ctx.buildChild(content))
+    }
+}
+
+private struct _HoverModifier: View, _PrimitiveView {
+    typealias Body = Never
+
+    let content: AnyView
+    let action: (Bool) -> Void
+    let actionScopePath: [Int]
+
+    func _makeNode(_ ctx: inout _BuildContext) -> _VNode {
+        let id = ctx.runtime._registerHoverHandler(actionScopePath: ctx.path, action: action)
+        return .hover(id: id, child: ctx.buildChild(content))
+    }
+}
+
+private struct _PreviewDisplayNameModifier: View, _PrimitiveView {
+    typealias Body = Never
+
+    let content: AnyView
+    let name: String
+
+    func _makeNode(_ ctx: inout _BuildContext) -> _VNode {
+        guard !name.isEmpty else { return ctx.buildChild(content) }
+        return ctx.buildChild(
+            VStack(alignment: .leading, spacing: 0) {
+                Text(name).foregroundStyle(.secondary)
+                content
+            }
+        )
+    }
+}
+
+private struct _OpacityModifier: View, _PrimitiveView {
+    typealias Body = Never
+
+    let content: AnyView
+    let opacity: CGFloat
+
+    func _makeNode(_ ctx: inout _BuildContext) -> _VNode {
+        .opacity(opacity, child: ctx.buildChild(content))
+    }
+}
+
+private struct _OffsetModifier: View, _PrimitiveView {
+    typealias Body = Never
+
+    let content: AnyView
+    let x: CGFloat
+    let y: CGFloat
+
+    func _makeNode(_ ctx: inout _BuildContext) -> _VNode {
+        .offset(x: Int(x.rounded()), y: Int(y.rounded()), child: ctx.buildChild(content))
+    }
+}
+
+private struct _MaskModifier: View, _PrimitiveView {
+    typealias Body = Never
+
+    let content: AnyView
+    let mask: AnyView
+
+    func _makeNode(_ ctx: inout _BuildContext) -> _VNode {
+        let child = ctx.buildChild(content)
+        let maskNode = ctx.buildChild(mask)
+        let kind: _ShapeKind = {
+            guard case .shape(let shape) = maskNode else { return .rectangle }
+            return shape.kind
+        }()
+        return .clip(kind: kind, child: child)
+    }
+}
+
+private struct _DisabledModifier: View, _PrimitiveView {
+    typealias Body = Never
+
+    let content: AnyView
+    let disabled: Bool
+
+    func _makeNode(_ ctx: inout _BuildContext) -> _VNode {
+        let current = _UIRuntime._currentEnvironment ?? ctx.runtime._baseEnvironment
+        var next = current
+        next.isEnabled = current.isEnabled && !disabled
+        return _UIRuntime.$_currentEnvironment.withValue(next) {
+            _UIRuntime.$_hitTestingEnabled.withValue(_UIRuntime._hitTestingEnabled && !disabled) {
+                let node = ctx.buildChild(content)
+                if disabled {
+                    return _VNode.style(fg: .secondary, bg: nil, child: node)
+                }
+                return node
+            }
+        }
+    }
+}
+
+private struct _SearchableModifier: View, _PrimitiveView {
+    typealias Body = Never
+
+    let content: AnyView
+    let text: Binding<String>
+
+    func _makeNode(_ ctx: inout _BuildContext) -> _VNode {
+        ctx.buildChild(
+            VStack(alignment: .leading, spacing: 1) {
+                HStack(spacing: 1) {
+                    Image(systemName: "magnifyingglass")
+                    TextField("Search", text: text)
+                        .submitLabel(.search)
+                }
+                content
+            }
+        )
+    }
+}
+
+private struct _RefreshableModifier: View, _PrimitiveView {
+    typealias Body = Never
+
+    let content: AnyView
+    let action: () async -> Void
+    let actionScopePath: [Int]
+
+    func _makeNode(_ ctx: inout _BuildContext) -> _VNode {
+        let runtime = ctx.runtime
+        let actionPath = actionScopePath
+        let refreshAction = action
+        return ctx.buildChild(
+            VStack(alignment: .leading, spacing: 1) {
+                Button("Refresh") {
+                    runtime._launchAsyncAction(path: actionPath, action: refreshAction)
+                }
+                .keyboardShortcut("r", modifiers: .control)
+                content
+            }
+        )
+    }
+}
+
+private struct _HelpModifier: View, _PrimitiveView {
+    typealias Body = Never
+
+    let content: AnyView
+    let text: String
+
+    func _makeNode(_ ctx: inout _BuildContext) -> _VNode {
+        guard !text.isEmpty else { return ctx.buildChild(content) }
+        return ctx.buildChild(
+            VStack(alignment: .leading, spacing: 0) {
+                content
+                Text(text)
+                    .foregroundStyle(.tertiary)
+            }
+        )
+    }
+}
+
+private struct _OnExitCommandBinder: View, _PrimitiveView {
+    typealias Body = Never
+
+    let content: AnyView
+    let action: () -> Void
+    let actionScopePath: [Int]
+
+    func _makeNode(_ ctx: inout _BuildContext) -> _VNode {
+        ctx.runtime._registerExitCommand(actionScopePath: actionScopePath, action: action)
+        return ctx.buildChild(content)
+    }
+}
+
+private struct _QuickLookPreviewModifier: View, _PrimitiveView {
+    typealias Body = Never
+
+    let content: AnyView
+    let url: Binding<URL?>
+
+    func _makeNode(_ ctx: inout _BuildContext) -> _VNode {
+        if let currentURL = url.wrappedValue {
+            let dismiss = {
+                if url.wrappedValue != nil {
+                    url.wrappedValue = nil
+                }
+            }
+            ctx.runtime._registerOverlay(view: AnyView(
+                ZStack {
+                    Color.gray.opacity(0.25)
+                    VStack(spacing: 1) {
+                        Text("Quick Look")
+                            .bold()
+                        Text(currentURL.absoluteString)
+                        Button("Close") {
+                            dismiss()
+                        }
+                    }
+                    .padding(1)
+                }
+            ), dismiss: dismiss)
+        }
+        return ctx.buildChild(content)
+    }
+}
+
 public struct _Passthrough: View, _PrimitiveView {
     public typealias Body = Never
 

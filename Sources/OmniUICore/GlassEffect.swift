@@ -1,4 +1,4 @@
-// Compile-only stubs for iOS/macOS 26 "Liquid Glass" APIs.
+// Terminal-friendly approximations for iOS/macOS 26 "Liquid Glass" APIs.
 
 import Foundation
 

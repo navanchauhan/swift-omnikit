@@ -1,3 +1,5 @@
+public struct AnimationTimelineSchedule: Hashable, Sendable { public init() {} }
+
 public struct Animation: Hashable, Sendable {
     public let rawValue: String
     public init(_ rawValue: String) { self.rawValue = rawValue }

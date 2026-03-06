@@ -261,6 +261,14 @@ public enum TextSelection: Hashable, Sendable {
     case disabled
 }
 
+public struct NavigationTransition: Hashable, Sendable {
+    public init() {}
+}
+
+public struct ContentTransition: Hashable, Sendable {
+    public init() {}
+}
+
 public struct AnyTransition: Hashable, Sendable {
     public let rawValue: String
     public init(_ rawValue: String) { self.rawValue = rawValue }

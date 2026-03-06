@@ -842,6 +842,673 @@ struct _OnAppearLifecycleProbeView: View {
     #expect(s4.text.contains("appear: 2"))
 }
 
+private struct _SheetItemProbeItem: Identifiable {
+    let id: Int
+}
+
+struct _SheetItemProbeView: View {
+    @State private var item: _SheetItemProbeItem? = nil
+
+    var body: some View {
+        VStack(spacing: 1) {
+            Text("item: \(item?.id ?? -1)")
+            Button("Show") {
+                item = _SheetItemProbeItem(id: 1)
+            }
+        }
+        .sheet(item: $item) { current in
+            Text("Item \(current.id)")
+        }
+    }
+}
+
+@Test func sheet_item_presents_and_dismisses() async throws {
+    let runtime = _UIRuntime()
+    let size = _Size(width: 40, height: 10)
+
+    let s0 = runtime.debugRender(_SheetItemProbeView(), size: size)
+    #expect(s0.text.contains("item: -1"))
+
+    guard let show = _findButton(s0, title: "Show") else {
+        #expect(Bool(false), "Could not find Show button")
+        return
+    }
+    s0.click(x: show.x, y: show.y)
+
+    let s1 = runtime.debugRender(_SheetItemProbeView(), size: size)
+    #expect(s1.text.contains("Item 1"))
+    #expect(s1.text.contains("item: 1"))
+
+    guard let close = _findButton(s1, title: "Close") else {
+        #expect(Bool(false), "Could not find Close button")
+        return
+    }
+    s1.click(x: close.x, y: close.y)
+
+    let s2 = runtime.debugRender(_SheetItemProbeView(), size: size)
+    #expect(!s2.text.contains("Item 1"))
+    #expect(s2.text.contains("item: -1"))
+}
+
+struct _PopoverProbeView: View {
+    @State private var isPresented: Bool = false
+
+    var body: some View {
+        VStack(spacing: 1) {
+            Text("popover: \(isPresented ? "open" : "closed")")
+            Button("Show") { isPresented = true }
+        }
+        .popover(isPresented: $isPresented) {
+            Text("Popover Body")
+        }
+    }
+}
+
+@Test func popover_isPresented_shows_and_dismisses() async throws {
+    let runtime = _UIRuntime()
+    let size = _Size(width: 40, height: 10)
+
+    let s0 = runtime.debugRender(_PopoverProbeView(), size: size)
+    #expect(s0.text.contains("popover: closed"))
+
+    guard let show = _findButton(s0, title: "Show") else {
+        #expect(Bool(false), "Could not find Show button")
+        return
+    }
+    s0.click(x: show.x, y: show.y)
+
+    let s1 = runtime.debugRender(_PopoverProbeView(), size: size)
+    #expect(s1.text.contains("Popover Body"))
+    #expect(s1.text.contains("popover: open"))
+
+    guard let close = _findButton(s1, title: "Close") else {
+        #expect(Bool(false), "Could not find Close button")
+        return
+    }
+    s1.click(x: close.x, y: close.y)
+
+    let s2 = runtime.debugRender(_PopoverProbeView(), size: size)
+    #expect(!s2.text.contains("Popover Body"))
+    #expect(s2.text.contains("popover: closed"))
+}
+
+struct _ConfirmationDialogProbeView: View {
+    @State private var isPresented: Bool = false
+    @State private var picked: String = "-"
+
+    var body: some View {
+        VStack(spacing: 1) {
+            Text("picked: \(picked)")
+            Button("Show") { isPresented = true }
+        }
+        .confirmationDialog("Confirm", isPresented: $isPresented) {
+            Button("One") { picked = "One" }
+            Button("Two", role: .destructive) { picked = "Two" }
+            Button("Cancel", role: .cancel) { picked = "Cancel" }
+        } message: {
+            Text("Choose")
+        }
+    }
+}
+
+@Test func confirmationDialog_captures_buttons_and_runs_selected_action() async throws {
+    let runtime = _UIRuntime()
+    let size = _Size(width: 40, height: 12)
+
+    let s0 = runtime.debugRender(_ConfirmationDialogProbeView(), size: size)
+    #expect(s0.text.contains("picked: -"))
+
+    guard let show = _findButton(s0, title: "Show") else {
+        #expect(Bool(false), "Could not find Show button")
+        return
+    }
+    s0.click(x: show.x, y: show.y)
+
+    let s1 = runtime.debugRender(_ConfirmationDialogProbeView(), size: size)
+    #expect(s1.text.contains("Confirm"))
+    #expect(s1.text.contains("Choose"))
+
+    guard let two = _findButton(s1, title: "Two") else {
+        #expect(Bool(false), "Could not find Two button")
+        return
+    }
+    s1.click(x: two.x, y: two.y)
+
+    let s2 = runtime.debugRender(_ConfirmationDialogProbeView(), size: size)
+    #expect(s2.text.contains("picked: Two"))
+    #expect(!s2.text.contains("Choose"))
+}
+
+private struct _PopoverItemProbeItem: Identifiable {
+    let id: Int
+}
+
+struct _PopoverItemProbeView: View {
+    @State private var item: _PopoverItemProbeItem? = nil
+
+    var body: some View {
+        VStack(spacing: 1) {
+            Text("popover item: \(item?.id ?? -1)")
+            Button("Show") { item = _PopoverItemProbeItem(id: 7) }
+        }
+        .popover(item: $item) { current in
+            Text("Popover Item \(current.id)")
+        }
+    }
+}
+
+@Test func popover_item_presents_and_dismisses() async throws {
+    let runtime = _UIRuntime()
+    let size = _Size(width: 40, height: 10)
+
+    let s0 = runtime.debugRender(_PopoverItemProbeView(), size: size)
+    #expect(s0.text.contains("popover item: -1"))
+
+    guard let show = _findButton(s0, title: "Show") else {
+        #expect(Bool(false), "Could not find Show button")
+        return
+    }
+    s0.click(x: show.x, y: show.y)
+
+    let s1 = runtime.debugRender(_PopoverItemProbeView(), size: size)
+    #expect(s1.text.contains("Popover Item 7"))
+    #expect(s1.text.contains("popover item: 7"))
+
+    guard let close = _findButton(s1, title: "Close") else {
+        #expect(Bool(false), "Could not find Close button")
+        return
+    }
+    s1.click(x: close.x, y: close.y)
+
+    let s2 = runtime.debugRender(_PopoverItemProbeView(), size: size)
+    #expect(!s2.text.contains("Popover Item 7"))
+    #expect(s2.text.contains("popover item: -1"))
+}
+
+struct _NavigationDestinationBoolProbeView: View {
+    @State private var isShowingDetail: Bool = false
+
+    var body: some View {
+        NavigationStack {
+            VStack(spacing: 1) {
+                Text("root")
+                Button("Show") { isShowingDetail = true }
+            }
+            .navigationDestination(isPresented: $isShowingDetail) {
+                Text("Bool Detail")
+            }
+        }
+    }
+}
+
+@Test func navigationDestination_isPresented_pushes_and_pops() async throws {
+    let runtime = _UIRuntime()
+    let size = _Size(width: 40, height: 10)
+
+    let s0 = runtime.debugRender(_NavigationDestinationBoolProbeView(), size: size)
+    #expect(s0.text.contains("root"))
+
+    guard let show = _findButton(s0, title: "Show") else {
+        #expect(Bool(false), "Could not find Show button")
+        return
+    }
+    s0.click(x: show.x, y: show.y)
+
+    let s1 = runtime.debugRender(_NavigationDestinationBoolProbeView(), size: size)
+    #expect(s1.text.contains("Bool Detail"))
+    #expect(s1.text.contains("[ Back ]"))
+
+    guard let back = _findButton(s1, title: "Back") else {
+        #expect(Bool(false), "Could not find Back button")
+        return
+    }
+    s1.click(x: back.x, y: back.y)
+
+    let s2 = runtime.debugRender(_NavigationDestinationBoolProbeView(), size: size)
+    #expect(s2.text.contains("root"))
+    #expect(!s2.text.contains("Bool Detail"))
+}
+
+private struct _NavigationDestinationItemProbeItem: Identifiable {
+    let id: Int
+}
+
+struct _NavigationDestinationItemProbeView: View {
+    @State private var selected: _NavigationDestinationItemProbeItem? = nil
+
+    var body: some View {
+        NavigationStack {
+            VStack(spacing: 1) {
+                Text("selected: \(selected?.id ?? -1)")
+                Button("Show") { selected = _NavigationDestinationItemProbeItem(id: 5) }
+            }
+            .navigationDestination(item: $selected) { item in
+                Text("Item Detail \(item.id)")
+            }
+        }
+    }
+}
+
+@Test func navigationDestination_item_pushes_and_clears_on_back() async throws {
+    let runtime = _UIRuntime()
+    let size = _Size(width: 40, height: 10)
+
+    let s0 = runtime.debugRender(_NavigationDestinationItemProbeView(), size: size)
+    #expect(s0.text.contains("selected: -1"))
+
+    guard let show = _findButton(s0, title: "Show") else {
+        #expect(Bool(false), "Could not find Show button")
+        return
+    }
+    s0.click(x: show.x, y: show.y)
+
+    let s1 = runtime.debugRender(_NavigationDestinationItemProbeView(), size: size)
+    #expect(s1.text.contains("Item Detail 5"))
+
+    guard let back = _findButton(s1, title: "Back") else {
+        #expect(Bool(false), "Could not find Back button")
+        return
+    }
+    s1.click(x: back.x, y: back.y)
+
+    let s2 = runtime.debugRender(_NavigationDestinationItemProbeView(), size: size)
+    #expect(s2.text.contains("selected: -1"))
+    #expect(!s2.text.contains("Item Detail 5"))
+}
+
+struct _NavigationDestinationValueProbeView: View {
+    var body: some View {
+        NavigationStack {
+            VStack(spacing: 1) {
+                NavigationLink(value: 42) {
+                    Text("Value Link")
+                }
+            }
+            .navigationDestination(for: Int.self) { value in
+                Text("Value \(value)")
+            }
+        }
+    }
+}
+
+@Test func navigationDestination_for_value_pushes_resolved_destination() async throws {
+    let runtime = _UIRuntime()
+    let size = _Size(width: 40, height: 10)
+
+    let s0 = runtime.debugRender(_NavigationDestinationValueProbeView(), size: size)
+    #expect(s0.text.contains("Value Link"))
+
+    guard let link = _findButton(s0, title: "Value Link") else {
+        #expect(Bool(false), "Could not find Value Link button")
+        return
+    }
+    s0.click(x: link.x, y: link.y)
+
+    let s1 = runtime.debugRender(_NavigationDestinationValueProbeView(), size: size)
+    #expect(s1.text.contains("Value 42"))
+    #expect(s1.text.contains("[ Back ]"))
+}
+
+struct _CoreParityViewsProbe: View {
+    @State private var date: Date = Date(timeIntervalSinceReferenceDate: 123456789)
+
+    var body: some View {
+        NavigationView {
+            VStack(spacing: 1) {
+                DatePicker("When", selection: $date)
+                    .datePickerStyle(.graphical)
+                Gauge(value: 0.4) {
+                    Text("Gauge")
+                } currentValueLabel: {
+                    Text("40%")
+                }
+                .gaugeStyle(.default)
+                AsyncImage(url: URL(string: "https://example.com/image.png")) { _ in
+                    Text("photo")
+                }
+                TimelineView(()) { context in
+                    Text(context.cadence == .live ? "Timeline" : "Other")
+                }
+                .contentTransition(ContentTransition())
+                .navigationTransition(NavigationTransition())
+            }
+        }
+        .navigationViewStyle(.default)
+    }
+}
+
+@Test func core_parity_views_render_basic_output() async throws {
+    let runtime = _UIRuntime()
+    let s0 = runtime.debugRender(_CoreParityViewsProbe(), size: _Size(width: 60, height: 12))
+    #expect(s0.text.contains("When"))
+    #expect(s0.text.contains("Gauge"))
+    #expect(s0.text.contains("40%"))
+        }
+
+struct _DrawingParityProbe: View {
+    var body: some View {
+        VStack(spacing: 1) {
+            LinearGradient(colors: [.red, .blue], startPoint: .topLeading, endPoint: .bottomTrailing)
+                .frame(width: 4, height: 2)
+            Canvas { context, _ in
+                context.fill(Rectangle(), with: .color(.green))
+            }
+            .frame(width: 4, height: 2)
+        }
+    }
+}
+
+@Test func asyncImage_loads_local_file() async throws {
+    let runtime = _UIRuntime()
+    let tempURL = URL.temporaryDirectory.appending(path: "omniui-async-image-test.bin")
+    try Data([0x89, 0x50, 0x4E, 0x47]).write(to: tempURL)
+    struct Probe: View {
+        let url: URL
+        var body: some View {
+            AsyncImage(url: url) { phase in
+                switch phase {
+                case .success:
+                    return Text("photo")
+                case .failure:
+                    return Text("failure")
+                case .empty:
+                    return Text("empty")
+                }
+            }
+        }
+    }
+    let initial = runtime.debugRender(Probe(url: tempURL), size: _Size(width: 20, height: 4))
+    #expect(initial.text.contains("empty"))
+    try await Task.sleep(nanoseconds: 100_000_000)
+    let next = runtime.debugRender(Probe(url: tempURL), size: _Size(width: 20, height: 4))
+    #expect(next.text.contains("photo"))
+}
+
+@Test func timelineView_ticks_over_time() async throws {
+    let runtime = _UIRuntime()
+    struct Probe: View {
+        var body: some View {
+            TimelineView(()) { context in
+                Text(context.date.formatted(date: .omitted, time: .standard))
+            }
+        }
+    }
+    let first = runtime.debugRender(Probe(), size: _Size(width: 20, height: 4)).text
+    try await Task.sleep(nanoseconds: 1_100_000_000)
+    let second = runtime.debugRender(Probe(), size: _Size(width: 20, height: 4)).text
+    #expect(first != second)
+}
+
+@Test func drawing_primitives_emit_renderer_ops() async throws {
+    let runtime = _UIRuntime()
+    let snapshot = runtime.render(_DrawingParityProbe(), size: _Size(width: 6, height: 6))
+    #expect(!snapshot.ops.isEmpty)
+    #expect(!snapshot.shapeRegions.isEmpty)
+}
+
+struct _DisabledButtonProbe: View {
+    @State private var count = 0
+
+    var body: some View {
+        VStack(spacing: 1) {
+            Text("Count: \(count)")
+            Button("Inc") { count += 1 }
+                .disabled(true)
+        }
+    }
+}
+
+@Test func disabled_button_blocks_interaction() async throws {
+    let runtime = _UIRuntime()
+    let initial = runtime.debugRender(_DisabledButtonProbe(), size: _Size(width: 30, height: 6))
+    #expect(initial.text.contains("Count: 0"))
+    initial.click(x: 2, y: 2)
+    let next = runtime.debugRender(_DisabledButtonProbe(), size: _Size(width: 30, height: 6))
+    #expect(next.text.contains("Count: 0"))
+}
+
+struct _SearchableProbe: View {
+    @State private var query = ""
+
+    var body: some View {
+        Text("Query: \(query)")
+            .searchable(text: $query)
+    }
+}
+
+@Test func searchable_renders_field_and_updates_binding() async throws {
+    let runtime = _UIRuntime()
+    let initial = runtime.debugRender(_SearchableProbe(), size: _Size(width: 40, height: 6))
+    #expect(initial.text.contains("Query:"))
+    #expect(initial.text.contains("Search"))
+    initial.click(x: 3, y: 0)
+    initial.type("abc")
+    let next = runtime.debugRender(_SearchableProbe(), size: _Size(width: 40, height: 6))
+    #expect(next.text.contains("Query: abc"))
+}
+
+struct _RefreshableProbe: View {
+    @State private var refreshCount = 0
+
+    var body: some View {
+        Text("Refreshes: \(refreshCount)")
+            .refreshable {
+                refreshCount += 1
+            }
+    }
+}
+
+@Test func refreshable_exposes_button_and_runs_action() async throws {
+    let runtime = _UIRuntime()
+    let initial = runtime.debugRender(_RefreshableProbe(), size: _Size(width: 40, height: 6))
+    #expect(initial.text.contains("Refreshes: 0"))
+    #expect(initial.text.contains("Refresh"))
+    initial.click(x: 2, y: 0)
+    try await Task.sleep(nanoseconds: 50_000_000)
+    let next = runtime.debugRender(_RefreshableProbe(), size: _Size(width: 40, height: 6))
+    #expect(next.text.contains("Refreshes: 1"))
+}
+
+struct _OffsetOpacityProbe: View {
+    @State private var count = 0
+
+    var body: some View {
+        VStack(spacing: 1) {
+            Text("Count: \(count)")
+            Button("Go") { count += 1 }
+                .offset(x: 4, y: 0)
+            Text("Fade")
+                .opacity(0.5)
+        }
+    }
+}
+
+@Test func offset_and_opacity_modifiers_affect_render_tree() async throws {
+    let runtime = _UIRuntime()
+    let initial = runtime.debugRender(_OffsetOpacityProbe(), size: _Size(width: 30, height: 8))
+    initial.click(x: 8, y: 2)
+    let next = runtime.debugRender(_OffsetOpacityProbe(), size: _Size(width: 30, height: 8))
+    #expect(next.text.contains("Count: 1"))
+
+    let faded = runtime.render(Text("Fade").opacity(0.5), size: _Size(width: 10, height: 2))
+    let hasAlpha = faded.ops.contains { op in
+        switch op.kind {
+        case .glyph(_, _, _, let fg, _), .textRun(_, _, _, let fg, _):
+            return (fg?.alpha ?? 1.0) < 1.0
+        default:
+            return false
+        }
+    }
+    #expect(hasAlpha)
+}
+
+struct _TextEnvironmentProbe: View {
+    var body: some View {
+        Text("First\nSecond\nThird")
+            .lineLimit(2)
+            .multilineTextAlignment(.trailing)
+            .font(.headline)
+    }
+}
+
+@Test func text_environment_modifiers_affect_output() async throws {
+    let runtime = _UIRuntime()
+    let snapshot = runtime.debugRender(_TextEnvironmentProbe(), size: _Size(width: 20, height: 5))
+    #expect(snapshot.text.contains("First"))
+    #expect(snapshot.text.contains("Second"))
+    #expect(!snapshot.text.contains("Third"))
+}
+
+struct _ExitCommandProbe: View {
+    @State private var exits = 0
+
+    var body: some View {
+        Text("Exits: \(exits)")
+            .onExitCommand {
+                exits += 1
+            }
+    }
+}
+
+@Test func onExitCommand_registers_runtime_handler() async throws {
+    let runtime = _UIRuntime()
+    _ = runtime.debugRender(_ExitCommandProbe(), size: _Size(width: 20, height: 4))
+    #expect(runtime.invokeExitCommand())
+    let next = runtime.debugRender(_ExitCommandProbe(), size: _Size(width: 20, height: 4))
+    #expect(next.text.contains("Exits: 1"))
+}
+
+struct _QuickLookProbe: View {
+    let url: Binding<URL?>
+
+    var body: some View {
+        Text("Host")
+            .quickLookPreview(url)
+    }
+}
+
+@Test func quickLookPreview_registers_overlay() async throws {
+    let runtime = _UIRuntime()
+    var currentURL: URL? = URL(string: "https://example.com/file.txt")
+    let binding = Binding<URL?>(get: { currentURL }, set: { currentURL = $0 })
+    let snapshot = runtime.debugRender(_QuickLookProbe(url: binding), size: _Size(width: 50, height: 10))
+    #expect(snapshot.text.contains("Quick Look"))
+    #expect(snapshot.text.contains("file.txt"))
+    currentURL = nil
+    let next = runtime.debugRender(_QuickLookProbe(url: binding), size: _Size(width: 50, height: 10))
+    #expect(!next.text.contains("Quick Look"))
+}
+
+struct _HoverProbe: View {
+    @State private var hovered = false
+
+    var body: some View {
+        Text(hovered ? "Hover ON" : "Hover OFF")
+            .onHover { hovered = $0 }
+    }
+}
+
+@Test func onHover_updates_state_via_snapshot_hover() async throws {
+    let runtime = _UIRuntime()
+    let initial = runtime.debugRender(_HoverProbe(), size: _Size(width: 20, height: 4))
+    #expect(initial.text.contains("Hover OFF"))
+    initial.hover(x: 1, y: 0)
+    let hovered = runtime.debugRender(_HoverProbe(), size: _Size(width: 20, height: 4))
+    #expect(hovered.text.contains("Hover ON"))
+    hovered.hover(x: 19, y: 3)
+    let cleared = runtime.debugRender(_HoverProbe(), size: _Size(width: 20, height: 4))
+    #expect(cleared.text.contains("Hover OFF"))
+}
+
+struct _SceneCommandProbe: Scene {
+    @SceneBuilder var body: some Scene {
+        WindowGroup {
+            Text("Scene Root")
+        }
+        .commands {
+            CommandGroup(after: .appInfo) {
+                Button("Command") {}
+            }
+        }
+        .defaultSize(width: 90, height: 30)
+    }
+}
+
+@Test func scene_commands_and_default_size_are_exposed() async throws {
+    let scene = _SceneCommandProbe().body
+    let root = _sceneRootView(scene)
+    #expect(root != nil)
+    let commands = _sceneCommandsView(scene)
+    #expect(commands != nil)
+    let preferred = _scenePreferredSize(scene)
+    #expect(preferred?.width == 90)
+    #expect(preferred?.height == 30)
+
+    let runtime = _UIRuntime()
+    let snapshot = runtime.debugRender(root!, size: _Size(width: 30, height: 6))
+    #expect(snapshot.text.contains("Scene Root"))
+}
+
+struct _TextFieldConfigProbe: View {
+    @State private var url = ""
+    @State private var corrected = ""
+
+    var body: some View {
+        VStack(spacing: 1) {
+            TextField("URL", text: $url)
+                .keyboardType(.URL)
+                .textInputAutocapitalization(.characters)
+                .textContentType(.URL)
+                .textFieldStyle(.plain)
+            Text(url)
+            TextField("Auto", text: $corrected)
+                .autocorrectionDisabled(false)
+            Text(corrected)
+        }
+    }
+}
+
+@Test func textField_style_and_input_configs_affect_behavior() async throws {
+    let runtime = _UIRuntime()
+    let initial = runtime.debugRender(_TextFieldConfigProbe(), size: _Size(width: 30, height: 8))
+    #expect(!initial.text.contains("[URL]"))
+    initial.click(x: 1, y: 0)
+    initial.type("Ab C")
+    let urlState = runtime.debugRender(_TextFieldConfigProbe(), size: _Size(width: 30, height: 8))
+    #expect(urlState.text.contains("abc"))
+    #expect(!urlState.text.contains("Ab C"))
+
+    urlState.click(x: 1, y: 4)
+    urlState.type("teh ")
+    let corrected = runtime.debugRender(_TextFieldConfigProbe(), size: _Size(width: 30, height: 8))
+    #expect(corrected.text.contains("the "))
+}
+
+@Test func scene_commands_and_default_size_metadata_are_preserved() async throws {
+    let scene = AnyScene(
+        WindowGroup {
+            Text("Root")
+        }
+        .commands {
+            CommandGroup(after: .appInfo) {
+                Button("Command") {}
+            }
+        }
+        .defaultSize(width: 42, height: 17)
+    )
+
+    let rootScene: _OmniUISceneRoot = scene
+    #expect(rootScene._omniUIRootView() != nil)
+    #expect(rootScene._omniUICommandsView() != nil)
+    #expect(rootScene._omniUIPreferredSize == CGSize(width: 42, height: 17))
+
+    let runtime = _UIRuntime()
+    if let commandsView = rootScene._omniUICommandsView() {
+        let snapshot = runtime.debugRender(commandsView, size: _Size(width: 20, height: 4))
+        #expect(snapshot.text.contains("Command"))
+    }
+}
+
 struct _SplitAutomaticProbeView: View {
     var body: some View {
         NavigationSplitView(

@@ -35,7 +35,9 @@ public final class _UIRuntime: @unchecked Sendable {
 
     struct _MenuCaptureItem {
         var label: String
+        var role: ButtonRole?
         var actionScopePath: [Int]
+        var env: EnvironmentValues
         var action: () -> Void
     }
     private var nextMenuCaptureID: Int = 1
@@ -50,6 +52,10 @@ public final class _UIRuntime: @unchecked Sendable {
     private var focusActivation: [[Int]: _ActionID] = [:]
     private var focusBoolBindings: [[Int]: (Bool) -> Void] = [:]
     private var submitHandlers: [[Int]: (path: [Int], env: EnvironmentValues, action: () -> Void)] = [:]
+    private var nextHoverID: Int = 1
+    private var hoverHandlers: [_HoverID: (path: [Int], env: EnvironmentValues, action: (Bool) -> Void)] = [:]
+    private var activeHoverID: _HoverID? = nil
+    private var exitCommand: (path: [Int], env: EnvironmentValues, action: () -> Void)? = nil
     private var keyboardShortcuts: [KeyboardShortcut: _ActionID] = [:]
 
     private struct _TaskEntry {
@@ -60,6 +66,8 @@ public final class _UIRuntime: @unchecked Sendable {
     }
     private var tasks: [String: _TaskEntry] = [:]
     private var tasksSeenThisFrame: Set<String> = []
+    private var nextLaunchedAsyncActionID: Int = 1
+    private var launchedAsyncActions: [Int: _TaskEntry] = [:]
 
     private var expandedPickerPath: [Int]? = nil
     private var scrollOffsets: [String: Int] = [:]
@@ -67,8 +75,15 @@ public final class _UIRuntime: @unchecked Sendable {
     private var pendingScrollRequests: [_PendingScrollRequest] = []
     private var globalEditMode: EditMode = .inactive
 
-    private var navStacks: [String: [AnyView]] = [:]
+    private struct _NavEntry {
+        var view: AnyView
+        var ownerKey: String?
+        var onPop: (() -> Void)?
+    }
+    private typealias _NavResolver = (AnyHashable) -> AnyView
+    private var navStacks: [String: [_NavEntry]] = [:]
     private var navStackRoots: Set<[Int]> = []
+    private var navResolvers: [String: [ObjectIdentifier: _NavResolver]] = [:]
 
     private struct _PendingScrollRequest {
         var scopePath: [Int]
@@ -153,6 +168,15 @@ public final class _UIRuntime: @unchecked Sendable {
         menuCaptureResults[captureID, default: []].append(item)
     }
 
+    func _invokeCapturedMenuItem(_ item: _MenuCaptureItem) {
+        _UIRuntime.$_currentEnvironment.withValue(item.env) {
+            _BuildContext.withRuntime(self, path: item.actionScopePath) {
+                item.action()
+            }
+        }
+        _markDirty(path: item.actionScopePath)
+    }
+
     func _endMenuCapture(_ id: Int) -> [_MenuCaptureItem] {
         menuCaptureResults.removeValue(forKey: id) ?? []
     }
@@ -162,7 +186,7 @@ public final class _UIRuntime: @unchecked Sendable {
         return "\(prefix):\(p)"
     }
 
-    fileprivate func _viewPathKey(path: [Int]) -> String {
+    func _viewPathKey(path: [Int]) -> String {
         _pathKey(prefix: "view", path: path)
     }
 
@@ -408,8 +432,12 @@ public final class _UIRuntime: @unchecked Sendable {
         focusActivation.removeAll(keepingCapacity: true)
         focusBoolBindings.removeAll(keepingCapacity: true)
         submitHandlers.removeAll(keepingCapacity: true)
+        nextHoverID = 1
+        hoverHandlers.removeAll(keepingCapacity: true)
+        exitCommand = nil
         keyboardShortcuts.removeAll(keepingCapacity: true)
         navStackRoots.removeAll(keepingCapacity: true)
+        navResolvers.removeAll(keepingCapacity: true)
         overlays.removeAll(keepingCapacity: true)
         tasksSeenThisFrame.removeAll(keepingCapacity: true)
         onAppearSeenThisFrame.removeAll(keepingCapacity: true)
@@ -576,10 +604,28 @@ public final class _UIRuntime: @unchecked Sendable {
         _pathKey(prefix: "nav", path: stackPath)
     }
 
-    func _navPush(stackPath: [Int], view: AnyView) {
+    func _registerNavDestinationResolver<Value: Hashable>(stackPath: [Int], valueType: Value.Type, destination: @escaping (Value) -> AnyView) {
+        _noteBuildSideEffect()
+        let key = _navKey(stackPath: stackPath)
+        var resolvers = navResolvers[key] ?? [:]
+        resolvers[ObjectIdentifier(valueType)] = { any in
+            guard let typed = any.base as? Value else { return AnyView(EmptyView()) }
+            return destination(typed)
+        }
+        navResolvers[key] = resolvers
+    }
+
+    func _resolveNavDestination(stackPath: [Int], value: AnyHashable) -> AnyView? {
+        let key = _navKey(stackPath: stackPath)
+        let typeID = ObjectIdentifier(type(of: value.base))
+        guard let resolver = navResolvers[key]?[typeID] else { return nil }
+        return resolver(value)
+    }
+
+    func _navPush(stackPath: [Int], view: AnyView, ownerKey: String? = nil, onPop: (() -> Void)? = nil) {
         let key = _navKey(stackPath: stackPath)
         var s = navStacks[key] ?? []
-        s.append(view)
+        s.append(_NavEntry(view: view, ownerKey: ownerKey, onPop: onPop))
         navStacks[key] = s
         _markDirty(path: stackPath)
     }
@@ -587,14 +633,32 @@ public final class _UIRuntime: @unchecked Sendable {
     func _navPop(stackPath: [Int]) {
         let key = _navKey(stackPath: stackPath)
         guard var s = navStacks[key], !s.isEmpty else { return }
-        _ = s.popLast()
+        let popped = s.removeLast()
         navStacks[key] = s
+        popped.onPop?()
+        _markDirty(path: stackPath)
+    }
+
+    func _navContainsOwner(stackPath: [Int], ownerKey: String) -> Bool {
+        let key = _navKey(stackPath: stackPath)
+        return navStacks[key]?.contains(where: { $0.ownerKey == ownerKey }) == true
+    }
+
+    func _navRemoveOwned(stackPath: [Int], ownerKey: String) {
+        let key = _navKey(stackPath: stackPath)
+        guard var stack = navStacks[key], let index = stack.lastIndex(where: { $0.ownerKey == ownerKey }) else { return }
+        let removed = Array(stack[index...])
+        stack.removeSubrange(index...)
+        navStacks[key] = stack
+        for entry in removed.reversed() {
+            entry.onPop?()
+        }
         _markDirty(path: stackPath)
     }
 
     func _navTop(stackPath: [Int]) -> AnyView? {
         let key = _navKey(stackPath: stackPath)
-        return navStacks[key]?.last
+        return navStacks[key]?.last?.view
     }
 
     func _navDepth(stackPath: [Int]) -> Int {
@@ -892,6 +956,34 @@ public final class _UIRuntime: @unchecked Sendable {
         tasks[key] = _TaskEntry(env: env, path: path, action: action, task: t)
     }
 
+    func _launchAsyncAction(path: [Int], action: @escaping () async -> Void) {
+        _noteBuildSideEffect()
+        let id = nextLaunchedAsyncActionID
+        nextLaunchedAsyncActionID += 1
+
+        let runtime = self
+        let env = _UIRuntime._currentEnvironment ?? _baseEnvironment
+        launchedAsyncActions[id] = _TaskEntry(env: env, path: path, action: action, task: nil)
+        let task = Task { @MainActor in
+            await runtime._runLaunchedAsyncAction(id: id)
+        }
+        launchedAsyncActions[id]?.task = task
+    }
+
+    @MainActor
+    private func _runLaunchedAsyncAction(id: Int) async {
+        guard let entry = launchedAsyncActions[id] else { return }
+        await _UIRuntime.$_current.withValue(self) {
+            await _UIRuntime.$_currentPath.withValue(entry.path) {
+                await _UIRuntime.$_currentEnvironment.withValue(entry.env) {
+                    await entry.action()
+                }
+            }
+        }
+        launchedAsyncActions[id] = nil
+        _markDirty()
+    }
+
     func _reconcileTasksAfterFrame() {
         guard !tasks.isEmpty else { return }
         let seen = tasksSeenThisFrame
@@ -972,6 +1064,7 @@ public final class _UIRuntime: @unchecked Sendable {
             focusedRect: focusedRect,
             shapeRegions: laidOut.shapeRegions,
             hitRegions: laidOut.hitRegions,
+            hoverRegions: laidOut.hoverRegions,
             scrollRegions: laidOut.scrollRegions,
             runtime: runtime
         )
@@ -995,9 +1088,58 @@ extension _UIRuntime {
 
     func _registerSubmitHandler(controlPath: [Int], actionScopePath: [Int], action: @escaping () -> Void) {
         _noteBuildSideEffect()
-        // Capture the current environment so `@Environment` reads correctly inside submit handlers.
         let env = _UIRuntime._currentEnvironment ?? _baseEnvironment
         submitHandlers[controlPath] = (path: actionScopePath, env: env, action: action)
+    }
+
+    func _registerHoverHandler(actionScopePath: [Int], action: @escaping (Bool) -> Void) -> _HoverID {
+        _noteBuildSideEffect()
+        let env = _UIRuntime._currentEnvironment ?? _baseEnvironment
+        let id = _HoverID(raw: nextHoverID)
+        nextHoverID += 1
+        hoverHandlers[id] = (path: actionScopePath, env: env, action: action)
+        return id
+    }
+
+    func updateHover(_ id: _HoverID?) {
+        guard activeHoverID != id else { return }
+        if let previous = activeHoverID, let entry = hoverHandlers[previous] {
+            _UIRuntime.$_currentEnvironment.withValue(entry.env) {
+                _BuildContext.withRuntime(self, path: entry.path) {
+                    entry.action(false)
+                }
+            }
+        }
+        activeHoverID = id
+        if let id, let entry = hoverHandlers[id] {
+            _UIRuntime.$_currentEnvironment.withValue(entry.env) {
+                _BuildContext.withRuntime(self, path: entry.path) {
+                    entry.action(true)
+                }
+            }
+        }
+        _markDirty()
+    }
+
+    public func clearHover() {
+        updateHover(nil)
+    }
+
+    func _registerExitCommand(actionScopePath: [Int], action: @escaping () -> Void) {
+        _noteBuildSideEffect()
+        let env = _UIRuntime._currentEnvironment ?? _baseEnvironment
+        exitCommand = (path: actionScopePath, env: env, action: action)
+    }
+
+    @discardableResult
+    public func invokeExitCommand() -> Bool {
+        guard let entry = exitCommand else { return false }
+        _UIRuntime.$_currentEnvironment.withValue(entry.env) {
+            _BuildContext.withRuntime(self, path: entry.path) {
+                entry.action()
+            }
+        }
+        return true
     }
 
     public func submitFocusedTextEditor() {
@@ -1037,6 +1179,7 @@ extension _UIRuntime {
             activePicker: laidOut.activePicker,
             activeTextField: laidOut.activeTextField,
             hitRegions: laidOut.hitRegions,
+            hoverRegions: laidOut.hoverRegions,
             scrollRegions: laidOut.scrollRegions,
             runtime: runtime
         )
@@ -1145,6 +1288,7 @@ public struct DebugSnapshot: Sendable {
     public let shapeRegions: [(_Rect, _ShapeNode)]
 
     let hitRegions: [(_Rect, _ActionID)]
+    let hoverRegions: [(_Rect, _HoverID)]
     let scrollRegions: [_ScrollRegion]
     let runtime: _UIRuntime
 
@@ -1183,6 +1327,12 @@ public struct DebugSnapshot: Sendable {
         let p = _Point(x: x, y: y)
         guard let r = scrollRegions.last(where: { $0.rect.contains(p) }) else { return }
         runtime._scroll(path: r.path, deltaY: deltaY, maxOffset: r.maxOffsetY)
+    }
+
+    public func hover(x: Int, y: Int) {
+        let p = _Point(x: x, y: y)
+        let id = hoverRegions.last(where: { $0.0.contains(p) })?.1
+        runtime.updateHover(id)
     }
 
     /// Emulate typing into the currently-focused `TextField` (if any).

@@ -64,6 +64,10 @@ let package = Package(
             targets: ["OmniUICore"]
         ),
         .library(
+            name: "OmniSwiftUISymbolExtras",
+            targets: ["OmniSwiftUISymbolExtras"]
+        ),
+        .library(
             name: "OmniUI",
             targets: ["OmniUI"]
         ),
@@ -130,7 +134,7 @@ let package = Package(
         ),
         .executableTarget(
             name: "SwiftUICompatibilityHarness",
-            dependencies: ["OmniSwiftUI", "OmniSwiftData"],
+            dependencies: ["OmniSwiftUI", "OmniSwiftData", "OmniSwiftUISymbolExtras"],
             swiftSettings: [
                 .unsafeFlags(["-warn-concurrency", "-strict-concurrency=complete"]),
                 .unsafeFlags(["-enable-actor-data-race-checks"], .when(configuration: .debug)),
@@ -243,7 +247,16 @@ let package = Package(
         ),
         .target(
             name: "OmniUI",
-            dependencies: ["OmniUICore"],
+            dependencies: ["OmniUICore", "OmniUINotcursesRenderer"],
+            swiftSettings: [
+                .unsafeFlags(["-warn-concurrency", "-strict-concurrency=complete"]),
+                .unsafeFlags(["-enable-actor-data-race-checks"], .when(configuration: .debug)),
+            ]
+        ),
+        .target(
+            name: "OmniSwiftUISymbolExtras",
+            dependencies: [],
+            path: "Sources/OmniSwiftUISymbolExtras",
             swiftSettings: [
                 .unsafeFlags(["-warn-concurrency", "-strict-concurrency=complete"]),
                 .unsafeFlags(["-enable-actor-data-race-checks"], .when(configuration: .debug)),

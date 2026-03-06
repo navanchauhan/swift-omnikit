@@ -62,13 +62,19 @@ Interactive coding agent CLI.
 
 Current status in this repo: `AttractorCLI` and agent backends are available; standalone `OmniAICode` CLI packaging is not split as a separate product yet.
 
-## OmniUI
+## OmniUI (Experimental)
 
 Drop in SwiftUI replacement bringing SwiftUI apps to other platforms. Simply changing `import SwiftUI` to `import OmniUI` gets apps running on another renderer.
 
 ### OmniUICore
 
 1:1 SwiftUI APIs reimplemented.
+
+- Non-renderer SwiftUI parity audit and roadmap: `docs/swiftui-non-renderer-parity.md`
+- Refresh the audit report: `python3 scripts/swiftui_non_renderer_parity.py --check --swiftui-sdk auto --write-markdown docs/swiftui-non-renderer-parity.md`
+- Raw exact-title symbol diff: `docs/swiftui-non-renderer-symbol-diff.md`
+- Run the full non-renderer parity gate: `./scripts/run_swiftui_parity_gates.sh`
+- The gate now also builds `OmniUINotcursesRenderer` / `KitchenSink` and runs a 1-second notcurses smoke pass.
 
 ### OmniUInotcursesRenderer
 
@@ -82,23 +88,18 @@ TUI renderer built on top of notcurses.
 
 Implemented module: `OmniUINotcursesRenderer`.
 
-### OmniUIAdwaitaRenderer
+### OmniUIAdwaitaRenderer (Planned)
 
 GTK renderer using Adwaita theme pack.
 
-Current status in this repo: planned/not yet implemented as a package product.
-
-### OmniUIWeb
+### OmniUIWeb (Planned)
 
 Render to web with opinionated styling so SwiftUI apps can target the web.
 
-Current status in this repo: planned/not yet implemented as a package product.
-
-### OmniUILVGL
+### OmniUILVGL (Planned)
 
 LVGL renderer.
 
-Current status in this repo: planned/not yet implemented as a package product.
 
 ## Core Networking
 

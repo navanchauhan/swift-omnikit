@@ -8,6 +8,7 @@
 uint32_t omni_nckey_button1(void);
 uint32_t omni_nckey_button2(void);
 uint32_t omni_nckey_button3(void);
+uint32_t omni_nckey_motion(void);
 uint32_t omni_nckey_scroll_up(void);
 uint32_t omni_nckey_scroll_down(void);
 uint32_t omni_nckey_esc(void);

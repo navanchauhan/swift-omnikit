@@ -63,6 +63,10 @@ func _collectToolbarItems(from node: _VNode) -> _ToolbarLayoutItems {
             walk(overlay)
         case .frame(_, _, _, _, _, _, let child):
             walk(child)
+        case .offset(_, _, let child):
+            walk(child)
+        case .opacity(_, let child):
+            walk(child)
         case .edgePadding(_, _, _, _, let child):
             walk(child)
         case .contentShapeRect(let child):
@@ -75,6 +79,8 @@ func _collectToolbarItems(from node: _VNode) -> _ToolbarLayoutItems {
             walk(child)
         case .textStyled(_, let child):
             walk(child)
+        case .gradient:
+            break
         default:
             break
         }

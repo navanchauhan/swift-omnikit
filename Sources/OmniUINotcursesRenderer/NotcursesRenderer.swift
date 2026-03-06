@@ -48,13 +48,33 @@ private func _writeToStderr(_ message: String) {
 ///
 /// This renders OmniUICore's typed `RenderOp`s and uses notcurses for drawing + input
 /// (mouse clicks + scroll wheel + basic keyboard).
-public struct NotcursesApp<V: View> {
+public struct NotcursesApp<V: View>: @unchecked Sendable {
     let root: () -> V
 
     public init(root: @escaping () -> V) {
         self.root = root
     }
 
+}
+
+public extension NotcursesApp where V == AnyView {
+    init<S: Scene>(scene: S) {
+        self.init(root: {
+            let root = _sceneRootView(scene) ?? AnyView(Text("Empty Scene"))
+            if let commands = _sceneCommandsView(scene) {
+                return AnyView(root.safeAreaInset(edge: .bottom) { commands })
+            }
+            return root
+        })
+    }
+
+    init<A: App>(_ appType: A.Type) {
+        let app = A.init()
+        self.init(scene: app.body)
+    }
+}
+
+extension NotcursesApp {
     @MainActor
     public func run() async throws {
         #if os(Linux) || os(macOS)
@@ -151,6 +171,7 @@ public struct NotcursesApp<V: View> {
         let button1: UInt32 = omni_nckey_button1()
         let button2: UInt32 = omni_nckey_button2()
         let button3: UInt32 = omni_nckey_button3()
+        let motion: UInt32 = omni_nckey_motion()
         let scrollUp: UInt32 = omni_nckey_scroll_up()
         let scrollDown: UInt32 = omni_nckey_scroll_down()
         let resize: UInt32 = omni_nckey_resize()
@@ -1001,6 +1022,9 @@ public struct NotcursesApp<V: View> {
             let mods = eventModifiers(&ni)
 
             if id == q {
+                if runtime.invokeExitCommand() {
+                    continue
+                }
                 userRequestedExit = true
                 return
             }
@@ -1013,24 +1037,34 @@ public struct NotcursesApp<V: View> {
                 if runtime.invokeKeyboardShortcut(.escape, modifiers: mods) {
                     continue
                 }
+                if runtime.invokeExitCommand() {
+                    continue
+                }
                 if runtime.canPopNavigation() {
                     runtime.popNavigation()
                 }
                 continue
             }
 
-            // Mouse buttons.
+            // Mouse buttons / movement.
+            if id == motion {
+                snapshot.hover(x: Int(ni.x), y: Int(ni.y))
+                continue
+            }
             if id == button1 {
+                snapshot.hover(x: Int(ni.x), y: Int(ni.y))
                 snapshot.click(x: Int(ni.x), y: Int(ni.y))
                 continue
             } else if id == button2 || id == button3 {
-                // Right/middle click - treat as click for now.
+                snapshot.hover(x: Int(ni.x), y: Int(ni.y))
                 snapshot.click(x: Int(ni.x), y: Int(ni.y))
                 continue
             } else if id == scrollUp {
+                snapshot.hover(x: Int(ni.x), y: Int(ni.y))
                 snapshot.scroll(x: Int(ni.x), y: Int(ni.y), deltaY: -1)
                 continue
             } else if id == scrollDown {
+                snapshot.hover(x: Int(ni.x), y: Int(ni.y))
                 snapshot.scroll(x: Int(ni.x), y: Int(ni.y), deltaY: 1)
                 continue
             }

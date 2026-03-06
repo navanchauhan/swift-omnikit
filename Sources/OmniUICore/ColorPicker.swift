@@ -1,4 +1,4 @@
-// Minimal ColorPicker stub for SwiftUI compatibility.
+// Terminal-friendly ColorPicker approximation for SwiftUI compatibility.
 
 public struct ColorPicker: View, _PrimitiveView {
     public typealias Body = Never

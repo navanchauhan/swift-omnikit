@@ -80,6 +80,28 @@ public extension PickerStyle where Self == MenuPickerStyle {
 
 // MARK: - TextFieldStyle
 
+public protocol DatePickerStyle {}
+public struct DefaultDatePickerStyle: DatePickerStyle, Hashable, Sendable { public init() {} }
+public struct CompactDatePickerStyle: DatePickerStyle, Hashable, Sendable { public init() {} }
+public struct GraphicalDatePickerStyle: DatePickerStyle, Hashable, Sendable { public init() {} }
+public struct FieldDatePickerStyle: DatePickerStyle, Hashable, Sendable { public init() {} }
+public struct StepperFieldDatePickerStyle: DatePickerStyle, Hashable, Sendable { public init() {} }
+public extension DatePickerStyle where Self == DefaultDatePickerStyle {
+    static var `default`: DefaultDatePickerStyle { DefaultDatePickerStyle() }
+}
+public extension DatePickerStyle where Self == CompactDatePickerStyle {
+    static var compact: CompactDatePickerStyle { CompactDatePickerStyle() }
+}
+public extension DatePickerStyle where Self == GraphicalDatePickerStyle {
+    static var graphical: GraphicalDatePickerStyle { GraphicalDatePickerStyle() }
+}
+
+public protocol GaugeStyle {}
+public struct DefaultGaugeStyle: GaugeStyle, Hashable, Sendable { public init() {} }
+public extension GaugeStyle where Self == DefaultGaugeStyle {
+    static var `default`: DefaultGaugeStyle { DefaultGaugeStyle() }
+}
+
 public protocol TextFieldStyle {}
 
 public struct RoundedBorderTextFieldStyle: TextFieldStyle, Hashable, Sendable { public init() {} }
@@ -109,6 +131,14 @@ public extension ListStyle where Self == SidebarListStyle {
 }
 
 // MARK: - FormStyle
+
+public protocol NavigationViewStyle {}
+public struct DefaultNavigationViewStyle: NavigationViewStyle, Hashable, Sendable { public init() {} }
+public struct ColumnNavigationViewStyle: NavigationViewStyle, Hashable, Sendable { public init() {} }
+public struct DoubleColumnNavigationViewStyle: NavigationViewStyle, Hashable, Sendable { public init() {} }
+public extension NavigationViewStyle where Self == DefaultNavigationViewStyle {
+    static var `default`: DefaultNavigationViewStyle { DefaultNavigationViewStyle() }
+}
 
 public protocol FormStyle {}
 

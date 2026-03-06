@@ -1,6 +1,6 @@
 // Minimal shape API surface for SwiftUI compatibility.
 //
-// These are currently rendered as simple placeholder text in the debug/notcurses renderer.
+// These lower into the shared render tree and are rasterized by the debug/notcurses renderers.
 
 import Foundation
 

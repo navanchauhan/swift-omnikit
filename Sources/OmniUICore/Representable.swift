@@ -36,10 +36,9 @@ public extension NSViewRepresentable where Coordinator == Void {
 
 @inline(__always)
 func _makeNode<V: NSViewRepresentable>(_ view: V, _ ctx: inout _BuildContext) -> _VNode {
-    // Representable views are compile-time shims in OmniUI's text renderer for now.
-    _ = view
+    _ = view.makeCoordinator()
     _ = ctx
-    return .empty
+    return .style(fg: .secondary, bg: nil, child: .text("NSView: \(String(describing: V.NSViewType.self))"))
 }
 #endif
 
@@ -79,9 +78,8 @@ public extension UIViewRepresentable where Coordinator == Void {
 
 @inline(__always)
 func _makeNode<V: UIViewRepresentable>(_ view: V, _ ctx: inout _BuildContext) -> _VNode {
-    // Representable views are compile-time shims in OmniUI's text renderer for now.
-    _ = view
+    _ = view.makeCoordinator()
     _ = ctx
-    return .empty
+    return .style(fg: .secondary, bg: nil, child: .text("UIView: \(String(describing: V.UIViewType.self))"))
 }
 #endif

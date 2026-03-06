@@ -1,9 +1,12 @@
-// Minimal drawing/gradient API surface for SwiftUI compatibility.
-// These are currently compile-first stubs; renderers may ignore them.
-
 import Foundation
 
 public struct GraphicsContext: Sendable {
+    fileprivate enum _Command: Hashable, Sendable {
+        case fillShape(_ShapeNode)
+    }
+
+    fileprivate var commands: [_Command] = []
+
     public init() {}
 
     public struct Shading: Hashable, Sendable {
@@ -19,9 +22,14 @@ public struct GraphicsContext: Sendable {
     }
 
     public mutating func fill<S: Shape>(_ shape: S, with shading: Shading, style: FillStyle = FillStyle()) {
-        _ = shape
-        _ = shading
-        _ = style
+        guard var node = _shapeNode(for: shape) else { return }
+        node.fillStyle = style
+        node.strokeStyle = nil
+        switch shading.kind {
+        case .color(let color):
+            node.fillColor = color
+        }
+        commands.append(.fillShape(node))
     }
 }
 
@@ -46,7 +54,13 @@ public struct Canvas: View, _PrimitiveView {
         let rs = _UIRuntime._currentRenderSize ?? _Size(width: 0, height: 0)
         var gc = GraphicsContext()
         renderer(&gc, CGSize(width: CGFloat(rs.width), height: CGFloat(rs.height)))
-        return .empty
+        let nodes = gc.commands.compactMap { command -> _VNode? in
+            switch command {
+            case .fillShape(let shape):
+                return .shape(shape)
+            }
+        }
+        return nodes.isEmpty ? .empty : .group(nodes)
     }
 }
 
@@ -90,8 +104,12 @@ public struct LinearGradient: View, _PrimitiveView {
 
     func _makeNode(_ ctx: inout _BuildContext) -> _VNode {
         _ = ctx
-        // No-op placeholder.
-        return .empty
+        return .gradient(
+            _GradientNode(
+                kind: .linear(startPoint: startPoint, endPoint: endPoint),
+                colors: gradient.colors
+            )
+        )
     }
 }
 
@@ -112,7 +130,33 @@ public struct RadialGradient: View, _PrimitiveView {
 
     func _makeNode(_ ctx: inout _BuildContext) -> _VNode {
         _ = ctx
-        // No-op placeholder.
-        return .empty
+        return .gradient(
+            _GradientNode(
+                kind: .radial(center: center, startRadius: startRadius, endRadius: endRadius),
+                colors: gradient.colors
+            )
+        )
     }
+}
+
+private func _shapeNode<S: Shape>(for shape: S) -> _ShapeNode? {
+    if let path = shape as? Path {
+        return _ShapeNode(kind: .path, pathElements: path.elements)
+    }
+    if let rounded = shape as? RoundedRectangle {
+        return _ShapeNode(kind: .roundedRectangle(cornerRadius: Int(rounded.cornerRadius.rounded())))
+    }
+    if shape is Rectangle {
+        return _ShapeNode(kind: .rectangle)
+    }
+    if shape is Circle {
+        return _ShapeNode(kind: .circle)
+    }
+    if shape is Ellipse {
+        return _ShapeNode(kind: .ellipse)
+    }
+    if shape is Capsule {
+        return _ShapeNode(kind: .capsule)
+    }
+    return nil
 }
