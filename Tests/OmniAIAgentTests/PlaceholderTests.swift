@@ -652,6 +652,37 @@ final class LoopDetectionTests {
 final class SessionLifecycleTests {
 
     @Test
+    func testSessionFallsBackToCompleteWhenStreamingProducesNoResponse() async throws {
+        let mockAdapter = MockProviderAdapter(fixedResponse: Response(
+            id: "resp-1",
+            model: "mock-model",
+            provider: "anthropic",
+            message: .assistant("Fallback response"),
+            finishReason: .stop,
+            usage: .zero
+        ))
+        let client = try Client(providers: ["anthropic": mockAdapter], defaultProvider: "anthropic")
+        let env = MockExecutionEnvironment()
+        let profile = AnthropicProfile()
+        let session = try Session(profile: profile, environment: env, client: client)
+
+        await session.submit("Use fallback")
+
+        let history = await session.getHistory()
+        XCTAssertGreaterThanOrEqual(history.count, 2)
+
+        if case .assistant(let turn) = history[1] {
+            XCTAssertEqual(turn.content, "Fallback response")
+        } else {
+            XCTFail("Expected assistant turn after fallback response")
+        }
+
+        let counts = await mockAdapter.callStats.snapshot()
+        XCTAssertEqual(counts.stream, 1)
+        XCTAssertEqual(counts.complete, 1)
+    }
+
+    @Test
     func testSessionLifecycleIdleToProcessingToIdle() async throws {
         let mockAdapter = MockProviderAdapter(fixedResponse: Response(
             id: "resp-1",
@@ -776,20 +807,40 @@ final class SessionLifecycleTests {
 
 // MARK: - Mock Provider Adapter
 
+private actor MockProviderAdapterCallStats {
+    private var completeCalls: Int = 0
+    private var streamCalls: Int = 0
+
+    func recordComplete() {
+        completeCalls += 1
+    }
+
+    func recordStream() {
+        streamCalls += 1
+    }
+
+    func snapshot() -> (complete: Int, stream: Int) {
+        (completeCalls, streamCalls)
+    }
+}
+
 private final class MockProviderAdapter: ProviderAdapter, @unchecked Sendable {
     let name = "mock"
     let fixedResponse: Response
+    let callStats = MockProviderAdapterCallStats()
 
     init(fixedResponse: Response) {
         self.fixedResponse = fixedResponse
     }
 
     func complete(request: Request) async throws -> Response {
-        fixedResponse
+        await callStats.recordComplete()
+        return fixedResponse
     }
 
     func stream(request: Request) async throws -> AsyncThrowingStream<StreamEvent, Error> {
-        AsyncThrowingStream { continuation in
+        await callStats.recordStream()
+        return AsyncThrowingStream<StreamEvent, Error> { continuation in
             continuation.finish()
         }
     }

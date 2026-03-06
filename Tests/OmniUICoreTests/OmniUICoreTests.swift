@@ -751,6 +751,26 @@ struct _StableModelContainerProbe: View {
     }
 }
 
+struct _OnAppearLifecycleProbeView: View {
+    @State private var appearCount: Int = 0
+    @State private var rerenderCount: Int = 0
+    @State private var showChild: Bool = true
+
+    var body: some View {
+        VStack(spacing: 1) {
+            Text("appear: \(appearCount)")
+            Text("rerender: \(rerenderCount)")
+            Button("Rerender") { rerenderCount += 1 }
+            Button(showChild ? "Hide" : "Show") { showChild.toggle() }
+
+            if showChild {
+                Text("Child")
+                    .onAppear { appearCount += 1 }
+            }
+        }
+    }
+}
+
 @Test func modelContainer_for_keeps_context_stable_across_renders() async throws {
     let runtime = _UIRuntime()
     let root = _StableModelContainerProbe()
@@ -765,6 +785,61 @@ struct _StableModelContainerProbe: View {
 
     let s2 = runtime.debugRender(root, size: size)
     #expect(s2.text.contains("count: 1"))
+}
+
+@Test func onAppear_fires_once_for_a_stable_mount() async throws {
+    let runtime = _UIRuntime()
+    let size = _Size(width: 30, height: 8)
+
+    let s0 = runtime.debugRender(_OnAppearLifecycleProbeView(), size: size)
+    #expect(s0.text.contains("appear: 0"))
+
+    let s1 = runtime.debugRender(_OnAppearLifecycleProbeView(), size: size)
+    #expect(s1.text.contains("appear: 1"))
+
+    let s2 = runtime.debugRender(_OnAppearLifecycleProbeView(), size: size)
+    #expect(s2.text.contains("appear: 1"))
+
+    guard let rerender = _findButton(s2, title: "Rerender") else {
+        #expect(Bool(false), "Could not find Rerender button")
+        return
+    }
+    s2.click(x: rerender.x, y: rerender.y)
+
+    let s3 = runtime.debugRender(_OnAppearLifecycleProbeView(), size: size)
+    #expect(s3.text.contains("rerender: 1"))
+    #expect(s3.text.contains("appear: 1"))
+}
+
+@Test func onAppear_fires_again_after_remount() async throws {
+    let runtime = _UIRuntime()
+    let size = _Size(width: 30, height: 8)
+
+    _ = runtime.debugRender(_OnAppearLifecycleProbeView(), size: size)
+    let s1 = runtime.debugRender(_OnAppearLifecycleProbeView(), size: size)
+    #expect(s1.text.contains("appear: 1"))
+
+    guard let hide = _findButton(s1, title: "Hide") else {
+        #expect(Bool(false), "Could not find Hide button")
+        return
+    }
+    s1.click(x: hide.x, y: hide.y)
+
+    let s2 = runtime.debugRender(_OnAppearLifecycleProbeView(), size: size)
+    #expect(!s2.text.contains("Child"))
+    #expect(s2.text.contains("appear: 1"))
+
+    guard let show = _findButton(s2, title: "Show") else {
+        #expect(Bool(false), "Could not find Show button")
+        return
+    }
+    s2.click(x: show.x, y: show.y)
+
+    let s3 = runtime.debugRender(_OnAppearLifecycleProbeView(), size: size)
+    #expect(s3.text.contains("appear: 1"))
+
+    let s4 = runtime.debugRender(_OnAppearLifecycleProbeView(), size: size)
+    #expect(s4.text.contains("appear: 2"))
 }
 
 struct _SplitAutomaticProbeView: View {

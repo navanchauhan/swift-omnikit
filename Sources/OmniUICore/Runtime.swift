@@ -82,6 +82,8 @@ public final class _UIRuntime: @unchecked Sendable {
     }
     private var overlays: [_OverlayEntry] = []
 
+    private var onAppearPathKeys: Set<String> = []
+    private var onAppearSeenThisFrame: Set<String> = []
     private var onDisappearHandlers: [String: (path: [Int], env: EnvironmentValues, action: () -> Void)] = [:]
     private var onDisappearSeenThisFrame: Set<String> = []
 
@@ -311,8 +313,15 @@ public final class _UIRuntime: @unchecked Sendable {
 
         _frameDirtyEverything = false
         _frameDirtyPaths.removeAll(keepingCapacity: true)
+        let alivePathKeys = _frameAlivePathKeys
+        if !onAppearPathKeys.isEmpty {
+            onAppearPathKeys = Set(
+                onAppearPathKeys.filter { key in
+                    alivePathKeys.contains(key) && onAppearSeenThisFrame.contains(key)
+                }
+            )
+        }
         if !onDisappearHandlers.isEmpty {
-            let alivePathKeys = _frameAlivePathKeys
             var removed: [String] = []
             removed.reserveCapacity(onDisappearHandlers.count)
             for key in onDisappearHandlers.keys where !alivePathKeys.contains(key) {
@@ -340,6 +349,7 @@ public final class _UIRuntime: @unchecked Sendable {
         }
         _frameAlivePathKeys.removeAll(keepingCapacity: true)
         _activeBuildRecords.removeAll(keepingCapacity: true)
+        onAppearSeenThisFrame.removeAll(keepingCapacity: true)
         onDisappearSeenThisFrame.removeAll(keepingCapacity: true)
 
         _lastRenderedSize = size
@@ -402,6 +412,7 @@ public final class _UIRuntime: @unchecked Sendable {
         navStackRoots.removeAll(keepingCapacity: true)
         overlays.removeAll(keepingCapacity: true)
         tasksSeenThisFrame.removeAll(keepingCapacity: true)
+        onAppearSeenThisFrame.removeAll(keepingCapacity: true)
         onDisappearSeenThisFrame.removeAll(keepingCapacity: true)
     }
 
@@ -599,6 +610,21 @@ public final class _UIRuntime: @unchecked Sendable {
         let env = _UIRuntime._currentEnvironment ?? _baseEnvironment
         actions[id] = (path: path, env: env, action: action)
         return id
+    }
+
+    func _registerOnAppear(path: [Int], action: @escaping () -> Void) {
+        _noteBuildSideEffect()
+        let key = _viewPathKey(path: path)
+        onAppearSeenThisFrame.insert(key)
+
+        guard onAppearPathKeys.insert(key).inserted else { return }
+
+        let env = _UIRuntime._currentEnvironment ?? _baseEnvironment
+        _UIRuntime.$_currentEnvironment.withValue(env) {
+            _BuildContext.withRuntime(self, path: path) {
+                action()
+            }
+        }
     }
 
     func _registerOnDisappear(path: [Int], action: @escaping () -> Void) {

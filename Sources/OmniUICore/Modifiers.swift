@@ -1089,10 +1089,9 @@ public struct _OnAppear: View, _PrimitiveView {
     let action: () -> Void
 
     func _makeNode(_ ctx: inout _BuildContext) -> _VNode {
-        // Extremely small behavior: fire on every render for now.
-        // TODO: fire once per identity path.
-        action()
-        return ctx.buildChild(content)
+        let node = ctx.buildChild(content)
+        ctx.runtime._registerOnAppear(path: ctx.path, action: action)
+        return node
     }
 }
 

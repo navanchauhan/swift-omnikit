@@ -113,6 +113,34 @@ private func startBackendAgent(on transport: InMemoryTransport) -> Task<Void, Ne
 }
 
 struct ACPAgentBackendTests {
+
+    @Test
+    func default_transport_provider_uses_websocket_transport_for_ws_urls() async throws {
+        let transport = try await DefaultACPTransportProvider().makeTransport(configuration: .init(
+            agentPath: "wss://example.invalid/acp",
+            agentArguments: [],
+            workingDirectory: FileManager.default.currentDirectoryPath,
+            environment: [:],
+            requestTimeout: .seconds(30),
+            modeID: nil
+        ))
+
+        #expect(transport is WebSocketTransport)
+    }
+
+    @Test
+    func default_transport_provider_uses_http_sse_transport_for_http_urls() async throws {
+        let transport = try await DefaultACPTransportProvider().makeTransport(configuration: .init(
+            agentPath: "https://example.invalid/acp",
+            agentArguments: [],
+            workingDirectory: FileManager.default.currentDirectoryPath,
+            environment: [:],
+            requestTimeout: .seconds(30),
+            modeID: nil
+        ))
+
+        #expect(transport is HTTPSSETransport)
+    }
     @Test
     func backend_runs_against_in_memory_agent_and_collects_metadata() async throws {
         let recorder = RecordedExecutionConfig()

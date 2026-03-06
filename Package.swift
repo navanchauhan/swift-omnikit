@@ -207,7 +207,7 @@ let package = Package(
         ),
         .target(
             name: "OmniACP",
-            dependencies: ["OmniACPModel"],
+            dependencies: ["OmniACPModel", "OmniHTTP", "OmniHTTPNIO", "OmniAICore"],
             path: "Sources/OmniACP",
             swiftSettings: [
                 .swiftLanguageMode(.v6),
@@ -363,6 +363,8 @@ let package = Package(
             dependencies: [
                 "OmniACP",
                 "OmniACPModel",
+                "OmniHTTP",
+                "OmniAICore",
                 .product(name: "Testing", package: "swift-testing"),
             ],
             resources: [

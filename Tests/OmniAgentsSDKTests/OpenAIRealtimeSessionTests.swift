@@ -52,8 +52,42 @@ private final class StubRealtimeSDKTransport: RealtimeWebSocketTransport, @unche
 }
 
 struct OpenAIRealtimeSessionTests {
+    private enum WaitError: LocalizedError {
+        case timeout(expected: Int, actual: Int)
+
+        var errorDescription: String? {
+            switch self {
+            case .timeout(let expected, let actual):
+                return "Timed out waiting for \(expected) sent realtime events; saw \(actual)."
+            }
+        }
+    }
+
     private func parseSent(_ texts: [String]) throws -> [JSONValue] {
         try texts.map { try JSONValue.parse(Data($0.utf8)) }
+    }
+
+    private func waitForSentCount(
+        _ expectedCount: Int,
+        on transportSession: StubRealtimeSDKSession,
+        timeoutNanoseconds: UInt64 = 1_000_000_000,
+        pollIntervalNanoseconds: UInt64 = 5_000_000
+    ) async throws {
+        let attempts = max(1, Int(timeoutNanoseconds / pollIntervalNanoseconds))
+        var lastCount = 0
+
+        for _ in 0..<attempts {
+            lastCount = (await transportSession.snapshot().0).count
+            if lastCount >= expectedCount {
+                return
+            }
+            try await Task.sleep(nanoseconds: pollIntervalNanoseconds)
+        }
+
+        lastCount = (await transportSession.snapshot().0).count
+        guard lastCount >= expectedCount else {
+            throw WaitError.timeout(expected: expectedCount, actual: lastCount)
+        }
     }
 
     @Test
@@ -116,7 +150,7 @@ struct OpenAIRealtimeSessionTests {
         let client = OpenAIRealtimeClient(apiKey: "sk-test", transport: StubRealtimeSDKTransport(session: transportSession))
         let session = OpenAIRealtimeSession(agent: agent, context: (), client: client)
         try await session.connect()
-        try await Task.sleep(nanoseconds: 50_000_000)
+        try await waitForSentCount(3, on: transportSession)
         let sent = try parseSent(await transportSession.snapshot().0)
         #expect(sent.count == 3)
         #expect(sent[1]["type"]?.stringValue == "conversation.item.create")
@@ -143,7 +177,7 @@ struct OpenAIRealtimeSessionTests {
         let client = OpenAIRealtimeClient(apiKey: "sk-test", transport: StubRealtimeSDKTransport(session: transportSession))
         let session = OpenAIRealtimeSession(agent: primary, context: (), client: client)
         try await session.connect()
-        try await Task.sleep(nanoseconds: 50_000_000)
+        try await waitForSentCount(4, on: transportSession)
         let sent = try parseSent(await transportSession.snapshot().0)
         #expect(sent.count == 4)
         #expect(sent[0]["session"]?["instructions"]?.stringValue == "First agent")

@@ -892,5 +892,5 @@ AttractorCLI
 
 Usage:
   swift run AttractorCLI validate <dotfile>
-  swift run AttractorCLI run <dotfile> [--backend acp|agent|cli|llmkit|mock] [--logs-root <path>] [--workdir <path>] [--acp-agent <path>] [--acp-arg <value>] [--acp-cwd <path>] [--acp-timeout <seconds>] [--acp-mode <id>] [--interactive] [--print-context]
+  swift run AttractorCLI run <dotfile> [--backend acp|agent|cli|llmkit|mock] [--logs-root <path>] [--workdir <path>] [--acp-agent <path-or-url>] [--acp-arg <value>] [--acp-cwd <path>] [--acp-timeout <seconds>] [--acp-mode <id>] [--interactive] [--print-context]
 """

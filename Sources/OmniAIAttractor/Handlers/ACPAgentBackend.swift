@@ -64,12 +64,39 @@ public struct DefaultACPTransportProvider: ACPTransportProvider {
     public init() {}
 
     public func makeTransport(configuration: ACPExecutionConfiguration) async throws -> any Transport {
-        StdioTransport(configuration: .init(
+        if let url = remoteAgentURL(from: configuration.agentPath) {
+            switch url.scheme?.lowercased() {
+            case "ws", "wss":
+                return WebSocketTransport(configuration: .init(
+                    url: url,
+                    timeout: configuration.requestTimeout
+                ))
+            case "http", "https":
+                return HTTPSSETransport(configuration: .init(
+                    url: url,
+                    requestTimeout: configuration.requestTimeout
+                ))
+            default:
+                break
+            }
+        }
+
+        return StdioTransport(configuration: .init(
             executablePath: configuration.agentPath,
             arguments: configuration.agentArguments,
             workingDirectory: configuration.workingDirectory,
             environment: configuration.environment
         ))
+    }
+
+    private func remoteAgentURL(from rawValue: String) -> URL? {
+        guard let url = URL(string: rawValue),
+              let scheme = url.scheme?.lowercased(),
+              ["ws", "wss", "http", "https"].contains(scheme)
+        else {
+            return nil
+        }
+        return url
     }
 }
 
@@ -212,7 +239,7 @@ public final class ACPAgentBackend: CodergenBackend, Sendable {
             environment["ATTRACTOR_ACP_AGENT_BIN"] ?? "",
         ])
         guard !agentPath.isEmpty else {
-            throw AttractorError.llmError("ACP backend requires an agent binary path via acp_agent_path, --acp-agent, or ATTRACTOR_ACP_AGENT_BIN")
+            throw AttractorError.llmError("ACP backend requires an agent endpoint via acp_agent_path or --acp-agent (local executable path, ws/wss URL, or http/https URL)")
         }
         let arguments = firstNonEmpty([
             context.getString("_current_node_acp_agent_args"),

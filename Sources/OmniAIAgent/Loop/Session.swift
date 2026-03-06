@@ -1,6 +1,8 @@
 import Foundation
 import OmniAICore
 
+private struct EmptyStreamResponseError: Error {}
+
 public struct GitContext: Sendable {
     public var branch: String?
     public var modifiedFileCount: Int = 0
@@ -899,7 +901,12 @@ You are running in non-interactive (automated pipeline) mode. Complete your assi
                     if let inactivity = config.llmInactivityTimeoutSeconds, inactivity > 0, streamRequest.timeout == nil {
                         streamRequest.timeout = .seconds(inactivity)
                     }
-                    return try await streamAndAccumulate(request: streamRequest)
+                    do {
+                        return try await streamAndAccumulate(request: streamRequest)
+                    } catch is EmptyStreamResponseError {
+                        fputs("[Session] Stream produced no response; falling back to complete()\n", stderr)
+                        return try await llmClient.complete(request: request)
+                    }
                 }
                 return try await llmClient.complete(request: request)
             } catch {
@@ -1026,6 +1033,9 @@ You are running in non-interactive (automated pipeline) mode. Complete your assi
         }
         guard let response = accumulator.response() else {
             fputs("[Session] StreamAccumulator produced no response from \(eventCount) events\n", stderr)
+            if eventCount == 0 {
+                throw EmptyStreamResponseError()
+            }
             throw SDKError(message: "Stream completed without producing a response (\(eventCount) events)")
         }
         fputs("[Session] Accumulated response: \(response.text.count) chars, \(response.toolCalls.count) tool calls\n", stderr)

@@ -38,7 +38,7 @@ Typed Agent Client Protocol (ACP) model layer: JSON-RPC envelopes, ACP methods, 
 
 ### OmniACP
 
-Actor-based Agent Client Protocol (ACP) client runtime with `stdio` and in-memory transports plus delegate-driven filesystem, permission, and terminal handling.
+Actor-based Agent Client Protocol (ACP) client runtime with `stdio`, WebSocket, HTTP+SSE, and in-memory transports plus delegate-driven filesystem, permission, and terminal handling.
 
 ### OmniAIAttractor
 

@@ -29,12 +29,14 @@ struct KitchenSinkRoot: View {
     }
 }
 
+@MainActor
 @Observable
 final class DemoModel {
     var name: String = ""
     var count: Int = 0
 }
 
+@MainActor
 @Observable
 final class AppEnvironment {
     var banner: String = "Hello from EnvironmentObject"
@@ -68,8 +70,8 @@ struct KitchenSinkHome: View {
     @State private var pulseScale: Bool = false
     @State private var demoTick: Int = 0
     @State private var editableRows: [Int] = [1, 2, 3, 4, 5]
-    @State private var model = DemoModel()
-    @State private var appEnv = AppEnvironment()
+    @State private var model = MainActor.assumeIsolated { DemoModel() }
+    @State private var appEnv = MainActor.assumeIsolated { AppEnvironment() }
 
     enum Flavor: String, Hashable {
         case vanilla = "Vanilla"
@@ -154,6 +156,10 @@ struct KitchenSinkHome: View {
 
     @ViewBuilder
     private var primarySections: some View {
+        let model = model
+        let appEnv = appEnv
+        let modelCount = MainActor.assumeIsolated { model.count }
+
         Section(header: Text("State / Binding").foregroundStyle(.cyan).bold()) {
             HStack(spacing: 1) {
                 Text("Count: \(count)")
@@ -239,16 +245,32 @@ struct KitchenSinkHome: View {
         }
 
         Section(header: Text("Observable / Bindable").foregroundStyle(.cyan).bold()) {
-            Text("Model.count: \(model.count)")
+            Text("Model.count: \(modelCount)")
             HStack(spacing: 1) {
-                Button("Model +1") { model.count += 1 }
-                Button("Model -1") { model.count -= 1 }
+                Button("Model +1") {
+                    MainActor.assumeIsolated {
+                        model.count += 1
+                    }
+                }
+                Button("Model -1") {
+                    MainActor.assumeIsolated {
+                        model.count -= 1
+                    }
+                }
             }
             TextField(
                 "Model name",
                 text: Binding(
-                    get: { model.name },
-                    set: { model.name = $0 }
+                    get: {
+                        MainActor.assumeIsolated {
+                            model.name
+                        }
+                    },
+                    set: { newValue in
+                        MainActor.assumeIsolated {
+                            model.name = newValue
+                        }
+                    }
                 )
             )
             ObservedModelView(model: model)
@@ -568,9 +590,16 @@ struct ObservedModelView: View {
     @Bindable var model: DemoModel
 
     var body: some View {
+        let model = model
+        let count = MainActor.assumeIsolated { model.count }
+
         VStack(spacing: 1) {
-            Text("Observed: \(model.count)")
-            Button("Observed +1") { model.count += 1 }
+            Text("Observed: \(count)")
+            Button("Observed +1") {
+                MainActor.assumeIsolated {
+                    model.count += 1
+                }
+            }
         }
     }
 }
@@ -579,13 +608,24 @@ struct EnvironmentBannerView: View {
     @Bindable var env: AppEnvironment
 
     var body: some View {
+        let env = env
+        let banner = MainActor.assumeIsolated { env.banner }
+
         VStack(spacing: 1) {
-            Text(env.banner)
+            Text(banner)
             TextField(
                 "Banner",
                 text: Binding(
-                    get: { env.banner },
-                    set: { env.banner = $0 }
+                    get: {
+                        MainActor.assumeIsolated {
+                            env.banner
+                        }
+                    },
+                    set: { newValue in
+                        MainActor.assumeIsolated {
+                            env.banner = newValue
+                        }
+                    }
                 )
             )
         }
