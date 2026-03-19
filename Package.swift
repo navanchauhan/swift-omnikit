@@ -88,6 +88,18 @@ let package = Package(
             name: "OmniUINotcursesRenderer",
             targets: ["OmniUINotcursesRenderer"]
         ),
+        .library(
+            name: "OmniExecution",
+            targets: ["OmniExecution"]
+        ),
+        .library(
+            name: "OmniVFS",
+            targets: ["OmniVFS"]
+        ),
+        .library(
+            name: "OmniContainer",
+            targets: ["OmniContainer"]
+        ),
         .executable(
             name: "KitchenSink",
             targets: ["KitchenSink"]
@@ -154,6 +166,23 @@ let package = Package(
             ]
         ),
         .target(
+            name: "OmniExecution",
+            swiftSettings: commonSwiftSettings
+        ),
+        .target(
+            name: "OmniVFS",
+            swiftSettings: commonSwiftSettings
+        ),
+        .target(
+            name: "OmniContainer",
+            dependencies: [
+                "OmniVFS",
+                "OmniExecution",
+            ],
+            path: "Sources/OmniContainer",
+            swiftSettings: commonSwiftSettings
+        ),
+        .target(
             name: "OmniKit",
             swiftSettings: commonSwiftSettings
         ),
@@ -187,7 +216,10 @@ let package = Package(
         ),
         .target(
             name: "OmniAIAgent",
-            dependencies: ["OmniAICore", "OmniMCP"],
+            dependencies: [
+                "OmniAICore", "OmniMCP", "OmniExecution",
+                .target(name: "OmniContainer", condition: .when(platforms: [.macOS, .linux])),
+            ],
             path: "Sources/OmniAIAgent",
             resources: [
                 .process("Resources"),
@@ -288,8 +320,29 @@ let package = Package(
         ),
         .executableTarget(
             name: "OmniAICode",
-            dependencies: ["OmniAIAgent", "OmniAICore", "OmniMCP"],
+            dependencies: [
+                "OmniAIAgent", "OmniAICore", "OmniMCP",
+                .target(name: "OmniContainer", condition: .when(platforms: [.macOS, .linux])),
+            ],
             path: "Sources/OmniAICode",
+            swiftSettings: commonSwiftSettings
+        ),
+        .testTarget(
+            name: "OmniVFSTests",
+            dependencies: [
+                "OmniVFS",
+                .product(name: "Testing", package: "swift-testing"),
+            ],
+            swiftSettings: commonSwiftSettings
+        ),
+        .testTarget(
+            name: "OmniContainerTests",
+            dependencies: [
+                "OmniContainer",
+                "OmniVFS",
+                "OmniExecution",
+                .product(name: "Testing", package: "swift-testing"),
+            ],
             swiftSettings: commonSwiftSettings
         ),
         .testTarget(
