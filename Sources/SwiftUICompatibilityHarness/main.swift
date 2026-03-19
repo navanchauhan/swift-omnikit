@@ -9,7 +9,7 @@ final class HarnessModel {
 }
 
 @MainActor
-@Observable
+@SwiftUI.Observable
 final class HarnessObservableModel {
     var counter: Int = 0
     var flag: Bool = false

@@ -2,8 +2,7 @@ import Foundation
 import OmniVFS
 import OmniExecution
 
-/// Executes x86-64 ELF binaries via blink emulator using BLINK_OVERLAYS
-/// for filesystem virtualization.
+/// Executes x86-64 ELF binaries via blink emulator using overlay filesystem.
 public final class BlinkRuntime: ContainerRuntime, Sendable {
 
     /// Path to the blink binary. If nil, attempts to find in PATH.
@@ -48,27 +47,29 @@ public final class BlinkRuntime: ContainerRuntime, Sendable {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: resolvedBlink)
 
-        // blink runs the ELF binary with the overlay as root
+        // blink CLI: blink [-C OVERLAY] PROG [ARGS...]
+        // The -C flag specifies the chroot/overlay directory.
+        // The binary path is a guest path within the overlay.
         let guestBinaryPath = binaryPath.hasPrefix("/") ? binaryPath : "/\(binaryPath)"
-        process.arguments = [guestBinaryPath] + args
 
-        // Environment
+        // Build arguments: -C overlay_path PROG [ARGS...]
+        var blinkArgs: [String] = []
+        blinkArgs.append("-C")
+        blinkArgs.append(tempDir.path)
+        blinkArgs.append(guestBinaryPath)
+        blinkArgs.append(contentsOf: args)
+        process.arguments = blinkArgs
+
+        // Environment: pass through user env, add BLINK_PREFIX
         var processEnv = env
-        processEnv["BLINK_OVERLAYS"] = tempDir.path
+        processEnv["BLINK_PREFIX"] = tempDir.path
         if !networkEnabled {
             processEnv["BLINK_DISABLE_NETWORKING"] = "1"
         }
         process.environment = processEnv
 
-        let cwdRelative = workingDir.hasPrefix("/")
-            ? String(workingDir.dropFirst())
-            : workingDir
-        let cwdURL = tempDir.appendingPathComponent(cwdRelative)
-        // Create workdir if it doesn't exist on the materialized tree
-        try? FileManager.default.createDirectory(
-            at: cwdURL, withIntermediateDirectories: true
-        )
-        process.currentDirectoryURL = cwdURL
+        // Set current directory to the overlay root (blink manages paths internally)
+        process.currentDirectoryURL = tempDir
 
         // 4. Capture stdout/stderr
         let stdoutPipe = Pipe()
@@ -77,8 +78,6 @@ public final class BlinkRuntime: ContainerRuntime, Sendable {
         process.standardError = stderrPipe
 
         // 5. Execute on dedicated queue (not cooperative thread pool)
-        let networkAllowed = networkEnabled
-        _ = networkAllowed // silence unused-variable warning; kept for future use
         let result: ExecResult = try await withCheckedThrowingContinuation { continuation in
             DispatchQueue(
                 label: "omnikit.blink.exec.\(UUID().uuidString)"
@@ -121,7 +120,7 @@ public final class BlinkRuntime: ContainerRuntime, Sendable {
         }
 
         // 6. Sync changes back to VFS
-        // For BLINK_OVERLAYS approach, changes are in the temp dir.
+        // For overlay approach, changes are in the temp dir.
         // Diffing back to CowFS overlay is a future enhancement.
 
         return result
@@ -149,10 +148,10 @@ public final class BlinkRuntime: ContainerRuntime, Sendable {
         if let path = blinkPath, FileManager.default.fileExists(atPath: path) {
             return path
         }
-        // Check common locations
+        // Check common locations — /opt/homebrew/bin/blink is most likely on macOS ARM
         let candidates = [
-            "/usr/local/bin/blink",
             "/opt/homebrew/bin/blink",
+            "/usr/local/bin/blink",
             "/usr/bin/blink",
         ]
         for candidate in candidates {

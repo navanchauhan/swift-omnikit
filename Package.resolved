@@ -1,5 +1,5 @@
 {
-  "originHash" : "3ee0b9927b4e7dc01e4b398d5f5ace320071af8b19f96431e9a524b17456c649",
+  "originHash" : "445a0fbb380548a09a8503a7dcdb3d1fd8291923ba0ee7fdf45e72fe7b788714",
   "pins" : [
     {
       "identity" : "async-http-client",
@@ -17,6 +17,15 @@
       "state" : {
         "revision" : "87e50f483c54e6efd60e885f7f5aa946cee68023",
         "version" : "1.2.1"
+      }
+    },
+    {
+      "identity" : "swift-argument-parser",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/apple/swift-argument-parser",
+      "state" : {
+        "revision" : "c5d11a805e765f52ba34ec7284bd4fcd6ba68615",
+        "version" : "1.7.0"
       }
     },
     {
@@ -206,6 +215,15 @@
       "state" : {
         "revision" : "48a471ab313e858258ab0b9b0bf2cea55a50cefb",
         "version" : "6.2.3"
+      }
+    },
+    {
+      "identity" : "wasmkit",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/swiftwasm/WasmKit.git",
+      "state" : {
+        "revision" : "cc1c14f6a0ff7a9b70c632179161d256d2125f77",
+        "version" : "0.2.1"
       }
     },
     {

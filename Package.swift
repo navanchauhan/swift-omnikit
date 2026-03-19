@@ -16,10 +16,10 @@ let swift6CommonSwiftSettings: [SwiftSetting] = [
 let package = Package(
     name: "OmniKit",
     platforms: [
-        .macOS(.v13),
-        .iOS(.v16),
-        .tvOS(.v16),
-        .watchOS(.v9),
+        .macOS(.v14),
+        .iOS(.v17),
+        .tvOS(.v17),
+        .watchOS(.v10),
         .visionOS(.v1),
     ],
     products: [
@@ -123,6 +123,8 @@ let package = Package(
         .package(url: "https://github.com/swiftlang/swift-syntax.git", from: "602.0.0"),
         // Swift-native testing DSL (`import Testing`, `@Test`, `#expect`).
         .package(url: "https://github.com/swiftlang/swift-testing.git", from: "6.2.0"),
+        // WASI execution engine.
+        .package(url: "https://github.com/swiftwasm/WasmKit.git", from: "0.2.0"),
     ],
     targets: [
         // Targets are the basic building blocks of a package, defining a module or a test suite.
@@ -178,6 +180,8 @@ let package = Package(
             dependencies: [
                 "OmniVFS",
                 "OmniExecution",
+                .product(name: "WasmKit", package: "WasmKit"),
+                .product(name: "WasmKitWASI", package: "WasmKit"),
             ],
             path: "Sources/OmniContainer",
             swiftSettings: commonSwiftSettings
@@ -342,6 +346,9 @@ let package = Package(
                 "OmniVFS",
                 "OmniExecution",
                 .product(name: "Testing", package: "swift-testing"),
+            ],
+            resources: [
+                .copy("Fixtures"),
             ],
             swiftSettings: commonSwiftSettings
         ),

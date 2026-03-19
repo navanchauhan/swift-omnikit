@@ -30,14 +30,14 @@ struct KitchenSinkRoot: View {
 }
 
 @MainActor
-@Observable
+@OmniSwiftUI.Observable
 final class DemoModel {
     var name: String = ""
     var count: Int = 0
 }
 
 @MainActor
-@Observable
+@OmniSwiftUI.Observable
 final class AppEnvironment {
     var banner: String = "Hello from EnvironmentObject"
 }
