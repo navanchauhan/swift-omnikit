@@ -1,17 +1,22 @@
 import Foundation
 import OmniVFS
 import OmniExecution
+import CBlinkEmulator
 
-/// Executes x86-64 ELF binaries via blink emulator using overlay filesystem.
+/// Executes x86-64 ELF binaries via the embedded blink emulator library.
+///
+/// Uses a vendored static build of blink (https://github.com/jart/blink) linked
+/// directly into the process, eliminating the need for an external `blink` binary.
+/// Execution is fork-isolated: each run spawns a child process that loads the ELF
+/// binary into blink's x86-64 VM, captures stdout/stderr via pipes, and returns
+/// the exit code to the parent.
 public final class BlinkRuntime: ContainerRuntime, Sendable {
 
-    /// Path to the blink binary. If nil, attempts to find in PATH.
-    private let blinkPath: String?
     /// Whether networking is allowed.
     private let networkEnabled: Bool
 
     public init(blinkPath: String? = nil, networkEnabled: Bool = false) {
-        self.blinkPath = blinkPath
+        // blinkPath is ignored — we use the embedded library.
         self.networkEnabled = networkEnabled
     }
 
@@ -40,76 +45,45 @@ public final class BlinkRuntime: ContainerRuntime, Sendable {
 
         try BlinkVFSSync.materialize(namespace: namespace, to: tempDir.path)
 
-        // 2. Resolve blink binary
-        let resolvedBlink = try findBlink()
-
-        // 3. Set up Process
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: resolvedBlink)
-
-        // blink CLI: blink [-C OVERLAY] PROG [ARGS...]
-        // The -C flag specifies the chroot/overlay directory.
-        // The binary path is a guest path within the overlay.
+        // 2. Build the guest binary path within the overlay
         let guestBinaryPath = binaryPath.hasPrefix("/") ? binaryPath : "/\(binaryPath)"
 
-        // Build arguments: -C overlay_path PROG [ARGS...]
-        var blinkArgs: [String] = []
-        blinkArgs.append("-C")
-        blinkArgs.append(tempDir.path)
-        blinkArgs.append(guestBinaryPath)
-        blinkArgs.append(contentsOf: args)
-        process.arguments = blinkArgs
+        // 3. Build the full path to the binary on the host (within the materialized rootfs)
+        let hostBinaryPath = tempDir.path + guestBinaryPath
 
-        // Environment: pass through user env, add BLINK_PREFIX
-        var processEnv = env
-        processEnv["BLINK_PREFIX"] = tempDir.path
+        // 4. Build argv: program name + user args
+        let fullArgs = [guestBinaryPath] + args
+
+        // 5. Build envp as "KEY=VALUE" strings
+        var envStringsMut: [String] = env.map { "\($0.key)=\($0.value)" }
         if !networkEnabled {
-            processEnv["BLINK_DISABLE_NETWORKING"] = "1"
+            envStringsMut.append("BLINK_DISABLE_NETWORKING=1")
         }
-        process.environment = processEnv
+        let envStrings = envStringsMut
 
-        // Set current directory to the overlay root (blink manages paths internally)
-        process.currentDirectoryURL = tempDir
-
-        // 4. Capture stdout/stderr
-        let stdoutPipe = Pipe()
-        let stderrPipe = Pipe()
-        process.standardOutput = stdoutPipe
-        process.standardError = stderrPipe
-
-        // 5. Execute on dedicated queue (not cooperative thread pool)
+        // 6. Call blink via the C shim (fork-isolated)
         let result: ExecResult = try await withCheckedThrowingContinuation { continuation in
             DispatchQueue(
                 label: "omnikit.blink.exec.\(UUID().uuidString)"
             ).async {
                 do {
-                    try process.run()
-
-                    // Timeout handling
-                    let timeoutItem = DispatchWorkItem {
-                        process.terminate()
-                    }
-                    DispatchQueue.global().asyncAfter(
-                        deadline: .now() + .milliseconds(timeoutMs),
-                        execute: timeoutItem
+                    let execResult = try Self.runBlink(
+                        programPath: hostBinaryPath,
+                        argv: fullArgs,
+                        envp: envStrings,
+                        vfsPrefix: tempDir.path,
+                        timeoutMs: timeoutMs
                     )
-
-                    process.waitUntilExit()
-                    timeoutItem.cancel()
-
-                    let stdoutData = stdoutPipe.fileHandleForReading.readDataToEndOfFile()
-                    let stderrData = stderrPipe.fileHandleForReading.readDataToEndOfFile()
 
                     let elapsed = DispatchTime.now().uptimeNanoseconds
                         - startTime.uptimeNanoseconds
                     let durationMs = Int(elapsed / 1_000_000)
-                    let timedOut = process.terminationReason == .uncaughtSignal
 
                     let result = ExecResult(
-                        stdout: String(data: stdoutData, encoding: .utf8) ?? "",
-                        stderr: String(data: stderrData, encoding: .utf8) ?? "",
-                        exitCode: process.terminationStatus,
-                        timedOut: timedOut,
+                        stdout: execResult.stdout,
+                        stderr: execResult.stderr,
+                        exitCode: execResult.exitCode,
+                        timedOut: execResult.timedOut,
                         durationMs: durationMs
                     )
                     continuation.resume(returning: result)
@@ -118,10 +92,6 @@ public final class BlinkRuntime: ContainerRuntime, Sendable {
                 }
             }
         }
-
-        // 6. Sync changes back to VFS
-        // For overlay approach, changes are in the temp dir.
-        // Diffing back to CowFS overlay is a future enhancement.
 
         return result
     }
@@ -144,39 +114,91 @@ public final class BlinkRuntime: ContainerRuntime, Sendable {
         )
     }
 
-    private func findBlink() throws -> String {
-        if let path = blinkPath, FileManager.default.fileExists(atPath: path) {
-            return path
+    // MARK: - Private
+
+    private struct BlinkExecResult {
+        let stdout: String
+        let stderr: String
+        let exitCode: Int32
+        let timedOut: Bool
+    }
+
+    /// Call into CBlinkEmulator to run an ELF binary.
+    private static func runBlink(
+        programPath: String,
+        argv: [String],
+        envp: [String],
+        vfsPrefix: String,
+        timeoutMs: Int
+    ) throws -> BlinkExecResult {
+        // Convert Swift strings to C strings for the config.
+        let cProgramPath = programPath.withCString { strdup($0)! }
+        defer { free(cProgramPath) }
+
+        // Build argv as C array.
+        var cArgv: [UnsafePointer<CChar>?] = argv.map { str in
+            UnsafePointer(strdup(str))
         }
-        // Check common locations — /opt/homebrew/bin/blink is most likely on macOS ARM
-        let candidates = [
-            "/opt/homebrew/bin/blink",
-            "/usr/local/bin/blink",
-            "/usr/bin/blink",
-        ]
-        for candidate in candidates {
-            if FileManager.default.fileExists(atPath: candidate) {
-                return candidate
+        cArgv.append(nil)
+        defer {
+            for ptr in cArgv where ptr != nil {
+                free(UnsafeMutablePointer(mutating: ptr!))
             }
         }
-        // Try PATH via which
-        let whichProcess = Process()
-        whichProcess.executableURL = URL(fileURLWithPath: "/usr/bin/which")
-        whichProcess.arguments = ["blink"]
-        let pipe = Pipe()
-        whichProcess.standardOutput = pipe
-        whichProcess.standardError = Pipe()
-        try whichProcess.run()
-        whichProcess.waitUntilExit()
-        let data = pipe.fileHandleForReading.readDataToEndOfFile()
-        let path = String(data: data, encoding: .utf8)?
-            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        if !path.isEmpty && FileManager.default.fileExists(atPath: path) {
-            return path
+
+        // Build envp as C array.
+        var cEnvp: [UnsafePointer<CChar>?] = envp.map { str in
+            UnsafePointer(strdup(str))
         }
-        throw ContainerError.engineNotAvailable(
-            "blink not found. Install with: brew install blink "
-            + "or download from https://github.com/jart/blink"
+        cEnvp.append(nil)
+        defer {
+            for ptr in cEnvp where ptr != nil {
+                free(UnsafeMutablePointer(mutating: ptr!))
+            }
+        }
+
+        let cVfsPrefix = vfsPrefix.withCString { strdup($0)! }
+        defer { free(cVfsPrefix) }
+
+        var config = blink_run_config_t()
+        config.program_path = UnsafePointer(cProgramPath)
+        config.argv = cArgv.withUnsafeBufferPointer { buf in
+            // Safe: the buffer lives for the duration of this function.
+            UnsafePointer(buf.baseAddress!.withMemoryRebound(
+                to: UnsafePointer<CChar>?.self, capacity: buf.count
+            ) { $0 })
+        }
+        config.argc = Int32(argv.count)
+        config.envp = cEnvp.withUnsafeBufferPointer { buf in
+            UnsafePointer(buf.baseAddress!.withMemoryRebound(
+                to: UnsafePointer<CChar>?.self, capacity: buf.count
+            ) { $0 })
+        }
+        config.envc = Int32(envp.count)
+        config.vfs_prefix = UnsafePointer(cVfsPrefix)
+
+        var result = blink_run_result_t()
+        let rc = blink_run(&config, &result, Int32(timeoutMs))
+
+        if rc != 0 {
+            blink_result_free(&result)
+            throw ContainerError.executionFailed(
+                "blink_run failed: \(String(cString: strerror(errno)))"
+            )
+        }
+
+        let stdout = result.stdout_buf.map { String(cString: $0) } ?? ""
+        let stderr = result.stderr_buf.map { String(cString: $0) } ?? ""
+        let exitCode = Int32(result.exit_code)
+        let timedOut = result.timed_out != 0
+
+        blink_result_free(&result)
+
+        return BlinkExecResult(
+            stdout: stdout,
+            stderr: stderr,
+            exitCode: exitCode,
+            timedOut: timedOut
         )
     }
 }

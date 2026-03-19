@@ -176,10 +176,36 @@ let package = Package(
             swiftSettings: commonSwiftSettings
         ),
         .target(
+            name: "CBlinkEmulator",
+            path: "Sources/CBlinkEmulator",
+            exclude: ["lib/libblink.a", "lib/blink", "lib/config.h"],
+            publicHeadersPath: "include",
+            cSettings: [
+                // blink headers use #include "blink/foo.h" — resolve from lib/.
+                .unsafeFlags(["-iquote", "Sources/CBlinkEmulator/lib"]),
+                // Preprocessor defines matching blink's release build.
+                .define("NDEBUG"),
+                .define("_FILE_OFFSET_BITS", to: "64"),
+                .define("_DARWIN_C_SOURCE", .when(platforms: [.macOS])),
+                .define("_DEFAULT_SOURCE"),
+                .define("_BSD_SOURCE"),
+                .define("_GNU_SOURCE"),
+            ],
+            linkerSettings: [
+                .unsafeFlags([
+                    "-L", "Sources/CBlinkEmulator/lib",
+                    "-lblink",
+                ]),
+                .linkedLibrary("z"),
+                .linkedLibrary("m"),
+            ]
+        ),
+        .target(
             name: "OmniContainer",
             dependencies: [
                 "OmniVFS",
                 "OmniExecution",
+                "CBlinkEmulator",
                 .product(name: "WasmKit", package: "WasmKit"),
                 .product(name: "WasmKitWASI", package: "WasmKit"),
             ],
