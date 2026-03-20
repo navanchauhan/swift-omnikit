@@ -257,6 +257,10 @@ let package = Package(
                 .headerSearchPath("config/macos", .when(platforms: [.macOS])),
                 .headerSearchPath("config/ios", .when(platforms: [.iOS, .tvOS, .watchOS, .visionOS])),
                 // Preprocessor defines matching blink's release build.
+                .define("BLINK_VERSION", to: "\"1.1.0\""),
+                .define("BLINK_COMMITS", to: "\"1\""),
+                .define("BLINK_UNAME_V", to: "\"OmniKit\""),
+                .define("BUILD_TIMESTAMP", to: "\"2026\""),
                 .define("NDEBUG"),
                 .define("_FILE_OFFSET_BITS", to: "64"),
                 .define("_DARWIN_C_SOURCE", .when(platforms: [.macOS])),
