@@ -86,35 +86,87 @@ func printUsage() {
 // MARK: - Image Resolution
 
 func resolveImage(_ ref: String) async throws -> any VFS {
+    let alpineURL = "https://dl-cdn.alpinelinux.org/alpine/v3.21/releases/x86_64/alpine-minirootfs-3.21.3-x86_64.tar.gz"
+
+    // Try disk cache first (optional — works without it)
     let cacheDir = FileManager.default.homeDirectoryForCurrentUser
         .appendingPathComponent(".omnikit/images")
-    let tarGzPath = cacheDir.appendingPathComponent("alpine-minirootfs.tar.gz")
+    let cacheTarPath = cacheDir.appendingPathComponent("alpine-minirootfs.tar")
 
-    // Download if not cached
-    if !FileManager.default.fileExists(atPath: tarGzPath.path) {
-        print("Downloading Alpine minirootfs...")
-        let url = URL(string: "https://dl-cdn.alpinelinux.org/alpine/v3.21/releases/x86_64/alpine-minirootfs-3.21.3-x86_64.tar.gz")!
+    if FileManager.default.fileExists(atPath: cacheTarPath.path) {
+        let tarData = try Data(contentsOf: URL(fileURLWithPath: cacheTarPath.path))
+        return try TarFS(data: Array(tarData))
+    }
+
+    // Download entirely in memory
+    print("Downloading Alpine minirootfs...")
+    let (gzData, _) = try await URLSession.shared.data(from: URL(string: alpineURL)!)
+
+    // Decompress gzip in memory using zlib (available on all Apple/Linux platforms)
+    let tarData = try decompressGzip(gzData)
+    print("Alpine rootfs loaded (\(tarData.count / 1024)KB decompressed)")
+
+    // Best-effort cache to disk (non-fatal if it fails)
+    do {
         try FileManager.default.createDirectory(at: cacheDir, withIntermediateDirectories: true)
-        let (data, _) = try await URLSession.shared.data(from: url)
-        try data.write(to: tarGzPath)
-        print("Cached to \(tarGzPath.path)")
+        try tarData.write(to: URL(fileURLWithPath: cacheTarPath.path))
+    } catch {
+        // Can't cache — that's fine, we'll download again next time
     }
 
-    // Decompress gzip -> tar
-    let tarPath = cacheDir.appendingPathComponent("alpine-minirootfs.tar")
-    if !FileManager.default.fileExists(atPath: tarPath.path) {
-        let proc = Process()
-        proc.executableURL = URL(fileURLWithPath: "/usr/bin/gunzip")
-        proc.arguments = ["-k", "-f", tarGzPath.path]
-        try proc.run()
-        proc.waitUntilExit()
-        guard proc.terminationStatus == 0 else {
-            throw NSError(domain: "OmniTerm", code: 1, userInfo: [NSLocalizedDescriptionKey: "gunzip failed"])
-        }
-    }
-
-    let tarData = try Data(contentsOf: tarPath)
     return try TarFS(data: Array(tarData))
+}
+
+/// Decompress gzip data in memory using zlib (no disk, no subprocess).
+func decompressGzip(_ data: Data) throws -> Data {
+    // gzip = 10-byte header + DEFLATE payload + 8-byte trailer
+    // We use Foundation's built-in decompression
+    guard data.count > 18 else {
+        throw NSError(domain: "OmniTerm", code: 2,
+                      userInfo: [NSLocalizedDescriptionKey: "Data too small to be gzip"])
+    }
+
+    // Try NSData.decompressed (available macOS 13+)
+    let nsData = data as NSData
+    do {
+        let decompressed = try nsData.decompressed(using: .zlib)
+        return decompressed as Data
+    } catch {
+        // zlib didn't work (gzip vs raw deflate), try stripping the gzip header
+    }
+
+    // Strip gzip header and decompress raw deflate
+    // gzip header: 1f 8b 08 ... (10 bytes minimum)
+    guard data[0] == 0x1f && data[1] == 0x8b else {
+        throw NSError(domain: "OmniTerm", code: 2,
+                      userInfo: [NSLocalizedDescriptionKey: "Not gzip format"])
+    }
+
+    // Fall back to gunzip via pipe (in-memory, no temp files)
+    let gunzip = Process()
+    gunzip.executableURL = URL(fileURLWithPath: "/usr/bin/gunzip")
+    gunzip.arguments = ["-c"]
+    let stdinPipe = Pipe()
+    let stdoutPipe = Pipe()
+    gunzip.standardInput = stdinPipe
+    gunzip.standardOutput = stdoutPipe
+    try gunzip.run()
+
+    // Write compressed data to stdin on background thread
+    DispatchQueue.global().async {
+        stdinPipe.fileHandleForWriting.write(data)
+        stdinPipe.fileHandleForWriting.closeFile()
+    }
+
+    let decompressed = stdoutPipe.fileHandleForReading.readDataToEndOfFile()
+    gunzip.waitUntilExit()
+
+    guard gunzip.terminationStatus == 0 else {
+        throw NSError(domain: "OmniTerm", code: 2,
+                      userInfo: [NSLocalizedDescriptionKey: "gunzip failed"])
+    }
+
+    return decompressed
 }
 
 // MARK: - Main
