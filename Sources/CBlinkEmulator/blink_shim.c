@@ -535,6 +535,15 @@ static void memvfs_child_setup(const blink_run_config_t *config,
     (void)config;
 
     // Initialize blink subsystems.
+    // NOTE: After fork() from Swift async runtime, mutexes inherited from
+    // parent threads may be in a locked state. Reinitialize ALL known blink
+    // global mutexes to avoid deadlocks. This is safe because the forked
+    // child is single-threaded at this point.
+    extern struct Vfs g_vfs;
+    memset(&g_vfs, 0, sizeof(g_vfs));
+    pthread_mutex_init(&g_vfs.lock, NULL);
+    pthread_mutex_init(&g_vfs.mapslock, NULL);
+
     WriteErrorInit();
     InitMap();
     FLAG_nolinear = true;

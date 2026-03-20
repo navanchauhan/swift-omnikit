@@ -6,7 +6,7 @@ import CompilerPluginSupport
 import Foundation
 
 let blinkSourcesRoot = URL(fileURLWithPath: "Sources/CBlinkEmulator/vendor/blink/blink")
-let excludedBlinkSources: Set<String> = ["blink.c", "blinkenlights.c", "uop.c", "sse2.c"]
+let excludedBlinkSources: Set<String> = ["blink.c", "blinkenlights.c", "uop.c", "sse2.c", "oneoff.c"]
 let blinkSourceFiles: [String] = ((try? FileManager.default.contentsOfDirectory(atPath: blinkSourcesRoot.path)) ?? [])
     .filter { $0.hasSuffix(".c") && !excludedBlinkSources.contains($0) }
     .sorted()
