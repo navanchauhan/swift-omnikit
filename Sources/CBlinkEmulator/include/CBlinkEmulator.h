@@ -76,6 +76,57 @@ void blink_result_free(blink_run_result_t *result);
 /// @return Exit code from the emulated process, or -1 on error.
 int blink_run_interactive(const blink_run_config_t *config);
 
+// ── Flat in-memory VFS ──────────────────────────────────────────────────────
+
+/// Entry types for the flat in-memory VFS.
+#define FLATVFS_FILE     0
+#define FLATVFS_DIR      1
+#define FLATVFS_SYMLINK  2
+
+/// A single entry in the flat VFS.
+typedef struct {
+    const char *path;           // Relative path (e.g. "bin/busybox")
+    uint8_t type;               // FLATVFS_FILE, FLATVFS_DIR, or FLATVFS_SYMLINK
+    uint16_t mode;              // POSIX permission bits
+    const uint8_t *data;        // File contents (NULL for dirs/symlinks)
+    size_t data_size;           // Size of data
+    const char *symlink_target; // Symlink target (NULL for files/dirs)
+} flatvfs_entry_t;
+
+/// The flat in-memory VFS.
+typedef struct {
+    const flatvfs_entry_t *entries;
+    int entry_count;
+} flatvfs_t;
+
+/// Run blink with an in-memory VFS (no disk I/O).
+///
+/// This function materializes the VFS into blink's VFS layer by writing
+/// entries to a tmpfs-backed directory structure. The key difference from
+/// blink_run_interactive is that it uses memfd/pipes for file data instead
+/// of writing to the real filesystem.
+///
+/// @param config  Emulation configuration (must not be NULL).
+///                config->program_path should be the guest path (e.g. "/bin/sh").
+///                config->vfs_prefix is ignored (the flatvfs IS the filesystem).
+/// @param vfs     The flat in-memory VFS (must not be NULL).
+/// @return Exit code from the emulated process, or -1 on error.
+int blink_run_memvfs(const blink_run_config_t *config, const flatvfs_t *vfs);
+
+/// Run blink with captured output and an in-memory VFS (no disk I/O).
+///
+/// Like blink_run() but uses the flat in-memory VFS instead of a host directory.
+///
+/// @param config     Emulation configuration (must not be NULL).
+/// @param result     Output result structure (must not be NULL).
+/// @param timeout_ms Maximum execution time in milliseconds. 0 means no timeout.
+/// @param vfs        The flat in-memory VFS (must not be NULL).
+/// @return 0 on success, -1 on error.
+int blink_run_captured_memvfs(const blink_run_config_t *config,
+                              blink_run_result_t *result,
+                              int timeout_ms,
+                              const flatvfs_t *vfs);
+
 #ifdef __cplusplus
 }
 #endif

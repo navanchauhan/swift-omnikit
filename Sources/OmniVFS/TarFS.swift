@@ -8,6 +8,8 @@ public final class TarFS: Sendable, VFSReadDirFS, VFSStatFS {
         let mode: UInt16
         let modTime: Date
         let isDir: Bool
+        let isSymlink: Bool
+        let symlinkTarget: String?
         let data: ArraySlice<UInt8>
     }
 
@@ -42,6 +44,7 @@ public final class TarFS: Sendable, VFSReadDirFS, VFSStatFS {
             let sizeBytes = Array(headerBlock[124..<136])
             let mtimeBytes = Array(headerBlock[136..<148])
             let typeFlag = headerBlock[156]
+            let linkNameBytes = Array(headerBlock[157..<257])
             let prefixBytes = Array(headerBlock[345..<500])
 
             let prefix = TarFS.parseString(prefixBytes)
@@ -62,6 +65,9 @@ public final class TarFS: Sendable, VFSReadDirFS, VFSStatFS {
             let mtime = TimeInterval(TarFS.parseOctal(mtimeBytes))
             let modTime = Date(timeIntervalSince1970: mtime)
             let isDir = typeFlag == 0x35 /* '5' */ || typeFlag == 0x00 && fullName == "."
+            let isSymlink = typeFlag == 0x32 /* '2' */
+            let isHardLink = typeFlag == 0x31 /* '1' */
+            let linkName = TarFS.parseString(linkNameBytes)
 
             offset += 512
             let dataStart = offset
@@ -72,12 +78,23 @@ public final class TarFS: Sendable, VFSReadDirFS, VFSStatFS {
             guard dataStart + dataSize <= count else { break }
 
             let entryData = data[dataStart..<(dataStart + dataSize)]
+
+            // Determine symlink target
+            let symlinkTarget: String?
+            if isSymlink || isHardLink {
+                symlinkTarget = linkName.isEmpty ? nil : linkName
+            } else {
+                symlinkTarget = nil
+            }
+
             let entry = TarEntry(
                 name: fullName,
                 size: size,
                 mode: mode,
                 modTime: modTime,
                 isDir: isDir,
+                isSymlink: isSymlink || isHardLink,
+                symlinkTarget: symlinkTarget,
                 data: entryData
             )
             let idx = entries.count
@@ -114,13 +131,18 @@ public final class TarFS: Sendable, VFSReadDirFS, VFSStatFS {
         let normPath = PathUtils.cleanPath(path)
         if let idx = entryIndex[normPath] {
             let entry = allEntries[idx]
+            // If this is a symlink, resolve it
+            if entry.isSymlink, let target = entry.symlinkTarget {
+                let resolvedPath = resolveSymlinkTarget(from: normPath, target: target)
+                return try open(resolvedPath)
+            }
             return TarFSFile(entry: entry)
         }
         // Check if it's a directory that has no explicit entry.
         if dirs[normPath] != nil {
             return TarFSFile(entry: TarEntry(
                 name: normPath, size: 0, mode: 0o755, modTime: Date(),
-                isDir: true, data: [][...])
+                isDir: true, isSymlink: false, symlinkTarget: nil, data: [][...])
             )
         }
         throw VFSError.notFound(path)
@@ -131,12 +153,25 @@ public final class TarFS: Sendable, VFSReadDirFS, VFSStatFS {
     public func readDir(_ path: String) throws -> [VFSDirEntry] {
         let normPath = PathUtils.cleanPath(path)
         guard let dir = dirs[normPath] else {
+            // The path might be a symlink to a directory — try resolving
+            if let idx = entryIndex[normPath] {
+                let entry = allEntries[idx]
+                if entry.isSymlink, let target = entry.symlinkTarget {
+                    let resolvedPath = resolveSymlinkTarget(from: normPath, target: target)
+                    return try readDir(resolvedPath)
+                }
+            }
             throw VFSError.notDirectory(path)
         }
         return dir.childNames.map { name in
             let idx = dir.entries[name]!
             let entry = allEntries[idx]
-            return VFSDirEntry(name: name, isDir: entry.isDir, size: entry.isDir ? nil : entry.size)
+            return VFSDirEntry(
+                name: name,
+                isDir: entry.isDir,
+                isSymlink: entry.isSymlink,
+                size: entry.isDir ? nil : entry.size
+            )
         }
     }
 
@@ -152,7 +187,9 @@ public final class TarFS: Sendable, VFSReadDirFS, VFSStatFS {
                 size: entry.size,
                 mode: VFSFileMode(rawValue: entry.mode),
                 modTime: entry.modTime,
-                isDir: entry.isDir
+                isDir: entry.isDir,
+                isSymlink: entry.isSymlink,
+                symlinkTarget: entry.symlinkTarget
             )
         }
         if dirs[normPath] != nil {
@@ -160,6 +197,24 @@ public final class TarFS: Sendable, VFSReadDirFS, VFSStatFS {
             return VFSFileInfo(name: name, size: 0, mode: .defaultDir, isDir: true)
         }
         throw VFSError.notFound(path)
+    }
+
+    // MARK: - Symlink resolution
+
+    /// Resolve a symlink target relative to the entry that contains it.
+    private func resolveSymlinkTarget(from sourcePath: String, target: String, depth: Int = 0) -> String {
+        guard depth < 32 else { return target }
+
+        let resolved: String
+        if target.hasPrefix("/") {
+            // Absolute symlink — strip leading /
+            resolved = PathUtils.cleanPath(String(target.dropFirst()))
+        } else {
+            // Relative symlink — resolve relative to parent of source
+            let (parent, _) = PathUtils.splitPath(sourcePath)
+            resolved = PathUtils.cleanPath(PathUtils.joinPath(parent, target))
+        }
+        return resolved
     }
 
     // MARK: - Tar parsing helpers
@@ -201,7 +256,9 @@ private final class TarFSFile: @unchecked Sendable, VFSFile {
             size: entry.size,
             mode: VFSFileMode(rawValue: entry.mode),
             modTime: entry.modTime,
-            isDir: entry.isDir
+            isDir: entry.isDir,
+            isSymlink: entry.isSymlink,
+            symlinkTarget: entry.symlinkTarget
         )
     }
 
@@ -227,4 +284,3 @@ private final class TarFSFile: @unchecked Sendable, VFSFile {
         // No-op for tar entries.
     }
 }
-

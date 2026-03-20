@@ -10,6 +10,10 @@ import CBlinkEmulator
 /// Execution is fork-isolated: each run spawns a child process that loads the ELF
 /// binary into blink's x86-64 VM, captures stdout/stderr via pipes, and returns
 /// the exit code to the parent.
+///
+/// The VFS namespace is materialized into a flat in-memory representation (FlatVFS)
+/// on the Swift side — zero disk I/O from the parent process. The forked child
+/// writes the flat VFS to a temp directory for blink's VFS layer to consume.
 public final class BlinkRuntime: ContainerRuntime, Sendable {
 
     /// Whether networking is allowed.
@@ -35,43 +39,33 @@ public final class BlinkRuntime: ContainerRuntime, Sendable {
     ) async throws -> ExecResult {
         let startTime = DispatchTime.now()
 
-        // 1. Materialize VFS namespace to temp directory
-        let tempDir = FileManager.default.temporaryDirectory
-            .appendingPathComponent("omnikit-blink-\(UUID().uuidString)")
-        try FileManager.default.createDirectory(
-            at: tempDir, withIntermediateDirectories: true
-        )
-        defer { try? FileManager.default.removeItem(at: tempDir) }
+        // 1. Build flat in-memory VFS from namespace (no disk I/O)
+        let flatVFS = FlatVFS.from(namespace: namespace)
 
-        try BlinkVFSSync.materialize(namespace: namespace, to: tempDir.path)
-
-        // 2. Build the guest binary path within the overlay
+        // 2. Build the guest binary path
         let guestBinaryPath = binaryPath.hasPrefix("/") ? binaryPath : "/\(binaryPath)"
 
-        // 3. Build the full path to the binary on the host (within the materialized rootfs)
-        let hostBinaryPath = tempDir.path + guestBinaryPath
-
-        // 4. Build argv: program name + user args
+        // 3. Build argv: program name + user args
         let fullArgs = [guestBinaryPath] + args
 
-        // 5. Build envp as "KEY=VALUE" strings
+        // 4. Build envp as "KEY=VALUE" strings
         var envStringsMut: [String] = env.map { "\($0.key)=\($0.value)" }
         if !networkEnabled {
             envStringsMut.append("BLINK_DISABLE_NETWORKING=1")
         }
         let envStrings = envStringsMut
 
-        // 6. Call blink via the C shim (fork-isolated)
+        // 5. Call blink via the C shim with in-memory VFS (fork-isolated)
         let result: ExecResult = try await withCheckedThrowingContinuation { continuation in
             DispatchQueue(
                 label: "omnikit.blink.exec.\(UUID().uuidString)"
             ).async {
                 do {
-                    let execResult = try Self.runBlink(
-                        programPath: hostBinaryPath,
+                    let execResult = try Self.runBlinkMemVFS(
+                        programPath: guestBinaryPath,
                         argv: fullArgs,
                         envp: envStrings,
-                        vfsPrefix: tempDir.path,
+                        flatVFS: flatVFS,
                         timeoutMs: timeoutMs
                     )
 
@@ -123,12 +117,12 @@ public final class BlinkRuntime: ContainerRuntime, Sendable {
         let timedOut: Bool
     }
 
-    /// Call into CBlinkEmulator to run an ELF binary.
-    private static func runBlink(
+    /// Build a C flatvfs_t from a FlatVFS and call blink_run_captured_memvfs.
+    private static func runBlinkMemVFS(
         programPath: String,
         argv: [String],
         envp: [String],
-        vfsPrefix: String,
+        flatVFS: FlatVFS,
         timeoutMs: Int
     ) throws -> BlinkExecResult {
         // Convert Swift strings to C strings for the config.
@@ -157,13 +151,9 @@ public final class BlinkRuntime: ContainerRuntime, Sendable {
             }
         }
 
-        let cVfsPrefix = vfsPrefix.withCString { strdup($0)! }
-        defer { free(cVfsPrefix) }
-
         var config = blink_run_config_t()
         config.program_path = UnsafePointer(cProgramPath)
         config.argv = cArgv.withUnsafeBufferPointer { buf in
-            // Safe: the buffer lives for the duration of this function.
             UnsafePointer(buf.baseAddress!.withMemoryRebound(
                 to: UnsafePointer<CChar>?.self, capacity: buf.count
             ) { $0 })
@@ -175,15 +165,23 @@ public final class BlinkRuntime: ContainerRuntime, Sendable {
             ) { $0 })
         }
         config.envc = Int32(envp.count)
-        config.vfs_prefix = UnsafePointer(cVfsPrefix)
+        config.vfs_prefix = nil
+
+        // Build C flatvfs_t from FlatVFS
+        let cEntries = buildCFlatVFS(flatVFS)
+        defer { freeCFlatVFS(cEntries.entries, count: cEntries.count) }
+
+        var flatvfs = flatvfs_t()
+        flatvfs.entries = UnsafePointer(cEntries.entries)
+        flatvfs.entry_count = Int32(cEntries.count)
 
         var result = blink_run_result_t()
-        let rc = blink_run(&config, &result, Int32(timeoutMs))
+        let rc = blink_run_captured_memvfs(&config, &result, Int32(timeoutMs), &flatvfs)
 
         if rc != 0 {
             blink_result_free(&result)
             throw ContainerError.executionFailed(
-                "blink_run failed: \(String(cString: strerror(errno)))"
+                "blink_run_captured_memvfs failed: \(String(cString: strerror(errno)))"
             )
         }
 
@@ -200,5 +198,62 @@ public final class BlinkRuntime: ContainerRuntime, Sendable {
             exitCode: exitCode,
             timedOut: timedOut
         )
+    }
+
+    // MARK: - C FlatVFS conversion
+
+    private struct CFlatVFSResult {
+        let entries: UnsafeMutablePointer<flatvfs_entry_t>
+        let count: Int
+    }
+
+    /// Convert a FlatVFS to an array of C flatvfs_entry_t structs.
+    private static func buildCFlatVFS(_ flat: FlatVFS) -> CFlatVFSResult {
+        let count = flat.entries.count
+        let entries = UnsafeMutablePointer<flatvfs_entry_t>.allocate(capacity: count)
+
+        for (i, entry) in flat.entries.enumerated() {
+            var cEntry = flatvfs_entry_t()
+            cEntry.path = UnsafePointer(strdup(entry.path))
+            cEntry.type = entry.type.rawValue
+            cEntry.mode = entry.mode
+
+            if entry.type == .file && !entry.data.isEmpty {
+                let dataBuf = UnsafeMutablePointer<UInt8>.allocate(capacity: entry.data.count)
+                entry.data.withUnsafeBufferPointer { buf in
+                    dataBuf.initialize(from: buf.baseAddress!, count: buf.count)
+                }
+                cEntry.data = UnsafePointer(dataBuf)
+                cEntry.data_size = entry.data.count
+            } else {
+                cEntry.data = nil
+                cEntry.data_size = 0
+            }
+
+            if entry.type == .symlink && !entry.symlinkTarget.isEmpty {
+                cEntry.symlink_target = UnsafePointer(strdup(entry.symlinkTarget))
+            } else {
+                cEntry.symlink_target = nil
+            }
+
+            entries[i] = cEntry
+        }
+
+        return CFlatVFSResult(entries: entries, count: count)
+    }
+
+    /// Free memory allocated by buildCFlatVFS.
+    private static func freeCFlatVFS(_ entries: UnsafeMutablePointer<flatvfs_entry_t>, count: Int) {
+        for i in 0..<count {
+            let e = entries[i]
+            free(UnsafeMutablePointer(mutating: e.path))
+            if let data = e.data {
+                UnsafeMutablePointer(mutating: data).deallocate()
+            }
+            if let target = e.symlink_target {
+                free(UnsafeMutablePointer(mutating: target))
+            }
+        }
+        entries.deallocate()
     }
 }

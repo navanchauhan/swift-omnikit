@@ -4,6 +4,9 @@
 // syscall emulation with a Wanix-inspired VFS namespace (CowFS overlay on
 // Alpine minirootfs). No Docker, no VMs — just an embedded emulator.
 //
+// The VFS is materialized entirely in memory as a FlatVFS and passed to the
+// blink child process via C-accessible structs. Zero disk writes from Swift.
+//
 // Usage:
 //   omniterm                    # Boot into Alpine /bin/sh
 //   omniterm --network          # Enable outbound networking (for apk)
@@ -142,29 +145,22 @@ struct OmniTermMain {
             namespace.bind(src: diskFS, srcPath: ".", dstPath: "workspace", mode: .replace)
         }
 
-        // 3. Materialize VFS to temp directory
-        let tempDir = FileManager.default.temporaryDirectory
-            .appendingPathComponent("omniterm-\(UUID().uuidString)")
-        try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+        // 3. Build flat in-memory VFS (no disk I/O from Swift)
+        print("Building in-memory VFS...")
+        let flatVFS = FlatVFS.from(namespace: namespace)
+        print("In-memory VFS ready: \(flatVFS.entries.count) entries")
 
-        // SIGINT handled by child process — parent just waits
+        // 4. Convert FlatVFS to C flatvfs_t
+        let cEntries = buildCFlatVFS(flatVFS)
+        defer { freeCFlatVFS(cEntries.ptr, count: cEntries.count) }
 
-        print("Materializing Alpine rootfs...")
-        try BlinkVFSSync.materialize(namespace: namespace, to: tempDir.path)
+        var flatvfs = flatvfs_t()
+        flatvfs.entries = UnsafePointer(cEntries.ptr)
+        flatvfs.entry_count = Int32(cEntries.count)
 
-        // 4. Build blink config
-        // With blink VFS, program_path is the HOST path to the binary
-        // but argv[0] is the guest path
+        // 5. Build blink config
         let programPath = config.command[0]
         let guestProgramPath = programPath.hasPrefix("/") ? programPath : "/\(programPath)"
-        let hostProgramPath = tempDir.path + guestProgramPath
-
-        // Verify the binary exists in materialized rootfs
-        guard FileManager.default.fileExists(atPath: hostProgramPath) else {
-            fputs("omniterm: \(guestProgramPath): not found in rootfs\n", stderr)
-            try? FileManager.default.removeItem(at: tempDir)
-            exit(127)
-        }
 
         // Build argv — argv[0] is the guest-visible program name
         var argv = config.command
@@ -182,29 +178,83 @@ struct OmniTermMain {
             env.append("WORKSPACE=/workspace")
         }
 
-        // 5. Call blink_run_interactive — child inherits our terminal
-        // program_path must be the GUEST path — blink VFS translates it
+        // 6. Flush output before fork to avoid duplicates in child
+        fflush(stdout)
+        fflush(stderr)
+
+        // 7. Call blink_run_memvfs — child inherits our terminal
         let exitCode: Int32 = argv.withCArrayOfCStrings { cArgv in
             env.withCArrayOfCStrings { cEnv in
                 guestProgramPath.withCString { cProgram in
-                    tempDir.path.withCString { cPrefix in
-                        var blinkConfig = blink_run_config_t()
-                        blinkConfig.program_path = cProgram
-                        blinkConfig.argv = cArgv
-                        blinkConfig.argc = Int32(argv.count)
-                        blinkConfig.envp = cEnv
-                        blinkConfig.envc = Int32(env.count)
-                        blinkConfig.vfs_prefix = cPrefix
-                        return Int32(blink_run_interactive(&blinkConfig))
-                    }
+                    var blinkConfig = blink_run_config_t()
+                    blinkConfig.program_path = cProgram
+                    blinkConfig.argv = cArgv
+                    blinkConfig.argc = Int32(argv.count)
+                    blinkConfig.envp = cEnv
+                    blinkConfig.envc = Int32(env.count)
+                    blinkConfig.vfs_prefix = nil
+                    return Int32(blink_run_memvfs(&blinkConfig, &flatvfs))
                 }
             }
         }
 
-        // 6. Cleanup
-        try? FileManager.default.removeItem(at: tempDir)
         exit(exitCode)
     }
+}
+
+// MARK: - C FlatVFS Conversion Helpers
+
+private struct CFlatVFSResult {
+    let ptr: UnsafeMutablePointer<flatvfs_entry_t>
+    let count: Int
+}
+
+private func buildCFlatVFS(_ flat: FlatVFS) -> CFlatVFSResult {
+    let count = flat.entries.count
+    let entries = UnsafeMutablePointer<flatvfs_entry_t>.allocate(capacity: count)
+
+    for (i, entry) in flat.entries.enumerated() {
+        var cEntry = flatvfs_entry_t()
+        cEntry.path = UnsafePointer(strdup(entry.path))
+        cEntry.type = entry.type.rawValue
+        cEntry.mode = entry.mode
+
+        if entry.type == .file && !entry.data.isEmpty {
+            let dataBuf = UnsafeMutablePointer<UInt8>.allocate(capacity: entry.data.count)
+            entry.data.withUnsafeBufferPointer { buf in
+                dataBuf.initialize(from: buf.baseAddress!, count: buf.count)
+            }
+            cEntry.data = UnsafePointer(dataBuf)
+            cEntry.data_size = entry.data.count
+        } else {
+            cEntry.data = nil
+            cEntry.data_size = 0
+        }
+
+        if entry.type == .symlink && !entry.symlinkTarget.isEmpty {
+            cEntry.symlink_target = UnsafePointer(strdup(entry.symlinkTarget))
+        } else {
+            cEntry.symlink_target = nil
+        }
+
+        entries[i] = cEntry
+    }
+
+    return CFlatVFSResult(ptr: entries, count: count)
+}
+
+private func freeCFlatVFS(_ entries: UnsafeMutablePointer<flatvfs_entry_t>, count: Int) {
+    for i in 0..<count {
+        let e = entries[i]
+        free(UnsafeMutablePointer(mutating: e.path))
+        if let data = e.data {
+            UnsafeMutablePointer(mutating: data).deallocate()
+        }
+        if let target = e.symlink_target {
+            free(UnsafeMutablePointer(mutating: target))
+        }
+    }
+    entries.deallocate()
 }
 
 // MARK: - C String Array Helper

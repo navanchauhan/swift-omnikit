@@ -13,6 +13,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
 #include <sys/wait.h>
 #include <unistd.h>
 #include <limits.h>
@@ -442,4 +443,359 @@ int blink_run_interactive(const blink_run_config_t *config) {
     if (WIFEXITED(status)) return WEXITSTATUS(status);
     if (WIFSIGNALED(status)) return 128 + WTERMSIG(status);
     return -1;
+}
+
+// ── Flat VFS materialization ────────────────────────────────────────────────
+// Materializes a flatvfs_t to a temporary directory in the forked child.
+// This happens entirely in the child process — no disk I/O from the parent.
+
+/// Recursively create directories for a given path.
+static void mkdirs(const char *base, const char *relpath) {
+    char buf[PATH_MAX];
+    snprintf(buf, sizeof(buf), "%s/%s", base, relpath);
+    // Walk components
+    for (char *p = buf + strlen(base) + 1; *p; ++p) {
+        if (*p == '/') {
+            *p = '\0';
+            mkdir(buf, 0755);
+            *p = '/';
+        }
+    }
+    mkdir(buf, 0755);
+}
+
+/// Ensure parent directories exist for a file path.
+static void ensure_parent_dirs(const char *base, const char *relpath) {
+    char buf[PATH_MAX];
+    snprintf(buf, sizeof(buf), "%s/%s", base, relpath);
+    // Find last /
+    char *last_slash = strrchr(buf, '/');
+    if (last_slash && last_slash > buf + (int)strlen(base)) {
+        *last_slash = '\0';
+        // Recursively create
+        for (char *p = buf + strlen(base) + 1; *p; ++p) {
+            if (*p == '/') {
+                *p = '\0';
+                mkdir(buf, 0755);
+                *p = '/';
+            }
+        }
+        mkdir(buf, 0755);
+    }
+}
+
+/// Materialize a flat VFS to a directory. Called in the forked child only.
+static int materialize_flatvfs(const flatvfs_t *vfs, const char *destdir) {
+    if (!vfs || !destdir) return -1;
+    mkdir(destdir, 0755);
+
+    for (int i = 0; i < vfs->entry_count; i++) {
+        const flatvfs_entry_t *e = &vfs->entries[i];
+        if (!e->path) continue;
+
+        char fullpath[PATH_MAX];
+        snprintf(fullpath, sizeof(fullpath), "%s/%s", destdir, e->path);
+
+        switch (e->type) {
+        case FLATVFS_DIR:
+            mkdirs(destdir, e->path);
+            break;
+        case FLATVFS_FILE: {
+            ensure_parent_dirs(destdir, e->path);
+            int fd = open(fullpath, O_WRONLY | O_CREAT | O_TRUNC, e->mode ? e->mode : 0644);
+            if (fd == -1) continue;
+            if (e->data && e->data_size > 0) {
+                size_t written = 0;
+                while (written < e->data_size) {
+                    ssize_t n = write(fd, e->data + written, e->data_size - written);
+                    if (n <= 0) break;
+                    written += (size_t)n;
+                }
+            }
+            // Set executable bit if mode has it
+            if (e->mode & 0111) {
+                fchmod(fd, e->mode | 0755);
+            }
+            close(fd);
+            break;
+        }
+        case FLATVFS_SYMLINK:
+            if (e->symlink_target) {
+                ensure_parent_dirs(destdir, e->path);
+                symlink(e->symlink_target, fullpath);
+            }
+            break;
+        }
+    }
+    return 0;
+}
+
+/// Common child setup for memvfs: materialize, init blink, build args.
+/// Returns the child process's argv/envp via out params. _exits on failure.
+static void memvfs_child_setup(const blink_run_config_t *config,
+                                const flatvfs_t *vfs,
+                                char *tempdir_buf,
+                                size_t tempdir_bufsz) {
+    // Build temp dir path
+    snprintf(tempdir_buf, tempdir_bufsz,
+             "/tmp/omnikit-memvfs-%d", (int)getpid());
+
+    // Materialize flatvfs to temp dir
+    if (materialize_flatvfs(vfs, tempdir_buf) != 0) {
+        _exit(127);
+    }
+
+    // Initialize blink subsystems.
+    WriteErrorInit();
+    InitMap();
+    FLAG_nolinear = true;
+
+#ifndef DISABLE_VFS
+    if (VfsInit(tempdir_buf)) {
+        _exit(127);
+    }
+#endif
+
+    InitBus();
+}
+
+// ── blink_run_memvfs — interactive mode with in-memory VFS ──────────────────
+
+int blink_run_memvfs(const blink_run_config_t *config, const flatvfs_t *vfs) {
+    if (!config || !vfs || !config->program_path || !config->argv) {
+        errno = EINVAL;
+        return -1;
+    }
+
+    // Flush stdio buffers before fork to avoid duplicate output.
+    fflush(stdout);
+    fflush(stderr);
+
+    pid_t pid = fork();
+    if (pid == -1) return -1;
+
+    if (pid == 0) {
+        // ── Child: materialize + run ────────────────────────────────────
+        char tempdir[PATH_MAX];
+        memvfs_child_setup(config, vfs, tempdir, sizeof(tempdir));
+
+        char pathbuf[PATH_MAX];
+        strncpy(pathbuf, config->program_path, sizeof(pathbuf) - 1);
+        pathbuf[sizeof(pathbuf) - 1] = '\0';
+
+        int total_argc = config->argc;
+        char **child_argv = calloc((size_t)(total_argc + 1), sizeof(char *));
+        if (!child_argv) _exit(127);
+        for (int i = 0; i < total_argc; i++) {
+            child_argv[i] = (char *)config->argv[i];
+        }
+        child_argv[total_argc] = NULL;
+
+        char **child_envp;
+        if (config->envp && config->envc > 0) {
+            child_envp = calloc((size_t)(config->envc + 1), sizeof(char *));
+            if (!child_envp) _exit(127);
+            for (int i = 0; i < config->envc; i++) {
+                child_envp[i] = (char *)config->envp[i];
+            }
+            child_envp[config->envc] = NULL;
+        } else {
+            child_envp = calloc(1, sizeof(char *));
+            if (!child_envp) _exit(127);
+            child_envp[0] = NULL;
+        }
+
+        signal(SIGPIPE, SIG_IGN);
+        ShimExec(pathbuf, pathbuf, child_argv, child_envp);
+        _exit(127);
+    }
+
+    // ── Parent: wait for child to exit ──────────────────────────────────
+    int status = 0;
+    while (waitpid(pid, &status, 0) == -1) {
+        if (errno != EINTR) return -1;
+    }
+
+    if (WIFEXITED(status)) return WEXITSTATUS(status);
+    if (WIFSIGNALED(status)) return 128 + WTERMSIG(status);
+    return -1;
+}
+
+// ── blink_run_captured_memvfs — captured mode with in-memory VFS ────────────
+
+int blink_run_captured_memvfs(const blink_run_config_t *config,
+                              blink_run_result_t *result,
+                              int timeout_ms,
+                              const flatvfs_t *vfs) {
+    if (!config || !result || !vfs || !config->program_path || !config->argv) {
+        errno = EINVAL;
+        return -1;
+    }
+
+    memset(result, 0, sizeof(*result));
+
+    // Create pipes for stdout and stderr capture.
+    int stdout_pipe[2] = {-1, -1};
+    int stderr_pipe[2] = {-1, -1};
+    if (pipe(stdout_pipe) == -1) return -1;
+    if (pipe(stderr_pipe) == -1) {
+        close(stdout_pipe[0]);
+        close(stdout_pipe[1]);
+        return -1;
+    }
+
+    pid_t pid = fork();
+    if (pid == -1) {
+        int saved = errno;
+        close(stdout_pipe[0]); close(stdout_pipe[1]);
+        close(stderr_pipe[0]); close(stderr_pipe[1]);
+        errno = saved;
+        return -1;
+    }
+
+    if (pid == 0) {
+        // ── Child process ────────────────────────────────────────────────
+        close(stdout_pipe[0]);
+        close(stderr_pipe[0]);
+        dup2(stdout_pipe[1], STDOUT_FILENO);
+        dup2(stderr_pipe[1], STDERR_FILENO);
+        close(stdout_pipe[1]);
+        close(stderr_pipe[1]);
+
+        char tempdir[PATH_MAX];
+        memvfs_child_setup(config, vfs, tempdir, sizeof(tempdir));
+
+        char pathbuf[PATH_MAX];
+        strncpy(pathbuf, config->program_path, sizeof(pathbuf) - 1);
+        pathbuf[sizeof(pathbuf) - 1] = '\0';
+
+        int total_argc = config->argc;
+        char **child_argv = calloc((size_t)(total_argc + 1), sizeof(char *));
+        if (!child_argv) _exit(127);
+        for (int i = 0; i < total_argc; i++) {
+            child_argv[i] = (char *)config->argv[i];
+        }
+        child_argv[total_argc] = NULL;
+
+        char **child_envp;
+        if (config->envp && config->envc > 0) {
+            child_envp = calloc((size_t)(config->envc + 1), sizeof(char *));
+            if (!child_envp) _exit(127);
+            for (int i = 0; i < config->envc; i++) {
+                child_envp[i] = (char *)config->envp[i];
+            }
+            child_envp[config->envc] = NULL;
+        } else {
+            child_envp = calloc(1, sizeof(char *));
+            if (!child_envp) _exit(127);
+            child_envp[0] = NULL;
+        }
+
+        signal(SIGPIPE, SIG_IGN);
+        ShimExec(pathbuf, pathbuf, child_argv, child_envp);
+        _exit(127);
+    }
+
+    // ── Parent process ───────────────────────────────────────────────────
+    close(stdout_pipe[1]);
+    close(stderr_pipe[1]);
+
+    set_nonblocking(stdout_pipe[0]);
+    set_nonblocking(stderr_pipe[0]);
+
+    size_t out_cap = 4096, err_cap = 4096;
+    size_t out_len = 0, err_len = 0;
+    char *out_buf = malloc(out_cap);
+    char *err_buf = malloc(err_cap);
+    if (!out_buf || !err_buf) {
+        free(out_buf);
+        free(err_buf);
+        kill(pid, SIGKILL);
+        waitpid(pid, NULL, 0);
+        close(stdout_pipe[0]);
+        close(stderr_pipe[0]);
+        errno = ENOMEM;
+        return -1;
+    }
+
+    int stdout_eof = 0, stderr_eof = 0;
+
+    while (!stdout_eof || !stderr_eof) {
+        fd_set rfds;
+        FD_ZERO(&rfds);
+        int maxfd = -1;
+        if (!stdout_eof) {
+            FD_SET(stdout_pipe[0], &rfds);
+            if (stdout_pipe[0] > maxfd) maxfd = stdout_pipe[0];
+        }
+        if (!stderr_eof) {
+            FD_SET(stderr_pipe[0], &rfds);
+            if (stderr_pipe[0] > maxfd) maxfd = stderr_pipe[0];
+        }
+
+        struct timeval tv;
+        tv.tv_sec = (timeout_ms > 0) ? (timeout_ms / 1000) : 5;
+        tv.tv_usec = (timeout_ms > 0) ? ((timeout_ms % 1000) * 1000) : 0;
+
+        int ret = select(maxfd + 1, &rfds, NULL, NULL, &tv);
+        if (ret == -1) {
+            if (errno == EINTR) continue;
+            break;
+        }
+        if (ret == 0 && timeout_ms > 0) {
+            kill(pid, SIGKILL);
+            result->timed_out = 1;
+            break;
+        }
+
+        if (!stdout_eof && FD_ISSET(stdout_pipe[0], &rfds)) {
+            if (out_len + 1024 > out_cap) {
+                out_cap *= 2;
+                char *tmp = realloc(out_buf, out_cap);
+                if (tmp) out_buf = tmp;
+            }
+            ssize_t n = read(stdout_pipe[0], out_buf + out_len, out_cap - out_len);
+            if (n > 0) out_len += (size_t)n;
+            else if (n == 0) stdout_eof = 1;
+            else if (errno != EAGAIN && errno != EINTR) stdout_eof = 1;
+        }
+
+        if (!stderr_eof && FD_ISSET(stderr_pipe[0], &rfds)) {
+            if (err_len + 1024 > err_cap) {
+                err_cap *= 2;
+                char *tmp = realloc(err_buf, err_cap);
+                if (tmp) err_buf = tmp;
+            }
+            ssize_t n = read(stderr_pipe[0], err_buf + err_len, err_cap - err_len);
+            if (n > 0) err_len += (size_t)n;
+            else if (n == 0) stderr_eof = 1;
+            else if (errno != EAGAIN && errno != EINTR) stderr_eof = 1;
+        }
+    }
+
+    close(stdout_pipe[0]);
+    close(stderr_pipe[0]);
+
+    int status = 0;
+    waitpid(pid, &status, 0);
+
+    if (WIFEXITED(status)) {
+        result->exit_code = WEXITSTATUS(status);
+    } else if (WIFSIGNALED(status)) {
+        result->exit_code = 128 + WTERMSIG(status);
+    } else {
+        result->exit_code = -1;
+    }
+
+    out_buf = realloc(out_buf, out_len + 1);
+    if (out_buf) out_buf[out_len] = '\0';
+    err_buf = realloc(err_buf, err_len + 1);
+    if (err_buf) err_buf[err_len] = '\0';
+
+    result->stdout_buf = out_buf;
+    result->stdout_len = out_len;
+    result->stderr_buf = err_buf;
+    result->stderr_len = err_len;
+
+    return 0;
 }

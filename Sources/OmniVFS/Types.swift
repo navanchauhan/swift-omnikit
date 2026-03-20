@@ -7,6 +7,7 @@ public struct VFSFileInfo: Sendable {
     public var modTime: Date
     public var isDir: Bool
     public var isSymlink: Bool
+    public var symlinkTarget: String?
 
     public init(
         name: String,
@@ -14,7 +15,8 @@ public struct VFSFileInfo: Sendable {
         mode: VFSFileMode = .defaultFile,
         modTime: Date = Date(),
         isDir: Bool = false,
-        isSymlink: Bool = false
+        isSymlink: Bool = false,
+        symlinkTarget: String? = nil
     ) {
         self.name = name
         self.size = size
@@ -22,17 +24,20 @@ public struct VFSFileInfo: Sendable {
         self.modTime = modTime
         self.isDir = isDir
         self.isSymlink = isSymlink
+        self.symlinkTarget = symlinkTarget
     }
 }
 
 public struct VFSDirEntry: Sendable {
     public var name: String
     public var isDir: Bool
+    public var isSymlink: Bool
     public var size: Int64?
 
-    public init(name: String, isDir: Bool, size: Int64? = nil) {
+    public init(name: String, isDir: Bool, isSymlink: Bool = false, size: Int64? = nil) {
         self.name = name
         self.isDir = isDir
+        self.isSymlink = isSymlink
         self.size = size
     }
 }
