@@ -1,4 +1,7 @@
 import Foundation
+#if canImport(FoundationNetworking)
+import FoundationNetworking
+#endif
 import OmniVFS
 
 /// Actor that manages Alpine rootfs images, caching them as TarFS instances.
@@ -71,10 +74,8 @@ public actor ImageStore {
     private func decompressGzip(_ data: Data) throws -> Data {
         // Shell out to gunzip for reliable gzip decompression
         let tempIn = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString + ".tar.gz")
-        let tempOut = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString + ".tar")
         try data.write(to: tempIn)
         defer { try? FileManager.default.removeItem(at: tempIn) }
-        defer { try? FileManager.default.removeItem(at: tempOut) }
 
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/gunzip")
@@ -82,7 +83,13 @@ public actor ImageStore {
         let pipe = Pipe()
         process.standardOutput = pipe
         try process.run()
+        let decompressed = pipe.fileHandleForReading.readDataToEndOfFile()
         process.waitUntilExit()
-        return pipe.fileHandleForReading.readDataToEndOfFile()
+
+        guard process.terminationStatus == 0 else {
+            throw VFSError.notSupported("gunzip failed with exit code \(process.terminationStatus)")
+        }
+
+        return decompressed
     }
 }

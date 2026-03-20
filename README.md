@@ -107,6 +107,15 @@ LVGL renderer.
   - `URLSessionHTTPTransport` works on Apple platforms and Linux via `FoundationNetworking`.
 - `OmniHTTPNIO`: `NIOHTTPTransport` built on `swift-nio` + `async-http-client` (uses `swift-nio-transport-services` on Apple platforms when available).
 
+## OmniTerm / Blink Bootstrap
+
+- `CBlinkEmulator` is built from vendored blink source via SwiftPM. No host-specific `libblink.a` is committed.
+- Blink is vendored as a git submodule at `Sources/CBlinkEmulator/vendor/blink`.
+- Initialize submodules before building products that depend on blink:
+  - `git submodule update --init --recursive`
+- Linux and macOS use the full embedded blink runtime.
+- Apple mobile platforms build the module with a process-model stub; blink entry points return `ENOTSUP` there until a non-`fork()` runtime is implemented.
+
 ## OmniAICore Details
 
 ### Environment Variables

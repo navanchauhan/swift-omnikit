@@ -86,87 +86,11 @@ func printUsage() {
 // MARK: - Image Resolution
 
 func resolveImage(_ ref: String) async throws -> any VFS {
-    let alpineURL = "https://dl-cdn.alpinelinux.org/alpine/v3.21/releases/x86_64/alpine-minirootfs-3.21.3-x86_64.tar.gz"
-
-    // Try disk cache first (optional — works without it)
-    let cacheDir = FileManager.default.homeDirectoryForCurrentUser
-        .appendingPathComponent(".omnikit/images")
-    let cacheTarPath = cacheDir.appendingPathComponent("alpine-minirootfs.tar")
-
-    if FileManager.default.fileExists(atPath: cacheTarPath.path) {
-        let tarData = try Data(contentsOf: URL(fileURLWithPath: cacheTarPath.path))
-        return try TarFS(data: Array(tarData))
-    }
-
-    // Download entirely in memory
-    print("Downloading Alpine minirootfs...")
-    let (gzData, _) = try await URLSession.shared.data(from: URL(string: alpineURL)!)
-
-    // Decompress gzip in memory using zlib (available on all Apple/Linux platforms)
-    let tarData = try decompressGzip(gzData)
-    print("Alpine rootfs loaded (\(tarData.count / 1024)KB decompressed)")
-
-    // Best-effort cache to disk (non-fatal if it fails)
-    do {
-        try FileManager.default.createDirectory(at: cacheDir, withIntermediateDirectories: true)
-        try tarData.write(to: URL(fileURLWithPath: cacheTarPath.path))
-    } catch {
-        // Can't cache — that's fine, we'll download again next time
-    }
-
-    return try TarFS(data: Array(tarData))
+    try await ImageStore.shared.resolve(ref)
 }
 
-/// Decompress gzip data in memory using zlib (no disk, no subprocess).
-func decompressGzip(_ data: Data) throws -> Data {
-    // gzip = 10-byte header + DEFLATE payload + 8-byte trailer
-    // We use Foundation's built-in decompression
-    guard data.count > 18 else {
-        throw NSError(domain: "OmniTerm", code: 2,
-                      userInfo: [NSLocalizedDescriptionKey: "Data too small to be gzip"])
-    }
-
-    // Try NSData.decompressed (available macOS 13+)
-    let nsData = data as NSData
-    do {
-        let decompressed = try nsData.decompressed(using: .zlib)
-        return decompressed as Data
-    } catch {
-        // zlib didn't work (gzip vs raw deflate), try stripping the gzip header
-    }
-
-    // Strip gzip header and decompress raw deflate
-    // gzip header: 1f 8b 08 ... (10 bytes minimum)
-    guard data[0] == 0x1f && data[1] == 0x8b else {
-        throw NSError(domain: "OmniTerm", code: 2,
-                      userInfo: [NSLocalizedDescriptionKey: "Not gzip format"])
-    }
-
-    // Fall back to gunzip via pipe (in-memory, no temp files)
-    let gunzip = Process()
-    gunzip.executableURL = URL(fileURLWithPath: "/usr/bin/gunzip")
-    gunzip.arguments = ["-c"]
-    let stdinPipe = Pipe()
-    let stdoutPipe = Pipe()
-    gunzip.standardInput = stdinPipe
-    gunzip.standardOutput = stdoutPipe
-    try gunzip.run()
-
-    // Write compressed data to stdin on background thread
-    DispatchQueue.global().async {
-        stdinPipe.fileHandleForWriting.write(data)
-        stdinPipe.fileHandleForWriting.closeFile()
-    }
-
-    let decompressed = stdoutPipe.fileHandleForReading.readDataToEndOfFile()
-    gunzip.waitUntilExit()
-
-    guard gunzip.terminationStatus == 0 else {
-        throw NSError(domain: "OmniTerm", code: 2,
-                      userInfo: [NSLocalizedDescriptionKey: "gunzip failed"])
-    }
-
-    return decompressed
+private func shellQuote(_ argument: String) -> String {
+    "'" + argument.replacingOccurrences(of: "'", with: "'\"'\"'") + "'"
 }
 
 // MARK: - Main
@@ -222,12 +146,18 @@ struct OmniTermMain {
         flatvfs.entry_count = Int32(cEntries.count)
 
         // 5. Build blink config
-        let programPath = config.command[0]
-        let guestProgramPath = programPath.hasPrefix("/") ? programPath : "/\(programPath)"
-
-        // Build argv — argv[0] is the guest-visible program name
-        var argv = config.command
-        argv[0] = guestProgramPath
+        let guestProgramPath: String
+        let argv: [String]
+        if config.command[0].hasPrefix("/") {
+            guestProgramPath = config.command[0]
+            var directArgv = config.command
+            directArgv[0] = guestProgramPath
+            argv = directArgv
+        } else {
+            guestProgramPath = "/bin/sh"
+            let shellCommand = config.command.map(shellQuote).joined(separator: " ")
+            argv = [guestProgramPath, "-lc", shellCommand]
+        }
 
         // Build env
         var env: [String] = [
@@ -237,18 +167,19 @@ struct OmniTermMain {
             "LANG=C.UTF-8",
             "PS1=\\[\\033[1;32m\\]omniterm\\[\\033[0m\\]:\\[\\033[1;34m\\]\\w\\[\\033[0m\\]\\$ ",
         ]
+        if !config.networkEnabled {
+            env.append("BLINK_DISABLE_NETWORKING=1")
+        }
         if config.hostBindPath != nil {
             env.append("WORKSPACE=/workspace")
         }
 
         // 6. Flush output before fork to avoid duplicates in child
-        fflush(stdout)
-        fflush(stderr)
+        fflush(nil)
 
         // 7. Call blink_run_memvfs directly.
         //    chdir to "/" first to avoid getcwd issues in the forked child.
-        let savedCwd = FileManager.default.currentDirectoryPath
-        FileManager.default.changeCurrentDirectoryPath("/")
+        _ = FileManager.default.changeCurrentDirectoryPath("/")
 
         let exitCode: Int32 = argv.withCArrayOfCStrings { cArgv in
             env.withCArrayOfCStrings { cEnv in

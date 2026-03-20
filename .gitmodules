@@ -1,0 +1,3 @@
+[submodule "Sources/CBlinkEmulator/vendor/blink"]
+	path = Sources/CBlinkEmulator/vendor/blink
+	url = https://github.com/jart/blink

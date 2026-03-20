@@ -18,8 +18,17 @@
 #include <unistd.h>
 #include <limits.h>
 
+#if defined(__APPLE__)
+#include <TargetConditionals.h>
+#endif
+
+#if defined(__APPLE__) && (TARGET_OS_IPHONE || TARGET_OS_TV || TARGET_OS_WATCH || TARGET_OS_VISION)
+#define CBLINK_EMULATOR_MOBILE_STUB 1
+#endif
+
 // ── Blink library headers ────────────────────────────────────────────────────
 // These are resolved via the -iquote flag pointing to the blink source root.
+#if !defined(CBLINK_EMULATOR_MOBILE_STUB)
 #include "blink/machine.h"
 #include "blink/loader.h"
 #include "blink/map.h"
@@ -33,6 +42,62 @@
 #include "blink/x86.h"
 #include "blink/util.h"
 #include "blink/fds.h"
+#endif
+
+#if defined(CBLINK_EMULATOR_MOBILE_STUB)
+
+int blink_run(const blink_run_config_t *config,
+              blink_run_result_t *result,
+              int timeout_ms) {
+    (void)config;
+    (void)result;
+    (void)timeout_ms;
+    errno = ENOTSUP;
+    return -1;
+}
+
+void blink_result_free(blink_run_result_t *result) {
+    if (!result) return;
+    free(result->stdout_buf);
+    free(result->stderr_buf);
+    result->stdout_buf = NULL;
+    result->stdout_len = 0;
+    result->stderr_buf = NULL;
+    result->stderr_len = 0;
+}
+
+int blink_run_interactive(const blink_run_config_t *config) {
+    (void)config;
+    errno = ENOTSUP;
+    return -1;
+}
+
+int OmniVfsInit(const flatvfs_t *vfs) {
+    (void)vfs;
+    errno = ENOTSUP;
+    return -1;
+}
+
+int blink_run_memvfs(const blink_run_config_t *config, const flatvfs_t *vfs) {
+    (void)config;
+    (void)vfs;
+    errno = ENOTSUP;
+    return -1;
+}
+
+int blink_run_captured_memvfs(const blink_run_config_t *config,
+                              blink_run_result_t *result,
+                              int timeout_ms,
+                              const flatvfs_t *vfs) {
+    (void)config;
+    (void)result;
+    (void)timeout_ms;
+    (void)vfs;
+    errno = ENOTSUP;
+    return -1;
+}
+
+#else
 
 // ── Stubs for blinkenlights symbols ──────────────────────────────────────────
 // These are referenced by bios.c and other files but only meaningful in the
@@ -42,6 +107,7 @@ int ttyin = -1;
 int vidya = -1;
 bool tuimode = false;
 struct Pty *pty = NULL;
+struct Machine *m = NULL;
 bool ptyisenabled = false;
 
 void SetCarry(bool cf) { (void)cf; }
@@ -67,28 +133,43 @@ void TerminateSignal(struct Machine *m, int sig, int code) {
 // Called when the guest does execve(). We re-load the program in the same
 // child process.
 static int ShimExec(char *execfn, char *prog, char **argv, char **envp) {
+    int i;
+    sigset_t oldmask;
     struct Machine *old = g_machine;
     if (old) KillOtherThreads(old->system);
-    struct Machine *m = NewMachine(NewSystem(XED_MACHINE_MODE_LONG), 0);
-    if (!m) _exit(127);
-    g_machine = m;
-    m->system->exec = ShimExec;
+    struct Machine *machine = NewMachine(NewSystem(XED_MACHINE_MODE_LONG), 0);
+    if (!machine) _exit(127);
+    g_machine = machine;
+    m = machine;
+    machine->system->exec = ShimExec;
     if (!old) {
-        LoadProgram(m, execfn, prog, argv, envp, NULL);
-        SetupCod(m);
+        LoadProgram(machine, execfn, prog, argv, envp, NULL);
+        SetupCod(machine);
         for (int i = 0; i < 10; ++i) {
-            AddStdFd(&m->system->fds, i);
+            AddStdFd(&machine->system->fds, i);
         }
     } else {
 #ifdef HAVE_JIT
         DisableJit(&old->system->jit);
 #endif
-        LoadProgram(m, execfn, prog, argv, envp, NULL);
-        m->system->fds.list = old->system->fds.list;
+        unassert(!machine->sysdepth);
+        unassert(!machine->pagelocks.i);
+        unassert(!FreeVirtual(old->system, -0x800000000000, 0x1000000000000));
+        for (i = 1; i <= 64; ++i) {
+            if (Read64(old->system->hands[i - 1].handler) == SIG_IGN_LINUX) {
+                Write64(machine->system->hands[i - 1].handler, SIG_IGN_LINUX);
+            }
+        }
+        memcpy(machine->system->rlim, old->system->rlim, sizeof(old->system->rlim));
+        LoadProgram(machine, execfn, prog, argv, envp, NULL);
+        machine->system->fds.list = old->system->fds.list;
         old->system->fds.list = 0;
+        memcpy(&oldmask, &old->system->exec_sigmask, sizeof(oldmask));
+        UNLOCK(&old->system->exec_lock);
         FreeMachine(old);
+        unassert(!pthread_sigmask(SIG_SETMASK, &oldmask, 0));
     }
-    Blink(m);  // _Noreturn — guest will eventually call exit()
+    Blink(machine);  // _Noreturn — guest will eventually call exit()
 }
 
 // ── Pipe helpers ─────────────────────────────────────────────────────────────
@@ -705,3 +786,5 @@ int blink_run_captured_memvfs(const blink_run_config_t *config,
 
     return 0;
 }
+
+#endif

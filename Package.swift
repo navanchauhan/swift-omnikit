@@ -3,6 +3,14 @@
 
 import PackageDescription
 import CompilerPluginSupport
+import Foundation
+
+let blinkSourcesRoot = URL(fileURLWithPath: "Sources/CBlinkEmulator/vendor/blink/blink")
+let excludedBlinkSources: Set<String> = ["blink.c", "blinkenlights.c"]
+let blinkSourceFiles: [String] = ((try? FileManager.default.contentsOfDirectory(atPath: blinkSourcesRoot.path)) ?? [])
+    .filter { $0.hasSuffix(".c") && !excludedBlinkSources.contains($0) }
+    .sorted()
+    .map { "vendor/blink/blink/\($0)" }
 
 let commonSwiftSettings: [SwiftSetting] = [
     .unsafeFlags(["-warn-concurrency", "-strict-concurrency=complete"]),
@@ -182,24 +190,43 @@ let package = Package(
         .target(
             name: "CBlinkEmulator",
             path: "Sources/CBlinkEmulator",
-            exclude: ["lib/libblink.a", "lib/blink", "lib/config.h"],
+            exclude: [".build"],
+            sources: ["blink_shim.c", "memvfs.c"] + blinkSourceFiles,
             publicHeadersPath: "include",
             cSettings: [
-                // blink headers use #include "blink/foo.h" — resolve from lib/.
-                .unsafeFlags(["-iquote", "Sources/CBlinkEmulator/lib"]),
+                .headerSearchPath("vendor/blink"),
+                .headerSearchPath("config/linux", .when(platforms: [.linux])),
+                .headerSearchPath("config/macos", .when(platforms: [.macOS])),
+                .headerSearchPath("config/ios", .when(platforms: [.iOS, .tvOS, .watchOS, .visionOS])),
                 // Preprocessor defines matching blink's release build.
                 .define("NDEBUG"),
                 .define("_FILE_OFFSET_BITS", to: "64"),
                 .define("_DARWIN_C_SOURCE", .when(platforms: [.macOS])),
+                .define("_DARWIN_C_SOURCE", .when(platforms: [.iOS, .tvOS, .watchOS, .visionOS])),
                 .define("_DEFAULT_SOURCE"),
                 .define("_BSD_SOURCE"),
                 .define("_GNU_SOURCE"),
+                .unsafeFlags([
+                    "-fno-align-functions",
+                    "-fno-common",
+                    "-fpie",
+                    "-fno-omit-frame-pointer",
+                    "-fno-optimize-sibling-calls",
+                    "-fcf-protection=none",
+                    "-U_FORTIFY_SOURCE",
+                ]),
+                .unsafeFlags([
+                    "-fpatchable-function-entry=0,0",
+                    "-fno-stack-protector",
+                    "-fno-sanitize=all",
+                    "-fomit-frame-pointer",
+                    "-O2",
+                ], .when(configuration: .release)),
+                .unsafeFlags([
+                    "-O3",
+                ]),
             ],
             linkerSettings: [
-                .unsafeFlags([
-                    "-L", "Sources/CBlinkEmulator/lib",
-                    "-lblink",
-                ]),
                 .linkedLibrary("z"),
                 .linkedLibrary("m"),
             ]
