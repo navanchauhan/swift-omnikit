@@ -1,1 +1,1 @@
-#include "../CBlinkEmulator/vendor/blink/blink/uop.c"
+#include "blink/uop.c"

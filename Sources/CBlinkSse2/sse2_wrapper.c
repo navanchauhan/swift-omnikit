@@ -1,1 +1,1 @@
-#include "../CBlinkEmulator/vendor/blink/blink/sse2.c"
+#include "blink/sse2.c"

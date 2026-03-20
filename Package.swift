@@ -249,7 +249,6 @@ let package = Package(
             name: "CBlinkEmulator",
             dependencies: ["CBlinkUop", "CBlinkSse2"],
             path: "Sources/CBlinkEmulator",
-            exclude: [".build"],
             sources: ["blink_shim.c", "memvfs.c"] + blinkSourceFiles,
             publicHeadersPath: "include",
             cSettings: [
