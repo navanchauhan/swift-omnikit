@@ -6,7 +6,7 @@ import CompilerPluginSupport
 import Foundation
 
 let blinkSourcesRoot = URL(fileURLWithPath: "Sources/CBlinkEmulator/vendor/blink/blink")
-let excludedBlinkSources: Set<String> = ["blink.c", "blinkenlights.c"]
+let excludedBlinkSources: Set<String> = ["blink.c", "blinkenlights.c", "uop.c", "sse2.c"]
 let blinkSourceFiles: [String] = ((try? FileManager.default.contentsOfDirectory(atPath: blinkSourcesRoot.path)) ?? [])
     .filter { $0.hasSuffix(".c") && !excludedBlinkSources.contains($0) }
     .sorted()
@@ -188,7 +188,66 @@ let package = Package(
             swiftSettings: commonSwiftSettings
         ),
         .target(
+            name: "CBlinkUop",
+            path: "Sources/CBlinkUop",
+            cSettings: [
+                .headerSearchPath("../CBlinkEmulator/vendor/blink"),
+                .headerSearchPath("../CBlinkEmulator/config/linux", .when(platforms: [.linux])),
+                .headerSearchPath("../CBlinkEmulator/config/macos", .when(platforms: [.macOS])),
+                .headerSearchPath("../CBlinkEmulator/config/ios", .when(platforms: [.iOS, .tvOS, .watchOS, .visionOS])),
+                .define("NDEBUG"),
+                .define("_FILE_OFFSET_BITS", to: "64"),
+                .define("_DARWIN_C_SOURCE", .when(platforms: [.macOS])),
+                .define("_DARWIN_C_SOURCE", .when(platforms: [.iOS, .tvOS, .watchOS, .visionOS])),
+                .define("_DEFAULT_SOURCE"),
+                .define("_BSD_SOURCE"),
+                .define("_GNU_SOURCE"),
+                .unsafeFlags([
+                    "-fno-align-functions",
+                    "-fno-common",
+                    "-fpie",
+                    "-fno-omit-frame-pointer",
+                    "-fno-optimize-sibling-calls",
+                    "-fcf-protection=none",
+                    "-U_FORTIFY_SOURCE",
+                    "-fpatchable-function-entry=0,0",
+                    "-fno-stack-protector",
+                    "-fno-sanitize=all",
+                    "-O2",
+                    "-fomit-frame-pointer",
+                ]),
+            ]
+        ),
+        .target(
+            name: "CBlinkSse2",
+            path: "Sources/CBlinkSse2",
+            cSettings: [
+                .headerSearchPath("../CBlinkEmulator/vendor/blink"),
+                .headerSearchPath("../CBlinkEmulator/config/linux", .when(platforms: [.linux])),
+                .headerSearchPath("../CBlinkEmulator/config/macos", .when(platforms: [.macOS])),
+                .headerSearchPath("../CBlinkEmulator/config/ios", .when(platforms: [.iOS, .tvOS, .watchOS, .visionOS])),
+                .define("NDEBUG"),
+                .define("_FILE_OFFSET_BITS", to: "64"),
+                .define("_DARWIN_C_SOURCE", .when(platforms: [.macOS])),
+                .define("_DARWIN_C_SOURCE", .when(platforms: [.iOS, .tvOS, .watchOS, .visionOS])),
+                .define("_DEFAULT_SOURCE"),
+                .define("_BSD_SOURCE"),
+                .define("_GNU_SOURCE"),
+                .unsafeFlags([
+                    "-fno-align-functions",
+                    "-fno-common",
+                    "-fpie",
+                    "-fno-omit-frame-pointer",
+                    "-fno-optimize-sibling-calls",
+                    "-fcf-protection=none",
+                    "-U_FORTIFY_SOURCE",
+                    "-O3",
+                ]),
+            ]
+        ),
+        .target(
             name: "CBlinkEmulator",
+            dependencies: ["CBlinkUop", "CBlinkSse2"],
             path: "Sources/CBlinkEmulator",
             exclude: [".build"],
             sources: ["blink_shim.c", "memvfs.c"] + blinkSourceFiles,
@@ -214,16 +273,6 @@ let package = Package(
                     "-fno-optimize-sibling-calls",
                     "-fcf-protection=none",
                     "-U_FORTIFY_SOURCE",
-                ]),
-                .unsafeFlags([
-                    "-fpatchable-function-entry=0,0",
-                    "-fno-stack-protector",
-                    "-fno-sanitize=all",
-                    "-fomit-frame-pointer",
-                    "-O2",
-                ], .when(configuration: .release)),
-                .unsafeFlags([
-                    "-O3",
                 ]),
             ],
             linkerSettings: [
