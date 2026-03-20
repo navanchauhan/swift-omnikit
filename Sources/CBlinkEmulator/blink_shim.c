@@ -371,3 +371,75 @@ void blink_result_free(blink_run_result_t *result) {
     result->stderr_buf = NULL;
     result->stderr_len = 0;
 }
+
+// ── Interactive mode ────────────────────────────────────────────────────────
+// Child inherits stdin/stdout/stderr directly — no pipes, no capture.
+// Provides a fully interactive terminal experience.
+
+int blink_run_interactive(const blink_run_config_t *config) {
+    if (!config || !config->program_path || !config->argv) {
+        errno = EINVAL;
+        return -1;
+    }
+
+    pid_t pid = fork();
+    if (pid == -1) return -1;
+
+    if (pid == 0) {
+        // ── Child: stdin/stdout/stderr inherited from parent ────────────
+        WriteErrorInit();
+        InitMap();
+
+        FLAG_nolinear = true;
+
+#ifndef DISABLE_VFS
+        if (config->vfs_prefix) {
+            if (VfsInit(config->vfs_prefix)) {
+                _exit(127);
+            }
+        }
+#endif
+
+        InitBus();
+
+        char pathbuf[PATH_MAX];
+        strncpy(pathbuf, config->program_path, sizeof(pathbuf) - 1);
+        pathbuf[sizeof(pathbuf) - 1] = '\0';
+
+        int total_argc = config->argc;
+        char **child_argv = calloc((size_t)(total_argc + 1), sizeof(char *));
+        if (!child_argv) _exit(127);
+        for (int i = 0; i < total_argc; i++) {
+            child_argv[i] = (char *)config->argv[i];
+        }
+        child_argv[total_argc] = NULL;
+
+        char **child_envp;
+        if (config->envp && config->envc > 0) {
+            child_envp = calloc((size_t)(config->envc + 1), sizeof(char *));
+            if (!child_envp) _exit(127);
+            for (int i = 0; i < config->envc; i++) {
+                child_envp[i] = (char *)config->envp[i];
+            }
+            child_envp[config->envc] = NULL;
+        } else {
+            child_envp = calloc(1, sizeof(char *));
+            if (!child_envp) _exit(127);
+            child_envp[0] = NULL;
+        }
+
+        signal(SIGPIPE, SIG_IGN);
+        ShimExec(pathbuf, pathbuf, child_argv, child_envp);
+        _exit(127);
+    }
+
+    // ── Parent: wait for child to exit ──────────────────────────────────
+    int status = 0;
+    while (waitpid(pid, &status, 0) == -1) {
+        if (errno != EINTR) return -1;
+    }
+
+    if (WIFEXITED(status)) return WEXITSTATUS(status);
+    if (WIFSIGNALED(status)) return 128 + WTERMSIG(status);
+    return -1;
+}

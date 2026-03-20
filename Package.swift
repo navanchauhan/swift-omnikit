@@ -101,6 +101,10 @@ let package = Package(
             targets: ["OmniContainer"]
         ),
         .executable(
+            name: "OmniTerm",
+            targets: ["OmniTerm"]
+        ),
+        .executable(
             name: "KitchenSink",
             targets: ["KitchenSink"]
         ),
@@ -346,6 +350,17 @@ let package = Package(
             name: "AttractorCLI",
             dependencies: ["OmniAIAttractor"],
             path: "Sources/AttractorCLI",
+            swiftSettings: commonSwiftSettings
+        ),
+        .executableTarget(
+            name: "OmniTerm",
+            dependencies: [
+                "OmniVFS",
+                "OmniContainer",
+                "OmniExecution",
+                "CBlinkEmulator",
+            ],
+            path: "Sources/OmniTerm",
             swiftSettings: commonSwiftSettings
         ),
         .executableTarget(

@@ -66,6 +66,16 @@ int blink_run(const blink_run_config_t *config,
 /// Safe to call with NULL buffers.
 void blink_result_free(blink_run_result_t *result);
 
+/// Run an x86-64 ELF binary interactively with the user's terminal.
+///
+/// Unlike blink_run(), this function does NOT capture stdout/stderr.
+/// The child process inherits stdin/stdout/stderr directly, providing
+/// a fully interactive terminal experience (shell, apk, editors, etc.).
+///
+/// @param config  Emulation configuration (must not be NULL).
+/// @return Exit code from the emulated process, or -1 on error.
+int blink_run_interactive(const blink_run_config_t *config);
+
 #ifdef __cplusplus
 }
 #endif
