@@ -127,6 +127,18 @@ int blink_run_captured_memvfs(const blink_run_config_t *config,
                               int timeout_ms,
                               const flatvfs_t *vfs);
 
+/// Initialize blink's VFS with a pure in-memory filesystem.
+///
+/// Replaces VfsInit() — mounts the flatvfs as the root filesystem via a
+/// custom blink VfsSystem ("memfs"), with devfs at /dev and procfs at /proc.
+/// No disk writes occur; mutations go to an in-memory overlay.
+///
+/// Must be called from the forked child process before ShimExec.
+///
+/// @param vfs  The flat in-memory VFS (must not be NULL).
+/// @return 0 on success, non-zero on error.
+int OmniVfsInit(const flatvfs_t *vfs);
+
 #ifdef __cplusplus
 }
 #endif

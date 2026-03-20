@@ -445,105 +445,13 @@ int blink_run_interactive(const blink_run_config_t *config) {
     return -1;
 }
 
-// ── Flat VFS materialization ────────────────────────────────────────────────
-// Materializes a flatvfs_t to a temporary directory in the forked child.
-// This happens entirely in the child process — no disk I/O from the parent.
+// ── In-memory VFS child setup ───────────────────────────────────────────────
 
-/// Recursively create directories for a given path.
-static void mkdirs(const char *base, const char *relpath) {
-    char buf[PATH_MAX];
-    snprintf(buf, sizeof(buf), "%s/%s", base, relpath);
-    // Walk components
-    for (char *p = buf + strlen(base) + 1; *p; ++p) {
-        if (*p == '/') {
-            *p = '\0';
-            mkdir(buf, 0755);
-            *p = '/';
-        }
-    }
-    mkdir(buf, 0755);
-}
-
-/// Ensure parent directories exist for a file path.
-static void ensure_parent_dirs(const char *base, const char *relpath) {
-    char buf[PATH_MAX];
-    snprintf(buf, sizeof(buf), "%s/%s", base, relpath);
-    // Find last /
-    char *last_slash = strrchr(buf, '/');
-    if (last_slash && last_slash > buf + (int)strlen(base)) {
-        *last_slash = '\0';
-        // Recursively create
-        for (char *p = buf + strlen(base) + 1; *p; ++p) {
-            if (*p == '/') {
-                *p = '\0';
-                mkdir(buf, 0755);
-                *p = '/';
-            }
-        }
-        mkdir(buf, 0755);
-    }
-}
-
-/// Materialize a flat VFS to a directory. Called in the forked child only.
-static int materialize_flatvfs(const flatvfs_t *vfs, const char *destdir) {
-    if (!vfs || !destdir) return -1;
-    mkdir(destdir, 0755);
-
-    for (int i = 0; i < vfs->entry_count; i++) {
-        const flatvfs_entry_t *e = &vfs->entries[i];
-        if (!e->path) continue;
-
-        char fullpath[PATH_MAX];
-        snprintf(fullpath, sizeof(fullpath), "%s/%s", destdir, e->path);
-
-        switch (e->type) {
-        case FLATVFS_DIR:
-            mkdirs(destdir, e->path);
-            break;
-        case FLATVFS_FILE: {
-            ensure_parent_dirs(destdir, e->path);
-            int fd = open(fullpath, O_WRONLY | O_CREAT | O_TRUNC, e->mode ? e->mode : 0644);
-            if (fd == -1) continue;
-            if (e->data && e->data_size > 0) {
-                size_t written = 0;
-                while (written < e->data_size) {
-                    ssize_t n = write(fd, e->data + written, e->data_size - written);
-                    if (n <= 0) break;
-                    written += (size_t)n;
-                }
-            }
-            // Set executable bit if mode has it
-            if (e->mode & 0111) {
-                fchmod(fd, e->mode | 0755);
-            }
-            close(fd);
-            break;
-        }
-        case FLATVFS_SYMLINK:
-            if (e->symlink_target) {
-                ensure_parent_dirs(destdir, e->path);
-                symlink(e->symlink_target, fullpath);
-            }
-            break;
-        }
-    }
-    return 0;
-}
-
-/// Common child setup for memvfs: materialize, init blink, build args.
-/// Returns the child process's argv/envp via out params. _exits on failure.
+/// Common child setup for memvfs: init blink with in-memory VFS.
+/// Uses OmniVfsInit to mount the flatvfs directly — no disk writes.
 static void memvfs_child_setup(const blink_run_config_t *config,
-                                const flatvfs_t *vfs,
-                                char *tempdir_buf,
-                                size_t tempdir_bufsz) {
-    // Build temp dir path
-    snprintf(tempdir_buf, tempdir_bufsz,
-             "/tmp/omnikit-memvfs-%d", (int)getpid());
-
-    // Materialize flatvfs to temp dir
-    if (materialize_flatvfs(vfs, tempdir_buf) != 0) {
-        _exit(127);
-    }
+                                const flatvfs_t *vfs) {
+    (void)config;
 
     // Initialize blink subsystems.
     WriteErrorInit();
@@ -551,7 +459,7 @@ static void memvfs_child_setup(const blink_run_config_t *config,
     FLAG_nolinear = true;
 
 #ifndef DISABLE_VFS
-    if (VfsInit(tempdir_buf)) {
+    if (OmniVfsInit(vfs)) {
         _exit(127);
     }
 #endif
@@ -575,9 +483,8 @@ int blink_run_memvfs(const blink_run_config_t *config, const flatvfs_t *vfs) {
     if (pid == -1) return -1;
 
     if (pid == 0) {
-        // ── Child: materialize + run ────────────────────────────────────
-        char tempdir[PATH_MAX];
-        memvfs_child_setup(config, vfs, tempdir, sizeof(tempdir));
+        // ── Child: init in-memory VFS + run ─────────────────────────────
+        memvfs_child_setup(config, vfs);
 
         char pathbuf[PATH_MAX];
         strncpy(pathbuf, config->program_path, sizeof(pathbuf) - 1);
@@ -662,8 +569,7 @@ int blink_run_captured_memvfs(const blink_run_config_t *config,
         close(stdout_pipe[1]);
         close(stderr_pipe[1]);
 
-        char tempdir[PATH_MAX];
-        memvfs_child_setup(config, vfs, tempdir, sizeof(tempdir));
+        memvfs_child_setup(config, vfs);
 
         char pathbuf[PATH_MAX];
         strncpy(pathbuf, config->program_path, sizeof(pathbuf) - 1);

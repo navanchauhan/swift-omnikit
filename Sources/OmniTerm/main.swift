@@ -193,7 +193,11 @@ struct OmniTermMain {
         fflush(stdout)
         fflush(stderr)
 
-        // 7. Call blink_run_memvfs — child inherits our terminal
+        // 7. Call blink_run_memvfs directly.
+        //    chdir to "/" first to avoid getcwd issues in the forked child.
+        let savedCwd = FileManager.default.currentDirectoryPath
+        FileManager.default.changeCurrentDirectoryPath("/")
+
         let exitCode: Int32 = argv.withCArrayOfCStrings { cArgv in
             env.withCArrayOfCStrings { cEnv in
                 guestProgramPath.withCString { cProgram in
