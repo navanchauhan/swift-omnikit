@@ -145,6 +145,17 @@ struct OmniTermMain {
             namespace.bind(src: diskFS, srcPath: ".", dstPath: "workspace", mode: .replace)
         }
 
+        // Inject DNS config from host so networking works inside the container
+        if config.networkEnabled {
+            // Read host resolv.conf
+            var resolvConf = "nameserver 8.8.8.8\nnameserver 8.8.4.4\n"
+            if let hostResolv = try? String(contentsOfFile: "/etc/resolv.conf", encoding: .utf8) {
+                resolvConf = hostResolv
+            }
+            try? overlay.mkdir("etc")
+            try? overlay.writeFile("etc/resolv.conf", data: Array(resolvConf.utf8))
+        }
+
         // 3. Build flat in-memory VFS (no disk I/O from Swift)
         print("Building in-memory VFS...")
         let flatVFS = FlatVFS.from(namespace: namespace)
