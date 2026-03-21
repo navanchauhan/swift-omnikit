@@ -19,11 +19,14 @@ struct ApkInstallTests {
         try await container.writeFile(path: "etc/resolv.conf", content: resolvConf)
 
         let result = try await container.exec(
-            command: "apk add ripgrep && rg --version",
+            command: "apk add ripgrep && pwd && rg 'Alpine Linux' etc/os-release && rg --version",
             timeoutMs: 180_000
         )
 
         #expect(result.exitCode == 0)
+        #expect(result.stdout.contains("\n/\n") || result.stdout.hasPrefix("/\n"))
+        #expect(!result.stdout.contains("/SystemRoot"))
+        #expect(result.stdout.contains("Alpine Linux"))
         #expect(result.stdout.contains("ripgrep"))
         #expect(result.stdout.contains("14.1.1") || result.stdout.contains("14."))
     }

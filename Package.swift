@@ -261,6 +261,12 @@ let package = Package(
                 .define("BLINK_COMMITS", to: "\"1\""),
                 .define("BLINK_UNAME_V", to: "\"OmniKit\""),
                 .define("BUILD_TIMESTAMP", to: "\"2026\""),
+                // Route blink's internal exit() calls through the embedder so
+                // non-fork runtimes can unwind without terminating the app.
+                .define("exit", to: "blink_host_exit"),
+                // Apple mobile platforms cannot rely on Blink's JIT path in
+                // normal app sandboxes, so force interpreter mode there.
+                .define("DISABLE_JIT", .when(platforms: [.iOS, .tvOS, .watchOS, .visionOS])),
                 .define("NDEBUG"),
                 .define("_FILE_OFFSET_BITS", to: "64"),
                 .define("_DARWIN_C_SOURCE", .when(platforms: [.macOS])),

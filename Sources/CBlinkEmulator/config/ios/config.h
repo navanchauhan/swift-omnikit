@@ -1,7 +1,7 @@
 #ifndef BLINK_CONFIG_H_
 #define BLINK_CONFIG_H_
 
-// #define DISABLE_JIT
+#define DISABLE_JIT
 // #define DISABLE_X87
 // #define DISABLE_THREADS
 // #define DISABLE_SOCKETS
@@ -36,15 +36,15 @@
 // #define HAVE_MKFIFOAT
 #define HAVE_REALPATH
 // #define HAVE_SETREUID
-#define HAVE_FDATASYNC
+// #define HAVE_FDATASYNC
 #define HAVE_STRCHRNUL
 #define HAVE_VASPRINTF
 // #define HAVE_SETRESUID
 #define HAVE_KERN_ARND
-#define HAVE_GETRANDOM
+// #define HAVE_GETRANDOM
 // #define HAVE_SETGROUPS
 // #define HAVE_LIBUNWIND
-#define HAVE_GETENTROPY
+// #define HAVE_GETENTROPY
 #define HAVE_MAP_SHARED
 // #define HAVE_SENDTO_ZERO
 #define HAVE_SIOCGIFCONF

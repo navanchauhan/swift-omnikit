@@ -113,8 +113,11 @@ LVGL renderer.
 - Blink is vendored as a git submodule at `Sources/CBlinkEmulator/vendor/blink`.
 - Initialize submodules before building products that depend on blink:
   - `git submodule update --init --recursive`
-- Linux and macOS use the full embedded blink runtime.
-- Apple mobile platforms build the module with a process-model stub; blink entry points return `ENOTSUP` there until a non-`fork()` runtime is implemented.
+- Apply OmniKit's local Blink patches after syncing the submodule:
+  - `./scripts/apply_blink_patches.sh`
+- Local Blink deltas are stored as patch files in `Sources/CBlinkEmulator/blink-patches/` rather than as direct commits on the upstream `jart/blink` remote.
+- Linux and macOS keep the fork-isolated embedded blink runtime.
+- Apple mobile platforms use an in-process non-`fork()` blink runtime with the JIT path disabled so the container runtime can build inside app sandboxes.
 
 ## OmniAICore Details
 

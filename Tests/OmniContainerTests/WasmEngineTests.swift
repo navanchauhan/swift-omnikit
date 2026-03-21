@@ -103,11 +103,36 @@ struct WasmEngineTests {
     }
 }
 
-@Suite("BlinkRuntime")
+@Suite("BlinkRuntime", .serialized)
 struct BlinkRuntimeTests {
 
     private func blinkAvailable() -> Bool {
         FileManager.default.fileExists(atPath: "/opt/homebrew/bin/blink")
+    }
+
+    private func blinkFixtureRoot() -> URL {
+        URL(filePath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .appending(path: "Sources/CBlinkEmulator/vendor/blink/third_party/cosmo")
+    }
+
+    private func tinyHelloFixtureURL() -> URL {
+        blinkFixtureRoot().appending(path: "tinyhello.elf")
+    }
+
+    private func makeBlinkFixtureNamespace() -> VFSNamespace {
+        let diskFS = DiskFS(root: blinkFixtureRoot().path)
+        var namespace = VFSNamespace()
+        namespace.bind(src: diskFS, dstPath: ".", mode: .replace)
+        return namespace
+    }
+
+    private func withForcedNoForkBlink<T>(_ body: () async throws -> T) async throws -> T {
+        setenv("OMNIKIT_BLINK_FORCE_NOFORK", "1", 1)
+        defer { unsetenv("OMNIKIT_BLINK_FORCE_NOFORK") }
+        return try await body()
     }
 
     @Test("canExecute recognizes ELF")
@@ -149,6 +174,64 @@ struct BlinkRuntimeTests {
         let runtime = BlinkRuntime(blinkPath: "/opt/homebrew/bin/blink")
         let elfMagic: [UInt8] = [0x7f, 0x45, 0x4c, 0x46, 0x02, 0x01, 0x01, 0x00]
         #expect(runtime.canExecute(elfMagic))
+    }
+
+    @Test("forced no-fork runtime executes vendored tinyhello")
+    func executeTinyHelloNoFork() async throws {
+        guard FileManager.default.fileExists(atPath: tinyHelloFixtureURL().path) else {
+            return
+        }
+
+        let result = try await withForcedNoForkBlink {
+            let runtime = BlinkRuntime()
+            return try await runtime.execute(
+                binaryPath: "/tinyhello.elf",
+                args: [],
+                env: [:],
+                workingDir: "/",
+                namespace: makeBlinkFixtureNamespace(),
+                timeoutMs: 10_000
+            )
+        }
+
+        #expect(result.exitCode == 0)
+        #expect(result.stdout.localizedStandardContains("hello"))
+        #expect(!result.timedOut)
+    }
+
+    @Test("forced no-fork runtime can execute repeatedly")
+    func executeTinyHelloNoForkTwice() async throws {
+        guard FileManager.default.fileExists(atPath: tinyHelloFixtureURL().path) else {
+            return
+        }
+
+        let results = try await withForcedNoForkBlink {
+            let runtime = BlinkRuntime()
+            let namespace = makeBlinkFixtureNamespace()
+
+            let first = try await runtime.execute(
+                binaryPath: "/tinyhello.elf",
+                args: [],
+                env: [:],
+                workingDir: "/",
+                namespace: namespace,
+                timeoutMs: 10_000
+            )
+            let second = try await runtime.execute(
+                binaryPath: "/tinyhello.elf",
+                args: [],
+                env: [:],
+                workingDir: "/",
+                namespace: namespace,
+                timeoutMs: 10_000
+            )
+            return [first, second]
+        }
+
+        #expect(results.count == 2)
+        #expect(results.allSatisfy { $0.exitCode == 0 })
+        #expect(results.allSatisfy { $0.stdout.localizedStandardContains("hello") })
+        #expect(results.allSatisfy { !$0.timedOut })
     }
 }
 

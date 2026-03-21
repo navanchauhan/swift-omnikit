@@ -7,12 +7,12 @@ import CBlinkEmulator
 ///
 /// Uses a vendored static build of blink (https://github.com/jart/blink) linked
 /// directly into the process, eliminating the need for an external `blink` binary.
-/// Execution is fork-isolated: each run spawns a child process that loads the ELF
-/// binary into blink's x86-64 VM, captures stdout/stderr via pipes, and returns
-/// the exit code to the parent.
+/// On hosts with `fork()`, execution stays child-process isolated. Apple mobile
+/// platforms fall back to an in-process runtime because app sandboxes cannot use
+/// the fork-based model.
 ///
 /// The VFS namespace is materialized into a flat in-memory representation (FlatVFS)
-/// on the Swift side — zero disk I/O from the parent process. The forked child
+/// on the Swift side — zero disk I/O from the parent process. The blink shim
 /// writes the flat VFS to a temp directory for blink's VFS layer to consume.
 public final class BlinkRuntime: ContainerRuntime, Sendable {
 
@@ -55,7 +55,7 @@ public final class BlinkRuntime: ContainerRuntime, Sendable {
         }
         let envStrings = envStringsMut
 
-        // 5. Call blink via the C shim with in-memory VFS (fork-isolated)
+        // 5. Call blink via the C shim with in-memory VFS.
         let result: ExecResult = try await withCheckedThrowingContinuation { continuation in
             DispatchQueue(
                 label: "omnikit.blink.exec.\(UUID().uuidString)"

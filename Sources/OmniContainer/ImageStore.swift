@@ -27,8 +27,12 @@ public actor ImageStore {
     )
 
     public init() {
+#if os(iOS) || os(tvOS) || os(watchOS) || os(visionOS)
+        self.cacheDir = URL.cachesDirectory.appending(path: "omnikit/images", directoryHint: .isDirectory)
+#else
         let home = FileManager.default.homeDirectoryForCurrentUser
-        self.cacheDir = home.appendingPathComponent(".omnikit/images")
+        self.cacheDir = home.appending(path: ".omnikit/images", directoryHint: .isDirectory)
+#endif
     }
 
     /// Resolve an image reference to a VFS (TarFS backed by cached rootfs).
@@ -44,7 +48,7 @@ public actor ImageStore {
 
     private func fetchOrLoadFromDisk(_ ref: String) async throws -> Data {
         // Check disk cache
-        let cacheFile = cacheDir.appendingPathComponent(sanitizeRef(ref) + ".tar.gz")
+        let cacheFile = cacheDir.appending(path: sanitizeRef(ref) + ".tar.gz")
         if FileManager.default.fileExists(atPath: cacheFile.path) {
             return try Data(contentsOf: cacheFile)
         }
@@ -67,29 +71,11 @@ public actor ImageStore {
     }
 
     private func sanitizeRef(_ ref: String) -> String {
-        ref.replacingOccurrences(of: "/", with: "_")
-           .replacingOccurrences(of: ":", with: "_")
+        ref.replacing("/", with: "_")
+           .replacing(":", with: "_")
     }
 
     private func decompressGzip(_ data: Data) throws -> Data {
-        // Shell out to gunzip for reliable gzip decompression
-        let tempIn = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString + ".tar.gz")
-        try data.write(to: tempIn)
-        defer { try? FileManager.default.removeItem(at: tempIn) }
-
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/usr/bin/gunzip")
-        process.arguments = ["-c", tempIn.path]
-        let pipe = Pipe()
-        process.standardOutput = pipe
-        try process.run()
-        let decompressed = pipe.fileHandleForReading.readDataToEndOfFile()
-        process.waitUntilExit()
-
-        guard process.terminationStatus == 0 else {
-            throw VFSError.notSupported("gunzip failed with exit code \(process.terminationStatus)")
-        }
-
-        return decompressed
+        try GzipDecoder.decompress(data)
     }
 }

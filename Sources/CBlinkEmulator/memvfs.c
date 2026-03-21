@@ -1721,12 +1721,15 @@ static int MemvfsSymlink(const char *target, struct VfsInfo *dir,
 // ── OmniVfsInit — materialize flatvfs to tmpdir, then use VfsInit ──────────
 // The flatvfs is in-memory in the parent. After fork, the child has a copy.
 // We materialize to a tmpdir in the child (ephemeral, dies with process),
-// then use blink's standard VfsInit which is safe in a clean forked child.
+// then use blink's standard VfsInit in a container mode that keeps the host
+// system root hidden from the guest namespace.
 
 // Forward declaration of materialize function (defined below)
 static int materialize_flatvfs_to_dir(const flatvfs_t *vfs, const char *destdir);
 
 int OmniVfsInit(const flatvfs_t *vfs) {
+    int rc;
+
     if (!vfs) return -1;
 
     // Build a unique temp dir for this child
@@ -1738,8 +1741,12 @@ int OmniVfsInit(const flatvfs_t *vfs) {
         return -1;
     }
 
-    // Use blink's standard VfsInit with the temp dir as prefix
-    return VfsInit(tempdir);
+    // Use blink's standard VfsInit with the temp dir as prefix, but skip the
+    // extra host root mount so the guest stays inside the materialized tree.
+    setenv("OMNIKIT_VFS_NO_SYSTEMROOT", "1", 1);
+    rc = VfsInit(tempdir);
+    unsetenv("OMNIKIT_VFS_NO_SYSTEMROOT");
+    return rc;
 }
 
 /// Recursively create parent directories for a path.
