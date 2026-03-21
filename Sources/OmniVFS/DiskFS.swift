@@ -129,6 +129,19 @@ public final class DiskFS: @unchecked Sendable, VFSFullFS {
     public func resolveFS(_ path: String) throws -> (any VFS, String) {
         return (self, path)
     }
+
+    /// Returns a stable host path for mounting this subtree directly into blink.
+    public func mountSourcePath(for path: String = ".") throws -> String {
+        let mapped = try hostPath(path)
+        let baseURL: URL
+        if mapped.hasPrefix("/") {
+            baseURL = URL(fileURLWithPath: mapped)
+        } else {
+            baseURL = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
+                .appending(path: mapped)
+        }
+        return baseURL.standardizedFileURL.path
+    }
 }
 
 /// File handle for DiskFS.

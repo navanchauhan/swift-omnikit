@@ -7,10 +7,16 @@ import Foundation
 
 let blinkSourcesRoot = URL(fileURLWithPath: "Sources/CBlinkEmulator/vendor/blink/blink")
 let excludedBlinkSources: Set<String> = ["blink.c", "blinkenlights.c", "uop.c", "sse2.c", "oneoff.c"]
-let blinkSourceFiles: [String] = ((try? FileManager.default.contentsOfDirectory(atPath: blinkSourcesRoot.path)) ?? [])
-    .filter { $0.hasSuffix(".c") && !excludedBlinkSources.contains($0) }
+let requiredBlinkSourceFiles: Set<String> = [
+    "vendor/blink/blink/epollfd.c",
+    "vendor/blink/blink/eventfd.c",
+]
+let blinkSourceFiles: [String] = Set(
+    ((try? FileManager.default.contentsOfDirectory(atPath: blinkSourcesRoot.path)) ?? [])
+        .filter { $0.hasSuffix(".c") && !excludedBlinkSources.contains($0) }
+        .map { "vendor/blink/blink/\($0)" }
+).union(requiredBlinkSourceFiles)
     .sorted()
-    .map { "vendor/blink/blink/\($0)" }
 
 let commonSwiftSettings: [SwiftSetting] = [
     .unsafeFlags(["-warn-concurrency", "-strict-concurrency=complete"]),

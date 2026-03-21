@@ -144,7 +144,7 @@ public actor ContainerActor {
             workingDir: resolvedWorkDir
         )
 
-        // Shell commands go through blink's /bin/sh
+        // Shell commands go through Blink's /bin/sh.
         return try await blinkRuntime.executeShell(
             command: ([command] + args).joined(separator: " "),
             env: session.env,

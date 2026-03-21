@@ -8,9 +8,11 @@
 #include "include/CBlinkEmulator.h"
 #include "omni_fdfs.h"
 
+#include <ctype.h>
 #include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
+#include <inttypes.h>
 #include <limits.h>
 #include <pthread.h>
 #include <signal.h>
@@ -38,6 +40,7 @@
 #include "blink/x86.h"
 #include "blink/util.h"
 #include "blink/fds.h"
+#include "blink/flag.h"
 
 struct OmniNoForkContext {
     sigjmp_buf escape;
@@ -50,6 +53,17 @@ struct OmniNoForkContext {
 };
 
 static _Thread_local struct OmniNoForkContext *g_nofork_context = NULL;
+struct Machine *m = NULL;
+
+struct BlinkExecRequest {
+    char *execfn;
+    char *prog;
+    char **argv;
+    char **envp;
+    bool pending;
+};
+
+static _Thread_local struct BlinkExecRequest g_exec_request;
 
 struct BlinkFatalSignalHandlers {
     struct sigaction sigbus;
@@ -59,8 +73,292 @@ struct BlinkFatalSignalHandlers {
     bool installed;
 };
 
+struct BlinkRuntimeSignalHandlers {
+#ifdef HAVE_THREADS
+    struct sigaction sigsys;
+    bool have_sigsys;
+#endif
+    struct sigaction sigint;
+    bool have_sigint;
+    struct sigaction sigquit;
+    bool have_sigquit;
+    struct sigaction sighup;
+    bool have_sighup;
+    struct sigaction sigterm;
+    bool have_sigterm;
+    struct sigaction sigxcpu;
+    bool have_sigxcpu;
+    struct sigaction sigxfsz;
+    bool have_sigxfsz;
+    struct BlinkFatalSignalHandlers fatal;
+};
+
 static void nofork_context_detach_current_machine(struct OmniNoForkContext *context,
                                                   struct Machine *machine);
+static void restore_blink_runtime_signal_handlers(
+    const struct BlinkRuntimeSignalHandlers *saved);
+
+static void dump_guest_bytes(const char *label, struct Machine *machine, i64 addr) {
+    u8 *code;
+    int i;
+
+    if (!machine || !addr) return;
+    code = SpyAddress(machine, addr);
+    if (!code) {
+        fprintf(stderr, "[terminate] %s_bytes=<unmapped>\n", label);
+        return;
+    }
+
+    fprintf(stderr, "[terminate] %s_bytes=", label);
+    for (i = 0; i < 16; ++i) {
+        fprintf(stderr, "%s%02x", i ? " " : "", code[i]);
+    }
+    fprintf(stderr, "\n");
+}
+
+static void free_cstring_list(char **list) {
+    if (!list) return;
+    for (size_t i = 0; list[i]; ++i) {
+        free(list[i]);
+    }
+    free(list);
+}
+
+static void clear_exec_request(void) {
+    free(g_exec_request.execfn);
+    free(g_exec_request.prog);
+    free_cstring_list(g_exec_request.argv);
+    free_cstring_list(g_exec_request.envp);
+    memset(&g_exec_request, 0, sizeof(g_exec_request));
+}
+
+static char **dup_cstring_list(char **list) {
+    size_t count = 0;
+    char **copy;
+
+    if (!list) return NULL;
+    while (list[count]) {
+        ++count;
+    }
+    copy = calloc(count + 1, sizeof(*copy));
+    if (!copy) return NULL;
+    for (size_t i = 0; i < count; ++i) {
+        copy[i] = strdup(list[i]);
+        if (!copy[i]) {
+            free_cstring_list(copy);
+            return NULL;
+        }
+    }
+    copy[count] = NULL;
+    return copy;
+}
+
+static void fail_exec_request_setup(void) {
+    clear_exec_request();
+    if (g_nofork_context) {
+        blink_host_exit(127);
+    }
+    _exit(127);
+}
+
+static void stash_exec_request(char *execfn, char *prog, char **argv, char **envp) {
+    clear_exec_request();
+    g_exec_request.execfn = execfn ? strdup(execfn) : NULL;
+    g_exec_request.prog = prog ? strdup(prog) : NULL;
+    g_exec_request.argv = dup_cstring_list(argv);
+    g_exec_request.envp = dup_cstring_list(envp);
+    if ((execfn && !g_exec_request.execfn) || (prog && !g_exec_request.prog) ||
+        (argv && !g_exec_request.argv) || (envp && !g_exec_request.envp)) {
+        fail_exec_request_setup();
+    }
+    g_exec_request.pending = true;
+}
+
+static int queue_exec_request(char *execfn, char *prog, char **argv, char **envp) {
+    struct Machine *machine = g_machine;
+
+    unassert(machine);
+    stash_exec_request(execfn, prog, argv, envp);
+#ifdef HAVE_JIT
+    DisableJit(&machine->system->jit);
+#endif
+    HaltMachine(machine, kMachineExecTrap);
+}
+
+static void configure_exec_machine(struct Machine *machine) {
+    g_machine = machine;
+    m = machine;
+    if (getenv("OMNIKIT_BLINK_STRACE")) {
+        FLAG_strace = 1;
+    }
+    machine->system->trapexit = true;
+    machine->system->embedded_exit_fastpath = (g_nofork_context == NULL);
+    machine->system->exec = queue_exec_request;
+}
+
+static bool should_canonicalize_node_argv0(const char *prog, char **argv) {
+#if defined(__APPLE__) && (defined(__aarch64__) || defined(__arm64__))
+    const char *base;
+
+    if (!prog || !argv || !argv[0] || strchr(argv[0], '/')) {
+        return false;
+    }
+
+    base = strrchr(prog, '/');
+    base = base ? base + 1 : prog;
+    return (!strcmp(base, "node") || !strcmp(base, "nodejs")) &&
+           !strcmp(argv[0], base);
+#else
+    (void)prog;
+    (void)argv;
+    return false;
+#endif
+}
+
+static bool is_node_binary_name(const char *prog) {
+    const char *base;
+
+    if (!prog) {
+        return false;
+    }
+
+    base = strrchr(prog, '/');
+    base = base ? base + 1 : prog;
+    return !strcmp(base, "node") || !strcmp(base, "nodejs");
+}
+
+static bool is_env_node_program(const char *prog, char **argv) {
+#if defined(__APPLE__) && (defined(__aarch64__) || defined(__arm64__))
+    const char *base;
+    const char *subprogram;
+
+    if (!prog) {
+        return false;
+    }
+
+    base = strrchr(prog, '/');
+    base = base ? base + 1 : prog;
+    if (!strcmp(base, "env") && argv && argv[1]) {
+        subprogram = strrchr(argv[1], '/');
+        subprogram = subprogram ? subprogram + 1 : argv[1];
+        return is_node_binary_name(subprogram);
+    }
+    return false;
+#else
+    (void)prog;
+    (void)argv;
+    return false;
+#endif
+}
+
+static bool is_node_program(const char *prog, char **argv) {
+    return is_node_binary_name(prog) || is_env_node_program(prog, argv);
+}
+
+static bool should_disable_host_jit_for_program(const char *prog, char **argv) {
+#if defined(__APPLE__) && (defined(__aarch64__) || defined(__arm64__))
+    static int disable_node_host_jit = -1;
+
+    if (disable_node_host_jit == -1) {
+        disable_node_host_jit =
+            getenv("OMNIKIT_BLINK_ALLOW_NODE_HOST_JIT") == NULL;
+    }
+    return disable_node_host_jit && is_node_program(prog, argv);
+#else
+    (void)prog;
+    (void)argv;
+    return false;
+#endif
+}
+
+static void load_exec_program(struct Machine *machine, char *execfn,
+                              char *prog, char **argv, char **envp) {
+    bool debug = getenv("OMNIKIT_DEBUG_EXEC_LOOP") != NULL;
+
+    if (debug) {
+        fprintf(stderr, "[exec-loop] load_exec_program prog=%s argv0=%s\n",
+                prog ? prog : "<null>",
+                (argv && argv[0]) ? argv[0] : "<null>");
+        fflush(stderr);
+    }
+#ifdef HAVE_JIT
+    if (getenv("OMNIKIT_BLINK_NOJIT")) {
+        DisableJit(&machine->system->jit);
+    }
+#endif
+
+    // macOS/arm64 still hits a Blink JIT bug on Node/V8 startup when the
+    // interpreter is launched with argv[0]="node" via /usr/bin/env.
+    // Canonicalizing argv[0] to the resolved program path keeps Linux hosts
+    // unchanged while making JS CLI stubs usable on Apple hosts.
+    if (should_canonicalize_node_argv0(prog, argv)) {
+        if (argv == g_exec_request.argv) {
+            char *canonical_argv0 = strdup(prog);
+            if (!canonical_argv0) {
+                _exit(127);
+            }
+            free(argv[0]);
+            argv[0] = canonical_argv0;
+        } else {
+            argv[0] = prog;
+        }
+    }
+
+#ifdef HAVE_JIT
+    // Node/V8 remains unstable under the host-side Blink JIT on Apple arm64,
+    // even after fixing guest anonymous-exec handling. Keep Blink JIT for
+    // general workloads, but run the Node interpreter via the stable
+    // interpreter path so JS CLIs like npm/Codex can actually execute.
+    if (should_disable_host_jit_for_program(prog, argv)) {
+        DisableJit(&machine->system->jit);
+    }
+#endif
+    LoadProgram(machine, execfn, prog, argv, envp, NULL);
+    SetupCod(machine);
+    for (int i = 0; i < 10; ++i) {
+        AddStdFd(&machine->system->fds, i);
+    }
+    if (debug) {
+        fprintf(stderr, "[exec-loop] load_exec_program complete ip=%#" PRIx64 "\n",
+                machine->ip);
+        fflush(stderr);
+    }
+}
+
+static void teardown_exec_source(struct Machine *old) {
+    sigset_t oldmask;
+    bool debug = getenv("OMNIKIT_DEBUG_EXEC_LOOP") != NULL;
+
+    if (debug) {
+        fprintf(stderr, "[exec-loop] tearing down old=%p\n", (void *)old);
+        fflush(stderr);
+    }
+    if (old->threaded) {
+        KillOtherThreads(old->system);
+    }
+    if (debug) {
+        fprintf(stderr, "[exec-loop] after KillOtherThreads\n");
+        fflush(stderr);
+    }
+#ifdef HAVE_JIT
+    DisableJit(&old->system->jit);
+#endif
+    if (debug) {
+        fprintf(stderr, "[exec-loop] after old jit disable\n");
+        fflush(stderr);
+    }
+    memcpy(&oldmask, &old->system->exec_sigmask, sizeof(oldmask));
+    UNLOCK(&old->system->exec_lock);
+    FreeMachine(old);
+#ifdef HAVE_JIT
+    ShutdownJit();
+#endif
+    unassert(!pthread_sigmask(SIG_SETMASK, &oldmask, 0));
+    if (debug) {
+        fprintf(stderr, "[exec-loop] old teardown complete\n");
+        fflush(stderr);
+    }
+}
 
 #if !defined(__SANITIZE_THREAD__) && !defined(__SANITIZE_ADDRESS__) && \
     !defined(__FILC__)
@@ -76,6 +374,17 @@ static void OmniOnFatalSystemSignal(int sig, siginfo_t *si, void *ptr) {
 #endif
 
 #ifndef DISABLE_JIT
+    if (g_exec_request.pending && sig == SIGTRAP) {
+        return;
+    }
+    if (getenv("OMNIKIT_DEBUG_FATAL_SIG")) {
+        fprintf(stderr,
+                "[fatal-handler] sig=%d code=%d addr=%p ip=%#" PRIx64
+                " pending_exec=%d\n",
+                sig, si ? si->si_code : 0, si ? si->si_addr : NULL,
+                machine ? machine->ip : 0, g_exec_request.pending ? 1 : 0);
+        fflush(stderr);
+    }
     if (machine && IsSelfModifyingCodeSegfault(machine, si)) {
         return;
     }
@@ -131,6 +440,98 @@ static void restore_blink_fatal_signal_handlers(
 }
 #endif
 
+static bool should_install_blink_fatal_signal_handlers(void) {
+    return getenv("OMNIKIT_BLINK_DISABLE_FATAL_HANDLERS") == NULL;
+}
+
+static void OmniOnSigSys(int sig) {
+    (void)sig;
+}
+
+static int install_blink_runtime_signal_handlers(
+    struct BlinkRuntimeSignalHandlers *saved) {
+    struct sigaction sa;
+
+    memset(saved, 0, sizeof(*saved));
+
+#ifdef HAVE_THREADS
+    sigfillset(&sa.sa_mask);
+    sa.sa_flags = 0;
+    sa.sa_handler = OmniOnSigSys;
+    if (sigaction(SIGSYS, &sa, &saved->sigsys) == -1) {
+        return -1;
+    }
+    saved->have_sigsys = true;
+#endif
+
+    sigfillset(&sa.sa_mask);
+    sa.sa_flags = SA_SIGINFO;
+    sa.sa_sigaction = OnSignal;
+    if (sigaction(SIGINT, &sa, &saved->sigint) == -1) {
+        goto fail;
+    }
+    saved->have_sigint = true;
+    if (sigaction(SIGQUIT, &sa, &saved->sigquit) == -1) {
+        goto fail;
+    }
+    saved->have_sigquit = true;
+    if (sigaction(SIGHUP, &sa, &saved->sighup) == -1) {
+        goto fail;
+    }
+    saved->have_sighup = true;
+    if (sigaction(SIGTERM, &sa, &saved->sigterm) == -1) {
+        goto fail;
+    }
+    saved->have_sigterm = true;
+    if (sigaction(SIGXCPU, &sa, &saved->sigxcpu) == -1) {
+        goto fail;
+    }
+    saved->have_sigxcpu = true;
+    if (sigaction(SIGXFSZ, &sa, &saved->sigxfsz) == -1) {
+        goto fail;
+    }
+    saved->have_sigxfsz = true;
+
+    if (should_install_blink_fatal_signal_handlers() &&
+        install_blink_fatal_signal_handlers(&saved->fatal) == -1) {
+        goto fail;
+    }
+
+    return 0;
+
+fail:
+    restore_blink_runtime_signal_handlers(saved);
+    return -1;
+}
+
+static void restore_blink_runtime_signal_handlers(
+    const struct BlinkRuntimeSignalHandlers *saved) {
+    restore_blink_fatal_signal_handlers(&saved->fatal);
+    if (saved->have_sigxfsz) {
+        sigaction(SIGXFSZ, &saved->sigxfsz, NULL);
+    }
+    if (saved->have_sigxcpu) {
+        sigaction(SIGXCPU, &saved->sigxcpu, NULL);
+    }
+    if (saved->have_sigterm) {
+        sigaction(SIGTERM, &saved->sigterm, NULL);
+    }
+    if (saved->have_sighup) {
+        sigaction(SIGHUP, &saved->sighup, NULL);
+    }
+    if (saved->have_sigquit) {
+        sigaction(SIGQUIT, &saved->sigquit, NULL);
+    }
+    if (saved->have_sigint) {
+        sigaction(SIGINT, &saved->sigint, NULL);
+    }
+#ifdef HAVE_THREADS
+    if (saved->have_sigsys) {
+        sigaction(SIGSYS, &saved->sigsys, NULL);
+    }
+#endif
+}
+
 // ── Stubs for blinkenlights symbols ──────────────────────────────────────────
 // These are referenced by bios.c and other files but only meaningful in the
 // TUI debugger (blinkenlights). We provide no-op stubs.
@@ -139,7 +540,6 @@ int ttyin = -1;
 int vidya = -1;
 bool tuimode = false;
 struct Pty *pty = NULL;
-struct Machine *m = NULL;
 bool ptyisenabled = false;
 
 void SetCarry(bool cf) { (void)cf; }
@@ -156,6 +556,58 @@ ssize_t ReadAnsi(int fd, char *p, size_t n) {
 // Called when the guest receives a fatal signal.
 void TerminateSignal(struct Machine *machine, int sig, int code) {
     struct OmniNoForkContext *context = g_nofork_context;
+    struct FileMap *rip_map = NULL;
+    struct FileMap *fault_map = NULL;
+    u64 rip_entry = 0;
+    u64 fault_entry = 0;
+    i64 rip_offset = -1;
+    i64 fault_offset = -1;
+
+    if (machine) {
+        rip_map = GetFileMap(machine->system, machine->ip);
+        fault_map = GetFileMap(machine->system, machine->faultaddr);
+        rip_entry = FindPageTableEntry(machine, machine->ip & -4096);
+        fault_entry = FindPageTableEntry(machine, machine->faultaddr & -4096);
+        if (rip_map) {
+            rip_offset = machine->ip - rip_map->virt + rip_map->offset;
+        }
+        if (fault_map) {
+            fault_offset = machine->faultaddr - fault_map->virt + fault_map->offset;
+        }
+    }
+
+    fprintf(stderr,
+            "[terminate] sig=%d code=%d rip=%#" PRIx64 " faultaddr=%#" PRIx64
+            "\n",
+            sig, code, machine ? machine->ip : 0, machine ? machine->faultaddr : 0);
+    if (rip_entry) {
+        fprintf(stderr, "[terminate] rip_pte=%#" PRIx64 "\n", rip_entry);
+    }
+    if (fault_entry && fault_entry != rip_entry) {
+        fprintf(stderr, "[terminate] fault_pte=%#" PRIx64 "\n", fault_entry);
+    }
+    if (rip_map) {
+        fprintf(stderr,
+                "[terminate] rip_map path=%s virt=%#" PRIx64 " size=%#" PRIx64
+                " off=%#" PRIx64 "\n",
+                rip_map->path ? rip_map->path : "<null>", rip_map->virt,
+                rip_map->size, rip_offset);
+    }
+    dump_guest_bytes("rip", machine, machine ? machine->ip : 0);
+    if (fault_map) {
+        fprintf(stderr,
+                "[terminate] fault_map path=%s virt=%#" PRIx64 " size=%#" PRIx64
+                " off=%#" PRIx64 "\n",
+                fault_map->path ? fault_map->path : "<null>", fault_map->virt,
+                fault_map->size, fault_offset);
+    }
+    if (machine && machine->faultaddr && machine->faultaddr != machine->ip) {
+        dump_guest_bytes("fault", machine, machine->faultaddr);
+    }
+    if (machine) {
+        fprintf(stderr, "[terminate] guest_backtrace:\n%s\n", GetBacktrace(machine));
+    }
+    fflush(stderr);
 
     if (context) {
         nofork_context_detach_current_machine(context, machine);
@@ -174,46 +626,87 @@ void TerminateSignal(struct Machine *machine, int sig, int code) {
 }
 
 // ── Exec callback ────────────────────────────────────────────────────────────
-// Called when the guest does execve(). We re-load the program in the same
-// child process.
+// Called for the initial guest image load. Guest execve() requests are trapped
+// back to this loop so the replacement program starts from a clean host stack.
 static int ShimExec(char *execfn, char *prog, char **argv, char **envp) {
-    int i;
-    sigset_t oldmask;
-    struct Machine *old = g_machine;
-    if (old) KillOtherThreads(old->system);
-    struct Machine *machine = NewMachine(NewSystem(XED_MACHINE_MODE_LONG), 0);
-    if (!machine) _exit(127);
-    g_machine = machine;
-    m = machine;
-    machine->system->exec = ShimExec;
-    if (!old) {
-        LoadProgram(machine, execfn, prog, argv, envp, NULL);
-        SetupCod(machine);
-        for (int i = 0; i < 10; ++i) {
-            AddStdFd(&machine->system->fds, i);
+    int rc;
+    struct Machine *old = NULL;
+    bool debug = getenv("OMNIKIT_DEBUG_EXEC_LOOP") != NULL;
+
+    for (;;) {
+        if (old) {
+            teardown_exec_source(old);
+            old = NULL;
         }
-    } else {
+        if (debug) {
+            fprintf(stderr, "[exec-loop] creating replacement machine for %s\n",
+                    prog ? prog : "<null>");
+            fflush(stderr);
+        }
+        struct Machine *machine = NewMachine(NewSystem(XED_MACHINE_MODE_LONG), 0);
+        if (!machine) _exit(127);
+
+        configure_exec_machine(machine);
+        if (debug) {
+            fprintf(stderr, "[exec-loop] machine=%p configured\n", (void *)machine);
+            fflush(stderr);
+        }
+        load_exec_program(machine, execfn, prog, argv, envp);
+
+        clear_exec_request();
+        if (debug) {
+            fprintf(stderr, "[exec-loop] entering execute loop machine=%p\n",
+                    (void *)machine);
+            fflush(stderr);
+        }
+        for (;;) {
+            if (!(rc = sigsetjmp(machine->onhalt, 1))) {
+                machine->canhalt = true;
+                Actor(machine);
+            }
+
+            machine->sysdepth = 0;
+            machine->sigdepth = 0;
+            machine->canhalt = false;
+            machine->nofault = false;
+            machine->insyscall = false;
+            CollectPageLocks(machine);
+            CollectGarbage(machine, 0);
+            if (IsMakingPath(machine)) {
+                AbandonPath(machine);
+            }
+
+            if (rc == kMachineFatalSystemSignal) {
+                HandleFatalSystemSignal(machine, &g_siginfo);
+                continue;
+            }
+
+            if (rc == kMachineExitTrap && machine->system->exited) {
+                int exit_code = machine->system->exitcode;
+
+                if (debug) {
+                    fprintf(stderr,
+                            "[exec-loop] guest exit trap machine=%p exit_code=%d\n",
+                            (void *)machine, exit_code);
+                    fflush(stderr);
+                }
+                FreeMachine(machine);
 #ifdef HAVE_JIT
-        DisableJit(&old->system->jit);
+                ShutdownJit();
 #endif
-        unassert(!machine->sysdepth);
-        unassert(!machine->pagelocks.i);
-        unassert(!FreeVirtual(old->system, -0x800000000000, 0x1000000000000));
-        for (i = 1; i <= 64; ++i) {
-            if (Read64(old->system->hands[i - 1].handler) == SIG_IGN_LINUX) {
-                Write64(machine->system->hands[i - 1].handler, SIG_IGN_LINUX);
+                _exit(exit_code);
+            }
+
+            if (rc == kMachineExecTrap && g_exec_request.pending) {
+                old = machine;
+                execfn = g_exec_request.execfn;
+                prog = g_exec_request.prog;
+                argv = g_exec_request.argv;
+                envp = g_exec_request.envp;
+                break;
             }
         }
-        memcpy(machine->system->rlim, old->system->rlim, sizeof(old->system->rlim));
-        LoadProgram(machine, execfn, prog, argv, envp, NULL);
-        machine->system->fds.list = old->system->fds.list;
-        old->system->fds.list = 0;
-        memcpy(&oldmask, &old->system->exec_sigmask, sizeof(oldmask));
-        UNLOCK(&old->system->exec_lock);
-        FreeMachine(old);
-        unassert(!pthread_sigmask(SIG_SETMASK, &oldmask, 0));
     }
-    Blink(machine);  // _Noreturn — guest will eventually call exit()
 }
 
 // ── Pipe helpers ─────────────────────────────────────────────────────────────
@@ -784,6 +1277,82 @@ static int init_isolated_host_prefix(const char *prefix) {
     return rc;
 }
 
+static int ensure_guest_mountpoint(const char *guest_path) {
+    char pathbuf[PATH_MAX];
+    size_t pathlen;
+    char *cursor;
+    struct stat st;
+
+    if (!guest_path || guest_path[0] != '/') {
+        errno = EINVAL;
+        return -1;
+    }
+    if (!strcmp(guest_path, "/")) {
+        return 0;
+    }
+
+    pathlen = strlen(guest_path);
+    if (pathlen >= sizeof(pathbuf)) {
+        errno = ENAMETOOLONG;
+        return -1;
+    }
+
+    memcpy(pathbuf, guest_path, pathlen + 1);
+    for (cursor = pathbuf + 1; *cursor; ++cursor) {
+        if (*cursor != '/') continue;
+        *cursor = '\0';
+        if (VfsMkdir(AT_FDCWD, pathbuf, 0755) == -1 && errno != EEXIST) {
+            return -1;
+        }
+        *cursor = '/';
+    }
+
+    if (VfsMkdir(AT_FDCWD, pathbuf, 0755) == -1 && errno != EEXIST) {
+        return -1;
+    }
+    if (VfsStat(AT_FDCWD, pathbuf, &st, 0) == -1) {
+        return -1;
+    }
+    if (!S_ISDIR(st.st_mode)) {
+        errno = ENOTDIR;
+        return -1;
+    }
+    return 0;
+}
+
+static int install_extra_host_mounts(const blink_run_config_t *config) {
+    int i;
+
+    if (!config || !config->host_mounts || config->host_mount_count <= 0) {
+        return 0;
+    }
+
+    for (i = 0; i < config->host_mount_count; ++i) {
+        const blink_host_mount_t *mount = &config->host_mounts[i];
+
+        if (!mount->host_path || !mount->guest_path) {
+            errno = EINVAL;
+            return -1;
+        }
+        if (mount->guest_path[0] != '/') {
+            errno = EINVAL;
+            return -1;
+        }
+        if (!strcmp(mount->guest_path, "/")) {
+            errno = EBUSY;
+            return -1;
+        }
+        if (ensure_guest_mountpoint(mount->guest_path) == -1) {
+            return -1;
+        }
+        if (VfsMount(mount->host_path, mount->guest_path, "hostfs", 0, NULL) == -1) {
+            return -1;
+        }
+    }
+
+    return 0;
+}
+
 static int host_runtime_setup(const blink_run_config_t *config, const flatvfs_t *vfs) {
     (void)vfs;
 
@@ -794,6 +1363,10 @@ static int host_runtime_setup(const blink_run_config_t *config, const flatvfs_t 
     FLAG_nolinear = true;
 
 #ifndef DISABLE_VFS
+    if (config->host_mount_count > 0 && !config->vfs_prefix) {
+        errno = EINVAL;
+        return -1;
+    }
     if (config->vfs_prefix) {
         if (init_isolated_host_prefix(config->vfs_prefix)) {
             return -1;
@@ -801,6 +1374,9 @@ static int host_runtime_setup(const blink_run_config_t *config, const flatvfs_t 
         if (OmniInstallGuestFdMounts()) {
             return -1;
         }
+    }
+    if (install_extra_host_mounts(config)) {
+        return -1;
     }
 #endif
 
@@ -824,13 +1400,16 @@ static int memvfs_runtime_setup(const blink_run_config_t *config, const flatvfs_
     if (OmniInstallGuestFdMounts()) {
         return -1;
     }
+    if (install_extra_host_mounts(config)) {
+        return -1;
+    }
 #endif
 
     InitBus();
     return 0;
 }
 
-static _Noreturn void run_machine_nofork(struct Machine *machine) {
+static int run_machine_nofork(struct Machine *machine) {
     int rc;
     struct OmniNoForkContext *context = g_nofork_context;
 
@@ -878,56 +1457,53 @@ static _Noreturn void run_machine_nofork(struct Machine *machine) {
             context->exit_code = exit_code;
             siglongjmp(context->escape, 1);
         }
+
+        if (rc == kMachineExecTrap && g_exec_request.pending) {
+            return rc;
+        }
     }
 }
 
 // Called when the guest does execve(). In no-fork mode this replaces the
 // currently running machine and continues execution in-process.
 static int ShimExecNoFork(char *execfn, char *prog, char **argv, char **envp) {
-    int i;
-    sigset_t oldmask;
-    struct Machine *old = g_machine;
-    struct Machine *machine = NewMachine(NewSystem(XED_MACHINE_MODE_LONG), 0);
+    struct Machine *old = NULL;
+    bool debug = getenv("OMNIKIT_DEBUG_EXEC_LOOP") != NULL;
 
-    if (old) KillOtherThreads(old->system);
-    if (!machine) blink_host_exit(127);
-
-    g_machine = machine;
-    m = machine;
-    nofork_context_set_current_machine(g_nofork_context, machine);
-
-    machine->system->exec = ShimExecNoFork;
-    machine->system->trapexit = true;
-
-    if (!old) {
-        LoadProgram(machine, execfn, prog, argv, envp, NULL);
-        SetupCod(machine);
-        for (i = 0; i < 10; ++i) {
-            AddStdFd(&machine->system->fds, i);
+    for (;;) {
+        if (old) {
+            teardown_exec_source(old);
+            old = NULL;
         }
-    } else {
-#ifdef HAVE_JIT
-        DisableJit(&old->system->jit);
-#endif
-        unassert(!machine->sysdepth);
-        unassert(!machine->pagelocks.i);
-        unassert(!FreeVirtual(old->system, -0x800000000000, 0x1000000000000));
-        for (i = 1; i <= 64; ++i) {
-            if (Read64(old->system->hands[i - 1].handler) == SIG_IGN_LINUX) {
-                Write64(machine->system->hands[i - 1].handler, SIG_IGN_LINUX);
-            }
+        if (debug) {
+            fprintf(stderr, "[exec-loop] nofork creating replacement machine for %s\n",
+                    prog ? prog : "<null>");
+            fflush(stderr);
         }
-        memcpy(machine->system->rlim, old->system->rlim, sizeof(old->system->rlim));
-        LoadProgram(machine, execfn, prog, argv, envp, NULL);
-        machine->system->fds.list = old->system->fds.list;
-        old->system->fds.list = 0;
-        memcpy(&oldmask, &old->system->exec_sigmask, sizeof(oldmask));
-        UNLOCK(&old->system->exec_lock);
-        FreeMachine(old);
-        unassert(!pthread_sigmask(SIG_SETMASK, &oldmask, 0));
+        struct Machine *machine = NewMachine(NewSystem(XED_MACHINE_MODE_LONG), 0);
+        if (!machine) blink_host_exit(127);
+
+        configure_exec_machine(machine);
+        machine->system->trapexit = true;
+        nofork_context_set_current_machine(g_nofork_context, machine);
+
+        load_exec_program(machine, execfn, prog, argv, envp);
+
+        clear_exec_request();
+        if (debug) {
+            fprintf(stderr, "[exec-loop] nofork entering execute loop machine=%p\n",
+                    (void *)machine);
+            fflush(stderr);
+        }
+        if (run_machine_nofork(machine) == kMachineExecTrap && g_exec_request.pending) {
+            old = machine;
+            execfn = g_exec_request.execfn;
+            prog = g_exec_request.prog;
+            argv = g_exec_request.argv;
+            envp = g_exec_request.envp;
+            continue;
+        }
     }
-
-    run_machine_nofork(machine);
 }
 
 typedef int (*blink_runtime_setup_fn)(const blink_run_config_t *, const flatvfs_t *);
@@ -943,7 +1519,7 @@ static int blink_run_nofork_interactive_impl(const blink_run_config_t *config,
     pthread_t timeout_thread;
     struct OmniNoForkContext context;
     struct NoForkTimeoutThreadArgs timeout_args;
-    struct BlinkFatalSignalHandlers fatal_handlers;
+    struct BlinkRuntimeSignalHandlers signal_handlers = {0};
     void (*old_sigpipe)(int);
     char pathbuf[PATH_MAX];
     char *empty_envp[] = {NULL};
@@ -957,7 +1533,7 @@ static int blink_run_nofork_interactive_impl(const blink_run_config_t *config,
     old_sigpipe = signal(SIGPIPE, SIG_IGN);
 
     if (!sigsetjmp(context.escape, 1)) {
-        if (install_blink_fatal_signal_handlers(&fatal_handlers) != 0) {
+        if (install_blink_runtime_signal_handlers(&signal_handlers) != 0) {
             saved_errno = errno;
             goto nofork_interactive_cleanup;
         }
@@ -993,7 +1569,7 @@ nofork_interactive_cleanup:
     if (timeout_thread_started) {
         pthread_join(timeout_thread, NULL);
     }
-    restore_blink_fatal_signal_handlers(&fatal_handlers);
+    restore_blink_runtime_signal_handlers(&signal_handlers);
     if (old_sigpipe != SIG_ERR) {
         signal(SIGPIPE, old_sigpipe);
     }
@@ -1032,7 +1608,7 @@ static int blink_run_nofork_captured_impl(const blink_run_config_t *config,
     struct NoForkTimeoutThreadArgs timeout_args;
     struct CapturePipeState stdout_state = {.fd = -1, .buf = NULL, .len = 0, .error = 0};
     struct CapturePipeState stderr_state = {.fd = -1, .buf = NULL, .len = 0, .error = 0};
-    struct BlinkFatalSignalHandlers fatal_handlers;
+    struct BlinkRuntimeSignalHandlers signal_handlers = {0};
     void (*old_sigpipe)(int);
     char pathbuf[PATH_MAX];
     char *empty_envp[] = {NULL};
@@ -1048,7 +1624,7 @@ static int blink_run_nofork_captured_impl(const blink_run_config_t *config,
     old_sigpipe = signal(SIGPIPE, SIG_IGN);
 
     if (!sigsetjmp(context.escape, 1)) {
-        if (install_blink_fatal_signal_handlers(&fatal_handlers) != 0) {
+        if (install_blink_runtime_signal_handlers(&signal_handlers) != 0) {
             saved_errno = errno;
             goto nofork_captured_cleanup_locked;
         }
@@ -1142,7 +1718,7 @@ nofork_captured_cleanup_locked:
     if (stderr_reader_started) {
         pthread_join(stderr_reader_thread, NULL);
     }
-    restore_blink_fatal_signal_handlers(&fatal_handlers);
+    restore_blink_runtime_signal_handlers(&signal_handlers);
 
     if (!saved_errno && stdout_state.error) {
         saved_errno = stdout_state.error;
@@ -1212,7 +1788,7 @@ int blink_run(const blink_run_config_t *config,
 
     if (pid == 0) {
         // ── Child process ────────────────────────────────────────────────
-        struct BlinkFatalSignalHandlers fatal_handlers;
+        struct BlinkRuntimeSignalHandlers signal_handlers;
         close(stdout_pipe[0]);  // close read ends
         close(stderr_pipe[0]);
 
@@ -1229,6 +1805,9 @@ int blink_run(const blink_run_config_t *config,
         FLAG_nolinear = true;  // Safe memory mode — no mmap tricks in child
 
 #ifndef DISABLE_VFS
+        if (config->host_mount_count > 0 && !config->vfs_prefix) {
+            _exit(127);
+        }
         if (config->vfs_prefix) {
             if (init_isolated_host_prefix(config->vfs_prefix)) {
                 _exit(127);
@@ -1236,6 +1815,9 @@ int blink_run(const blink_run_config_t *config,
             if (OmniInstallGuestFdMounts()) {
                 _exit(127);
             }
+        }
+        if (install_extra_host_mounts(config)) {
+            _exit(127);
         }
 #endif
 
@@ -1272,7 +1854,7 @@ int blink_run(const blink_run_config_t *config,
 
         // Reset signal handlers in the child.
         signal(SIGPIPE, SIG_IGN);
-        if (install_blink_fatal_signal_handlers(&fatal_handlers) == -1) {
+        if (install_blink_runtime_signal_handlers(&signal_handlers) == -1) {
             _exit(127);
         }
 
@@ -1449,13 +2031,16 @@ int blink_run_interactive(const blink_run_config_t *config) {
 
     if (pid == 0) {
         // ── Child: stdin/stdout/stderr inherited from parent ────────────
-        struct BlinkFatalSignalHandlers fatal_handlers;
+        struct BlinkRuntimeSignalHandlers signal_handlers;
         WriteErrorInit();
         InitMap();
 
         FLAG_nolinear = true;
 
 #ifndef DISABLE_VFS
+        if (config->host_mount_count > 0 && !config->vfs_prefix) {
+            _exit(127);
+        }
         if (config->vfs_prefix) {
             if (init_isolated_host_prefix(config->vfs_prefix)) {
                 _exit(127);
@@ -1463,6 +2048,9 @@ int blink_run_interactive(const blink_run_config_t *config) {
             if (OmniInstallGuestFdMounts()) {
                 _exit(127);
             }
+        }
+        if (install_extra_host_mounts(config)) {
+            _exit(127);
         }
 #endif
 
@@ -1495,7 +2083,7 @@ int blink_run_interactive(const blink_run_config_t *config) {
         }
 
         signal(SIGPIPE, SIG_IGN);
-        if (install_blink_fatal_signal_handlers(&fatal_handlers) == -1) {
+        if (install_blink_runtime_signal_handlers(&signal_handlers) == -1) {
             _exit(127);
         }
         ShimExec(pathbuf, pathbuf, child_argv, child_envp);

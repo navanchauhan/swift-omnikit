@@ -13,6 +13,14 @@
 extern "C" {
 #endif
 
+/// Additional host directory mount to graft into the guest VFS.
+typedef struct {
+    /// Host directory path to expose.
+    const char *host_path;
+    /// Absolute guest mount path (for example "/workspace").
+    const char *guest_path;
+} blink_host_mount_t;
+
 /// Configuration for a blink emulation run.
 typedef struct {
     /// Path to the ELF binary to execute (host path).
@@ -29,6 +37,11 @@ typedef struct {
     /// VFS prefix path (sets BLINK_PREFIX for blink's VFS layer).
     /// If NULL, no VFS prefix is configured.
     const char *vfs_prefix;
+    /// Additional hostfs mounts to install inside the guest after the root VFS.
+    /// Only directory mounts are supported.
+    const blink_host_mount_t *host_mounts;
+    /// Number of entries in host_mounts.
+    int host_mount_count;
 } blink_run_config_t;
 
 /// Result of a blink emulation run.

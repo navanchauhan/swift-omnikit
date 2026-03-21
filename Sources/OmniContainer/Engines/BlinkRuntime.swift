@@ -11,44 +11,7 @@ import CBlinkEmulator
 /// platforms fall back to an in-process runtime because app sandboxes cannot use
 /// the fork-based model.
 ///
-/// The VFS namespace is materialized into a flat in-memory representation (FlatVFS)
-/// on the Swift side and mounted directly through the custom memvfs backend.
-private actor BlinkReadonlySnapshotCache {
-    private struct CacheKey: Hashable, Sendable {
-        let objectID: ObjectIdentifier
-        let srcPath: String
-        let mountPath: String
-    }
-
-    private var entriesByKey: [CacheKey: [FlatVFS.Entry]] = [:]
-
-    func entries(
-        for fs: any VFS,
-        srcPath: String,
-        mountedAt mountPath: String
-    ) -> [FlatVFS.Entry]? {
-        guard let tarFS = fs as? TarFS else {
-            return nil
-        }
-
-        let key = CacheKey(
-            objectID: ObjectIdentifier(tarFS),
-            srcPath: PathUtils.cleanPath(srcPath),
-            mountPath: PathUtils.cleanPath(mountPath)
-        )
-        if let cached = entriesByKey[key] {
-            return cached
-        }
-
-        let entries = FlatVFS.entries(from: tarFS, srcPath: srcPath, mountedAt: mountPath)
-        entriesByKey[key] = entries
-        return entries
-    }
-}
-
-public final class BlinkRuntime: ContainerRuntime, Sendable {
-    private static let snapshotCache = BlinkReadonlySnapshotCache()
-
+public final class BlinkRuntime: LinuxGuestRuntime, Sendable {
     /// Whether networking is allowed.
     private let networkEnabled: Bool
 
@@ -72,8 +35,8 @@ public final class BlinkRuntime: ContainerRuntime, Sendable {
     ) async throws -> ExecResult {
         let startTime = DispatchTime.now()
 
-        // 1. Build flat in-memory VFS from namespace (no disk I/O)
-        let flatVFS = await Self.buildFlatVFS(namespace: namespace)
+        // 1. Plan the guest VFS. Read-only images stay cached; host binds stay lazy.
+        let vfsPlan = BlinkVFSPlanner.buildLaunchPlan(namespace: namespace)
 
         // 2. Build the guest binary path
         let guestBinaryPath = binaryPath.hasPrefix("/") ? binaryPath : "/\(binaryPath)"
@@ -86,7 +49,7 @@ public final class BlinkRuntime: ContainerRuntime, Sendable {
         if !networkEnabled {
             envStringsMut.append("BLINK_DISABLE_NETWORKING=1")
         }
-        let envStrings = envStringsMut
+        let envStrings = BlinkGuestNodeRuntime.mergedEnvironmentStrings(envStringsMut)
 
         // 5. Call blink via the C shim with in-memory VFS.
         let result: ExecResult = try await withCheckedThrowingContinuation { continuation in
@@ -98,7 +61,8 @@ public final class BlinkRuntime: ContainerRuntime, Sendable {
                         programPath: guestBinaryPath,
                         argv: fullArgs,
                         envp: envStrings,
-                        flatVFS: flatVFS,
+                        flatVFS: vfsPlan.flatVFS,
+                        hostMounts: vfsPlan.hostMounts,
                         timeoutMs: timeoutMs
                     )
 
@@ -150,157 +114,13 @@ public final class BlinkRuntime: ContainerRuntime, Sendable {
         let timedOut: Bool
     }
 
-    private static func buildFlatVFS(namespace: VFSNamespace) async -> FlatVFS {
-        let bindings = namespace.bindingSnapshots()
-        guard !bindings.isEmpty else {
-            return FlatVFS.from(namespace: namespace)
-        }
-        guard bindings.allSatisfy({ $0.targets.count == 1 }) else {
-            return FlatVFS.from(namespace: namespace)
-        }
-
-        var entryMap: [String: FlatVFS.Entry] = [:]
-
-        for binding in bindings {
-            let target = binding.targets[0]
-            removeMountedSubtree(binding.dstPath, from: &entryMap)
-
-            if let cow = target.fs as? CowFS {
-                let baseEntries =
-                    await Self.snapshotCache.entries(
-                        for: cow.baseFS,
-                        srcPath: target.srcPath,
-                        mountedAt: binding.dstPath
-                    )
-                    ?? FlatVFS.entries(
-                        from: cow.baseFS,
-                        srcPath: target.srcPath,
-                        mountedAt: binding.dstPath
-                    )
-                let filteredBaseEntries = filterEntries(
-                    baseEntries,
-                    whiteouts: cow.whiteoutPaths(),
-                    srcPath: target.srcPath,
-                    mountPath: binding.dstPath
-                )
-                for entry in filteredBaseEntries {
-                    entryMap[entry.path] = entry
-                }
-
-                let overlayEntries = FlatVFS.entries(
-                    from: cow.overlayFS,
-                    srcPath: target.srcPath,
-                    mountedAt: binding.dstPath
-                )
-                for entry in overlayEntries {
-                    entryMap[entry.path] = entry
-                }
-                continue
-            }
-
-            let entries =
-                await Self.snapshotCache.entries(
-                    for: target.fs,
-                    srcPath: target.srcPath,
-                    mountedAt: binding.dstPath
-                )
-                ?? FlatVFS.entries(
-                    from: target.fs,
-                    srcPath: target.srcPath,
-                    mountedAt: binding.dstPath
-                )
-            for entry in entries {
-                entryMap[entry.path] = entry
-            }
-        }
-
-        let sortedEntries = entryMap.values.sorted { lhs, rhs in
-            let lhsDepth = lhs.path.split(separator: "/").count
-            let rhsDepth = rhs.path.split(separator: "/").count
-            if lhsDepth == rhsDepth {
-                return lhs.path < rhs.path
-            }
-            return lhsDepth < rhsDepth
-        }
-        return FlatVFS(entries: sortedEntries)
-    }
-
-    private static func removeMountedSubtree(
-        _ mountPath: String,
-        from entryMap: inout [String: FlatVFS.Entry]
-    ) {
-        let normalizedMountPath = PathUtils.cleanPath(mountPath)
-        entryMap = entryMap.filter { key, _ in
-            !path(key, isSameOrDescendantOf: normalizedMountPath)
-        }
-    }
-
-    private static func filterEntries(
-        _ entries: [FlatVFS.Entry],
-        whiteouts: Set<String>,
-        srcPath: String,
-        mountPath: String
-    ) -> [FlatVFS.Entry] {
-        let mountedWhiteouts = projectedWhiteouts(
-            whiteouts,
-            srcPath: srcPath,
-            mountPath: mountPath
-        )
-        guard !mountedWhiteouts.isEmpty else {
-            return entries
-        }
-        return entries.filter { entry in
-            !mountedWhiteouts.contains { path(entry.path, isSameOrDescendantOf: $0) }
-        }
-    }
-
-    private static func projectedWhiteouts(
-        _ whiteouts: Set<String>,
-        srcPath: String,
-        mountPath: String
-    ) -> [String] {
-        let normalizedSrcPath = PathUtils.cleanPath(srcPath)
-        let normalizedMountPath = PathUtils.cleanPath(mountPath)
-
-        return whiteouts.compactMap { whiteout in
-            let normalizedWhiteout = PathUtils.cleanPath(whiteout)
-            let relativePath: String
-
-            if normalizedSrcPath == "." {
-                relativePath = normalizedWhiteout
-            } else if normalizedWhiteout == normalizedSrcPath {
-                relativePath = "."
-            } else if normalizedWhiteout.hasPrefix(normalizedSrcPath + "/") {
-                relativePath = String(normalizedWhiteout.dropFirst(normalizedSrcPath.count + 1))
-            } else {
-                return nil
-            }
-
-            if relativePath == "." {
-                return normalizedMountPath
-            }
-            return normalizedMountPath == "."
-                ? relativePath
-                : PathUtils.joinPath(normalizedMountPath, relativePath)
-        }
-    }
-
-    private static func path(_ path: String, isSameOrDescendantOf ancestor: String) -> Bool {
-        let normalizedPath = PathUtils.cleanPath(path)
-        let normalizedAncestor = PathUtils.cleanPath(ancestor)
-        if normalizedAncestor == "." || normalizedAncestor == "/" {
-            return true
-        }
-        return normalizedPath == normalizedAncestor
-            || normalizedPath.hasPrefix(normalizedAncestor + "/")
-    }
-
     /// Build a C flatvfs_t from a FlatVFS and call blink_run_captured_memvfs.
     private static func runBlinkMemVFS(
         programPath: String,
         argv: [String],
         envp: [String],
         flatVFS: FlatVFS,
+        hostMounts: [BlinkHostMount],
         timeoutMs: Int
     ) throws -> BlinkExecResult {
         // Convert Swift strings to C strings for the config.
@@ -329,6 +149,9 @@ public final class BlinkRuntime: ContainerRuntime, Sendable {
             }
         }
 
+        let cHostMounts = buildCHostMounts(hostMounts)
+        defer { freeCHostMounts(cHostMounts.mounts, count: cHostMounts.count) }
+
         var config = blink_run_config_t()
         config.program_path = UnsafePointer(cProgramPath)
         config.argv = cArgv.withUnsafeBufferPointer { buf in
@@ -344,6 +167,8 @@ public final class BlinkRuntime: ContainerRuntime, Sendable {
         }
         config.envc = Int32(envp.count)
         config.vfs_prefix = nil
+        config.host_mounts = cHostMounts.mounts.map { UnsafePointer($0) }
+        config.host_mount_count = Int32(cHostMounts.count)
 
         // Build C flatvfs_t from FlatVFS
         let cEntries = buildCFlatVFS(flatVFS)
@@ -382,6 +207,11 @@ public final class BlinkRuntime: ContainerRuntime, Sendable {
 
     private struct CFlatVFSResult {
         let entries: UnsafeMutablePointer<flatvfs_entry_t>
+        let count: Int
+    }
+
+    private struct CHostMountsResult {
+        let mounts: UnsafeMutablePointer<blink_host_mount_t>?
         let count: Int
     }
 
@@ -433,5 +263,36 @@ public final class BlinkRuntime: ContainerRuntime, Sendable {
             }
         }
         entries.deallocate()
+    }
+
+    private static func buildCHostMounts(_ hostMounts: [BlinkHostMount]) -> CHostMountsResult {
+        guard !hostMounts.isEmpty else {
+            return CHostMountsResult(mounts: nil, count: 0)
+        }
+
+        let mounts = UnsafeMutablePointer<blink_host_mount_t>.allocate(capacity: hostMounts.count)
+        for (index, hostMount) in hostMounts.enumerated() {
+            var cMount = blink_host_mount_t()
+            cMount.host_path = UnsafePointer(strdup(hostMount.hostPath))
+            cMount.guest_path = UnsafePointer(strdup(hostMount.guestPath))
+            mounts[index] = cMount
+        }
+        return CHostMountsResult(mounts: mounts, count: hostMounts.count)
+    }
+
+    private static func freeCHostMounts(
+        _ mounts: UnsafeMutablePointer<blink_host_mount_t>?,
+        count: Int
+    ) {
+        guard let mounts else {
+            return
+        }
+
+        for index in 0..<count {
+            let mount = mounts[index]
+            free(UnsafeMutablePointer(mutating: mount.host_path))
+            free(UnsafeMutablePointer(mutating: mount.guest_path))
+        }
+        mounts.deallocate()
     }
 }
