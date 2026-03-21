@@ -6,6 +6,7 @@
 //   and unwind guest exit paths back to the embedder.
 
 #include "include/CBlinkEmulator.h"
+#include "omni_fdfs.h"
 
 #include <dirent.h>
 #include <errno.h>
@@ -50,8 +51,85 @@ struct OmniNoForkContext {
 
 static _Thread_local struct OmniNoForkContext *g_nofork_context = NULL;
 
+struct BlinkFatalSignalHandlers {
+    struct sigaction sigbus;
+    struct sigaction sigill;
+    struct sigaction sigtrap;
+    struct sigaction sigsegv;
+    bool installed;
+};
+
 static void nofork_context_detach_current_machine(struct OmniNoForkContext *context,
                                                   struct Machine *machine);
+
+#if !defined(__SANITIZE_THREAD__) && !defined(__SANITIZE_ADDRESS__) && \
+    !defined(__FILC__)
+static void OmniOnFatalSystemSignal(int sig, siginfo_t *si, void *ptr) {
+    struct Machine *machine = g_machine;
+
+    (void)ptr;
+
+#ifdef __APPLE__
+    sig = FixXnuSignal(machine, sig, si);
+#elif defined(__powerpc__) && CAN_64BIT
+    sig = FixPpcSignal(machine, sig, si);
+#endif
+
+#ifndef DISABLE_JIT
+    if (machine && IsSelfModifyingCodeSegfault(machine, si)) {
+        return;
+    }
+#endif
+
+    g_siginfo = *si;
+    unassert(machine);
+    unassert(machine->canhalt);
+    siglongjmp(machine->onhalt, kMachineFatalSystemSignal);
+}
+
+static int install_blink_fatal_signal_handlers(struct BlinkFatalSignalHandlers *saved) {
+    struct sigaction sa;
+
+    memset(saved, 0, sizeof(*saved));
+    sigfillset(&sa.sa_mask);
+    sa.sa_flags = SA_SIGINFO;
+    sa.sa_sigaction = OmniOnFatalSystemSignal;
+
+    if (sigaction(SIGBUS, &sa, &saved->sigbus) == -1) return -1;
+    if (sigaction(SIGILL, &sa, &saved->sigill) == -1) goto fail_sigill;
+    if (sigaction(SIGTRAP, &sa, &saved->sigtrap) == -1) goto fail_sigtrap;
+    if (sigaction(SIGSEGV, &sa, &saved->sigsegv) == -1) goto fail_sigsegv;
+    saved->installed = true;
+    return 0;
+
+fail_sigsegv:
+    sigaction(SIGTRAP, &saved->sigtrap, NULL);
+fail_sigtrap:
+    sigaction(SIGILL, &saved->sigill, NULL);
+fail_sigill:
+    sigaction(SIGBUS, &saved->sigbus, NULL);
+    return -1;
+}
+
+static void restore_blink_fatal_signal_handlers(
+    const struct BlinkFatalSignalHandlers *saved) {
+    if (!saved->installed) return;
+    sigaction(SIGSEGV, &saved->sigsegv, NULL);
+    sigaction(SIGTRAP, &saved->sigtrap, NULL);
+    sigaction(SIGILL, &saved->sigill, NULL);
+    sigaction(SIGBUS, &saved->sigbus, NULL);
+}
+#else
+static int install_blink_fatal_signal_handlers(struct BlinkFatalSignalHandlers *saved) {
+    memset(saved, 0, sizeof(*saved));
+    return 0;
+}
+
+static void restore_blink_fatal_signal_handlers(
+    const struct BlinkFatalSignalHandlers *saved) {
+    (void)saved;
+}
+#endif
 
 // ── Stubs for blinkenlights symbols ──────────────────────────────────────────
 // These are referenced by bios.c and other files but only meaningful in the
@@ -78,8 +156,6 @@ ssize_t ReadAnsi(int fd, char *p, size_t n) {
 // Called when the guest receives a fatal signal.
 void TerminateSignal(struct Machine *machine, int sig, int code) {
     struct OmniNoForkContext *context = g_nofork_context;
-
-    (void)code;
 
     if (context) {
         nofork_context_detach_current_machine(context, machine);
@@ -703,7 +779,7 @@ static int init_isolated_host_prefix(const char *prefix) {
         return -1;
     }
 
-    rc = VfsInitRootMount(resolved_prefix, "hostfs", 0, NULL, false, "/");
+    rc = VfsInitRootMount(resolved_prefix, "hostfs", 0, NULL, false, false, "/");
     free(resolved_prefix);
     return rc;
 }
@@ -718,8 +794,13 @@ static int host_runtime_setup(const blink_run_config_t *config, const flatvfs_t 
     FLAG_nolinear = true;
 
 #ifndef DISABLE_VFS
-    if (config->vfs_prefix && init_isolated_host_prefix(config->vfs_prefix)) {
-        return -1;
+    if (config->vfs_prefix) {
+        if (init_isolated_host_prefix(config->vfs_prefix)) {
+            return -1;
+        }
+        if (OmniInstallGuestFdMounts()) {
+            return -1;
+        }
     }
 #endif
 
@@ -738,6 +819,9 @@ static int memvfs_runtime_setup(const blink_run_config_t *config, const flatvfs_
 
 #ifndef DISABLE_VFS
     if (OmniVfsInit(vfs)) {
+        return -1;
+    }
+    if (OmniInstallGuestFdMounts()) {
         return -1;
     }
 #endif
@@ -859,6 +943,7 @@ static int blink_run_nofork_interactive_impl(const blink_run_config_t *config,
     pthread_t timeout_thread;
     struct OmniNoForkContext context;
     struct NoForkTimeoutThreadArgs timeout_args;
+    struct BlinkFatalSignalHandlers fatal_handlers;
     void (*old_sigpipe)(int);
     char pathbuf[PATH_MAX];
     char *empty_envp[] = {NULL};
@@ -872,6 +957,10 @@ static int blink_run_nofork_interactive_impl(const blink_run_config_t *config,
     old_sigpipe = signal(SIGPIPE, SIG_IGN);
 
     if (!sigsetjmp(context.escape, 1)) {
+        if (install_blink_fatal_signal_handlers(&fatal_handlers) != 0) {
+            saved_errno = errno;
+            goto nofork_interactive_cleanup;
+        }
         if (setup_fn(config, vfs) != 0) {
             saved_errno = errno;
             goto nofork_interactive_cleanup;
@@ -904,6 +993,7 @@ nofork_interactive_cleanup:
     if (timeout_thread_started) {
         pthread_join(timeout_thread, NULL);
     }
+    restore_blink_fatal_signal_handlers(&fatal_handlers);
     if (old_sigpipe != SIG_ERR) {
         signal(SIGPIPE, old_sigpipe);
     }
@@ -942,6 +1032,7 @@ static int blink_run_nofork_captured_impl(const blink_run_config_t *config,
     struct NoForkTimeoutThreadArgs timeout_args;
     struct CapturePipeState stdout_state = {.fd = -1, .buf = NULL, .len = 0, .error = 0};
     struct CapturePipeState stderr_state = {.fd = -1, .buf = NULL, .len = 0, .error = 0};
+    struct BlinkFatalSignalHandlers fatal_handlers;
     void (*old_sigpipe)(int);
     char pathbuf[PATH_MAX];
     char *empty_envp[] = {NULL};
@@ -957,6 +1048,10 @@ static int blink_run_nofork_captured_impl(const blink_run_config_t *config,
     old_sigpipe = signal(SIGPIPE, SIG_IGN);
 
     if (!sigsetjmp(context.escape, 1)) {
+        if (install_blink_fatal_signal_handlers(&fatal_handlers) != 0) {
+            saved_errno = errno;
+            goto nofork_captured_cleanup_locked;
+        }
         if (setup_fn(config, vfs) != 0) {
             saved_errno = errno;
             goto nofork_captured_cleanup_locked;
@@ -1047,6 +1142,7 @@ nofork_captured_cleanup_locked:
     if (stderr_reader_started) {
         pthread_join(stderr_reader_thread, NULL);
     }
+    restore_blink_fatal_signal_handlers(&fatal_handlers);
 
     if (!saved_errno && stdout_state.error) {
         saved_errno = stdout_state.error;
@@ -1116,6 +1212,7 @@ int blink_run(const blink_run_config_t *config,
 
     if (pid == 0) {
         // ── Child process ────────────────────────────────────────────────
+        struct BlinkFatalSignalHandlers fatal_handlers;
         close(stdout_pipe[0]);  // close read ends
         close(stderr_pipe[0]);
 
@@ -1134,6 +1231,9 @@ int blink_run(const blink_run_config_t *config,
 #ifndef DISABLE_VFS
         if (config->vfs_prefix) {
             if (init_isolated_host_prefix(config->vfs_prefix)) {
+                _exit(127);
+            }
+            if (OmniInstallGuestFdMounts()) {
                 _exit(127);
             }
         }
@@ -1172,6 +1272,9 @@ int blink_run(const blink_run_config_t *config,
 
         // Reset signal handlers in the child.
         signal(SIGPIPE, SIG_IGN);
+        if (install_blink_fatal_signal_handlers(&fatal_handlers) == -1) {
+            _exit(127);
+        }
 
         // Use ShimExec which mirrors blink.c's Exec() logic.
         // ShimExec calls Blink() which is _Noreturn.
@@ -1346,6 +1449,7 @@ int blink_run_interactive(const blink_run_config_t *config) {
 
     if (pid == 0) {
         // ── Child: stdin/stdout/stderr inherited from parent ────────────
+        struct BlinkFatalSignalHandlers fatal_handlers;
         WriteErrorInit();
         InitMap();
 
@@ -1354,6 +1458,9 @@ int blink_run_interactive(const blink_run_config_t *config) {
 #ifndef DISABLE_VFS
         if (config->vfs_prefix) {
             if (init_isolated_host_prefix(config->vfs_prefix)) {
+                _exit(127);
+            }
+            if (OmniInstallGuestFdMounts()) {
                 _exit(127);
             }
         }
@@ -1388,6 +1495,9 @@ int blink_run_interactive(const blink_run_config_t *config) {
         }
 
         signal(SIGPIPE, SIG_IGN);
+        if (install_blink_fatal_signal_handlers(&fatal_handlers) == -1) {
+            _exit(127);
+        }
         ShimExec(pathbuf, pathbuf, child_argv, child_envp);
         _exit(127);
     }

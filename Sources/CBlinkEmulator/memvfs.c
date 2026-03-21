@@ -7,6 +7,7 @@
 // The overlay is a simple linked list checked before the base flatvfs.
 
 #include "include/CBlinkEmulator.h"
+#include "omni_fdfs.h"
 
 #include <errno.h>
 #include <fcntl.h>
@@ -2199,7 +2200,7 @@ int OmniVfsInit(const flatvfs_t *vfs) {
     if (VfsRegister(&g_omni_memfs) == -1) {
         return -1;
     }
-    if (VfsInitRootMount("", "memfs", 0, vfs, false, "/") == -1) {
+    if (VfsInitRootMount("", "memfs", 0, vfs, false, false, "/") == -1) {
         return -1;
     }
     return 0;
