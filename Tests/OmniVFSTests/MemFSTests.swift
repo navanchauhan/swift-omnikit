@@ -90,4 +90,56 @@ struct MemFSTests {
         let entries = try fs.readDir("dir")
         #expect(entries.count == 50)
     }
+
+    @Test("symlink stat stays a symlink while open resolves to the target")
+    func symlinkOpenAndStat() throws {
+        let fs = MemFS()
+        try fs.mkdir("bin")
+        try fs.createFile("bin/busybox", data: Array("busybox".utf8))
+        try fs.symlink(target: "busybox", link: "bin/sh")
+
+        let info = try fs.stat("bin/sh")
+        #expect(info.isSymlink)
+        #expect(info.symlinkTarget == "busybox")
+
+        let file = try fs.open("bin/sh")
+        #expect(try file.readAll() == Array("busybox".utf8))
+        try file.close()
+
+        let entries = try fs.readDir("bin")
+        let symlinkEntry = try #require(entries.first(where: { $0.name == "sh" }))
+        #expect(symlinkEntry.isSymlink)
+    }
+
+    @Test("relative symlinks with parent traversal resolve within the filesystem")
+    func relativeSymlinkWithParentTraversal() throws {
+        let fs = MemFS()
+        try fs.mkdir("usr")
+        try fs.mkdir("usr/lib")
+        try fs.mkdir("lib64")
+        try fs.createFile("usr/lib/libc.so", data: Array("glibc".utf8))
+        try fs.symlink(target: "../usr/lib/libc.so", link: "lib64/ld-linux-x86-64.so.2")
+
+        let file = try fs.open("lib64/ld-linux-x86-64.so.2")
+        #expect(try file.readAll() == Array("glibc".utf8))
+        try file.close()
+    }
+
+    @Test("writeFile follows the final symlink target")
+    func writeThroughSymlink() throws {
+        let fs = MemFS()
+        try fs.mkdir("bin")
+        try fs.createFile("bin/busybox", data: Array("old".utf8))
+        try fs.symlink(target: "busybox", link: "bin/sh")
+
+        try fs.writeFile("bin/sh", data: Array("new".utf8))
+
+        let target = try fs.open("bin/busybox")
+        #expect(try target.readAll() == Array("new".utf8))
+        try target.close()
+
+        let linkInfo = try fs.stat("bin/sh")
+        #expect(linkInfo.isSymlink)
+        #expect(linkInfo.symlinkTarget == "busybox")
+    }
 }

@@ -204,17 +204,8 @@ public final class TarFS: Sendable, VFSReadDirFS, VFSStatFS {
     /// Resolve a symlink target relative to the entry that contains it.
     private func resolveSymlinkTarget(from sourcePath: String, target: String, depth: Int = 0) -> String {
         guard depth < 32 else { return target }
-
-        let resolved: String
-        if target.hasPrefix("/") {
-            // Absolute symlink — strip leading /
-            resolved = PathUtils.cleanPath(String(target.dropFirst()))
-        } else {
-            // Relative symlink — resolve relative to parent of source
-            let (parent, _) = PathUtils.splitPath(sourcePath)
-            resolved = PathUtils.cleanPath(PathUtils.joinPath(parent, target))
-        }
-        return resolved
+        let (parent, _) = PathUtils.splitPath(sourcePath)
+        return PathUtils.resolvePath(target, relativeTo: parent)
     }
 
     // MARK: - Tar parsing helpers

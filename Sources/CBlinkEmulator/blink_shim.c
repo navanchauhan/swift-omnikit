@@ -7,6 +7,7 @@
 
 #include "include/CBlinkEmulator.h"
 
+#include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <limits.h>
@@ -28,6 +29,7 @@
 #include "blink/bus.h"
 #include "blink/web.h"
 #include "blink/vfs.h"
+#include "blink/hostfs.h"
 #include "blink/log.h"
 #include "blink/syscall.h"
 #include "blink/signal.h"
@@ -182,6 +184,324 @@ static int read_all(int fd, char **out_buf, size_t *out_len) {
     return 0;
 }
 
+static char *join_paths(const char *base, const char *path) {
+    size_t base_len;
+    size_t path_len;
+    char *joined;
+
+    if (!base || !path) {
+        errno = EINVAL;
+        return NULL;
+    }
+
+    while (path[0] == '/') {
+        ++path;
+    }
+
+    base_len = strlen(base);
+    path_len = strlen(path);
+    joined = malloc(base_len + (path_len ? 1 : 0) + path_len + 1);
+    if (!joined) {
+        return NULL;
+    }
+
+    memcpy(joined, base, base_len);
+    if (path_len) {
+        joined[base_len] = '/';
+        memcpy(joined + base_len + 1, path, path_len);
+        joined[base_len + path_len + 1] = '\0';
+    } else {
+        joined[base_len] = '\0';
+    }
+    return joined;
+}
+
+static char *parent_path_copy(const char *path) {
+    const char *slash;
+    char *parent;
+    size_t parent_len;
+
+    if (!path || !path[0]) {
+        return strdup("");
+    }
+
+    slash = strrchr(path, '/');
+    if (!slash) {
+        return strdup("");
+    }
+
+    parent_len = (size_t)(slash - path);
+    parent = malloc(parent_len + 1);
+    if (!parent) {
+        return NULL;
+    }
+
+    memcpy(parent, path, parent_len);
+    parent[parent_len] = '\0';
+    return parent;
+}
+
+static int ensure_directory_path(const char *root, const char *relative_path,
+                                 mode_t mode) {
+    char *path;
+    char *cursor;
+    size_t root_len;
+
+    if (!relative_path || !relative_path[0]) {
+        return 0;
+    }
+
+    path = join_paths(root, relative_path);
+    if (!path) {
+        return -1;
+    }
+
+    root_len = strlen(root);
+    for (cursor = path + root_len + 1; *cursor; ++cursor) {
+        if (*cursor != '/') {
+            continue;
+        }
+        *cursor = '\0';
+        if (mkdir(path, mode) == -1 && errno != EEXIST) {
+            int saved_errno = errno;
+            free(path);
+            errno = saved_errno;
+            return -1;
+        }
+        *cursor = '/';
+    }
+
+    if (mkdir(path, mode) == -1 && errno != EEXIST) {
+        int saved_errno = errno;
+        free(path);
+        errno = saved_errno;
+        return -1;
+    }
+
+    free(path);
+    return 0;
+}
+
+static int write_all_bytes(int fd, const uint8_t *data, size_t size) {
+    size_t written = 0;
+
+    while (written < size) {
+        ssize_t rc = write(fd, data + written, size - written);
+        if (rc == -1) {
+            if (errno == EINTR) {
+                continue;
+            }
+            return -1;
+        }
+        written += (size_t)rc;
+    }
+
+    return 0;
+}
+
+static int remove_tree(const char *path) {
+    struct stat st;
+
+    if (lstat(path, &st) == -1) {
+        if (errno == ENOENT) {
+            return 0;
+        }
+        return -1;
+    }
+
+    if (S_ISDIR(st.st_mode)) {
+        DIR *dir;
+        struct dirent *entry;
+        int rc = 0;
+
+        dir = opendir(path);
+        if (!dir) {
+            return -1;
+        }
+
+        while ((entry = readdir(dir)) != NULL) {
+            char *child_path;
+
+            if (!strcmp(entry->d_name, ".") || !strcmp(entry->d_name, "..")) {
+                continue;
+            }
+
+            child_path = join_paths(path, entry->d_name);
+            if (!child_path) {
+                rc = -1;
+                break;
+            }
+            if (remove_tree(child_path) == -1) {
+                int saved_errno = errno;
+                free(child_path);
+                closedir(dir);
+                errno = saved_errno;
+                return -1;
+            }
+            free(child_path);
+        }
+
+        if (closedir(dir) == -1 && rc == 0) {
+            rc = -1;
+        }
+        if (rc == -1) {
+            return -1;
+        }
+        return rmdir(path);
+    }
+
+    return unlink(path);
+}
+
+static int remove_existing_path(const char *path) {
+    struct stat st;
+
+    if (lstat(path, &st) == -1) {
+        if (errno == ENOENT) {
+            return 0;
+        }
+        return -1;
+    }
+
+    return remove_tree(path);
+}
+
+static int materialize_flatvfs_to_tempdir(const flatvfs_t *vfs, char *tempdir,
+                                          size_t tempdir_size) {
+    int i;
+    int saved_errno = 0;
+
+    if (!vfs || !tempdir || tempdir_size < sizeof("/tmp/omnikit-blink-host-XXXXXX")) {
+        errno = EINVAL;
+        return -1;
+    }
+
+    strncpy(tempdir, "/tmp/omnikit-blink-host-XXXXXX", tempdir_size);
+    tempdir[tempdir_size - 1] = '\0';
+    if (!mkdtemp(tempdir)) {
+        return -1;
+    }
+
+    for (i = 0; i < vfs->entry_count; ++i) {
+        const flatvfs_entry_t *entry = &vfs->entries[i];
+        const char *relative_path = entry->path ? entry->path : "";
+        char *parent = NULL;
+        char *host_path = NULL;
+        mode_t mode = (mode_t)(entry->mode ? entry->mode : 0644);
+
+        if (!relative_path[0]) {
+            continue;
+        }
+
+        parent = parent_path_copy(relative_path);
+        if (!parent) {
+            saved_errno = errno;
+            goto fail;
+        }
+        if (ensure_directory_path(tempdir, parent, 0755) == -1) {
+            saved_errno = errno;
+            goto fail;
+        }
+
+        host_path = join_paths(tempdir, relative_path);
+        if (!host_path) {
+            saved_errno = errno;
+            goto fail;
+        }
+
+        switch (entry->type) {
+        case FLATVFS_DIR:
+            mode = (mode_t)(entry->mode ? entry->mode : 0755);
+            {
+                struct stat st;
+                if (lstat(host_path, &st) == 0) {
+                    if (!S_ISDIR(st.st_mode)) {
+                        if (remove_tree(host_path) == -1) {
+                            saved_errno = errno;
+                            goto fail;
+                        }
+                        if (mkdir(host_path, mode) == -1) {
+                            saved_errno = errno;
+                            goto fail;
+                        }
+                    }
+                } else if (errno == ENOENT) {
+                    if (mkdir(host_path, mode) == -1) {
+                        saved_errno = errno;
+                        goto fail;
+                    }
+                } else {
+                    saved_errno = errno;
+                    goto fail;
+                }
+            }
+            if (chmod(host_path, mode) == -1) {
+                saved_errno = errno;
+                goto fail;
+            }
+            break;
+        case FLATVFS_SYMLINK:
+            if (!entry->symlink_target) {
+                saved_errno = EINVAL;
+                goto fail;
+            }
+            if (remove_existing_path(host_path) == -1) {
+                saved_errno = errno;
+                goto fail;
+            }
+            if (symlink(entry->symlink_target, host_path) == -1) {
+                saved_errno = errno;
+                goto fail;
+            }
+            break;
+        case FLATVFS_FILE: {
+            int fd;
+            if (remove_existing_path(host_path) == -1) {
+                saved_errno = errno;
+                goto fail;
+            }
+            fd = open(host_path, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC,
+                      mode);
+            if (fd == -1) {
+                saved_errno = errno;
+                goto fail;
+            }
+            if (entry->data_size &&
+                write_all_bytes(fd, entry->data, entry->data_size) == -1) {
+                saved_errno = errno;
+                close(fd);
+                goto fail;
+            }
+            if (close(fd) == -1) {
+                saved_errno = errno;
+                goto fail;
+            }
+            if (chmod(host_path, mode) == -1) {
+                saved_errno = errno;
+                goto fail;
+            }
+            break;
+        }
+        default:
+            saved_errno = EINVAL;
+            goto fail;
+        }
+
+        free(parent);
+        free(host_path);
+        continue;
+
+fail:
+        free(parent);
+        free(host_path);
+        remove_tree(tempdir);
+        errno = saved_errno ? saved_errno : EIO;
+        return -1;
+    }
+
+    return 0;
+}
+
 static pthread_mutex_t g_nofork_runtime_lock = PTHREAD_MUTEX_INITIALIZER;
 
 struct NoForkTimeoutThreadArgs {
@@ -290,51 +610,37 @@ static void *nofork_timeout_thread_main(void *arg) {
     return NULL;
 }
 
-static int duplicate_fd_above_stdio(int fd) {
-    int dupfd;
+struct CapturePipeState {
+    int fd;
+    char *buf;
+    size_t len;
+    int error;
+};
 
-#ifdef F_DUPFD_CLOEXEC
-    dupfd = fcntl(fd, F_DUPFD_CLOEXEC, 10);
-    if (dupfd == -1 && errno != EINVAL) {
-        return -1;
-    }
-    if (dupfd != -1) {
-        return dupfd;
-    }
-#endif
+static void *capture_pipe_reader_main(void *arg) {
+    struct CapturePipeState *state = (struct CapturePipeState *)arg;
 
-    return fcntl(fd, F_DUPFD, 10);
+    if (read_all(state->fd, &state->buf, &state->len) != 0) {
+        state->error = errno ? errno : EIO;
+    }
+    close(state->fd);
+    state->fd = -1;
+    return NULL;
 }
 
-static int open_unlinked_tempfile(void) {
-    char pathbuf[PATH_MAX];
-    const char *tmpdir = getenv("TMPDIR");
+static int redirect_guest_fd(int guest_fd, int host_fd) {
+    struct VfsInfo *info;
 
-    if (!tmpdir || !tmpdir[0]) {
-#if defined(__APPLE__)
-        size_t count = confstr(_CS_DARWIN_USER_TEMP_DIR, pathbuf, sizeof(pathbuf));
-        if (count && count <= sizeof(pathbuf)) {
-            tmpdir = pathbuf;
-        } else {
-            tmpdir = "/tmp/";
-        }
-#else
-        tmpdir = "/tmp/";
-#endif
-    }
-
-    if (snprintf(pathbuf, sizeof(pathbuf), "%s%somnikit-blink-XXXXXX", tmpdir,
-                 tmpdir[strlen(tmpdir) - 1] == '/' ? "" : "/") >= sizeof(pathbuf)) {
-        errno = ENAMETOOLONG;
+    if (HostfsWrapFd(host_fd, true, &info) == -1) {
         return -1;
     }
-
-    int fd = mkstemp(pathbuf);
-    if (fd == -1) {
+    if (VfsSetFd(guest_fd, info) == -1) {
+        int saved_errno = errno;
+        unassert(!VfsFreeInfo(info));
+        errno = saved_errno;
         return -1;
     }
-    unlink(pathbuf);
-    return fd;
+    return 0;
 }
 
 _Noreturn void blink_host_exit(int status) {
@@ -366,8 +672,40 @@ _Noreturn void blink_host_exit(int status) {
 }
 
 static int reset_blink_vfs_state(void) {
+    VfsCloseAll();
     VfsResetForReuse();
     return 0;
+}
+
+static int init_isolated_host_prefix(const char *prefix) {
+    char *resolved_prefix;
+    struct stat st;
+    int rc;
+
+    if (!prefix) {
+        errno = EINVAL;
+        return -1;
+    }
+
+    resolved_prefix = realpath(prefix, NULL);
+    if (!resolved_prefix) {
+        return -1;
+    }
+    if (stat(resolved_prefix, &st) == -1) {
+        int saved_errno = errno;
+        free(resolved_prefix);
+        errno = saved_errno;
+        return -1;
+    }
+    if (!S_ISDIR(st.st_mode)) {
+        free(resolved_prefix);
+        errno = ENOTDIR;
+        return -1;
+    }
+
+    rc = VfsInitRootMount(resolved_prefix, "hostfs", 0, NULL, false, "/");
+    free(resolved_prefix);
+    return rc;
 }
 
 static int host_runtime_setup(const blink_run_config_t *config, const flatvfs_t *vfs) {
@@ -380,7 +718,7 @@ static int host_runtime_setup(const blink_run_config_t *config, const flatvfs_t 
     FLAG_nolinear = true;
 
 #ifndef DISABLE_VFS
-    if (config->vfs_prefix && VfsInit(config->vfs_prefix)) {
+    if (config->vfs_prefix && init_isolated_host_prefix(config->vfs_prefix)) {
         return -1;
     }
 #endif
@@ -561,6 +899,7 @@ static int blink_run_nofork_interactive_impl(const blink_run_config_t *config,
     rc = context.exit_code;
 
 nofork_interactive_cleanup:
+    VfsCloseAll();
     nofork_context_finish(&context);
     if (timeout_thread_started) {
         pthread_join(timeout_thread, NULL);
@@ -588,97 +927,70 @@ static int blink_run_nofork_captured_impl(const blink_run_config_t *config,
                                           int timeout_ms,
                                           const flatvfs_t *vfs,
                                           blink_runtime_setup_fn setup_fn) {
+    int err;
     int rc = -1;
     int saved_errno = 0;
-    int capture_stdout = -1;
-    int capture_stderr = -1;
-    int saved_stdout = -1;
-    int saved_stderr = -1;
+    int stdout_pipe[2] = {-1, -1};
+    int stderr_pipe[2] = {-1, -1};
     bool timeout_thread_started = false;
+    bool stdout_reader_started = false;
+    bool stderr_reader_started = false;
     pthread_t timeout_thread;
+    pthread_t stdout_reader_thread;
+    pthread_t stderr_reader_thread;
     struct OmniNoForkContext context;
     struct NoForkTimeoutThreadArgs timeout_args;
+    struct CapturePipeState stdout_state = {.fd = -1, .buf = NULL, .len = 0, .error = 0};
+    struct CapturePipeState stderr_state = {.fd = -1, .buf = NULL, .len = 0, .error = 0};
     void (*old_sigpipe)(int);
     char pathbuf[PATH_MAX];
     char *empty_envp[] = {NULL};
-    char *stdout_buf = NULL;
-    char *stderr_buf = NULL;
-    size_t stdout_len = 0;
-    size_t stderr_len = 0;
 
     memset(result, 0, sizeof(*result));
 
     if (init_nofork_context(&context) != 0) {
         return -1;
     }
-    if ((capture_stdout = open_unlinked_tempfile()) == -1 ||
-        (capture_stderr = open_unlinked_tempfile()) == -1) {
-        saved_errno = errno;
-        destroy_nofork_context(&context);
-        errno = saved_errno;
-        return -1;
-    }
-    if ((saved_stdout = dup(STDOUT_FILENO)) == -1 ||
-        (saved_stderr = dup(STDERR_FILENO)) == -1) {
-        saved_errno = errno;
-        if (capture_stdout != -1) close(capture_stdout);
-        if (capture_stderr != -1) close(capture_stderr);
-        if (saved_stdout != -1) close(saved_stdout);
-        if (saved_stderr != -1) close(saved_stderr);
-        destroy_nofork_context(&context);
-        errno = saved_errno;
-        return -1;
-    }
-
-    {
-        int fd;
-
-        if ((fd = duplicate_fd_above_stdio(capture_stdout)) == -1) {
-            saved_errno = errno;
-            goto nofork_captured_finalize;
-        }
-        close(capture_stdout);
-        capture_stdout = fd;
-
-        if ((fd = duplicate_fd_above_stdio(capture_stderr)) == -1) {
-            saved_errno = errno;
-            goto nofork_captured_finalize;
-        }
-        close(capture_stderr);
-        capture_stderr = fd;
-
-        if ((fd = duplicate_fd_above_stdio(saved_stdout)) == -1) {
-            saved_errno = errno;
-            goto nofork_captured_finalize;
-        }
-        close(saved_stdout);
-        saved_stdout = fd;
-
-        if ((fd = duplicate_fd_above_stdio(saved_stderr)) == -1) {
-            saved_errno = errno;
-            goto nofork_captured_finalize;
-        }
-        close(saved_stderr);
-        saved_stderr = fd;
-    }
 
     pthread_mutex_lock(&g_nofork_runtime_lock);
     g_nofork_context = &context;
     old_sigpipe = signal(SIGPIPE, SIG_IGN);
-
-    fflush(stdout);
-    fflush(stderr);
-    if (dup2(capture_stdout, STDOUT_FILENO) == -1 ||
-        dup2(capture_stderr, STDERR_FILENO) == -1) {
-        saved_errno = errno;
-        goto nofork_captured_cleanup_locked;
-    }
 
     if (!sigsetjmp(context.escape, 1)) {
         if (setup_fn(config, vfs) != 0) {
             saved_errno = errno;
             goto nofork_captured_cleanup_locked;
         }
+
+        if (pipe(stdout_pipe) == -1 || pipe(stderr_pipe) == -1) {
+            saved_errno = errno;
+            goto nofork_captured_cleanup_locked;
+        }
+
+        stdout_state.fd = stdout_pipe[0];
+        stderr_state.fd = stderr_pipe[0];
+        if ((err = pthread_create(&stdout_reader_thread, NULL, capture_pipe_reader_main,
+                                  &stdout_state)) != 0) {
+            saved_errno = err;
+            goto nofork_captured_cleanup_locked;
+        }
+        stdout_reader_started = true;
+        if ((err = pthread_create(&stderr_reader_thread, NULL, capture_pipe_reader_main,
+                                  &stderr_state)) != 0) {
+            saved_errno = err;
+            goto nofork_captured_cleanup_locked;
+        }
+        stderr_reader_started = true;
+
+        if (redirect_guest_fd(STDOUT_FILENO, stdout_pipe[1]) == -1 ||
+            redirect_guest_fd(STDERR_FILENO, stderr_pipe[1]) == -1) {
+            saved_errno = errno;
+            goto nofork_captured_cleanup_locked;
+        }
+        close(stdout_pipe[1]);
+        stdout_pipe[1] = -1;
+        close(stderr_pipe[1]);
+        stderr_pipe[1] = -1;
 
         if (timeout_ms > 0) {
             int err;
@@ -699,26 +1011,18 @@ static int blink_run_nofork_captured_impl(const blink_run_config_t *config,
                        config->envp ? (char **)config->envp : empty_envp);
     }
 
-    rc = 0;
+    rc = saved_errno ? -1 : 0;
 
 nofork_captured_cleanup_locked:
-    fflush(stdout);
-    fflush(stderr);
-    if (saved_stdout != -1) {
-        if (dup2(saved_stdout, STDOUT_FILENO) == -1 && !saved_errno) {
-            saved_errno = errno;
-        }
-        close(saved_stdout);
-        saved_stdout = -1;
+    if (stdout_pipe[1] != -1) {
+        close(stdout_pipe[1]);
+        stdout_pipe[1] = -1;
     }
-    if (saved_stderr != -1) {
-        if (dup2(saved_stderr, STDERR_FILENO) == -1 && !saved_errno) {
-            saved_errno = errno;
-        }
-        close(saved_stderr);
-        saved_stderr = -1;
+    if (stderr_pipe[1] != -1) {
+        close(stderr_pipe[1]);
+        stderr_pipe[1] = -1;
     }
-
+    VfsCloseAll();
     nofork_context_finish(&context);
     if (timeout_thread_started) {
         pthread_join(timeout_thread, NULL);
@@ -729,40 +1033,38 @@ nofork_captured_cleanup_locked:
     g_nofork_context = NULL;
     pthread_mutex_unlock(&g_nofork_runtime_lock);
 
-nofork_captured_finalize:
-    if (saved_stdout != -1) {
-        close(saved_stdout);
+    if (stdout_pipe[0] != -1 && !stdout_reader_started) {
+        close(stdout_pipe[0]);
+        stdout_pipe[0] = -1;
     }
-    if (saved_stderr != -1) {
-        close(saved_stderr);
+    if (stderr_pipe[0] != -1 && !stderr_reader_started) {
+        close(stderr_pipe[0]);
+        stderr_pipe[0] = -1;
     }
-    if (capture_stdout != -1) {
-        if (lseek(capture_stdout, 0, SEEK_SET) == -1) {
-            if (!saved_errno) saved_errno = errno;
-        } else if (read_all(capture_stdout, &stdout_buf, &stdout_len) != 0) {
-            if (!saved_errno) saved_errno = errno;
-        }
-        close(capture_stdout);
+    if (stdout_reader_started) {
+        pthread_join(stdout_reader_thread, NULL);
     }
-    if (capture_stderr != -1) {
-        if (lseek(capture_stderr, 0, SEEK_SET) == -1) {
-            if (!saved_errno) saved_errno = errno;
-        } else if (read_all(capture_stderr, &stderr_buf, &stderr_len) != 0) {
-            if (!saved_errno) saved_errno = errno;
-        }
-        close(capture_stderr);
+    if (stderr_reader_started) {
+        pthread_join(stderr_reader_thread, NULL);
+    }
+
+    if (!saved_errno && stdout_state.error) {
+        saved_errno = stdout_state.error;
+    }
+    if (!saved_errno && stderr_state.error) {
+        saved_errno = stderr_state.error;
     }
 
     if (rc == 0 && !saved_errno) {
         result->exit_code = context.exit_code;
         result->timed_out = context.timed_out ? 1 : 0;
-        result->stdout_buf = stdout_buf;
-        result->stdout_len = stdout_len;
-        result->stderr_buf = stderr_buf;
-        result->stderr_len = stderr_len;
+        result->stdout_buf = stdout_state.buf;
+        result->stdout_len = stdout_state.len;
+        result->stderr_buf = stderr_state.buf;
+        result->stderr_len = stderr_state.len;
     } else {
-        free(stdout_buf);
-        free(stderr_buf);
+        free(stdout_state.buf);
+        free(stderr_state.buf);
     }
 
     destroy_nofork_context(&context);
@@ -831,7 +1133,7 @@ int blink_run(const blink_run_config_t *config,
 
 #ifndef DISABLE_VFS
         if (config->vfs_prefix) {
-            if (VfsInit(config->vfs_prefix)) {
+            if (init_isolated_host_prefix(config->vfs_prefix)) {
                 _exit(127);
             }
         }
@@ -1051,7 +1353,7 @@ int blink_run_interactive(const blink_run_config_t *config) {
 
 #ifndef DISABLE_VFS
         if (config->vfs_prefix) {
-            if (VfsInit(config->vfs_prefix)) {
+            if (init_isolated_host_prefix(config->vfs_prefix)) {
                 _exit(127);
             }
         }
@@ -1105,35 +1407,60 @@ int blink_run_interactive(const blink_run_config_t *config) {
 #endif
 }
 
-// ── In-memory VFS child setup ───────────────────────────────────────────────
+static int run_interactive_memvfs_via_hostfs(const blink_run_config_t *config,
+                                             const flatvfs_t *vfs) {
+    blink_run_config_t host_config;
+    char tempdir[PATH_MAX];
+    int rc;
+    int saved_errno = 0;
 
-/// Common child setup for memvfs: init blink with in-memory VFS.
-/// Uses OmniVfsInit to mount the flatvfs directly — no disk writes.
-static void memvfs_child_setup(const blink_run_config_t *config,
-                                const flatvfs_t *vfs) {
-    (void)config;
-
-    // Initialize blink subsystems.
-    // NOTE: After fork() from Swift async runtime, mutexes inherited from
-    // parent threads may be in a locked state. Reinitialize ALL known blink
-    // global mutexes to avoid deadlocks. This is safe because the forked
-    // child is single-threaded at this point.
-    extern struct Vfs g_vfs;
-    memset(&g_vfs, 0, sizeof(g_vfs));
-    pthread_mutex_init(&g_vfs.lock, NULL);
-    pthread_mutex_init(&g_vfs.mapslock, NULL);
-
-    WriteErrorInit();
-    InitMap();
-    FLAG_nolinear = true;
-
-#ifndef DISABLE_VFS
-    if (OmniVfsInit(vfs)) {
-        _exit(127);
+    if (materialize_flatvfs_to_tempdir(vfs, tempdir, sizeof(tempdir)) == -1) {
+        return -1;
     }
-#endif
 
-    InitBus();
+    host_config = *config;
+    host_config.vfs_prefix = tempdir;
+    rc = blink_run_interactive(&host_config);
+    if (rc == -1) {
+        saved_errno = errno;
+    }
+
+    if (remove_tree(tempdir) == -1 && rc == -1 && !saved_errno) {
+        saved_errno = errno;
+    }
+    if (rc == -1 && saved_errno) {
+        errno = saved_errno;
+    }
+    return rc;
+}
+
+static int run_captured_memvfs_via_hostfs(const blink_run_config_t *config,
+                                          blink_run_result_t *result,
+                                          int timeout_ms,
+                                          const flatvfs_t *vfs) {
+    blink_run_config_t host_config;
+    char tempdir[PATH_MAX];
+    int rc;
+    int saved_errno = 0;
+
+    if (materialize_flatvfs_to_tempdir(vfs, tempdir, sizeof(tempdir)) == -1) {
+        return -1;
+    }
+
+    host_config = *config;
+    host_config.vfs_prefix = tempdir;
+    rc = blink_run(&host_config, result, timeout_ms);
+    if (rc == -1) {
+        saved_errno = errno;
+    }
+
+    if (remove_tree(tempdir) == -1 && rc == -1 && !saved_errno) {
+        saved_errno = errno;
+    }
+    if (rc == -1 && saved_errno) {
+        errno = saved_errno;
+    }
+    return rc;
 }
 
 // ── blink_run_memvfs — interactive mode with in-memory VFS ──────────────────
@@ -1149,58 +1476,8 @@ int blink_run_memvfs(const blink_run_config_t *config, const flatvfs_t *vfs) {
                                                  0, NULL);
     }
 
-    // Flush stdio buffers before fork to avoid duplicate output.
-    fflush(stdout);
-    fflush(stderr);
-
 #if defined(HAVE_FORK)
-    pid_t pid = fork();
-    if (pid == -1) return -1;
-
-    if (pid == 0) {
-        // ── Child: init in-memory VFS + run ─────────────────────────────
-        memvfs_child_setup(config, vfs);
-
-        char pathbuf[PATH_MAX];
-        strncpy(pathbuf, config->program_path, sizeof(pathbuf) - 1);
-        pathbuf[sizeof(pathbuf) - 1] = '\0';
-
-        int total_argc = config->argc;
-        char **child_argv = calloc((size_t)(total_argc + 1), sizeof(char *));
-        if (!child_argv) _exit(127);
-        for (int i = 0; i < total_argc; i++) {
-            child_argv[i] = (char *)config->argv[i];
-        }
-        child_argv[total_argc] = NULL;
-
-        char **child_envp;
-        if (config->envp && config->envc > 0) {
-            child_envp = calloc((size_t)(config->envc + 1), sizeof(char *));
-            if (!child_envp) _exit(127);
-            for (int i = 0; i < config->envc; i++) {
-                child_envp[i] = (char *)config->envp[i];
-            }
-            child_envp[config->envc] = NULL;
-        } else {
-            child_envp = calloc(1, sizeof(char *));
-            if (!child_envp) _exit(127);
-            child_envp[0] = NULL;
-        }
-
-        signal(SIGPIPE, SIG_IGN);
-        ShimExec(pathbuf, pathbuf, child_argv, child_envp);
-        _exit(127);
-    }
-
-    // ── Parent: wait for child to exit ──────────────────────────────────
-    int status = 0;
-    while (waitpid(pid, &status, 0) == -1) {
-        if (errno != EINTR) return -1;
-    }
-
-    if (WIFEXITED(status)) return WEXITSTATUS(status);
-    if (WIFSIGNALED(status)) return 128 + WTERMSIG(status);
-    return -1;
+    return run_interactive_memvfs_via_hostfs(config, vfs);
 #else
     errno = ENOTSUP;
     return -1;
@@ -1223,172 +1500,9 @@ int blink_run_captured_memvfs(const blink_run_config_t *config,
                                               memvfs_runtime_setup);
     }
 
-    memset(result, 0, sizeof(*result));
-
 #if defined(HAVE_FORK)
-    // Create pipes for stdout and stderr capture.
-    int stdout_pipe[2] = {-1, -1};
-    int stderr_pipe[2] = {-1, -1};
-    if (pipe(stdout_pipe) == -1) return -1;
-    if (pipe(stderr_pipe) == -1) {
-        close(stdout_pipe[0]);
-        close(stdout_pipe[1]);
-        return -1;
-    }
-
-    pid_t pid = fork();
-    if (pid == -1) {
-        int saved = errno;
-        close(stdout_pipe[0]); close(stdout_pipe[1]);
-        close(stderr_pipe[0]); close(stderr_pipe[1]);
-        errno = saved;
-        return -1;
-    }
-
-    if (pid == 0) {
-        // ── Child process ────────────────────────────────────────────────
-        close(stdout_pipe[0]);
-        close(stderr_pipe[0]);
-        dup2(stdout_pipe[1], STDOUT_FILENO);
-        dup2(stderr_pipe[1], STDERR_FILENO);
-        close(stdout_pipe[1]);
-        close(stderr_pipe[1]);
-
-        memvfs_child_setup(config, vfs);
-
-        char pathbuf[PATH_MAX];
-        strncpy(pathbuf, config->program_path, sizeof(pathbuf) - 1);
-        pathbuf[sizeof(pathbuf) - 1] = '\0';
-
-        int total_argc = config->argc;
-        char **child_argv = calloc((size_t)(total_argc + 1), sizeof(char *));
-        if (!child_argv) _exit(127);
-        for (int i = 0; i < total_argc; i++) {
-            child_argv[i] = (char *)config->argv[i];
-        }
-        child_argv[total_argc] = NULL;
-
-        char **child_envp;
-        if (config->envp && config->envc > 0) {
-            child_envp = calloc((size_t)(config->envc + 1), sizeof(char *));
-            if (!child_envp) _exit(127);
-            for (int i = 0; i < config->envc; i++) {
-                child_envp[i] = (char *)config->envp[i];
-            }
-            child_envp[config->envc] = NULL;
-        } else {
-            child_envp = calloc(1, sizeof(char *));
-            if (!child_envp) _exit(127);
-            child_envp[0] = NULL;
-        }
-
-        signal(SIGPIPE, SIG_IGN);
-        ShimExec(pathbuf, pathbuf, child_argv, child_envp);
-        _exit(127);
-    }
-
-    // ── Parent process ───────────────────────────────────────────────────
-    close(stdout_pipe[1]);
-    close(stderr_pipe[1]);
-
-    set_nonblocking(stdout_pipe[0]);
-    set_nonblocking(stderr_pipe[0]);
-
-    size_t out_cap = 4096, err_cap = 4096;
-    size_t out_len = 0, err_len = 0;
-    char *out_buf = malloc(out_cap);
-    char *err_buf = malloc(err_cap);
-    if (!out_buf || !err_buf) {
-        free(out_buf);
-        free(err_buf);
-        kill(pid, SIGKILL);
-        waitpid(pid, NULL, 0);
-        close(stdout_pipe[0]);
-        close(stderr_pipe[0]);
-        errno = ENOMEM;
-        return -1;
-    }
-
-    int stdout_eof = 0, stderr_eof = 0;
-
-    while (!stdout_eof || !stderr_eof) {
-        fd_set rfds;
-        FD_ZERO(&rfds);
-        int maxfd = -1;
-        if (!stdout_eof) {
-            FD_SET(stdout_pipe[0], &rfds);
-            if (stdout_pipe[0] > maxfd) maxfd = stdout_pipe[0];
-        }
-        if (!stderr_eof) {
-            FD_SET(stderr_pipe[0], &rfds);
-            if (stderr_pipe[0] > maxfd) maxfd = stderr_pipe[0];
-        }
-
-        struct timeval tv;
-        tv.tv_sec = (timeout_ms > 0) ? (timeout_ms / 1000) : 5;
-        tv.tv_usec = (timeout_ms > 0) ? ((timeout_ms % 1000) * 1000) : 0;
-
-        int ret = select(maxfd + 1, &rfds, NULL, NULL, &tv);
-        if (ret == -1) {
-            if (errno == EINTR) continue;
-            break;
-        }
-        if (ret == 0 && timeout_ms > 0) {
-            kill(pid, SIGKILL);
-            result->timed_out = 1;
-            break;
-        }
-
-        if (!stdout_eof && FD_ISSET(stdout_pipe[0], &rfds)) {
-            if (out_len + 1024 > out_cap) {
-                out_cap *= 2;
-                char *tmp = realloc(out_buf, out_cap);
-                if (tmp) out_buf = tmp;
-            }
-            ssize_t n = read(stdout_pipe[0], out_buf + out_len, out_cap - out_len);
-            if (n > 0) out_len += (size_t)n;
-            else if (n == 0) stdout_eof = 1;
-            else if (errno != EAGAIN && errno != EINTR) stdout_eof = 1;
-        }
-
-        if (!stderr_eof && FD_ISSET(stderr_pipe[0], &rfds)) {
-            if (err_len + 1024 > err_cap) {
-                err_cap *= 2;
-                char *tmp = realloc(err_buf, err_cap);
-                if (tmp) err_buf = tmp;
-            }
-            ssize_t n = read(stderr_pipe[0], err_buf + err_len, err_cap - err_len);
-            if (n > 0) err_len += (size_t)n;
-            else if (n == 0) stderr_eof = 1;
-            else if (errno != EAGAIN && errno != EINTR) stderr_eof = 1;
-        }
-    }
-
-    close(stdout_pipe[0]);
-    close(stderr_pipe[0]);
-
-    int status = 0;
-    waitpid(pid, &status, 0);
-
-    if (WIFEXITED(status)) {
-        result->exit_code = WEXITSTATUS(status);
-    } else if (WIFSIGNALED(status)) {
-        result->exit_code = 128 + WTERMSIG(status);
-    } else {
-        result->exit_code = -1;
-    }
-
-    out_buf = realloc(out_buf, out_len + 1);
-    if (out_buf) out_buf[out_len] = '\0';
-    err_buf = realloc(err_buf, err_len + 1);
-    if (err_buf) err_buf[err_len] = '\0';
-
-    result->stdout_buf = out_buf;
-    result->stdout_len = out_len;
-    result->stderr_buf = err_buf;
-    result->stderr_len = err_len;
-
-    return 0;
+    memset(result, 0, sizeof(*result));
+    return run_captured_memvfs_via_hostfs(config, result, timeout_ms, vfs);
 #else
     errno = ENOTSUP;
     return -1;

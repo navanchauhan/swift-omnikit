@@ -15,14 +15,25 @@ public enum PathUtils {
         return true
     }
 
-    /// Normalize a path: remove double slashes, resolve single dots, but NOT "..".
+    /// Normalize a path: remove double slashes and resolve single dots.
     public static func cleanPath(_ path: String) -> String {
+        normalizePath(path, resolveParentReferences: false)
+    }
+
+    /// Normalize a path and optionally collapse ".." segments, clamping at the root.
+    public static func normalizePath(_ path: String, resolveParentReferences: Bool) -> String {
         if path.isEmpty { return "." }
         let isAbs = path.hasPrefix("/")
         let components = path.split(separator: "/", omittingEmptySubsequences: true)
         var result: [Substring] = []
         for component in components {
             if component == "." { continue }
+            if resolveParentReferences && component == ".." {
+                if !result.isEmpty {
+                    result.removeLast()
+                }
+                continue
+            }
             result.append(component)
         }
         if result.isEmpty {
@@ -39,6 +50,16 @@ public enum PathUtils {
         if b.hasPrefix("/") { return b }
         let trimmedA = a.hasSuffix("/") ? String(a.dropLast()) : a
         return trimmedA + "/" + b
+    }
+
+    /// Resolve a possibly-relative path against a base path, collapsing "..".
+    public static func resolvePath(_ path: String, relativeTo base: String = ".") -> String {
+        let combined = if path.hasPrefix("/") {
+            path
+        } else {
+            joinPath(base, path)
+        }
+        return normalizePath(combined, resolveParentReferences: true)
     }
 
     /// Split into parent directory and filename.

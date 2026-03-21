@@ -110,14 +110,12 @@ LVGL renderer.
 ## OmniTerm / Blink Bootstrap
 
 - `CBlinkEmulator` is built from vendored blink source via SwiftPM. No host-specific `libblink.a` is committed.
-- Blink is vendored as a git submodule at `Sources/CBlinkEmulator/vendor/blink`.
+- Blink is vendored as a git submodule at `Sources/CBlinkEmulator/vendor/blink`, backed by the `navanchauhan/blink` fork.
 - Initialize submodules before building products that depend on blink:
   - `git submodule update --init --recursive`
-- Apply OmniKit's local Blink patches after syncing the submodule:
-  - `./scripts/apply_blink_patches.sh`
-- Local Blink deltas are stored as patch files in `Sources/CBlinkEmulator/blink-patches/` rather than as direct commits on the upstream `jart/blink` remote.
-- Linux and macOS keep the fork-isolated embedded blink runtime.
-- Apple mobile platforms use an in-process non-`fork()` blink runtime with the JIT path disabled so the container runtime can build inside app sandboxes.
+- The local checkout keeps `origin` pointed at the fork and `upstream` pointed at `jart/blink` so Blink changes can be committed directly on the forked submodule.
+- Linux and macOS use a fork-isolated embedded blink runtime and can fall back to an isolated temporary host root when guest `fork()` semantics need shared filesystem mutations.
+- Apple mobile platforms use an in-process non-`fork()` blink runtime with direct memvfs mounting and the JIT path disabled so the container runtime can build inside app sandboxes.
 
 ## OmniAICore Details
 

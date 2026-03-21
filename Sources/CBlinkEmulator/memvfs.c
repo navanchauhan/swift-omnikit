@@ -14,11 +14,13 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/mman.h>
 #include <sys/stat.h>
 #include <unistd.h>
 #include <dirent.h>
 
 #include "blink/vfs.h"
+#include "blink/errno.h"
 #include "blink/hostfs.h"
 #include "blink/devfs.h"
 #include "blink/procfs.h"
@@ -65,6 +67,10 @@ static int MemvfsFdatasync(struct VfsInfo *);
 static int MemvfsFlock(struct VfsInfo *, int);
 static int MemvfsDup(struct VfsInfo *, struct VfsInfo **);
 static int MemvfsOpendir(struct VfsInfo *, struct VfsInfo **);
+#ifdef HAVE_SEEKDIR
+static void MemvfsSeekdir(struct VfsInfo *, long);
+static long MemvfsTelldir(struct VfsInfo *);
+#endif
 static struct dirent *MemvfsReaddir(struct VfsInfo *);
 static void MemvfsRewinddir(struct VfsInfo *);
 static int MemvfsClosedir(struct VfsInfo *);
@@ -76,6 +82,10 @@ static int MemvfsFutime(struct VfsInfo *, const struct timespec[2]);
 static int MemvfsSymlink(const char *, struct VfsInfo *, const char *);
 static int MemvfsFcntl(struct VfsInfo *, int, va_list);
 static int MemvfsIoctl(struct VfsInfo *, unsigned long, const void *);
+static void *MemvfsMmap(struct VfsInfo *, void *, size_t, int, int, off_t);
+static int MemvfsMunmap(struct VfsInfo *, void *, size_t);
+static int MemvfsMprotect(struct VfsInfo *, void *, size_t, int);
+static int MemvfsMsync(struct VfsInfo *, void *, size_t, int);
 
 // ── Data structures ─────────────────────────────────────────────────────────
 
@@ -89,9 +99,27 @@ struct MemvfsOverlayEntry {
     int type;              // FLATVFS_FILE, FLATVFS_DIR, FLATVFS_SYMLINK, or -1 for deleted
     char *symlink_target;
     struct MemvfsOverlayEntry *next;
+    struct MemvfsOverlayEntry *hash_next;
 };
 
 #define MEMVFS_DELETED (-1)
+
+struct MemvfsBasePathIndexEntry {
+    const char *path;
+    int entry_idx;
+    struct MemvfsBasePathIndexEntry *next;
+};
+
+struct MemvfsBaseDirChild {
+    char *name;
+    struct MemvfsBaseDirChild *next;
+};
+
+struct MemvfsBaseDirIndexEntry {
+    char *path;
+    struct MemvfsBaseDirChild *children;
+    struct MemvfsBaseDirIndexEntry *next;
+};
 
 // Per-file state stored in VfsInfo->data for open files.
 struct MemvfsFileData {
@@ -103,6 +131,7 @@ struct MemvfsFileData {
 
 // Per-directory state stored in VfsInfo->data for open directories.
 struct MemvfsDirData {
+    struct MemvfsFileData file;
     char *dir_path;             // Normalized directory path (e.g. "" for root, "bin" for /bin)
     size_t dir_path_len;
     int readdir_pos;            // Current position for readdir iteration
@@ -117,6 +146,12 @@ struct MemvfsDeviceData {
     const flatvfs_t *base;
     struct MemvfsOverlayEntry *overlay;
     pthread_mutex_t overlay_lock;
+    struct MemvfsBasePathIndexEntry **base_path_buckets;
+    size_t base_path_bucket_count;
+    struct MemvfsBaseDirIndexEntry **base_dir_buckets;
+    size_t base_dir_bucket_count;
+    struct MemvfsOverlayEntry **overlay_buckets;
+    size_t overlay_bucket_count;
 };
 
 // ── Global VfsSystem ────────────────────────────────────────────────────────
@@ -129,7 +164,6 @@ struct VfsSystem g_omni_memfs = {
         .Freeinfo = MemvfsFreeinfo,
         .Freedevice = MemvfsFreedevice,
         .Finddir = MemvfsFinddir,
-        .Traverse = MemvfsTraverse,
         .Readlink = MemvfsReadlink,
         .Mkdir = MemvfsMkdir,
         .Open = MemvfsOpen,
@@ -160,6 +194,10 @@ struct VfsSystem g_omni_memfs = {
         .Ioctl = MemvfsIoctl,
         .Dup = MemvfsDup,
         .Opendir = MemvfsOpendir,
+#ifdef HAVE_SEEKDIR
+        .Seekdir = MemvfsSeekdir,
+        .Telldir = MemvfsTelldir,
+#endif
         .Readdir = MemvfsReaddir,
         .Rewinddir = MemvfsRewinddir,
         .Closedir = MemvfsClosedir,
@@ -167,6 +205,10 @@ struct VfsSystem g_omni_memfs = {
         .Utime = MemvfsUtime,
         .Futime = MemvfsFutime,
         .Symlink = MemvfsSymlink,
+        .Mmap = MemvfsMmap,
+        .Munmap = MemvfsMunmap,
+        .Mprotect = MemvfsMprotect,
+        .Msync = MemvfsMsync,
         // Socket/pipe/mmap/terminal ops are NULL — not supported on memfs.
         // blink will fall back to hostfs for those.
     },
@@ -179,8 +221,19 @@ struct VfsSystem g_omni_memfs = {
 // Path components have no leading slash. E.g. root="", child of root "bin"="bin",
 // child of "bin" named "sh" = "bin/sh".
 static char *memvfs_build_path(struct VfsInfo *parent, const char *name) {
+    int is_absolute = 0;
+
+    while (name && name[0] == '/') {
+        is_absolute = 1;
+        ++name;
+    }
+
     if (!parent || !parent->data) {
-        // Root node
+        if (!name || name[0] == '\0') return strdup("");
+        return strdup(name);
+    }
+
+    if (is_absolute) {
         if (!name || name[0] == '\0') return strdup("");
         return strdup(name);
     }
@@ -235,20 +288,188 @@ static const char *memvfs_get_path(struct VfsInfo *info) {
     return "";
 }
 
+static uint64_t memvfs_hash_path(const char *path) {
+    uint64_t hash = 1469598103934665603ULL;
+    const unsigned char *p = (const unsigned char *)path;
+    while (*p) {
+        hash ^= (uint64_t)*p++;
+        hash *= 1099511628211ULL;
+    }
+    return hash;
+}
+
+static size_t memvfs_bucket_count(size_t entry_count) {
+    size_t count = 64;
+    while (count < entry_count * 2) {
+        count <<= 1;
+    }
+    return count;
+}
+
+static struct MemvfsBaseDirIndexEntry *
+memvfs_base_dir_lookup(struct MemvfsDeviceData *devdata, const char *path) {
+    size_t bucket;
+    struct MemvfsBaseDirIndexEntry *entry;
+
+    if (!devdata->base_dir_buckets) return NULL;
+    bucket = (size_t)(memvfs_hash_path(path) & (devdata->base_dir_bucket_count - 1));
+    for (entry = devdata->base_dir_buckets[bucket]; entry; entry = entry->next) {
+        if (strcmp(entry->path, path) == 0) {
+            return entry;
+        }
+    }
+    return NULL;
+}
+
+static struct MemvfsBaseDirIndexEntry *
+memvfs_base_dir_get_or_create(struct MemvfsDeviceData *devdata, const char *path) {
+    size_t bucket;
+    struct MemvfsBaseDirIndexEntry *entry;
+
+    entry = memvfs_base_dir_lookup(devdata, path);
+    if (entry) return entry;
+
+    entry = calloc(1, sizeof(*entry));
+    if (!entry) return NULL;
+    entry->path = strdup(path);
+    if (!entry->path) {
+        free(entry);
+        return NULL;
+    }
+
+    bucket = (size_t)(memvfs_hash_path(path) & (devdata->base_dir_bucket_count - 1));
+    entry->next = devdata->base_dir_buckets[bucket];
+    devdata->base_dir_buckets[bucket] = entry;
+    return entry;
+}
+
+static void memvfs_base_dir_add_child(struct MemvfsDeviceData *devdata,
+                                      const char *dir_path,
+                                      const char *child_name) {
+    struct MemvfsBaseDirIndexEntry *dir_entry;
+    struct MemvfsBaseDirChild *child;
+
+    dir_entry = memvfs_base_dir_get_or_create(devdata, dir_path);
+    if (!dir_entry) return;
+    for (child = dir_entry->children; child; child = child->next) {
+        if (strcmp(child->name, child_name) == 0) {
+            return;
+        }
+    }
+    child = calloc(1, sizeof(*child));
+    if (!child) return;
+    child->name = strdup(child_name);
+    if (!child->name) {
+        free(child);
+        return;
+    }
+    child->next = dir_entry->children;
+    dir_entry->children = child;
+}
+
+static void memvfs_base_index_path_components(struct MemvfsDeviceData *devdata,
+                                              const char *path) {
+    const char *segment = path;
+    const char *slash;
+    size_t prefix_len = 0;
+    char name[VFS_NAME_MAX];
+    char *parent_path;
+
+    if (!path || !path[0]) return;
+
+    for (;;) {
+        slash = strchr(segment, '/');
+        if (slash) {
+            if ((size_t)(slash - segment) >= sizeof(name)) return;
+            memcpy(name, segment, (size_t)(slash - segment));
+            name[slash - segment] = '\0';
+        } else {
+            if (strlen(segment) >= sizeof(name)) return;
+            strcpy(name, segment);
+        }
+
+        if (prefix_len == 0) {
+            parent_path = strdup("");
+        } else {
+            parent_path = strndup(path, prefix_len);
+        }
+        if (!parent_path) return;
+        memvfs_base_dir_add_child(devdata, parent_path, name);
+        free(parent_path);
+
+        if (!slash) break;
+        prefix_len = (size_t)(slash - path);
+        segment = slash + 1;
+    }
+}
+
+static int memvfs_build_base_indexes(struct MemvfsDeviceData *devdata) {
+    size_t i;
+    struct MemvfsBasePathIndexEntry *path_entry;
+    size_t bucket;
+
+    devdata->base_path_bucket_count = memvfs_bucket_count(devdata->base->entry_count);
+    devdata->base_dir_bucket_count = memvfs_bucket_count(devdata->base->entry_count);
+    devdata->overlay_bucket_count = memvfs_bucket_count(devdata->base->entry_count / 2 + 1);
+
+    devdata->base_path_buckets = calloc(devdata->base_path_bucket_count,
+                                        sizeof(*devdata->base_path_buckets));
+    devdata->base_dir_buckets = calloc(devdata->base_dir_bucket_count,
+                                       sizeof(*devdata->base_dir_buckets));
+    devdata->overlay_buckets = calloc(devdata->overlay_bucket_count,
+                                      sizeof(*devdata->overlay_buckets));
+    if (!devdata->base_path_buckets || !devdata->base_dir_buckets ||
+        !devdata->overlay_buckets) {
+        return enomem();
+    }
+
+    for (i = 0; i < (size_t)devdata->base->entry_count; ++i) {
+        const char *path = devdata->base->entries[i].path;
+        if (!path) continue;
+
+        path_entry = calloc(1, sizeof(*path_entry));
+        if (!path_entry) {
+            return enomem();
+        }
+        path_entry->path = path;
+        path_entry->entry_idx = (int)i;
+        bucket = (size_t)(memvfs_hash_path(path) & (devdata->base_path_bucket_count - 1));
+        path_entry->next = devdata->base_path_buckets[bucket];
+        devdata->base_path_buckets[bucket] = path_entry;
+
+        memvfs_base_index_path_components(devdata, path);
+    }
+
+    return 0;
+}
+
 // Look up an overlay entry by path (NULL if not found).
 static struct MemvfsOverlayEntry *
 memvfs_overlay_lookup(struct MemvfsDeviceData *devdata, const char *path) {
-    for (struct MemvfsOverlayEntry *e = devdata->overlay; e; e = e->next) {
-        if (strcmp(e->path, path) == 0) return e;
+    size_t bucket;
+    struct MemvfsOverlayEntry *entry;
+
+    if (!devdata->overlay_buckets) return NULL;
+    bucket = (size_t)(memvfs_hash_path(path) & (devdata->overlay_bucket_count - 1));
+    for (entry = devdata->overlay_buckets[bucket]; entry; entry = entry->hash_next) {
+        if (strcmp(entry->path, path) == 0) {
+            return entry;
+        }
     }
     return NULL;
 }
 
 // Look up a base entry index by path (-1 if not found).
-static int memvfs_base_lookup(const flatvfs_t *base, const char *path) {
-    for (int i = 0; i < base->entry_count; i++) {
-        if (base->entries[i].path && strcmp(base->entries[i].path, path) == 0)
-            return i;
+static int memvfs_base_lookup(struct MemvfsDeviceData *devdata, const char *path) {
+    size_t bucket;
+    struct MemvfsBasePathIndexEntry *entry;
+
+    if (!devdata->base_path_buckets) return -1;
+    bucket = (size_t)(memvfs_hash_path(path) & (devdata->base_path_bucket_count - 1));
+    for (entry = devdata->base_path_buckets[bucket]; entry; entry = entry->next) {
+        if (strcmp(entry->path, path) == 0) {
+            return entry->entry_idx;
+        }
     }
     return -1;
 }
@@ -326,8 +547,16 @@ memvfs_overlay_create(struct MemvfsDeviceData *devdata, const char *path,
         return NULL;
     }
     e->path = strdup(path);
+    if (!e->path) {
+        free(e);
+        pthread_mutex_unlock(&devdata->overlay_lock);
+        return NULL;
+    }
     e->type = type;
     e->mode = mode;
+    e->hash_next =
+        devdata->overlay_buckets[memvfs_hash_path(path) & (devdata->overlay_bucket_count - 1)];
+    devdata->overlay_buckets[memvfs_hash_path(path) & (devdata->overlay_bucket_count - 1)] = e;
     e->next = devdata->overlay;
     devdata->overlay = e;
     pthread_mutex_unlock(&devdata->overlay_lock);
@@ -340,13 +569,36 @@ static int memvfs_create_info(struct VfsDevice *dev, struct VfsInfo *parent,
                               struct MemvfsOverlayEntry *ov, u32 mode,
                               struct VfsInfo **out) {
     struct VfsInfo *info;
+    struct MemvfsFileData *fdata;
+    char *copyname;
     int rc = VfsCreateInfo(&info);
     if (rc) return rc;
 
-    struct MemvfsFileData *fdata = calloc(1, sizeof(*fdata));
+    fdata = calloc(1, sizeof(*fdata));
     if (!fdata) {
-        VfsFreeInfo(info);
-        return ENOMEM;
+        unassert(!VfsFreeInfo(info));
+        return enomem();
+    }
+
+    copyname = name ? strdup(name) : strdup("");
+    if (!copyname) {
+        free(fdata);
+        unassert(!VfsFreeInfo(info));
+        return enomem();
+    }
+
+    if (VfsAcquireDevice(dev, &info->device) == -1) {
+        free(copyname);
+        free(fdata);
+        unassert(!VfsFreeInfo(info));
+        return -1;
+    }
+
+    if (VfsAcquireInfo(parent, &info->parent) == -1) {
+        free(copyname);
+        free(fdata);
+        unassert(!VfsFreeInfo(info));
+        return -1;
     }
 
     fdata->entry_idx = entry_idx;
@@ -354,10 +606,8 @@ static int memvfs_create_info(struct VfsDevice *dev, struct VfsInfo *parent,
     fdata->read_offset = 0;
     fdata->flags = 0;
 
-    info->device = dev;
-    info->parent = parent;
-    info->name = name ? strdup(name) : strdup("");
-    info->namelen = name ? strlen(name) : 0;
+    info->name = copyname;
+    info->namelen = strlen(copyname);
     info->data = fdata;
     info->mode = mode;
     info->dev = dev->dev;
@@ -413,6 +663,48 @@ static void memvfs_dir_add_child(struct MemvfsDirData *dd, const char *name) {
     dd->children[dd->children_count++] = strdup(name);
 }
 
+static int memvfs_error(int code) {
+    errno = code;
+    return -1;
+}
+
+static ssize_t memvfs_error_ssize(int code) {
+    errno = code;
+    return -1;
+}
+
+static off_t memvfs_error_off(int code) {
+    errno = code;
+    return -1;
+}
+
+static int memvfs_file_view(struct VfsInfo *info, const uint8_t **data,
+                            size_t *data_size) {
+    struct MemvfsFileData *fdata;
+    struct MemvfsDeviceData *devdata;
+
+    if (!info || !info->data || !data || !data_size) return efault();
+
+    fdata = (struct MemvfsFileData *)info->data;
+    devdata = (struct MemvfsDeviceData *)info->device->data;
+
+    if (fdata->overlay_entry) {
+        if (fdata->overlay_entry->type != FLATVFS_FILE) return eisdir();
+        *data = fdata->overlay_entry->data;
+        *data_size = fdata->overlay_entry->data_size;
+        return 0;
+    }
+    if (fdata->entry_idx >= 0 && fdata->entry_idx < devdata->base->entry_count) {
+        const flatvfs_entry_t *entry = &devdata->base->entries[fdata->entry_idx];
+        if (entry->type != FLATVFS_FILE) return eisdir();
+        *data = entry->data;
+        *data_size = entry->data_size;
+        return 0;
+    }
+
+    return eisdir();
+}
+
 // ── VfsOps implementation ───────────────────────────────────────────────────
 
 static int MemvfsInit(const char *source, u64 flags, const void *data,
@@ -423,7 +715,7 @@ static int MemvfsInit(const char *source, u64 flags, const void *data,
 
     // 'data' is a pointer to const flatvfs_t *
     const flatvfs_t *base = (const flatvfs_t *)data;
-    if (!base) return EINVAL;
+    if (!base) return einval();
 
     struct VfsDevice *dev;
     int rc = VfsCreateDevice(&dev);
@@ -431,12 +723,19 @@ static int MemvfsInit(const char *source, u64 flags, const void *data,
 
     struct MemvfsDeviceData *devdata = calloc(1, sizeof(*devdata));
     if (!devdata) {
-        VfsFreeDevice(dev);
-        return ENOMEM;
+        unassert(!VfsFreeDevice(dev));
+        return enomem();
     }
     devdata->base = base;
     devdata->overlay = NULL;
     pthread_mutex_init(&devdata->overlay_lock, NULL);
+    rc = memvfs_build_base_indexes(devdata);
+    if (rc) {
+        pthread_mutex_destroy(&devdata->overlay_lock);
+        free(devdata);
+        unassert(!VfsFreeDevice(dev));
+        return rc;
+    }
 
     dev->data = devdata;
     dev->ops = &g_omni_memfs.ops;
@@ -445,11 +744,9 @@ static int MemvfsInit(const char *source, u64 flags, const void *data,
     struct VfsInfo *root;
     rc = memvfs_create_info(dev, NULL, "", -1, NULL, S_IFDIR | 0755, &root);
     if (rc) {
-        free(devdata);
-        VfsFreeDevice(dev);
+        unassert(!VfsFreeDevice(dev));
         return rc;
     }
-    root->parent = root; // root's parent is itself
     dev->root = root;
 
     *out_device = dev;
@@ -459,10 +756,8 @@ static int MemvfsInit(const char *source, u64 flags, const void *data,
         // VfsMount allocation — blink expects us to allocate it
         struct VfsMount *mnt = calloc(1, sizeof(*mnt));
         if (!mnt) {
-            VfsFreeInfo(root);
-            free(devdata);
-            VfsFreeDevice(dev);
-            return ENOMEM;
+            unassert(!VfsFreeInfo(root));
+            return enomem();
         }
         mnt->root = root;
         mnt->baseino = 0;
@@ -482,6 +777,7 @@ static int MemvfsFreeinfo(void *data) {
 }
 
 static int MemvfsFreedevice(void *data) {
+    size_t i;
     if (!data) return 0;
     struct MemvfsDeviceData *devdata = (struct MemvfsDeviceData *)data;
     // Free overlay entries
@@ -494,6 +790,37 @@ static int MemvfsFreedevice(void *data) {
         free(e);
         e = next;
     }
+    if (devdata->base_path_buckets) {
+        for (i = 0; i < devdata->base_path_bucket_count; ++i) {
+            struct MemvfsBasePathIndexEntry *entry = devdata->base_path_buckets[i];
+            while (entry) {
+                struct MemvfsBasePathIndexEntry *next = entry->next;
+                free(entry);
+                entry = next;
+            }
+        }
+        free(devdata->base_path_buckets);
+    }
+    if (devdata->base_dir_buckets) {
+        for (i = 0; i < devdata->base_dir_bucket_count; ++i) {
+            struct MemvfsBaseDirIndexEntry *entry = devdata->base_dir_buckets[i];
+            while (entry) {
+                struct MemvfsBaseDirIndexEntry *next = entry->next;
+                struct MemvfsBaseDirChild *child = entry->children;
+                while (child) {
+                    struct MemvfsBaseDirChild *child_next = child->next;
+                    free(child->name);
+                    free(child);
+                    child = child_next;
+                }
+                free(entry->path);
+                free(entry);
+                entry = next;
+            }
+        }
+        free(devdata->base_dir_buckets);
+    }
+    free(devdata->overlay_buckets);
     pthread_mutex_destroy(&devdata->overlay_lock);
     free(devdata);
     return 0;
@@ -501,20 +828,27 @@ static int MemvfsFreedevice(void *data) {
 
 static int MemvfsFinddir(struct VfsInfo *parent, const char *name,
                          struct VfsInfo **out) {
-    if (!parent || !name || !out) return EINVAL;
-    if (name[0] == '\0') return ENOENT;
+    if (!parent || !name || !out) return efault();
+    if (name[0] == '\0') return enoent();
 
     struct MemvfsDeviceData *devdata =
         (struct MemvfsDeviceData *)parent->device->data;
     char *fullpath = memvfs_build_path(parent, name);
-    if (!fullpath) return ENOMEM;
+    if (!fullpath) return enomem();
+
+    if (fullpath[0] == '\0') {
+        int rc = memvfs_create_info(parent->device, NULL, "", -1, NULL,
+                                    S_IFDIR | 0755, out);
+        free(fullpath);
+        return rc;
+    }
 
     // Check overlay first (including deleted markers)
     struct MemvfsOverlayEntry *ov = memvfs_overlay_lookup(devdata, fullpath);
     if (ov) {
         if (ov->type == MEMVFS_DELETED) {
             free(fullpath);
-            return ENOENT;
+            return enoent();
         }
         int rc = memvfs_create_info(parent->device, parent, name, -2, ov,
                                     memvfs_make_mode(ov->type,
@@ -525,7 +859,7 @@ static int MemvfsFinddir(struct VfsInfo *parent, const char *name,
     }
 
     // Check base
-    int idx = memvfs_base_lookup(devdata->base, fullpath);
+    int idx = memvfs_base_lookup(devdata, fullpath);
     if (idx >= 0) {
         const flatvfs_entry_t *e = &devdata->base->entries[idx];
         int rc = memvfs_create_info(parent->device, parent, name, idx, NULL,
@@ -534,39 +868,30 @@ static int MemvfsFinddir(struct VfsInfo *parent, const char *name,
         return rc;
     }
 
-    // Not found as exact match — check if it's an implicit directory
-    // (a path prefix that has children but no explicit entry)
-    size_t fplen = strlen(fullpath);
-    for (int i = 0; i < devdata->base->entry_count; i++) {
-        const char *ep = devdata->base->entries[i].path;
-        if (!ep) continue;
-        if (strncmp(ep, fullpath, fplen) == 0 && ep[fplen] == '/') {
-            // There's an entry under this path — it's an implicit directory
-            int rc = memvfs_create_info(parent->device, parent, name, -1, NULL,
-                                        S_IFDIR | 0755, out);
-            // Store the path in a synthetic overlay entry so we can retrieve it
-            // Actually, let's create a proper overlay dir entry for it
-            struct MemvfsOverlayEntry *synth =
-                memvfs_overlay_create(devdata, fullpath, FLATVFS_DIR, 0755);
-            if (synth && *out) {
-                struct MemvfsFileData *fdata =
-                    (struct MemvfsFileData *)(*out)->data;
-                fdata->entry_idx = -2;
-                fdata->overlay_entry = synth;
-            }
-            free(fullpath);
-            return rc;
+    // Not found as exact match — check if it's an implicit directory.
+    if (memvfs_base_dir_lookup(devdata, fullpath)) {
+        int rc = memvfs_create_info(parent->device, parent, name, -1, NULL,
+                                    S_IFDIR | 0755, out);
+        struct MemvfsOverlayEntry *synth =
+            memvfs_overlay_create(devdata, fullpath, FLATVFS_DIR, 0755);
+        if (synth && *out) {
+            struct MemvfsFileData *fdata =
+                (struct MemvfsFileData *)(*out)->data;
+            fdata->entry_idx = -2;
+            fdata->overlay_entry = synth;
         }
+        free(fullpath);
+        return rc;
     }
 
     free(fullpath);
-    return ENOENT;
+    return enoent();
 }
 
 static int MemvfsTraverse(struct VfsInfo **dir, const char **path,
                           struct VfsInfo *root) {
     // Handle ".." by walking up parent pointers
-    if (!dir || !*dir || !path || !*path) return EINVAL;
+    if (!dir || !*dir || !path || !*path) return efault();
 
     while (**path == '/') (*path)++;
 
@@ -597,7 +922,7 @@ static int MemvfsTraverse(struct VfsInfo **dir, const char **path,
 }
 
 static ssize_t MemvfsReadlink(struct VfsInfo *info, char **out) {
-    if (!info || !info->data || !out) return -EINVAL;
+    if (!info || !info->data || !out) return efault();
 
     struct MemvfsFileData *fdata = (struct MemvfsFileData *)info->data;
     struct MemvfsDeviceData *devdata =
@@ -606,40 +931,40 @@ static ssize_t MemvfsReadlink(struct VfsInfo *info, char **out) {
     const char *target = NULL;
 
     if (fdata->overlay_entry) {
-        if (fdata->overlay_entry->type != FLATVFS_SYMLINK) return -EINVAL;
+        if (fdata->overlay_entry->type != FLATVFS_SYMLINK) return einval();
         target = fdata->overlay_entry->symlink_target;
     } else if (fdata->entry_idx >= 0 &&
                fdata->entry_idx < devdata->base->entry_count) {
         const flatvfs_entry_t *e = &devdata->base->entries[fdata->entry_idx];
-        if (e->type != FLATVFS_SYMLINK) return -EINVAL;
+        if (e->type != FLATVFS_SYMLINK) return einval();
         target = e->symlink_target;
     }
 
-    if (!target) return -EINVAL;
+    if (!target) return einval();
 
     *out = strdup(target);
-    if (!*out) return -ENOMEM;
+    if (!*out) return enomem();
     return (ssize_t)strlen(target);
 }
 
 static int MemvfsMkdir(struct VfsInfo *parent, const char *name, mode_t mode) {
-    if (!parent || !name) return EINVAL;
+    if (!parent || !name) return efault();
 
     struct MemvfsDeviceData *devdata =
         (struct MemvfsDeviceData *)parent->device->data;
     char *fullpath = memvfs_build_path(parent, name);
-    if (!fullpath) return ENOMEM;
+    if (!fullpath) return enomem();
 
     // Check if already exists
     struct MemvfsOverlayEntry *ov = memvfs_overlay_lookup(devdata, fullpath);
     if (ov && ov->type != MEMVFS_DELETED) {
         free(fullpath);
-        return EEXIST;
+        return eexist();
     }
-    int idx = memvfs_base_lookup(devdata->base, fullpath);
+    int idx = memvfs_base_lookup(devdata, fullpath);
     if (idx >= 0) {
         free(fullpath);
-        return EEXIST;
+        return eexist();
     }
 
     // Create overlay directory
@@ -647,12 +972,12 @@ static int MemvfsMkdir(struct VfsInfo *parent, const char *name, mode_t mode) {
         memvfs_overlay_create(devdata, fullpath, FLATVFS_DIR,
                               mode ? mode : 0755);
     free(fullpath);
-    return entry ? 0 : ENOMEM;
+    return entry ? 0 : enomem();
 }
 
 static int MemvfsOpen(struct VfsInfo *dir, const char *name, int flags,
                       int mode, struct VfsInfo **out) {
-    if (!dir || !out) return EINVAL;
+    if (!dir || !out) return efault();
 
     struct MemvfsDeviceData *devdata =
         (struct MemvfsDeviceData *)dir->device->data;
@@ -660,7 +985,7 @@ static int MemvfsOpen(struct VfsInfo *dir, const char *name, int flags,
     // If name is NULL or empty, we're opening the directory itself
     if (!name || name[0] == '\0') {
         struct MemvfsFileData *pdata = (struct MemvfsFileData *)dir->data;
-        if (!pdata) return EINVAL;
+        if (!pdata) return efault();
         int rc = memvfs_create_info(dir->device, dir->parent,
                                     dir->name ? dir->name : "",
                                     pdata->entry_idx, pdata->overlay_entry,
@@ -674,7 +999,19 @@ static int MemvfsOpen(struct VfsInfo *dir, const char *name, int flags,
     }
 
     char *fullpath = memvfs_build_path(dir, name);
-    if (!fullpath) return ENOMEM;
+    if (!fullpath) return enomem();
+
+    if (fullpath[0] == '\0') {
+        int rc = memvfs_create_info(dir->device, NULL, "", -1, NULL,
+                                    S_IFDIR | 0755, out);
+        if (!rc) {
+            struct MemvfsFileData *fdata =
+                (struct MemvfsFileData *)(*out)->data;
+            fdata->flags = flags;
+        }
+        free(fullpath);
+        return rc;
+    }
 
     // Check overlay first
     struct MemvfsOverlayEntry *ov = memvfs_overlay_lookup(devdata, fullpath);
@@ -700,7 +1037,7 @@ static int MemvfsOpen(struct VfsInfo *dir, const char *name, int flags,
             return rc;
         }
         free(fullpath);
-        return ENOENT;
+        return enoent();
     }
 
     if (ov) {
@@ -723,28 +1060,23 @@ static int MemvfsOpen(struct VfsInfo *dir, const char *name, int flags,
     }
 
     // Check base
-    int idx = memvfs_base_lookup(devdata->base, fullpath);
+    int idx = memvfs_base_lookup(devdata, fullpath);
     if (idx >= 0) {
         const flatvfs_entry_t *e = &devdata->base->entries[idx];
 
-        // If writing to a base entry, copy-on-write to overlay
-        if ((flags & O_WRONLY) || (flags & O_RDWR) || (flags & O_TRUNC)) {
+        // O_TRUNC must materialize an empty overlay immediately.
+        if (flags & O_TRUNC) {
             struct MemvfsOverlayEntry *cow =
                 memvfs_overlay_create(devdata, fullpath, e->type,
                                       e->mode ? e->mode : 0644);
             if (!cow) {
                 free(fullpath);
-                return ENOMEM;
+                return enomem();
             }
-            if (!(flags & O_TRUNC) && e->type == FLATVFS_FILE && e->data &&
-                e->data_size > 0) {
-                cow->data = malloc(e->data_size);
-                if (cow->data) {
-                    memcpy(cow->data, e->data, e->data_size);
-                    cow->data_size = e->data_size;
-                    cow->data_capacity = e->data_size;
-                }
-            }
+            free(cow->data);
+            cow->data = NULL;
+            cow->data_size = 0;
+            cow->data_capacity = 0;
             int rc = memvfs_create_info(
                 dir->device, dir, name, -2, cow,
                 memvfs_make_mode(cow->type,
@@ -756,6 +1088,22 @@ static int MemvfsOpen(struct VfsInfo *dir, const char *name, int flags,
                 fdata->flags = flags;
                 if (flags & O_APPEND)
                     fdata->read_offset = cow->data_size;
+            }
+            free(fullpath);
+            return rc;
+        }
+
+        // For writable opens, defer copy-on-write until the first mutation.
+        if ((flags & O_WRONLY) || (flags & O_RDWR)) {
+            int rc = memvfs_create_info(dir->device, dir, name, idx, NULL,
+                                        memvfs_make_mode(e->type, e->mode), out);
+            if (!rc) {
+                struct MemvfsFileData *fdata =
+                    (struct MemvfsFileData *)(*out)->data;
+                fdata->flags = flags;
+                if ((flags & O_APPEND) && e->type == FLATVFS_FILE) {
+                    fdata->read_offset = e->data_size;
+                }
             }
             free(fullpath);
             return rc;
@@ -778,7 +1126,7 @@ static int MemvfsOpen(struct VfsInfo *dir, const char *name, int flags,
             devdata, fullpath, FLATVFS_FILE, mode ? (mode_t)mode : 0644);
         if (!entry) {
             free(fullpath);
-            return ENOMEM;
+            return enomem();
         }
         int rc = memvfs_create_info(
             dir->device, dir, name, -2, entry,
@@ -794,33 +1142,28 @@ static int MemvfsOpen(struct VfsInfo *dir, const char *name, int flags,
         return rc;
     }
 
-    // Also check for implicit directories (paths that exist as prefixes)
-    size_t fplen = strlen(fullpath);
-    for (int i = 0; i < devdata->base->entry_count; i++) {
-        const char *ep = devdata->base->entries[i].path;
-        if (!ep) continue;
-        if (strncmp(ep, fullpath, fplen) == 0 && ep[fplen] == '/') {
-            struct MemvfsOverlayEntry *synth =
-                memvfs_overlay_create(devdata, fullpath, FLATVFS_DIR, 0755);
-            int rc = memvfs_create_info(dir->device, dir, name, -2, synth,
-                                        S_IFDIR | 0755, out);
-            if (!rc) {
-                struct MemvfsFileData *fdata =
-                    (struct MemvfsFileData *)(*out)->data;
-                fdata->flags = flags;
-            }
-            free(fullpath);
-            return rc;
+    // Also check for implicit directories (paths that exist as prefixes).
+    if (memvfs_base_dir_lookup(devdata, fullpath)) {
+        struct MemvfsOverlayEntry *synth =
+            memvfs_overlay_create(devdata, fullpath, FLATVFS_DIR, 0755);
+        int rc = memvfs_create_info(dir->device, dir, name, -2, synth,
+                                    S_IFDIR | 0755, out);
+        if (!rc) {
+            struct MemvfsFileData *fdata =
+                (struct MemvfsFileData *)(*out)->data;
+            fdata->flags = flags;
         }
+        free(fullpath);
+        return rc;
     }
 
     free(fullpath);
-    return ENOENT;
+    return enoent();
 }
 
 static int MemvfsAccess(struct VfsInfo *dir, const char *name, mode_t amode,
                         int flags) {
-    if (!dir) return EINVAL;
+    if (!dir) return efault();
     (void)flags;
 
     struct MemvfsDeviceData *devdata =
@@ -833,41 +1176,41 @@ static int MemvfsAccess(struct VfsInfo *dir, const char *name, mode_t amode,
     }
 
     char *fullpath = memvfs_build_path(dir, name);
-    if (!fullpath) return ENOMEM;
+    if (!fullpath) return enomem();
+
+    if (fullpath[0] == '\0') {
+        free(fullpath);
+        return 0;
+    }
 
     // Check overlay
     struct MemvfsOverlayEntry *ov = memvfs_overlay_lookup(devdata, fullpath);
     if (ov) {
         free(fullpath);
-        if (ov->type == MEMVFS_DELETED) return ENOENT;
+        if (ov->type == MEMVFS_DELETED) return enoent();
         return 0;
     }
 
     // Check base
-    int idx = memvfs_base_lookup(devdata->base, fullpath);
+    int idx = memvfs_base_lookup(devdata, fullpath);
     if (idx >= 0) {
         free(fullpath);
         return 0;
     }
 
-    // Check implicit dirs
-    size_t fplen = strlen(fullpath);
-    for (int i = 0; i < devdata->base->entry_count; i++) {
-        const char *ep = devdata->base->entries[i].path;
-        if (!ep) continue;
-        if (strncmp(ep, fullpath, fplen) == 0 && ep[fplen] == '/') {
-            free(fullpath);
-            return 0;
-        }
+    // Check implicit dirs.
+    if (memvfs_base_dir_lookup(devdata, fullpath)) {
+        free(fullpath);
+        return 0;
     }
 
     free(fullpath);
-    return ENOENT;
+    return enoent();
 }
 
 static int MemvfsStat(struct VfsInfo *dir, const char *name, struct stat *st,
                       int flags) {
-    if (!dir || !st) return EINVAL;
+    if (!dir || !st) return efault();
     (void)flags;
 
     struct MemvfsDeviceData *devdata =
@@ -880,7 +1223,7 @@ static int MemvfsStat(struct VfsInfo *dir, const char *name, struct stat *st,
     } else {
         fullpath = memvfs_build_path(dir, name);
     }
-    if (!fullpath) return ENOMEM;
+    if (!fullpath) return enomem();
 
     // Root directory
     if (fullpath[0] == '\0') {
@@ -899,7 +1242,7 @@ static int MemvfsStat(struct VfsInfo *dir, const char *name, struct stat *st,
     if (ov) {
         if (ov->type == MEMVFS_DELETED) {
             free(fullpath);
-            return ENOENT;
+            return enoent();
         }
         memvfs_stat_overlay(ov, st, dir->dev);
         free(fullpath);
@@ -907,7 +1250,7 @@ static int MemvfsStat(struct VfsInfo *dir, const char *name, struct stat *st,
     }
 
     // Check base
-    int idx = memvfs_base_lookup(devdata->base, fullpath);
+    int idx = memvfs_base_lookup(devdata, fullpath);
     if (idx >= 0) {
         memvfs_stat_base(&devdata->base->entries[idx], st, dir->dev,
                          (u64)(idx + 1));
@@ -915,35 +1258,30 @@ static int MemvfsStat(struct VfsInfo *dir, const char *name, struct stat *st,
         return 0;
     }
 
-    // Check implicit dirs
-    size_t fplen = strlen(fullpath);
-    for (int i = 0; i < devdata->base->entry_count; i++) {
-        const char *ep = devdata->base->entries[i].path;
-        if (!ep) continue;
-        if (strncmp(ep, fullpath, fplen) == 0 && ep[fplen] == '/') {
-            memset(st, 0, sizeof(*st));
-            st->st_dev = dir->dev;
-            st->st_ino = (ino_t)(uintptr_t)fullpath; // unique enough
-            st->st_mode = S_IFDIR | 0755;
-            st->st_nlink = 2;
-            st->st_blksize = 4096;
-            free(fullpath);
-            return 0;
-        }
+    // Check implicit dirs.
+    if (memvfs_base_dir_lookup(devdata, fullpath)) {
+        memset(st, 0, sizeof(*st));
+        st->st_dev = dir->dev;
+        st->st_ino = (ino_t)(uintptr_t)fullpath;
+        st->st_mode = S_IFDIR | 0755;
+        st->st_nlink = 2;
+        st->st_blksize = 4096;
+        free(fullpath);
+        return 0;
     }
 
     free(fullpath);
-    return ENOENT;
+    return enoent();
 }
 
 static int MemvfsFstat(struct VfsInfo *info, struct stat *st) {
-    if (!info || !st) return EINVAL;
+    if (!info || !st) return efault();
 
     struct MemvfsFileData *fdata = (struct MemvfsFileData *)info->data;
     struct MemvfsDeviceData *devdata =
         (struct MemvfsDeviceData *)info->device->data;
 
-    if (!fdata) return EINVAL;
+    if (!fdata) return efault();
 
     if (fdata->entry_idx == -1) {
         // Root
@@ -957,7 +1295,7 @@ static int MemvfsFstat(struct VfsInfo *info, struct stat *st) {
     }
 
     if (fdata->overlay_entry) {
-        if (fdata->overlay_entry->type == MEMVFS_DELETED) return ENOENT;
+        if (fdata->overlay_entry->type == MEMVFS_DELETED) return enoent();
         memvfs_stat_overlay(fdata->overlay_entry, st, info->dev);
         return 0;
     }
@@ -969,18 +1307,18 @@ static int MemvfsFstat(struct VfsInfo *info, struct stat *st) {
         return 0;
     }
 
-    return ENOENT;
+    return enoent();
 }
 
 static int MemvfsChmod(struct VfsInfo *dir, const char *name, mode_t mode,
                        int flags) {
     (void)flags;
-    if (!dir) return EINVAL;
+    if (!dir) return efault();
 
     struct MemvfsDeviceData *devdata =
         (struct MemvfsDeviceData *)dir->device->data;
     char *fullpath = memvfs_build_path(dir, name);
-    if (!fullpath) return ENOMEM;
+    if (!fullpath) return enomem();
 
     // Check overlay
     struct MemvfsOverlayEntry *ov = memvfs_overlay_lookup(devdata, fullpath);
@@ -991,14 +1329,14 @@ static int MemvfsChmod(struct VfsInfo *dir, const char *name, mode_t mode,
     }
 
     // Check base — COW
-    int idx = memvfs_base_lookup(devdata->base, fullpath);
+    int idx = memvfs_base_lookup(devdata, fullpath);
     if (idx >= 0) {
         const flatvfs_entry_t *e = &devdata->base->entries[idx];
         struct MemvfsOverlayEntry *cow =
             memvfs_overlay_create(devdata, fullpath, e->type, mode);
         if (!cow) {
             free(fullpath);
-            return ENOMEM;
+            return enomem();
         }
         if (e->type == FLATVFS_FILE && e->data && e->data_size > 0 &&
             !cow->data) {
@@ -1018,11 +1356,11 @@ static int MemvfsChmod(struct VfsInfo *dir, const char *name, mode_t mode,
     }
 
     free(fullpath);
-    return ENOENT;
+    return enoent();
 }
 
 static int MemvfsFchmod(struct VfsInfo *info, mode_t mode) {
-    if (!info || !info->data) return EINVAL;
+    if (!info || !info->data) return efault();
     struct MemvfsFileData *fdata = (struct MemvfsFileData *)info->data;
     if (fdata->overlay_entry) {
         fdata->overlay_entry->mode = mode;
@@ -1036,7 +1374,7 @@ static int MemvfsFchmod(struct VfsInfo *info, mode_t mode) {
         const flatvfs_entry_t *e = &devdata->base->entries[fdata->entry_idx];
         struct MemvfsOverlayEntry *cow = memvfs_overlay_create(
             devdata, e->path, e->type, mode);
-        if (!cow) return ENOMEM;
+        if (!cow) return enomem();
         if (e->type == FLATVFS_FILE && e->data && e->data_size > 0 &&
             !cow->data) {
             cow->data = malloc(e->data_size);
@@ -1050,7 +1388,7 @@ static int MemvfsFchmod(struct VfsInfo *info, mode_t mode) {
         fdata->entry_idx = -2;
         return 0;
     }
-    return ENOENT;
+    return enoent();
 }
 
 static int MemvfsChown(struct VfsInfo *dir, const char *name, uid_t uid,
@@ -1071,7 +1409,7 @@ static int MemvfsFchown(struct VfsInfo *info, uid_t uid, gid_t gid) {
 }
 
 static int MemvfsFtruncate(struct VfsInfo *info, off_t length) {
-    if (!info || !info->data) return EINVAL;
+    if (!info || !info->data) return efault();
     struct MemvfsFileData *fdata = (struct MemvfsFileData *)info->data;
 
     // Must have an overlay entry for writing
@@ -1085,7 +1423,7 @@ static int MemvfsFtruncate(struct VfsInfo *info, off_t length) {
                 &devdata->base->entries[fdata->entry_idx];
             struct MemvfsOverlayEntry *cow = memvfs_overlay_create(
                 devdata, e->path, e->type, e->mode ? e->mode : 0644);
-            if (!cow) return ENOMEM;
+            if (!cow) return enomem();
             if (e->data && e->data_size > 0) {
                 cow->data = malloc(e->data_size);
                 if (cow->data) {
@@ -1097,14 +1435,14 @@ static int MemvfsFtruncate(struct VfsInfo *info, off_t length) {
             fdata->overlay_entry = cow;
             fdata->entry_idx = -2;
         } else {
-            return EINVAL;
+            return einval();
         }
     }
 
     struct MemvfsOverlayEntry *ov = fdata->overlay_entry;
     if ((size_t)length > ov->data_capacity) {
         uint8_t *newdata = realloc(ov->data, (size_t)length);
-        if (!newdata) return ENOMEM;
+        if (!newdata) return enomem();
         memset(newdata + ov->data_size, 0, (size_t)length - ov->data_size);
         ov->data = newdata;
         ov->data_capacity = (size_t)length;
@@ -1127,16 +1465,16 @@ static int MemvfsLink(struct VfsInfo *olddir, const char *oldname,
     (void)newdir;
     (void)newname;
     (void)flags;
-    return EPERM; // Hard links not supported
+    return eperm(); // Hard links not supported
 }
 
 static int MemvfsUnlink(struct VfsInfo *dir, const char *name, int flags) {
-    if (!dir || !name) return EINVAL;
+    if (!dir || !name) return efault();
 
     struct MemvfsDeviceData *devdata =
         (struct MemvfsDeviceData *)dir->device->data;
     char *fullpath = memvfs_build_path(dir, name);
-    if (!fullpath) return ENOMEM;
+    if (!fullpath) return enomem();
 
     // If AT_REMOVEDIR, this is rmdir
     int is_rmdir = (flags & AT_REMOVEDIR);
@@ -1146,11 +1484,11 @@ static int MemvfsUnlink(struct VfsInfo *dir, const char *name, int flags) {
     if (ov && ov->type != MEMVFS_DELETED) {
         if (is_rmdir && ov->type != FLATVFS_DIR) {
             free(fullpath);
-            return ENOTDIR;
+            return enotdir();
         }
         if (!is_rmdir && ov->type == FLATVFS_DIR) {
             free(fullpath);
-            return EISDIR;
+            return eisdir();
         }
         ov->type = MEMVFS_DELETED;
         free(ov->data);
@@ -1161,30 +1499,30 @@ static int MemvfsUnlink(struct VfsInfo *dir, const char *name, int flags) {
     }
 
     // Check base
-    int idx = memvfs_base_lookup(devdata->base, fullpath);
+    int idx = memvfs_base_lookup(devdata, fullpath);
     if (idx >= 0) {
         const flatvfs_entry_t *e = &devdata->base->entries[idx];
         if (is_rmdir && e->type != FLATVFS_DIR) {
             free(fullpath);
-            return ENOTDIR;
+            return enotdir();
         }
         if (!is_rmdir && e->type == FLATVFS_DIR) {
             free(fullpath);
-            return EISDIR;
+            return eisdir();
         }
         // Mark as deleted in overlay
         struct MemvfsOverlayEntry *del =
             memvfs_overlay_create(devdata, fullpath, MEMVFS_DELETED, 0);
         free(fullpath);
-        return del ? 0 : ENOMEM;
+        return del ? 0 : enomem();
     }
 
     free(fullpath);
-    return ENOENT;
+    return enoent();
 }
 
 static ssize_t MemvfsRead(struct VfsInfo *info, void *buf, size_t nbyte) {
-    if (!info || !info->data || !buf) return -EINVAL;
+    if (!info || !info->data || !buf) return efault();
 
     struct MemvfsFileData *fdata = (struct MemvfsFileData *)info->data;
     struct MemvfsDeviceData *devdata =
@@ -1202,7 +1540,7 @@ static ssize_t MemvfsRead(struct VfsInfo *info, void *buf, size_t nbyte) {
         data = e->data;
         data_size = e->data_size;
     } else {
-        return -EISDIR; // root or dir
+        return eisdir(); // root or dir
     }
 
     if (fdata->read_offset >= data_size) return 0;
@@ -1218,7 +1556,7 @@ static ssize_t MemvfsRead(struct VfsInfo *info, void *buf, size_t nbyte) {
 
 static ssize_t MemvfsWrite(struct VfsInfo *info, const void *buf,
                            size_t nbyte) {
-    if (!info || !info->data) return -EINVAL;
+    if (!info || !info->data) return efault();
 
     struct MemvfsFileData *fdata = (struct MemvfsFileData *)info->data;
 
@@ -1233,7 +1571,7 @@ static ssize_t MemvfsWrite(struct VfsInfo *info, const void *buf,
                 &devdata->base->entries[fdata->entry_idx];
             struct MemvfsOverlayEntry *cow = memvfs_overlay_create(
                 devdata, e->path, e->type, e->mode ? e->mode : 0644);
-            if (!cow) return -ENOMEM;
+            if (!cow) return enomem();
             if (e->data && e->data_size > 0 && !cow->data) {
                 cow->data = malloc(e->data_size);
                 if (cow->data) {
@@ -1245,7 +1583,7 @@ static ssize_t MemvfsWrite(struct VfsInfo *info, const void *buf,
             fdata->overlay_entry = cow;
             fdata->entry_idx = -2;
         } else {
-            return -EROFS;
+            return memvfs_error_ssize(EROFS);
         }
     }
 
@@ -1257,7 +1595,7 @@ static ssize_t MemvfsWrite(struct VfsInfo *info, const void *buf,
         size_t newcap = ov->data_capacity ? ov->data_capacity : 4096;
         while (newcap < end) newcap *= 2;
         uint8_t *newdata = realloc(ov->data, newcap);
-        if (!newdata) return -ENOMEM;
+        if (!newdata) return enomem();
         // Zero fill gap
         if (offset > ov->data_size)
             memset(newdata + ov->data_size, 0, offset - ov->data_size);
@@ -1274,7 +1612,7 @@ static ssize_t MemvfsWrite(struct VfsInfo *info, const void *buf,
 
 static ssize_t MemvfsPread(struct VfsInfo *info, void *buf, size_t nbyte,
                            off_t offset) {
-    if (!info || !info->data || !buf) return -EINVAL;
+    if (!info || !info->data || !buf) return efault();
 
     struct MemvfsFileData *fdata = (struct MemvfsFileData *)info->data;
     struct MemvfsDeviceData *devdata =
@@ -1292,7 +1630,7 @@ static ssize_t MemvfsPread(struct VfsInfo *info, void *buf, size_t nbyte,
         data = e->data;
         data_size = e->data_size;
     } else {
-        return -EISDIR;
+        return eisdir();
     }
 
     if ((size_t)offset >= data_size) return 0;
@@ -1306,7 +1644,7 @@ static ssize_t MemvfsPread(struct VfsInfo *info, void *buf, size_t nbyte,
 
 static ssize_t MemvfsPwrite(struct VfsInfo *info, const void *buf,
                             size_t nbyte, off_t offset) {
-    if (!info || !info->data) return -EINVAL;
+    if (!info || !info->data) return efault();
 
     // Save/restore offset
     struct MemvfsFileData *fdata = (struct MemvfsFileData *)info->data;
@@ -1368,7 +1706,7 @@ static ssize_t MemvfsPwritev(struct VfsInfo *info, const struct iovec *iov,
 }
 
 static off_t MemvfsSeek(struct VfsInfo *info, off_t offset, int whence) {
-    if (!info || !info->data) return -EINVAL;
+    if (!info || !info->data) return efault();
 
     struct MemvfsFileData *fdata = (struct MemvfsFileData *)info->data;
     struct MemvfsDeviceData *devdata =
@@ -1394,10 +1732,10 @@ static off_t MemvfsSeek(struct VfsInfo *info, off_t offset, int whence) {
         newpos = (off_t)file_size + offset;
         break;
     default:
-        return -EINVAL;
+        return einval();
     }
 
-    if (newpos < 0) return -EINVAL;
+    if (newpos < 0) return einval();
     fdata->read_offset = (size_t)newpos;
     return newpos;
 }
@@ -1412,6 +1750,83 @@ static int MemvfsFdatasync(struct VfsInfo *info) {
     return 0;
 }
 
+static void *MemvfsMmap(struct VfsInfo *info, void *addr, size_t len, int prot,
+                        int flags, off_t offset) {
+    const uint8_t *data;
+    size_t data_size;
+    size_t copy_size = 0;
+    int map_prot;
+    int map_flags = flags;
+    void *mapped;
+
+    if (memvfs_file_view(info, &data, &data_size) == -1) {
+        return MAP_FAILED;
+    }
+
+    if (offset < 0) {
+        einval();
+        return MAP_FAILED;
+    }
+
+#ifdef MAP_ANONYMOUS
+    map_flags |= MAP_ANONYMOUS;
+#elif defined(MAP_ANON)
+    map_flags |= MAP_ANON;
+#endif
+
+    map_prot = prot;
+    if (!(map_prot & PROT_READ) || !(map_prot & PROT_WRITE)) {
+        map_prot |= PROT_READ | PROT_WRITE;
+    }
+    map_prot &= ~PROT_EXEC;
+
+    mapped = mmap(addr, len, map_prot, map_flags, -1, 0);
+    if (mapped == MAP_FAILED) {
+        return MAP_FAILED;
+    }
+
+    if ((size_t)offset < data_size) {
+        copy_size = data_size - (size_t)offset;
+        if (copy_size > len) {
+            copy_size = len;
+        }
+        if (copy_size > 0 && data) {
+            memcpy(mapped, data + offset, copy_size);
+        }
+    }
+
+    if (mprotect(mapped, len, prot) == -1) {
+        unassert(!munmap(mapped, len));
+        return MAP_FAILED;
+    }
+
+    return mapped;
+}
+
+static int MemvfsMunmap(struct VfsInfo *info, void *addr, size_t len) {
+    (void)info;
+    (void)addr;
+    (void)len;
+    return 0;
+}
+
+static int MemvfsMprotect(struct VfsInfo *info, void *addr, size_t len,
+                          int prot) {
+    (void)info;
+    (void)addr;
+    (void)len;
+    (void)prot;
+    return 0;
+}
+
+static int MemvfsMsync(struct VfsInfo *info, void *addr, size_t len, int flags) {
+    (void)info;
+    (void)addr;
+    (void)len;
+    (void)flags;
+    return 0;
+}
+
 static int MemvfsFlock(struct VfsInfo *info, int op) {
     (void)info;
     (void)op;
@@ -1420,7 +1835,7 @@ static int MemvfsFlock(struct VfsInfo *info, int op) {
 
 static int MemvfsFcntl(struct VfsInfo *info, int cmd, va_list args) {
     (void)args;
-    if (!info) return -EINVAL;
+    if (!info) return efault();
     switch (cmd) {
     case F_GETFD:
         return 0;
@@ -1433,7 +1848,7 @@ static int MemvfsFcntl(struct VfsInfo *info, int cmd, va_list args) {
     case F_SETFL:
         return 0;
     default:
-        return -EINVAL;
+        return einval();
     }
 }
 
@@ -1442,14 +1857,15 @@ static int MemvfsIoctl(struct VfsInfo *info, unsigned long request,
     (void)info;
     (void)request;
     (void)arg;
-    return -ENOTTY;
+    return memvfs_error(ENOTTY);
 }
 
 static int MemvfsDup(struct VfsInfo *info, struct VfsInfo **out) {
-    if (!info || !out) return EINVAL;
+    char *copyname;
+    if (!info || !out) return efault();
 
     struct MemvfsFileData *fdata = (struct MemvfsFileData *)info->data;
-    if (!fdata) return EINVAL;
+    if (!fdata) return efault();
 
     struct VfsInfo *dup;
     int rc = VfsCreateInfo(&dup);
@@ -1457,8 +1873,8 @@ static int MemvfsDup(struct VfsInfo *info, struct VfsInfo **out) {
 
     struct MemvfsFileData *dup_fdata = calloc(1, sizeof(*dup_fdata));
     if (!dup_fdata) {
-        VfsFreeInfo(dup);
-        return ENOMEM;
+        unassert(!VfsFreeInfo(dup));
+        return enomem();
     }
 
     dup_fdata->entry_idx = fdata->entry_idx;
@@ -1466,9 +1882,27 @@ static int MemvfsDup(struct VfsInfo *info, struct VfsInfo **out) {
     dup_fdata->overlay_entry = fdata->overlay_entry;
     dup_fdata->flags = fdata->flags;
 
-    dup->device = info->device;
-    dup->parent = info->parent;
-    dup->name = info->name ? strdup(info->name) : strdup("");
+    copyname = info->name ? strdup(info->name) : strdup("");
+    if (!copyname) {
+        free(dup_fdata);
+        unassert(!VfsFreeInfo(dup));
+        return enomem();
+    }
+
+    if (VfsAcquireDevice(info->device, &dup->device) == -1) {
+        free(copyname);
+        free(dup_fdata);
+        unassert(!VfsFreeInfo(dup));
+        return -1;
+    }
+    if (VfsAcquireInfo(info->parent, &dup->parent) == -1) {
+        free(copyname);
+        free(dup_fdata);
+        unassert(!VfsFreeInfo(dup));
+        return -1;
+    }
+
+    dup->name = copyname;
     dup->namelen = info->namelen;
     dup->data = dup_fdata;
     dup->mode = info->mode;
@@ -1480,8 +1914,10 @@ static int MemvfsDup(struct VfsInfo *info, struct VfsInfo **out) {
 }
 
 static int MemvfsOpendir(struct VfsInfo *info, struct VfsInfo **out) {
-    if (!info || !out) return EINVAL;
+    char *copyname;
+    if (!info || !out) return efault();
 
+    struct MemvfsFileData *fdata = (struct MemvfsFileData *)info->data;
     struct MemvfsDeviceData *devdata =
         (struct MemvfsDeviceData *)info->device->data;
 
@@ -1491,54 +1927,46 @@ static int MemvfsOpendir(struct VfsInfo *info, struct VfsInfo **out) {
 
     // Build list of direct children
     struct MemvfsDirData *dd = calloc(1, sizeof(*dd));
-    if (!dd) return ENOMEM;
+    if (!dd) return enomem();
     dd->dir_path = strdup(dir_path);
+    if (!dd->dir_path) {
+        free(dd);
+        return enomem();
+    }
+    if (fdata) {
+        dd->file = *fdata;
+    } else {
+        memset(&dd->file, 0, sizeof(dd->file));
+        dd->file.entry_idx = -1;
+    }
     dd->dir_path_len = dir_len;
     dd->readdir_pos = 0;
     dd->children = NULL;
     dd->children_count = 0;
     dd->children_capacity = 0;
 
-    // Scan base entries
-    for (int i = 0; i < devdata->base->entry_count; i++) {
-        const char *ep = devdata->base->entries[i].path;
-        if (!ep) continue;
-        if (memvfs_is_direct_child(dir_path, dir_len, ep)) {
-            const char *basename = (dir_len == 0) ? ep : ep + dir_len + 1;
-            // Check if deleted in overlay
-            struct MemvfsOverlayEntry *ov =
-                memvfs_overlay_lookup(devdata, ep);
+    // Enumerate indexed base children.
+    struct MemvfsBaseDirIndexEntry *dir_index =
+        memvfs_base_dir_lookup(devdata, dir_path);
+    if (dir_index) {
+        for (struct MemvfsBaseDirChild *child = dir_index->children; child;
+             child = child->next) {
+            char *child_path;
+            struct MemvfsOverlayEntry *ov;
+
+            if (dir_len == 0) {
+                child_path = strdup(child->name);
+            } else {
+                child_path = malloc(dir_len + 1 + strlen(child->name) + 1);
+                if (!child_path) continue;
+                memcpy(child_path, dir_path, dir_len);
+                child_path[dir_len] = '/';
+                strcpy(child_path + dir_len + 1, child->name);
+            }
+            ov = memvfs_overlay_lookup(devdata, child_path);
+            free(child_path);
             if (ov && ov->type == MEMVFS_DELETED) continue;
-            memvfs_dir_add_child(dd, basename);
-        }
-    }
-
-    // Also scan for implicit directories: paths that have entries as children
-    // but no explicit directory entry. E.g. if we have "usr/bin/foo" and
-    // dir_path="" we need "usr" as a child even if there's no "usr" entry.
-    for (int i = 0; i < devdata->base->entry_count; i++) {
-        const char *ep = devdata->base->entries[i].path;
-        if (!ep) continue;
-
-        const char *rest;
-        if (dir_len == 0) {
-            rest = ep;
-        } else if (strncmp(ep, dir_path, dir_len) == 0 &&
-                   ep[dir_len] == '/') {
-            rest = ep + dir_len + 1;
-        } else {
-            continue;
-        }
-        // rest is the part after dir_path/ — find the first component
-        const char *slash = strchr(rest, '/');
-        if (slash && slash > rest) {
-            // This means there's an intermediate directory
-            size_t complen = (size_t)(slash - rest);
-            char comp[VFS_NAME_MAX];
-            if (complen >= sizeof(comp)) continue;
-            memcpy(comp, rest, complen);
-            comp[complen] = '\0';
-            memvfs_dir_add_child(dd, comp);
+            memvfs_dir_add_child(dd, child->name);
         }
     }
 
@@ -1563,9 +1991,34 @@ static int MemvfsOpendir(struct VfsInfo *info, struct VfsInfo **out) {
         return rc;
     }
 
-    dirinfo->device = info->device;
-    dirinfo->parent = info->parent;
-    dirinfo->name = info->name ? strdup(info->name) : strdup("");
+    copyname = info->name ? strdup(info->name) : strdup("");
+    if (!copyname) {
+        unassert(!VfsFreeInfo(dirinfo));
+        for (int i = 0; i < dd->children_count; i++) free(dd->children[i]);
+        free(dd->children);
+        free(dd->dir_path);
+        free(dd);
+        return enomem();
+    }
+    if (VfsAcquireDevice(info->device, &dirinfo->device) == -1) {
+        free(copyname);
+        unassert(!VfsFreeInfo(dirinfo));
+        for (int i = 0; i < dd->children_count; i++) free(dd->children[i]);
+        free(dd->children);
+        free(dd->dir_path);
+        free(dd);
+        return -1;
+    }
+    if (VfsAcquireInfo(info->parent, &dirinfo->parent) == -1) {
+        free(copyname);
+        unassert(!VfsFreeInfo(dirinfo));
+        for (int i = 0; i < dd->children_count; i++) free(dd->children[i]);
+        free(dd->children);
+        free(dd->dir_path);
+        free(dd);
+        return -1;
+    }
+    dirinfo->name = copyname;
     dirinfo->namelen = info->namelen;
     dirinfo->data = dd;
     dirinfo->mode = info->mode;
@@ -1594,6 +2047,28 @@ static struct dirent *MemvfsReaddir(struct VfsInfo *info) {
     return &g_memvfs_dirent;
 }
 
+#ifdef HAVE_SEEKDIR
+static void MemvfsSeekdir(struct VfsInfo *info, long offset) {
+    if (!info || !info->data) return;
+    struct MemvfsDirData *dd = (struct MemvfsDirData *)info->data;
+    if (offset < 0) {
+        dd->readdir_pos = 0;
+    } else if (offset > dd->children_count) {
+        dd->readdir_pos = dd->children_count;
+    } else {
+        dd->readdir_pos = (int)offset;
+    }
+}
+
+static long MemvfsTelldir(struct VfsInfo *info) {
+    if (!info || !info->data) {
+        return memvfs_error_off(EFAULT);
+    }
+    struct MemvfsDirData *dd = (struct MemvfsDirData *)info->data;
+    return dd->readdir_pos;
+}
+#endif
+
 static void MemvfsRewinddir(struct VfsInfo *info) {
     if (!info || !info->data) return;
     struct MemvfsDirData *dd = (struct MemvfsDirData *)info->data;
@@ -1613,7 +2088,7 @@ static int MemvfsClosedir(struct VfsInfo *info) {
 
 static int MemvfsRename(struct VfsInfo *olddir, const char *oldname,
                         struct VfsInfo *newdir, const char *newname) {
-    if (!olddir || !oldname || !newdir || !newname) return EINVAL;
+    if (!olddir || !oldname || !newdir || !newname) return efault();
 
     struct MemvfsDeviceData *devdata =
         (struct MemvfsDeviceData *)olddir->device->data;
@@ -1623,17 +2098,17 @@ static int MemvfsRename(struct VfsInfo *olddir, const char *oldname,
     if (!oldpath || !newpath) {
         free(oldpath);
         free(newpath);
-        return ENOMEM;
+        return enomem();
     }
 
     // Find the source entry (overlay or base)
     struct MemvfsOverlayEntry *ov = memvfs_overlay_lookup(devdata, oldpath);
-    int base_idx = memvfs_base_lookup(devdata->base, oldpath);
+    int base_idx = memvfs_base_lookup(devdata, oldpath);
 
     if (!ov && base_idx < 0) {
         free(oldpath);
         free(newpath);
-        return ENOENT;
+        return enoent();
     }
 
     if (ov && ov->type != MEMVFS_DELETED) {
@@ -1643,7 +2118,7 @@ static int MemvfsRename(struct VfsInfo *olddir, const char *oldname,
         if (!newov) {
             free(oldpath);
             free(newpath);
-            return ENOMEM;
+            return enomem();
         }
         newov->data = ov->data;
         newov->data_size = ov->data_size;
@@ -1661,7 +2136,7 @@ static int MemvfsRename(struct VfsInfo *olddir, const char *oldname,
         if (!newov) {
             free(oldpath);
             free(newpath);
-            return ENOMEM;
+            return enomem();
         }
         if (e->type == FLATVFS_FILE && e->data && e->data_size > 0) {
             newov->data = malloc(e->data_size);
@@ -1699,18 +2174,18 @@ static int MemvfsFutime(struct VfsInfo *info, const struct timespec ts[2]) {
 
 static int MemvfsSymlink(const char *target, struct VfsInfo *dir,
                          const char *name) {
-    if (!target || !dir || !name) return EINVAL;
+    if (!target || !dir || !name) return efault();
 
     struct MemvfsDeviceData *devdata =
         (struct MemvfsDeviceData *)dir->device->data;
     char *fullpath = memvfs_build_path(dir, name);
-    if (!fullpath) return ENOMEM;
+    if (!fullpath) return enomem();
 
     struct MemvfsOverlayEntry *entry =
         memvfs_overlay_create(devdata, fullpath, FLATVFS_SYMLINK, 0777);
     if (!entry) {
         free(fullpath);
-        return ENOMEM;
+        return enomem();
     }
     free(entry->symlink_target);
     entry->symlink_target = strdup(target);
@@ -1718,91 +2193,14 @@ static int MemvfsSymlink(const char *target, struct VfsInfo *dir,
     return 0;
 }
 
-// ── OmniVfsInit — materialize flatvfs to tmpdir, then use VfsInit ──────────
-// The flatvfs is in-memory in the parent. After fork, the child has a copy.
-// We materialize to a tmpdir in the child (ephemeral, dies with process),
-// then use blink's standard VfsInit in a container mode that keeps the host
-// system root hidden from the guest namespace.
-
-// Forward declaration of materialize function (defined below)
-static int materialize_flatvfs_to_dir(const flatvfs_t *vfs, const char *destdir);
-
+// ── OmniVfsInit — mount the flatvfs directly at / via blink's VFS layer ────
 int OmniVfsInit(const flatvfs_t *vfs) {
-    int rc;
-
     if (!vfs) return -1;
-
-    // Build a unique temp dir for this child
-    char tempdir[PATH_MAX];
-    snprintf(tempdir, sizeof(tempdir), "/tmp/omnikit-memvfs-%d", (int)getpid());
-
-    // Materialize the in-memory VFS to the temp dir
-    if (materialize_flatvfs_to_dir(vfs, tempdir) != 0) {
+    if (VfsRegister(&g_omni_memfs) == -1) {
         return -1;
     }
-
-    // Use blink's standard VfsInit with the temp dir as prefix, but skip the
-    // extra host root mount so the guest stays inside the materialized tree.
-    setenv("OMNIKIT_VFS_NO_SYSTEMROOT", "1", 1);
-    rc = VfsInit(tempdir);
-    unsetenv("OMNIKIT_VFS_NO_SYSTEMROOT");
-    return rc;
-}
-
-/// Recursively create parent directories for a path.
-static void ensure_parents(const char *base, const char *relpath) {
-    char buf[PATH_MAX];
-    snprintf(buf, sizeof(buf), "%s/%s", base, relpath);
-    char *last = strrchr(buf, '/');
-    if (last && last > buf + (int)strlen(base)) {
-        *last = '\0';
-        for (char *p = buf + strlen(base) + 1; *p; ++p) {
-            if (*p == '/') { *p = '\0'; mkdir(buf, 0755); *p = '/'; }
-        }
-        mkdir(buf, 0755);
-    }
-}
-
-static int materialize_flatvfs_to_dir(const flatvfs_t *vfs, const char *destdir) {
-    if (!vfs || !destdir) return -1;
-    mkdir(destdir, 0755);
-
-    for (int i = 0; i < vfs->entry_count; i++) {
-        const flatvfs_entry_t *e = &vfs->entries[i];
-        if (!e->path) continue;
-
-        char fullpath[PATH_MAX];
-        snprintf(fullpath, sizeof(fullpath), "%s/%s", destdir, e->path);
-
-        switch (e->type) {
-        case FLATVFS_DIR:
-            ensure_parents(destdir, e->path);
-            mkdir(fullpath, 0755);
-            break;
-        case FLATVFS_FILE: {
-            ensure_parents(destdir, e->path);
-            int fd = open(fullpath, O_WRONLY | O_CREAT | O_TRUNC,
-                          e->mode ? e->mode : 0644);
-            if (fd == -1) continue;
-            if (e->data && e->data_size > 0) {
-                size_t w = 0;
-                while (w < e->data_size) {
-                    ssize_t n = write(fd, e->data + w, e->data_size - w);
-                    if (n <= 0) break;
-                    w += (size_t)n;
-                }
-            }
-            if (e->mode & 0111) fchmod(fd, e->mode | 0755);
-            close(fd);
-            break;
-        }
-        case FLATVFS_SYMLINK:
-            if (e->symlink_target) {
-                ensure_parents(destdir, e->path);
-                symlink(e->symlink_target, fullpath);
-            }
-            break;
-        }
+    if (VfsInitRootMount("", "memfs", 0, vfs, false, "/") == -1) {
+        return -1;
     }
     return 0;
 }

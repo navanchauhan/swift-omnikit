@@ -233,6 +233,42 @@ struct BlinkRuntimeTests {
         #expect(results.allSatisfy { $0.stdout.localizedStandardContains("hello") })
         #expect(results.allSatisfy { !$0.timedOut })
     }
+
+    @Test("forced no-fork runtime executes vendored tinyhello through a symlinked guest path")
+    func executeTinyHelloViaSymlink() async throws {
+        guard FileManager.default.fileExists(atPath: tinyHelloFixtureURL().path) else {
+            return
+        }
+
+        let tempRoot = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
+        try FileManager.default.createDirectory(at: tempRoot, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempRoot) }
+
+        let binaryURL = tempRoot.appending(path: "tinyhello.elf")
+        try FileManager.default.copyItem(at: tinyHelloFixtureURL(), to: binaryURL)
+        let linkPath = tempRoot.appending(path: "hello-link").path
+        try FileManager.default.createSymbolicLink(atPath: linkPath, withDestinationPath: "tinyhello.elf")
+
+        let diskFS = DiskFS(root: tempRoot.path)
+        var namespace = VFSNamespace()
+        namespace.bind(src: diskFS, dstPath: ".", mode: .replace)
+
+        let result = try await withForcedNoForkBlink {
+            let runtime = BlinkRuntime()
+            return try await runtime.execute(
+                binaryPath: "/hello-link",
+                args: [],
+                env: [:],
+                workingDir: "/",
+                namespace: namespace,
+                timeoutMs: 10_000
+            )
+        }
+
+        #expect(result.exitCode == 0)
+        #expect(result.stdout.localizedStandardContains("hello"))
+        #expect(!result.timedOut)
+    }
 }
 
 /// Simple error type for test failures.

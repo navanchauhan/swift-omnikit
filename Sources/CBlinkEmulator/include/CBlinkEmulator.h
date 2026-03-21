@@ -1,6 +1,7 @@
 // CBlinkEmulator — thin C wrapper around the blink x86-64 emulator library.
-// Provides a fork-safe API that runs an ELF binary in a child process using
-// blink's emulation engine and captures stdout/stderr via pipes.
+// Provides a fork-safe API that runs an ELF binary using blink's emulation
+// engine. Hosts with fork() keep child-process isolation; no-fork platforms
+// fall back to an in-process runtime.
 
 #ifndef CBLINK_EMULATOR_H
 #define CBLINK_EMULATOR_H
@@ -99,12 +100,12 @@ typedef struct {
     int entry_count;
 } flatvfs_t;
 
-/// Run blink with an in-memory VFS (no disk I/O).
+/// Run blink with a flat VFS snapshot as the guest root filesystem.
 ///
-/// This function materializes the VFS into blink's VFS layer by writing
-/// entries to a tmpfs-backed directory structure. The key difference from
-/// blink_run_interactive is that it uses memfd/pipes for file data instead
-/// of writing to the real filesystem.
+/// On platforms without host fork(), or when explicitly forced into no-fork
+/// mode, the custom memvfs backend is mounted directly in-process. On
+/// fork-capable hosts, the shim may materialize the snapshot into an isolated
+/// temporary root so guest fork()/exec flows share a consistent writable view.
 ///
 /// @param config  Emulation configuration (must not be NULL).
 ///                config->program_path should be the guest path (e.g. "/bin/sh").
@@ -113,9 +114,11 @@ typedef struct {
 /// @return Exit code from the emulated process, or -1 on error.
 int blink_run_memvfs(const blink_run_config_t *config, const flatvfs_t *vfs);
 
-/// Run blink with captured output and an in-memory VFS (no disk I/O).
+/// Run blink with captured output and a flat VFS snapshot as the guest root.
 ///
-/// Like blink_run() but uses the flat in-memory VFS instead of a host directory.
+/// Like blink_run() but uses the provided flat snapshot instead of an existing
+/// host directory. The runtime chooses between direct memvfs mounting and an
+/// isolated temporary host root using the same rules as blink_run_memvfs().
 ///
 /// @param config     Emulation configuration (must not be NULL).
 /// @param result     Output result structure (must not be NULL).
@@ -133,7 +136,7 @@ int blink_run_captured_memvfs(const blink_run_config_t *config,
 /// custom blink VfsSystem ("memfs"), with devfs at /dev and procfs at /proc.
 /// No disk writes occur; mutations go to an in-memory overlay.
 ///
-/// Must be called from the forked child process before ShimExec.
+/// Used by the in-process runtime path before ShimExec.
 ///
 /// @param vfs  The flat in-memory VFS (must not be NULL).
 /// @return 0 on success, non-zero on error.

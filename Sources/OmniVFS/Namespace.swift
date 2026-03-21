@@ -7,6 +7,26 @@ public struct VFSNamespace: Sendable, VFS, VFSReadDirFS, VFSStatFS, VFSResolveFS
         let srcPath: String
     }
 
+    public struct BindingSnapshot: Sendable {
+        public struct Target: Sendable {
+            public let fs: any VFS
+            public let srcPath: String
+
+            public init(fs: any VFS, srcPath: String) {
+                self.fs = fs
+                self.srcPath = srcPath
+            }
+        }
+
+        public let dstPath: String
+        public let targets: [Target]
+
+        public init(dstPath: String, targets: [Target]) {
+            self.dstPath = dstPath
+            self.targets = targets
+        }
+    }
+
     private var bindings: [String: [BindTarget]] = [:]
 
     /// Maximum resolution depth to prevent cycles.
@@ -135,6 +155,23 @@ public struct VFSNamespace: Sendable, VFS, VFSReadDirFS, VFSStatFS, VFSResolveFS
     /// Returns a copy of this namespace (value type, so automatic).
     public func clone() -> VFSNamespace {
         return self
+    }
+
+    public func bindingSnapshots() -> [BindingSnapshot] {
+        bindings.map { key, targets in
+            BindingSnapshot(
+                dstPath: key,
+                targets: targets.map { BindingSnapshot.Target(fs: $0.fs, srcPath: $0.srcPath) }
+            )
+        }
+        .sorted {
+            let leftDepth = $0.dstPath.split(separator: "/").count
+            let rightDepth = $1.dstPath.split(separator: "/").count
+            if leftDepth == rightDepth {
+                return $0.dstPath < $1.dstPath
+            }
+            return leftDepth < rightDepth
+        }
     }
 
     // MARK: - Private resolution

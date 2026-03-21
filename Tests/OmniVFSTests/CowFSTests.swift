@@ -10,6 +10,9 @@ struct CowFSTests {
         try base.mkdir("docs")
         try base.createFile("docs/readme.md", data: Array("base readme".utf8))
         try base.createFile("root.txt", data: Array("base root".utf8))
+        try base.mkdir("bin")
+        try base.createFile("bin/busybox", data: Array("base busybox".utf8))
+        try base.symlink(target: "busybox", link: "bin/sh")
         return base
     }
 
@@ -62,7 +65,6 @@ struct CowFSTests {
         let cow = CowFS(base: base)
 
         // Add a new file in overlay dir
-        try cow.mkdir("docs")  // ensure overlay dir exists
         try cow.createFile("docs/new.txt", data: [1, 2, 3])
 
         // Remove a base file
@@ -92,5 +94,53 @@ struct CowFSTests {
         let file = try cow.open("root.txt")
         #expect(try file.readAll() == Array("reborn".utf8))
         try file.close()
+    }
+
+    @Test("base symlinks resolve through the merged overlay view")
+    func baseSymlinkRespectsOverlayWrites() throws {
+        let base = try makeBase()
+        let cow = CowFS(base: base)
+
+        try cow.writeFile("bin/busybox", data: Array("overlay busybox".utf8))
+
+        let file = try cow.open("bin/sh")
+        #expect(try file.readAll() == Array("overlay busybox".utf8))
+        try file.close()
+
+        let info = try cow.stat("bin/sh")
+        #expect(info.isSymlink)
+        #expect(info.symlinkTarget == "busybox")
+    }
+
+    @Test("rename preserves symlink nodes instead of dereferencing them")
+    func renameSymlink() throws {
+        let base = try makeBase()
+        let cow = CowFS(base: base)
+
+        try cow.rename(from: "bin/sh", to: "bin/ash")
+
+        let info = try cow.stat("bin/ash")
+        #expect(info.isSymlink)
+        #expect(info.symlinkTarget == "busybox")
+
+        let file = try cow.open("bin/ash")
+        #expect(try file.readAll() == Array("base busybox".utf8))
+        try file.close()
+
+        #expect(throws: VFSError.self) {
+            try cow.stat("bin/sh")
+        }
+    }
+
+    @Test("whiteouting a directory hides its base descendants")
+    func removeDirectoryHidesDescendants() throws {
+        let base = try makeBase()
+        let cow = CowFS(base: base)
+
+        try cow.remove("docs")
+
+        #expect(throws: VFSError.self) {
+            try cow.open("docs/readme.md")
+        }
     }
 }

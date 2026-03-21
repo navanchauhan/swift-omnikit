@@ -5,6 +5,7 @@ public final class MemFS: @unchecked Sendable, VFSFullFS {
     private enum MemNode {
         case file(Data)
         case directory([String: MemNode])
+        case symlink(String)
     }
 
     private let lock = NSLock()
@@ -21,7 +22,7 @@ public final class MemFS: @unchecked Sendable, VFSFullFS {
     public func open(_ path: String) throws -> any VFSFile {
         let normPath = PathUtils.cleanPath(path)
         return try lock.withLock {
-            let node = try lookupNode(normPath)
+            let node = try lookupNode(normPath, followFinalSymlink: true)
             switch node {
             case .file(let data):
                 let (_, name) = PathUtils.splitPath(normPath)
@@ -29,6 +30,8 @@ public final class MemFS: @unchecked Sendable, VFSFullFS {
             case .directory:
                 let (_, name) = PathUtils.splitPath(normPath)
                 return MemFSFile(name: name, data: Data(), isDir: true)
+            case .symlink:
+                throw VFSError.notFound(path)
             }
         }
     }
@@ -38,7 +41,7 @@ public final class MemFS: @unchecked Sendable, VFSFullFS {
     public func readDir(_ path: String) throws -> [VFSDirEntry] {
         let normPath = PathUtils.cleanPath(path)
         return try lock.withLock {
-            let node = try lookupNode(normPath)
+            let node = try lookupNode(normPath, followFinalSymlink: true)
             guard case .directory(let children) = node else {
                 throw VFSError.notDirectory(path)
             }
@@ -48,6 +51,13 @@ public final class MemFS: @unchecked Sendable, VFSFullFS {
                     return VFSDirEntry(name: name, isDir: false, size: Int64(data.count))
                 case .directory:
                     return VFSDirEntry(name: name, isDir: true)
+                case .symlink(let target):
+                    return VFSDirEntry(
+                        name: name,
+                        isDir: false,
+                        isSymlink: true,
+                        size: Int64(target.utf8.count)
+                    )
                 }
             }.sorted { $0.name < $1.name }
         }
@@ -58,13 +68,21 @@ public final class MemFS: @unchecked Sendable, VFSFullFS {
     public func stat(_ path: String) throws -> VFSFileInfo {
         let normPath = PathUtils.cleanPath(path)
         return try lock.withLock {
-            let node = try lookupNode(normPath)
+            let node = try lookupNode(normPath, followFinalSymlink: false)
             let (_, name) = PathUtils.splitPath(normPath)
             switch node {
             case .file(let data):
                 return VFSFileInfo(name: name, size: Int64(data.count), isDir: false)
             case .directory:
                 return VFSFileInfo(name: name, size: 0, mode: .defaultDir, isDir: true)
+            case .symlink(let target):
+                return VFSFileInfo(
+                    name: name,
+                    size: Int64(target.utf8.count),
+                    isDir: false,
+                    isSymlink: true,
+                    symlinkTarget: target
+                )
             }
         }
     }
@@ -82,7 +100,7 @@ public final class MemFS: @unchecked Sendable, VFSFullFS {
                 throw VFSError.capacityExceeded("write would exceed maxBytes (\(maxBytes))")
             }
             let (parent, name) = PathUtils.splitPath(normPath)
-            var dirNode = try lookupNode(parent)
+            var dirNode = try lookupNode(parent, followFinalSymlink: true)
             guard case .directory(var children) = dirNode else {
                 throw VFSError.notDirectory(parent)
             }
@@ -103,7 +121,7 @@ public final class MemFS: @unchecked Sendable, VFSFullFS {
         }
         try lock.withLock {
             let (parent, name) = PathUtils.splitPath(normPath)
-            var dirNode = try lookupNode(parent)
+            var dirNode = try lookupNode(parent, followFinalSymlink: true)
             guard case .directory(var children) = dirNode else {
                 throw VFSError.notDirectory(parent)
             }
@@ -123,7 +141,7 @@ public final class MemFS: @unchecked Sendable, VFSFullFS {
         }
         try lock.withLock {
             let (parent, name) = PathUtils.splitPath(normPath)
-            var dirNode = try lookupNode(parent)
+            var dirNode = try lookupNode(parent, followFinalSymlink: true)
             guard case .directory(var children) = dirNode else {
                 throw VFSError.notDirectory(parent)
             }
@@ -145,28 +163,7 @@ public final class MemFS: @unchecked Sendable, VFSFullFS {
             throw VFSError.isDirectory(path)
         }
         try lock.withLock {
-            let (parent, name) = PathUtils.splitPath(normPath)
-            var dirNode = try lookupNode(parent)
-            guard case .directory(var children) = dirNode else {
-                throw VFSError.notDirectory(parent)
-            }
-            var oldSize = 0
-            if let existing = children[name] {
-                if case .directory = existing {
-                    throw VFSError.isDirectory(path)
-                }
-                if case .file(let oldData) = existing {
-                    oldSize = oldData.count
-                }
-            }
-            let newTotal = totalBytes - oldSize + data.count
-            if newTotal > maxBytes {
-                throw VFSError.capacityExceeded("write would exceed maxBytes (\(maxBytes))")
-            }
-            children[name] = .file(Data(data))
-            dirNode = .directory(children)
-            try setNode(parent, dirNode)
-            totalBytes = newTotal
+            try writeFileLocked(normPath, originalPath: path, data: data, depth: 0)
         }
     }
 
@@ -174,11 +171,11 @@ public final class MemFS: @unchecked Sendable, VFSFullFS {
         let normFrom = PathUtils.cleanPath(from)
         let normTo = PathUtils.cleanPath(to)
         try lock.withLock {
-            let node = try lookupNode(normFrom)
+            let node = try lookupNode(normFrom, followFinalSymlink: false)
             let (fromParent, fromName) = PathUtils.splitPath(normFrom)
             let (toParent, toName) = PathUtils.splitPath(normTo)
             // Remove from source.
-            var srcDirNode = try lookupNode(fromParent)
+            var srcDirNode = try lookupNode(fromParent, followFinalSymlink: true)
             guard case .directory(var srcChildren) = srcDirNode else {
                 throw VFSError.notDirectory(fromParent)
             }
@@ -186,7 +183,7 @@ public final class MemFS: @unchecked Sendable, VFSFullFS {
             srcDirNode = .directory(srcChildren)
             try setNode(fromParent, srcDirNode)
             // Add to destination.
-            var dstDirNode = try lookupNode(toParent)
+            var dstDirNode = try lookupNode(toParent, followFinalSymlink: true)
             guard case .directory(var dstChildren) = dstDirNode else {
                 throw VFSError.notDirectory(toParent)
             }
@@ -197,8 +194,23 @@ public final class MemFS: @unchecked Sendable, VFSFullFS {
     }
 
     public func symlink(target: String, link: String) throws {
-        // MemFS does not support symlinks; store as a file with the target path.
-        throw VFSError.notSupported("symlinks not supported in MemFS")
+        let normLink = PathUtils.cleanPath(link)
+        guard normLink != "." && normLink != "/" else {
+            throw VFSError.alreadyExists(link)
+        }
+        try lock.withLock {
+            let (parent, name) = PathUtils.splitPath(normLink)
+            var dirNode = try lookupNode(parent, followFinalSymlink: true)
+            guard case .directory(var children) = dirNode else {
+                throw VFSError.notDirectory(parent)
+            }
+            if children[name] != nil {
+                throw VFSError.alreadyExists(link)
+            }
+            children[name] = .symlink(target)
+            dirNode = .directory(children)
+            try setNode(parent, dirNode)
+        }
     }
 
     // MARK: - VFSResolveFS
@@ -209,21 +221,89 @@ public final class MemFS: @unchecked Sendable, VFSFullFS {
 
     // MARK: - Internal helpers (must be called under lock)
 
-    private func lookupNode(_ path: String) throws -> MemNode {
+    private func lookupNode(
+        _ path: String,
+        followFinalSymlink: Bool = false,
+        depth: Int = 0
+    ) throws -> MemNode {
         let normPath = PathUtils.cleanPath(path)
+        if depth > 32 {
+            throw VFSError.cyclicResolution("too many symlink resolutions for \(path)")
+        }
         if normPath == "." || normPath == "/" { return root }
         let components = normPath.split(separator: "/")
         var current = root
-        for component in components {
+        var currentPath = "."
+        for (index, component) in components.enumerated() {
             guard case .directory(let children) = current else {
                 throw VFSError.notDirectory(String(component))
             }
             guard let next = children[String(component)] else {
                 throw VFSError.notFound(normPath)
             }
+            let isFinal = index == components.count - 1
+            if case .symlink(let target) = next, !isFinal || followFinalSymlink {
+                let parentPath = currentPath
+                let resolved = resolveSymlinkTarget(parentPath: parentPath, target: target)
+                let remaining = isFinal ? "." : components[(index + 1)...].joined(separator: "/")
+                let nextPath = remaining == "." ? resolved : PathUtils.joinPath(resolved, remaining)
+                return try lookupNode(
+                    nextPath,
+                    followFinalSymlink: followFinalSymlink,
+                    depth: depth + 1
+                )
+            }
             current = next
+            currentPath = PathUtils.joinPath(currentPath, String(component))
         }
         return current
+    }
+
+    private func resolveSymlinkTarget(parentPath: String, target: String) -> String {
+        PathUtils.resolvePath(target, relativeTo: parentPath)
+    }
+
+    private func writeFileLocked(
+        _ path: String,
+        originalPath: String,
+        data: [UInt8],
+        depth: Int
+    ) throws {
+        if depth > 32 {
+            throw VFSError.cyclicResolution("too many symlink resolutions for \(originalPath)")
+        }
+
+        let (parent, name) = PathUtils.splitPath(path)
+        var dirNode = try lookupNode(parent, followFinalSymlink: true, depth: depth)
+        guard case .directory(var children) = dirNode else {
+            throw VFSError.notDirectory(parent)
+        }
+
+        if case .symlink(let target)? = children[name] {
+            let resolved = resolveSymlinkTarget(parentPath: parent, target: target)
+            try writeFileLocked(resolved, originalPath: originalPath, data: data, depth: depth + 1)
+            return
+        }
+
+        var oldSize = 0
+        if let existing = children[name] {
+            if case .directory = existing {
+                throw VFSError.isDirectory(originalPath)
+            }
+            if case .file(let oldData) = existing {
+                oldSize = oldData.count
+            }
+        }
+
+        let newTotal = totalBytes - oldSize + data.count
+        if newTotal > maxBytes {
+            throw VFSError.capacityExceeded("write would exceed maxBytes (\(maxBytes))")
+        }
+
+        children[name] = .file(Data(data))
+        dirNode = .directory(children)
+        try setNode(parent, dirNode)
+        totalBytes = newTotal
     }
 
     private func setNode(_ path: String, _ node: MemNode) throws {
