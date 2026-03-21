@@ -19,6 +19,11 @@ import OmniVFS
 import OmniContainer
 import OmniExecution
 import CBlinkEmulator
+#if canImport(Darwin)
+import Darwin
+#elseif canImport(Glibc)
+import Glibc
+#endif
 
 private let blinkHelperFlag = "--_blink-helper"
 
@@ -155,6 +160,8 @@ private func materializeFlatVFS(_ flatVFS: FlatVFS, to rootURL: URL) throws {
 }
 
 private func runBlinkHelperMode(configPath: String) throws -> Int32 {
+    adoptParentProcessGroupIfPossible()
+
     let configData = try Data(contentsOf: URL(fileURLWithPath: configPath))
     let helperConfig = try JSONDecoder().decode(BlinkHelperConfig.self, from: configData)
     let hostMounts = helperConfig.hostMounts.map {
@@ -185,6 +192,26 @@ private func runBlinkHelperMode(configPath: String) throws -> Int32 {
             }
         }
     }
+}
+
+private func adoptParentProcessGroupIfPossible() {
+#if canImport(Darwin) || canImport(Glibc)
+    let parentPID = getppid()
+    guard parentPID > 1 else {
+        return
+    }
+
+    let parentGroup = getpgid(parentPID)
+    guard parentGroup > 0 else {
+        return
+    }
+
+    // `Process` can place the spawned helper into its own process group on
+    // macOS. Rejoining the parent's group keeps the interactive Blink child in
+    // the foreground terminal job instead of being background-stopped on tty
+    // access.
+    _ = setpgid(0, parentGroup)
+#endif
 }
 
 private func runViaSpawnedBlinkHelper(
