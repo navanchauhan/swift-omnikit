@@ -202,6 +202,10 @@ let package = Package(
             swiftSettings: commonSwiftSettings
         ),
         .target(
+            name: "OmniTermSupport",
+            swiftSettings: commonSwiftSettings
+        ),
+        .target(
             name: "CBlinkUop",
             path: "Sources/CBlinkUop",
             cSettings: [
@@ -455,6 +459,7 @@ let package = Package(
         .executableTarget(
             name: "OmniTerm",
             dependencies: [
+                "OmniTermSupport",
                 "OmniVFS",
                 "OmniContainer",
                 "OmniExecution",
@@ -490,6 +495,14 @@ let package = Package(
             ],
             resources: [
                 .copy("Fixtures"),
+            ],
+            swiftSettings: commonSwiftSettings
+        ),
+        .testTarget(
+            name: "OmniTermTests",
+            dependencies: [
+                "OmniTermSupport",
+                .product(name: "Testing", package: "swift-testing"),
             ],
             swiftSettings: commonSwiftSettings
         ),

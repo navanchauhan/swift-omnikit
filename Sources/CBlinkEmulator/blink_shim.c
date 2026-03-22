@@ -261,7 +261,7 @@ static bool should_disable_host_jit_for_program(const char *prog, char **argv) {
 
     if (disable_node_host_jit == -1) {
         disable_node_host_jit =
-            getenv("OMNIKIT_BLINK_ALLOW_NODE_HOST_JIT") == NULL;
+            getenv("OMNIKIT_BLINK_DISABLE_NODE_HOST_JIT") != NULL;
     }
     return disable_node_host_jit && is_node_program(prog, argv);
 #else
@@ -1353,6 +1353,15 @@ static int install_extra_host_mounts(const blink_run_config_t *config) {
     return 0;
 }
 
+static bool should_force_nolinear_host_runtime(void) {
+    static int cached = -1;
+
+    if (cached == -1) {
+        cached = (FLAG_pagesize != 4096) || getenv("OMNIKIT_BLINK_FORCE_NOLINEAR") != NULL;
+    }
+    return cached;
+}
+
 static int host_runtime_setup(const blink_run_config_t *config, const flatvfs_t *vfs) {
     (void)vfs;
 
@@ -1360,7 +1369,7 @@ static int host_runtime_setup(const blink_run_config_t *config, const flatvfs_t 
 
     WriteErrorInit();
     InitMap();
-    FLAG_nolinear = true;
+    FLAG_nolinear = should_force_nolinear_host_runtime();
 
 #ifndef DISABLE_VFS
     if (config->host_mount_count > 0 && !config->vfs_prefix) {
@@ -1802,7 +1811,7 @@ int blink_run(const blink_run_config_t *config,
         WriteErrorInit();
         InitMap();
 
-        FLAG_nolinear = true;  // Safe memory mode — no mmap tricks in child
+        FLAG_nolinear = should_force_nolinear_host_runtime();
 
 #ifndef DISABLE_VFS
         if (config->host_mount_count > 0 && !config->vfs_prefix) {
@@ -2035,7 +2044,7 @@ int blink_run_interactive(const blink_run_config_t *config) {
         WriteErrorInit();
         InitMap();
 
-        FLAG_nolinear = true;
+        FLAG_nolinear = should_force_nolinear_host_runtime();
 
 #ifndef DISABLE_VFS
         if (config->host_mount_count > 0 && !config->vfs_prefix) {

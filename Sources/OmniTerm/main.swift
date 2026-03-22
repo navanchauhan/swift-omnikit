@@ -18,6 +18,7 @@ import Foundation
 import OmniVFS
 import OmniContainer
 import OmniExecution
+import OmniTermSupport
 import CBlinkEmulator
 #if canImport(Darwin)
 import Darwin
@@ -47,6 +48,9 @@ struct TermConfig {
     var hostBindPath: String? = nil
     var command: [String] = ["/bin/sh", "-l"]
     var imageRef = "alpine:minirootfs"
+    var persistenceEnabled = true
+    var resetState = false
+    var stateDirOverride: String? = nil
 }
 
 func parseArgs() -> TermConfig {
@@ -64,6 +68,13 @@ func parseArgs() -> TermConfig {
         case "--image":
             i += 1
             if i < args.count { config.imageRef = args[i] }
+        case "--ephemeral":
+            config.persistenceEnabled = false
+        case "--reset-state":
+            config.resetState = true
+        case "--state-dir":
+            i += 1
+            if i < args.count { config.stateDirOverride = args[i] }
         case "--help", "-h":
             printUsage()
             exit(0)
@@ -92,6 +103,9 @@ func printUsage() {
       -n, --network       Enable outbound networking (for apk add, curl, etc.)
       -b, --bind PATH     Bind a host directory at /workspace in the container
           --image REF     Image reference (default: alpine:minirootfs)
+          --ephemeral     Disable persisted guest state for this session
+          --reset-state   Rebuild the persisted guest state before launch
+          --state-dir DIR Override the persisted guest-state directory
       -h, --help          Show this help
 
     EXAMPLES:
@@ -122,12 +136,78 @@ private func helperConfigPathIfPresent() -> String? {
     return args[2]
 }
 
+private func resolvedHostBindPath(_ hostPath: String?) -> String? {
+    guard let hostPath else {
+        return nil
+    }
+
+    if hostPath.hasPrefix("/") {
+        return hostPath
+    }
+
+    return FileManager.default.currentDirectoryPath + "/" + hostPath
+}
+
+private func makeHostMounts(hostBindPath: String?) -> [BlinkHostMount] {
+    guard let hostBindPath = resolvedHostBindPath(hostBindPath) else {
+        return []
+    }
+
+    return [
+        BlinkHostMount(hostPath: hostBindPath, guestPath: "/workspace")
+    ]
+}
+
 private func shouldUseSpawnedBlinkHelper() -> Bool {
 #if os(macOS)
     return ProcessInfo.processInfo.environment["OMNIKIT_BLINK_FORCE_NOFORK"] == nil
 #else
     return false
 #endif
+}
+
+private func makeGuestLaunchCommand(
+    _ command: [String]
+) -> (programPath: String, argv: [String]) {
+    if command[0].hasPrefix("/") {
+        let guestProgramPath = command[0]
+        var directArgv = command
+        directArgv[0] = guestProgramPath
+        return (guestProgramPath, directArgv)
+    }
+
+    let guestProgramPath = "/bin/sh"
+    let shellCommand = command.map(shellQuote).joined(separator: " ")
+    return (guestProgramPath, [guestProgramPath, "-lc", shellCommand])
+}
+
+private func makeGuestEnvironment(
+    networkEnabled: Bool,
+    hostBindPath: String?
+) -> [String] {
+    var env: [String] = [
+        "HOME=/root",
+        "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+        "TERM=\(ProcessInfo.processInfo.environment["TERM"] ?? "xterm-256color")",
+        "LANG=C.UTF-8",
+        "PS1=\\[\\033[1;32m\\]omniterm\\[\\033[0m\\]:\\[\\033[1;34m\\]\\w\\[\\033[0m\\]\\$ ",
+    ]
+    if !networkEnabled {
+        env.append("BLINK_DISABLE_NETWORKING=1")
+    }
+    if hostBindPath != nil {
+        env.append("WORKSPACE=/workspace")
+    }
+    return BlinkGuestNodeRuntime.mergedEnvironmentStrings(env)
+}
+
+private func makeGuestResolvConf(networkEnabled: Bool) -> String? {
+    guard networkEnabled else {
+        return nil
+    }
+
+    let hostResolv = try? String(contentsOfFile: "/etc/resolv.conf", encoding: .utf8)
+    return BlinkGuestNetworking.resolvConf(hostContents: hostResolv)
 }
 
 private func materializeFlatVFS(_ flatVFS: FlatVFS, to rootURL: URL) throws {
@@ -164,24 +244,39 @@ private func runBlinkHelperMode(configPath: String) throws -> Int32 {
 
     let configData = try Data(contentsOf: URL(fileURLWithPath: configPath))
     let helperConfig = try JSONDecoder().decode(BlinkHelperConfig.self, from: configData)
-    let hostMounts = helperConfig.hostMounts.map {
-        BlinkHostMount(hostPath: $0.hostPath, guestPath: $0.guestPath)
-    }
+    return runBlinkInteractiveHostRoot(
+        rootPath: helperConfig.rootPath,
+        hostMounts: helperConfig.hostMounts.map {
+            BlinkHostMount(hostPath: $0.hostPath, guestPath: $0.guestPath)
+        },
+        guestProgramPath: helperConfig.programPath,
+        argv: helperConfig.argv,
+        env: helperConfig.env
+    )
+}
+
+private func runBlinkInteractiveHostRoot(
+    rootPath: String,
+    hostMounts: [BlinkHostMount],
+    guestProgramPath: String,
+    argv: [String],
+    env: [String]
+) -> Int32 {
     let cHostMounts = buildCHostMounts(hostMounts)
     defer { freeCHostMounts(cHostMounts.ptr, count: cHostMounts.count) }
 
     _ = FileManager.default.changeCurrentDirectoryPath("/")
 
-    return helperConfig.argv.withCArrayOfCStrings { cArgv in
-        helperConfig.env.withCArrayOfCStrings { cEnv in
-            helperConfig.programPath.withCString { cProgram in
+    return argv.withCArrayOfCStrings { cArgv in
+        env.withCArrayOfCStrings { cEnv in
+            guestProgramPath.withCString { cProgram in
                 var blinkConfig = blink_run_config_t()
                 blinkConfig.program_path = cProgram
                 blinkConfig.argv = cArgv
-                blinkConfig.argc = Int32(helperConfig.argv.count)
+                blinkConfig.argc = Int32(argv.count)
                 blinkConfig.envp = cEnv
-                blinkConfig.envc = Int32(helperConfig.env.count)
-                let vfsPrefix = strdup(helperConfig.rootPath)
+                blinkConfig.envc = Int32(env.count)
+                let vfsPrefix = strdup(rootPath)
                 blinkConfig.vfs_prefix = vfsPrefix.map { UnsafePointer($0) }
                 blinkConfig.host_mounts = cHostMounts.ptr.map { UnsafePointer($0) }
                 blinkConfig.host_mount_count = Int32(cHostMounts.count)
@@ -214,33 +309,33 @@ private func adoptParentProcessGroupIfPossible() {
 #endif
 }
 
-private func runViaSpawnedBlinkHelper(
-    flatVFS: FlatVFS,
+private func spawnBlinkHelper(
+    rootPath: String,
     hostMounts: [BlinkHostMount],
     guestProgramPath: String,
     argv: [String],
-    env: [String]
+    env: [String],
+    cleanupBaseURL: URL? = nil
 ) throws -> Int32 {
     let fm = FileManager.default
     let keepHelperRoot = ProcessInfo.processInfo.environment["OMNITERM_KEEP_HELPER_ROOT"] != nil
-    let helperBaseURL = fm.temporaryDirectory.appending(
-        path: "omniterm-helper-\(UUID().uuidString)",
-        directoryHint: .isDirectory
-    )
-    let rootURL = helperBaseURL.appending(path: "rootfs", directoryHint: .isDirectory)
+    let helperBaseURL =
+        cleanupBaseURL
+        ?? fm.temporaryDirectory.appending(
+            path: "omniterm-helper-\(UUID().uuidString)",
+            directoryHint: .isDirectory
+        )
     let configURL = helperBaseURL.appending(path: "blink-helper.json")
 
     try fm.createDirectory(at: helperBaseURL, withIntermediateDirectories: true)
     defer {
-        if !keepHelperRoot {
+        if cleanupBaseURL != nil && !keepHelperRoot {
             try? fm.removeItem(at: helperBaseURL)
         }
     }
 
-    try materializeFlatVFS(flatVFS, to: rootURL)
-
     let helperConfig = BlinkHelperConfig(
-        rootPath: rootURL.path,
+        rootPath: rootPath,
         programPath: guestProgramPath,
         argv: argv,
         env: env,
@@ -278,16 +373,124 @@ private func runViaSpawnedBlinkHelper(
     }
 }
 
+private func runViaSpawnedBlinkHelper(
+    flatVFS: FlatVFS,
+    hostMounts: [BlinkHostMount],
+    guestProgramPath: String,
+    argv: [String],
+    env: [String]
+) throws -> Int32 {
+    let helperBaseURL = FileManager.default.temporaryDirectory.appending(
+        path: "omniterm-helper-\(UUID().uuidString)",
+        directoryHint: .isDirectory
+    )
+    let rootURL = helperBaseURL.appending(path: "rootfs", directoryHint: .isDirectory)
+
+    try FileManager.default.createDirectory(at: helperBaseURL, withIntermediateDirectories: true)
+    try materializeFlatVFS(flatVFS, to: rootURL)
+
+    return try spawnBlinkHelper(
+        rootPath: rootURL.path,
+        hostMounts: hostMounts,
+        guestProgramPath: guestProgramPath,
+        argv: argv,
+        env: env,
+        cleanupBaseURL: helperBaseURL
+    )
+}
+
 // MARK: - Main
 
-@main
-struct OmniTermMain {
-    static func main() async throws {
+enum OmniTermMain {
+    static func run() async throws {
         if let helperConfigPath = helperConfigPathIfPresent() {
             exit(try runBlinkHelperMode(configPath: helperConfigPath))
         }
 
         let config = parseArgs()
+        let resolvedBindPath = resolvedHostBindPath(config.hostBindPath)
+        let hostMounts = makeHostMounts(hostBindPath: resolvedBindPath)
+        let (guestProgramPath, argv) = makeGuestLaunchCommand(config.command)
+        let env = makeGuestEnvironment(
+            networkEnabled: config.networkEnabled,
+            hostBindPath: resolvedBindPath
+        )
+        let resolvConf = makeGuestResolvConf(networkEnabled: config.networkEnabled)
+
+        if config.persistenceEnabled {
+            let statePaths = try OmniTermStateStore.preparePaths(
+                for: config.imageRef,
+                baseDirectoryOverride: config.stateDirOverride,
+                reset: config.resetState
+            )
+
+            if OmniTermStateStore.isInitialized(at: statePaths, imageRef: config.imageRef) {
+                print("Using persistent guest state: \(statePaths.rootDirectory.path)")
+            } else {
+                // 1. Resolve Alpine rootfs
+                let rootFS = try await resolveImage(config.imageRef)
+
+                // 2. Build VFS namespace
+                let overlay = MemFS()
+                let cow = CowFS(base: rootFS, overlay: overlay)
+                var namespace = VFSNamespace()
+                namespace.bind(src: cow, srcPath: ".", dstPath: ".", mode: .replace)
+
+                let tmpFS = MemFS()
+                namespace.bind(src: tmpFS, srcPath: ".", dstPath: "tmp", mode: .replace)
+
+                if let resolvedBindPath {
+                    let diskFS = DiskFS(root: resolvedBindPath)
+                    namespace.bind(src: diskFS, srcPath: ".", dstPath: "workspace", mode: .replace)
+                }
+
+                if let resolvConf {
+                    try? overlay.mkdir("etc")
+                    try? overlay.writeFile("etc/resolv.conf", data: Array(resolvConf.utf8))
+                }
+
+                print("Planning guest VFS...")
+                let vfsPlan = BlinkVFSPlanner.buildLaunchPlan(namespace: namespace)
+                print(
+                    "Guest VFS ready: \(vfsPlan.flatVFS.entries.count) snapshot entries, "
+                        + "\(vfsPlan.hostMounts.count) host mounts"
+                )
+                print("Initializing persistent guest state...")
+                try materializeFlatVFS(vfsPlan.flatVFS, to: statePaths.rootDirectory)
+                try OmniTermStateStore.markInitialized(at: statePaths, imageRef: config.imageRef)
+            }
+
+            try OmniTermStateStore.clearEphemeralDirectories(in: statePaths)
+            if let resolvConf {
+                try OmniTermStateStore.writeFile(
+                    relativePath: "etc/resolv.conf",
+                    contents: resolvConf,
+                    in: statePaths
+                )
+            }
+
+            if shouldUseSpawnedBlinkHelper() {
+                exit(try spawnBlinkHelper(
+                    rootPath: statePaths.rootDirectory.path,
+                    hostMounts: hostMounts,
+                    guestProgramPath: guestProgramPath,
+                    argv: argv,
+                    env: env
+                ))
+            }
+
+            fflush(nil)
+            _ = FileManager.default.changeCurrentDirectoryPath("/")
+            exit(
+                runBlinkInteractiveHostRoot(
+                    rootPath: statePaths.rootDirectory.path,
+                    hostMounts: hostMounts,
+                    guestProgramPath: guestProgramPath,
+                    argv: argv,
+                    env: env
+                )
+            )
+        }
 
         // 1. Resolve Alpine rootfs
         let rootFS = try await resolveImage(config.imageRef)
@@ -303,17 +506,13 @@ struct OmniTermMain {
         namespace.bind(src: tmpFS, srcPath: ".", dstPath: "tmp", mode: .replace)
 
         // Bind host directory at /workspace if requested
-        if let hostPath = config.hostBindPath {
-            let absPath = hostPath.hasPrefix("/") ? hostPath :
-                FileManager.default.currentDirectoryPath + "/" + hostPath
-            let diskFS = DiskFS(root: absPath)
+        if let resolvedBindPath {
+            let diskFS = DiskFS(root: resolvedBindPath)
             namespace.bind(src: diskFS, srcPath: ".", dstPath: "workspace", mode: .replace)
         }
 
         // Inject DNS config from host so networking works inside the container
-        if config.networkEnabled {
-            let hostResolv = try? String(contentsOfFile: "/etc/resolv.conf", encoding: .utf8)
-            let resolvConf = BlinkGuestNetworking.resolvConf(hostContents: hostResolv)
+        if let resolvConf {
             try? overlay.mkdir("etc")
             try? overlay.writeFile("etc/resolv.conf", data: Array(resolvConf.utf8))
         }
@@ -329,7 +528,7 @@ struct OmniTermMain {
         // 4. Convert FlatVFS to C flatvfs_t
         let cEntries = buildCFlatVFS(vfsPlan.flatVFS)
         defer { freeCFlatVFS(cEntries.ptr, count: cEntries.count) }
-        let cHostMounts = buildCHostMounts(vfsPlan.hostMounts)
+        let cHostMounts = buildCHostMounts(hostMounts)
         defer { freeCHostMounts(cHostMounts.ptr, count: cHostMounts.count) }
 
         var flatvfs = flatvfs_t()
@@ -337,39 +536,10 @@ struct OmniTermMain {
         flatvfs.entry_count = Int32(cEntries.count)
 
         // 5. Build blink config
-        let guestProgramPath: String
-        let argv: [String]
-        if config.command[0].hasPrefix("/") {
-            guestProgramPath = config.command[0]
-            var directArgv = config.command
-            directArgv[0] = guestProgramPath
-            argv = directArgv
-        } else {
-            guestProgramPath = "/bin/sh"
-            let shellCommand = config.command.map(shellQuote).joined(separator: " ")
-            argv = [guestProgramPath, "-lc", shellCommand]
-        }
-
-        // Build env
-        var env: [String] = [
-            "HOME=/root",
-            "PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
-            "TERM=\(ProcessInfo.processInfo.environment["TERM"] ?? "xterm-256color")",
-            "LANG=C.UTF-8",
-            "PS1=\\[\\033[1;32m\\]omniterm\\[\\033[0m\\]:\\[\\033[1;34m\\]\\w\\[\\033[0m\\]\\$ ",
-        ]
-        if !config.networkEnabled {
-            env.append("BLINK_DISABLE_NETWORKING=1")
-        }
-        if config.hostBindPath != nil {
-            env.append("WORKSPACE=/workspace")
-        }
-        env = BlinkGuestNodeRuntime.mergedEnvironmentStrings(env)
-
         if shouldUseSpawnedBlinkHelper() {
             exit(try runViaSpawnedBlinkHelper(
                 flatVFS: vfsPlan.flatVFS,
-                hostMounts: vfsPlan.hostMounts,
+                hostMounts: hostMounts,
                 guestProgramPath: guestProgramPath,
                 argv: argv,
                 env: env
@@ -403,6 +573,8 @@ struct OmniTermMain {
         exit(exitCode)
     }
 }
+
+try await OmniTermMain.run()
 
 // MARK: - C FlatVFS Conversion Helpers
 
