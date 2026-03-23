@@ -210,13 +210,14 @@ private struct CLICommand {
             }
         }
 
-        let backendInstance = try makeBackend()
+        let canonicalBackend = canonicalBackendName()
+        let backendInstance = try makeBackend(canonicalBackend: canonicalBackend)
         let interviewer: Interviewer = interactive ? ConsoleInterviewer() : AutoApproveInterviewer()
 
         let normalizedDotPath = normalizePath(dotPath)
         let normalizedWorkdir = normalizePath(FileManager.default.currentDirectoryPath)
         let resumeSelection = autoresume
-            ? try findLatestIncompleteRun(dotPath: normalizedDotPath, backend: backend.lowercased(), workdir: normalizedWorkdir)
+            ? try findLatestIncompleteRun(dotPath: normalizedDotPath, backend: canonicalBackend, workdir: normalizedWorkdir)
             : nil
 
         let logs: URL
@@ -235,7 +236,7 @@ private struct CLICommand {
             checkpoint = nil
             manifest = RunManifest(
                 dotPath: normalizedDotPath,
-                backend: backend.lowercased(),
+                backend: canonicalBackend,
                 workingDirectory: normalizedWorkdir,
                 logsRoot: logs.path
             )
@@ -286,39 +287,75 @@ private struct CLICommand {
         }
     }
 
-    private func makeBackend() throws -> CodergenBackend {
+    private func canonicalBackendName() -> String {
         switch backend.lowercased() {
+        case "mock":
+            return "mock"
+        case "cli":
+            return "cli"
+        case "codex", "codex-cli", "codex_cli":
+            return "codex"
+        case "claude", "claude-code", "claude_code", "claudecode":
+            return "claude"
+        case "gemini", "gemini-cli", "gemini_cli":
+            return "gemini"
+        case "llmkit":
+            return "llmkit"
+        case "agent", "coding-agent", "coding_agent":
+            return "agent"
+        case "acp":
+            return "acp"
+        case "codex-acp", "codex_acp":
+            return "codex-acp"
+        case "claude-acp", "claude_acp", "claude-code-acp", "claude_code_acp", "claudeagentacp":
+            return "claude-acp"
+        default:
+            return backend.lowercased()
+        }
+    }
+
+    private func makeBackend(canonicalBackend: String) throws -> CodergenBackend {
+        switch canonicalBackend {
         case "mock":
             return MockCodergenBackend()
         case "cli":
             return ProviderCLICodergenBackend()
-        case "codex", "codex-cli", "codex_cli":
+        case "codex":
             return CodexCLICodergenBackend()
-        case "claude", "claude-code", "claude_code", "claudecode":
+        case "claude":
             return ClaudeCodeCLICodergenBackend()
-        case "gemini", "gemini-cli", "gemini_cli":
+        case "gemini":
             return GeminiCLICodergenBackend()
         case "llmkit":
             return LLMKitBackend()
-        case "agent", "coding-agent", "coding_agent":
+        case "agent":
             return CodingAgentBackend(workingDirectory: FileManager.default.currentDirectoryPath)
         case "acp":
-            return ACPAgentBackend(
-                configuration: ACPBackendConfiguration(
-                    agentPath: acpAgent,
-                    agentArguments: acpArgs,
-                    workingDirectory: acpCwd ?? FileManager.default.currentDirectoryPath,
-                    requestTimeout: acpTimeoutSeconds.map { .milliseconds(Int64($0 * 1_000)) },
-                    modeID: acpMode
-                ),
-                interactivePermissions: interactive
-            )
+            return makeACPBackend(preset: .generic)
+        case "codex-acp":
+            return makeACPBackend(preset: .codex)
+        case "claude-acp":
+            return makeACPBackend(preset: .claudeCode)
         default:
             throw ExitError(
                 code: 2,
-                message: "Unknown backend '\(backend)'. Use one of: acp, agent, cli, llmkit, mock"
+                message: "Unknown backend '\(backend)'. Use one of: acp, agent, claude, claude-acp, cli, codex, codex-acp, gemini, llmkit, mock"
             )
         }
+    }
+
+    private func makeACPBackend(preset: ACPBackendPreset) -> CodergenBackend {
+        let overrides = ACPBackendConfiguration(
+            agentPath: acpAgent,
+            agentArguments: acpArgs,
+            workingDirectory: acpCwd,
+            requestTimeout: acpTimeoutSeconds.map { .milliseconds(Int64($0 * 1_000)) },
+            modeID: acpMode
+        )
+        return ACPAgentBackend(
+            configuration: preset.makeConfiguration(overrides: overrides),
+            interactivePermissions: interactive
+        )
     }
 
     private func findLatestIncompleteRun(
@@ -1040,5 +1077,5 @@ AttractorCLI
 
 Usage:
   swift run AttractorCLI validate <dotfile>
-  swift run AttractorCLI run <dotfile> [--backend acp|agent|cli|llmkit|mock] [--logs-root <path>] [--workdir <path>] [--acp-agent <path-or-url>] [--acp-arg <value>] [--acp-cwd <path>] [--acp-timeout <seconds>] [--acp-mode <id>] [--interactive] [--print-context] [--no-resume]
+  swift run AttractorCLI run <dotfile> [--backend acp|agent|claude|claude-acp|cli|codex|codex-acp|gemini|llmkit|mock] [--logs-root <path>] [--workdir <path>] [--acp-agent <path-or-url>] [--acp-arg <value>] [--acp-cwd <path>] [--acp-timeout <seconds>] [--acp-mode <id>] [--interactive] [--print-context] [--no-resume]
 """

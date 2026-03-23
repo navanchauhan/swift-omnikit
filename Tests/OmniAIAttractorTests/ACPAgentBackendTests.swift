@@ -115,6 +115,87 @@ private func startBackendAgent(on transport: InMemoryTransport) -> Task<Void, Ne
 struct ACPAgentBackendTests {
 
     @Test
+    func codex_acp_preset_defaults_to_local_binary() {
+        let configuration = ACPBackendPreset.codex.makeConfiguration(
+            overrides: .init(requestTimeout: nil),
+            environment: [:]
+        )
+
+        #expect(configuration.agentPath == "codex-acp")
+        #expect(configuration.agentArguments.isEmpty)
+        #expect(configuration.workingDirectory == nil)
+        #expect(configuration.modeID == nil)
+        #expect(configuration.requestTimeout == nil)
+    }
+
+    @Test
+    func claude_acp_preset_defaults_to_npx_agent_package() {
+        let configuration = ACPBackendPreset.claudeCode.makeConfiguration(
+            overrides: .init(requestTimeout: nil),
+            environment: [:]
+        )
+
+        #expect(configuration.agentPath == "npx")
+        #expect(configuration.agentArguments == ["-y", "@zed-industries/claude-agent-acp"])
+        #expect(configuration.workingDirectory == nil)
+        #expect(configuration.modeID == nil)
+        #expect(configuration.requestTimeout == nil)
+    }
+
+    @Test
+    func claude_acp_preset_supports_prefixed_environment_overrides() {
+        let configuration = ACPBackendPreset.claudeCode.makeConfiguration(
+            overrides: .init(requestTimeout: nil),
+            environment: [
+                "ATTRACTOR_CLAUDE_ACP_AGENT_BIN": "bunx",
+                "ATTRACTOR_CLAUDE_ACP_AGENT_ARGS": "--bun,@custom/claude-acp",
+                "ATTRACTOR_CLAUDE_ACP_CWD": "/tmp/claude",
+                "ATTRACTOR_CLAUDE_ACP_TIMEOUT_SECONDS": "45",
+                "ATTRACTOR_CLAUDE_ACP_MODE": "plan",
+                "ATTRACTOR_CLAUDE_ACP_EXTRA_PATH": "/opt/acp/bin",
+                "PATH": "/usr/bin",
+            ]
+        )
+
+        #expect(configuration.agentPath == "bunx")
+        #expect(configuration.agentArguments == ["--bun", "@custom/claude-acp"])
+        #expect(configuration.workingDirectory == "/tmp/claude")
+        #expect(configuration.modeID == "plan")
+        #expect(configuration.requestTimeout == .milliseconds(45_000))
+        #expect(configuration.environment["PATH"] == "/opt/acp/bin:/usr/bin")
+    }
+
+    @Test
+    func codex_acp_preset_keeps_explicit_overrides() {
+        let configuration = ACPBackendPreset.codex.makeConfiguration(
+            overrides: .init(
+                agentPath: "/tmp/codex-acp",
+                agentArguments: ["--stdio"],
+                workingDirectory: "/tmp/codex",
+                environment: ["PATH": "/custom/bin"],
+                requestTimeout: .seconds(9),
+                modeID: "edit"
+            ),
+            environment: [
+                "ATTRACTOR_CODEX_ACP_AGENT_BIN": "ignored-binary",
+                "ATTRACTOR_CODEX_ACP_AGENT_ARGS": "--ignored",
+                "ATTRACTOR_CODEX_ACP_CWD": "/ignored",
+                "ATTRACTOR_CODEX_ACP_TIMEOUT_SECONDS": "99",
+                "ATTRACTOR_CODEX_ACP_MODE": "ignored",
+                "ATTRACTOR_CODEX_ACP_EXTRA_PATH": "/opt/codex/bin",
+                "PATH": "/usr/bin",
+            ]
+        )
+
+        #expect(configuration.agentPath == "/tmp/codex-acp")
+        #expect(configuration.agentArguments == ["--stdio"])
+        #expect(configuration.workingDirectory == "/tmp/codex")
+        #expect(configuration.modeID == "edit")
+        #expect(configuration.requestTimeout == .seconds(9))
+        #expect(configuration.environment["PATH"] == "/opt/codex/bin:/custom/bin")
+    }
+
+    @Test
     func default_transport_provider_uses_websocket_transport_for_ws_urls() async throws {
         let transport = try await DefaultACPTransportProvider().makeTransport(configuration: .init(
             agentPath: "wss://example.invalid/acp",
