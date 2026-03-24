@@ -73,6 +73,7 @@ public final class ParallelHandler: NodeHandler, Sendable {
 
         // Merge context updates from all branches
         var mergedUpdates: [String: String] = [:]
+        var laneNames: [String] = []
         for (nodeId, outcome) in results {
             for (key, value) in outcome.contextUpdates {
                 // Preserve the raw key for compatibility (last writer wins),
@@ -80,6 +81,14 @@ public final class ParallelHandler: NodeHandler, Sendable {
                 mergedUpdates[key] = value
                 mergedUpdates["parallel.\(node.id).\(nodeId).\(key)"] = value
             }
+            if let branchNode = graph.node(nodeId) {
+                let lane = branchNode.rawAttributes["lane"]?.stringValue ?? nodeId
+                laneNames.append(lane)
+                mergedUpdates["parallel.\(node.id).\(nodeId).lane"] = lane
+            }
+        }
+        if !laneNames.isEmpty {
+            mergedUpdates["parallel.\(node.id).lanes"] = laneNames.joined(separator: ",")
         }
 
         let allSucceeded = results.allSatisfy { $0.1.status == .success || $0.1.status == .partialSuccess }

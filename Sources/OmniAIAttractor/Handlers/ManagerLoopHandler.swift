@@ -31,6 +31,7 @@ public final class ManagerLoopHandler: NodeHandler, Sendable {
         // 3. Read manager config from node raw attributes
         let maxCycles = node.rawAttributes["manager.max_cycles"]?.intValue ?? 10
         let pollInterval = node.rawAttributes["manager.poll_interval"]?.intValue ?? 5
+        let lane = node.rawAttributes["lane"]?.stringValue ?? ""
 
         // 4. Load the child DOT string from the file
         let resolvedPath: String
@@ -72,6 +73,9 @@ public final class ManagerLoopHandler: NodeHandler, Sendable {
                     var updates: [String: String] = [:]
                     updates["manager.cycle_count"] = String(cycle + 1)
                     updates["manager.child_status"] = result.status.rawValue
+                    if !lane.isEmpty {
+                        updates["manager.lane"] = lane
+                    }
                     for (k, v) in result.context {
                         updates["child.\(k)"] = v
                     }

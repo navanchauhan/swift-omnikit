@@ -129,7 +129,7 @@ public final class PipelineEngine: Sendable {
                 // Enforce maximum cycle limit from graph's default_max_retry.
                 let maxCycles = g.attributes.defaultMaxRetry
                 if loopRestartCount >= maxCycles {
-                    fputs("[PipelineEngine] loop_restart limit reached (\(loopRestartCount)/\(maxCycles) cycles). Stopping.\n", stderr)
+                    writeToAttractorStderr("[PipelineEngine] loop_restart limit reached (\(loopRestartCount)/\(maxCycles) cycles). Stopping.\n")
                     state.pipelineStatus = .fail
                     return finalizeRun(state: state)
                 }
@@ -214,7 +214,7 @@ public final class PipelineEngine: Sendable {
 
                 let maxCycles = g.attributes.defaultMaxRetry
                 if loopCount >= maxCycles {
-                    fputs("[PipelineEngine] loop_restart limit reached (\(loopCount)/\(maxCycles) cycles). Stopping.\n", stderr)
+                    writeToAttractorStderr("[PipelineEngine] loop_restart limit reached (\(loopCount)/\(maxCycles) cycles). Stopping.\n")
                     state.pipelineStatus = .fail
                     return finalizeRun(state: state)
                 }

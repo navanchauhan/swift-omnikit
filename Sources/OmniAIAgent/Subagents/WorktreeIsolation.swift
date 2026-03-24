@@ -1,114 +1,76 @@
 import Foundation
 
-struct ManagedGitWorktree: Sendable {
-    let repoRoot: String
-    let path: String
-    let branch: String
+public enum WorktreeIsolation: Sendable, Codable, Equatable {
+    case inherited
+    case dedicated(path: String)
+    case ephemeral(parentPath: String)
 }
 
-func createGitWorktreeEnvironment(from env: ExecutionEnvironment, agentID: String) async throws -> LocalExecutionEnvironment {
-    let repoRoot = try await resolveGitRepoRoot(from: env)
-    let worktreesRoot = URL(fileURLWithPath: repoRoot, isDirectory: true)
-        .appendingPathComponent(".ai/subagents/worktrees", isDirectory: true)
-    try FileManager.default.createDirectory(at: worktreesRoot, withIntermediateDirectories: true)
-
-    let branchSuffix = String(UUID().uuidString.lowercased().prefix(8))
-    let branch = "omnikit-subagent-\(sanitizeBranchComponent(agentID.prefix(12)))\(branchSuffix)"
-    let worktreePath = worktreesRoot.appendingPathComponent(agentID, isDirectory: true).path
-
-    let createCommand = "git -C \(worktreeShellEscape(repoRoot)) worktree add -b \(worktreeShellEscape(branch)) \(worktreeShellEscape(worktreePath)) HEAD"
-    let createResult = try await env.execCommand(
-        command: createCommand,
-        timeoutMs: 60_000,
-        workingDir: repoRoot,
-        envVars: nil
-    )
-
-    guard createResult.exitCode == 0, !createResult.timedOut else {
-        throw ToolError.validationError(
-            "Failed to create git worktree at \(worktreePath): \(compactCommandOutput(createResult))"
-        )
-    }
-
-    let worktree = ManagedGitWorktree(repoRoot: repoRoot, path: worktreePath, branch: branch)
-    let isolatedEnv = LocalExecutionEnvironment(
-        workingDir: worktreePath,
-        cleanupHandler: {
-            try await cleanupGitWorktree(worktree)
-        }
-    )
-    try await isolatedEnv.initialize()
-    return isolatedEnv
-}
-
-private func resolveGitRepoRoot(from env: ExecutionEnvironment) async throws -> String {
-    let workingDir = env.workingDirectory()
-    let result = try await env.execCommand(
+public func createGitWorktreeEnvironment(
+    from parentEnvironment: ExecutionEnvironment,
+    agentID: String
+) async throws -> ExecutionEnvironment {
+    let workingDirectory = parentEnvironment.workingDirectory()
+    let checkoutProbe = try await parentEnvironment.execCommand(
         command: "git rev-parse --show-toplevel",
         timeoutMs: 10_000,
-        workingDir: workingDir,
+        workingDir: workingDirectory,
         envVars: nil
     )
-    guard result.exitCode == 0, !result.timedOut else {
+
+    guard checkoutProbe.exitCode == 0 else {
+        let message = checkoutProbe.stderr.isEmpty ? checkoutProbe.stdout : checkoutProbe.stderr
         throw ToolError.validationError(
-            "worktree isolation requires a git repository; \(workingDir) is not inside one"
+            "worktree isolation requires a git checkout: \(message.trimmingCharacters(in: .whitespacesAndNewlines))"
         )
     }
 
-    let repoRoot = result.stdout.trimmingCharacters(in: .whitespacesAndNewlines)
-    guard !repoRoot.isEmpty else {
+    let repositoryRootPath = checkoutProbe.stdout.trimmingCharacters(in: .whitespacesAndNewlines)
+    let repositoryRoot = URL(fileURLWithPath: repositoryRootPath, isDirectory: true)
+    let worktreeRoot = repositoryRoot
+        .appending(path: ".ai", directoryHint: .isDirectory)
+        .appending(path: "subagents", directoryHint: .isDirectory)
+        .appending(path: "worktrees", directoryHint: .isDirectory)
+    try FileManager.default.createDirectory(at: worktreeRoot, withIntermediateDirectories: true)
+    let worktreeURL = worktreeRoot.appending(path: agentID, directoryHint: .isDirectory)
+
+    if FileManager.default.fileExists(atPath: worktreeURL.path()) {
+        try? FileManager.default.removeItem(at: worktreeURL)
+    }
+
+    let addCommand = "git worktree add --detach \(shellQuoted(worktreeURL.path())) HEAD"
+    let addResult = try await parentEnvironment.execCommand(
+        command: addCommand,
+        timeoutMs: 60_000,
+        workingDir: workingDirectory,
+        envVars: nil
+    )
+    guard addResult.exitCode == 0 else {
+        let message = addResult.stderr.isEmpty ? addResult.stdout : addResult.stderr
         throw ToolError.validationError(
-            "worktree isolation requires a git repository; unable to resolve repository root from \(workingDir)"
+            "failed to create git worktree: \(message.trimmingCharacters(in: .whitespacesAndNewlines))"
         )
     }
-    return repoRoot
-}
 
-private func cleanupGitWorktree(_ worktree: ManagedGitWorktree) async throws {
-    let cleanupEnv = LocalExecutionEnvironment(workingDir: worktree.repoRoot)
-    _ = try? await cleanupEnv.execCommand(
-        command: "git -C \(worktreeShellEscape(worktree.repoRoot)) worktree remove --force \(worktreeShellEscape(worktree.path))",
-        timeoutMs: 60_000,
-        workingDir: worktree.repoRoot,
-        envVars: nil
+    return LocalExecutionEnvironment(
+        workingDir: worktreeURL.path(),
+        cleanupHandler: {
+            let removeResult = try await parentEnvironment.execCommand(
+                command: "git worktree remove --force \(shellQuoted(worktreeURL.path()))",
+                timeoutMs: 60_000,
+                workingDir: workingDirectory,
+                envVars: nil
+            )
+            if removeResult.exitCode != 0 {
+                let message = removeResult.stderr.isEmpty ? removeResult.stdout : removeResult.stderr
+                throw ToolError.validationError(
+                    "failed to remove git worktree: \(message.trimmingCharacters(in: .whitespacesAndNewlines))"
+                )
+            }
+        }
     )
-    _ = try? await cleanupEnv.execCommand(
-        command: "git -C \(worktreeShellEscape(worktree.repoRoot)) worktree prune",
-        timeoutMs: 60_000,
-        workingDir: worktree.repoRoot,
-        envVars: nil
-    )
-    _ = try? await cleanupEnv.execCommand(
-        command: "git -C \(worktreeShellEscape(worktree.repoRoot)) branch -D \(worktreeShellEscape(worktree.branch))",
-        timeoutMs: 60_000,
-        workingDir: worktree.repoRoot,
-        envVars: nil
-    )
-
-    if FileManager.default.fileExists(atPath: worktree.path) {
-        try? FileManager.default.removeItem(atPath: worktree.path)
-    }
 }
 
-private func compactCommandOutput(_ result: ExecResult) -> String {
-    let text = result.combinedOutput.trimmingCharacters(in: .whitespacesAndNewlines)
-    if text.isEmpty {
-        return result.timedOut ? "command timed out" : "exit code \(result.exitCode)"
-    }
-    return text
-}
-
-private func sanitizeBranchComponent<S: StringProtocol>(_ value: S) -> String {
-    let allowed = Set("abcdefghijklmnopqrstuvwxyz0123456789-")
-    let lowercased = value.lowercased()
-    let mapped = lowercased.map { allowed.contains($0) ? String($0) : "-" }.joined()
-    let trimmed = mapped.trimmingCharacters(in: CharacterSet(charactersIn: "-"))
-    return trimmed.isEmpty ? "agent" : trimmed
-}
-
-private func worktreeShellEscape(_ value: String) -> String {
-    if value.isEmpty {
-        return "''"
-    }
-    return "'" + value.replacing("'", with: "'\\''") + "'"
+private func shellQuoted(_ value: String) -> String {
+    "'\(value.replacing("'", with: "'\\''"))'"
 }

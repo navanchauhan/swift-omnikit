@@ -6,12 +6,23 @@ public struct ArtifactInfo: Sendable {
     public var id: String
     public var name: String
     public var size: Int
+    public var contentType: String?
+    public var metadata: [String: String]
     public var createdAt: Date
 
-    public init(id: String, name: String, size: Int, createdAt: Date = Date()) {
+    public init(
+        id: String,
+        name: String,
+        size: Int,
+        contentType: String? = nil,
+        metadata: [String: String] = [:],
+        createdAt: Date = Date()
+    ) {
         self.id = id
         self.name = name
         self.size = size
+        self.contentType = contentType
+        self.metadata = metadata
         self.createdAt = createdAt
     }
 }
@@ -29,7 +40,13 @@ public actor ArtifactStore {
         self.fileSizeThreshold = fileSizeThreshold
     }
 
-    public func store(artifactId: String, name: String, data: Any) throws -> ArtifactInfo {
+    public func store(
+        artifactId: String,
+        name: String,
+        data: Any,
+        contentType: String? = nil,
+        artifactMetadata: [String: String] = [:]
+    ) throws -> ArtifactInfo {
         let serialized: Data
         if let d = data as? Data {
             serialized = d
@@ -39,7 +56,13 @@ public actor ArtifactStore {
             serialized = try JSONSerialization.data(withJSONObject: data, options: .prettyPrinted)
         }
 
-        let info = ArtifactInfo(id: artifactId, name: name, size: serialized.count)
+        let info = ArtifactInfo(
+            id: artifactId,
+            name: name,
+            size: serialized.count,
+            contentType: contentType,
+            metadata: artifactMetadata
+        )
         metadata[artifactId] = info
 
         if serialized.count > fileSizeThreshold {

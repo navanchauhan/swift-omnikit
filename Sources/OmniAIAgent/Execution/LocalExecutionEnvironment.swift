@@ -261,20 +261,19 @@ public final class LocalExecutionEnvironment: ExecutionEnvironment, @unchecked S
 
     public func glob(pattern: String, path: String) async throws -> [String] {
         let resolvedPath = resolvePath(path)
-        // Sort by modification time (newest first) as required by the spec
-        let cmd: String
-        #if os(Linux)
-        cmd = "find '\(resolvedPath)' -path '\(resolvedPath)/\(pattern)' -type f -printf '%T@ %p\\n' 2>/dev/null | sort -rn | cut -d' ' -f2- | head -1000"
-        #else
-        // macOS/Darwin: use stat -f for modification time
-        cmd = "find '\(resolvedPath)' -path '\(resolvedPath)/\(pattern)' -type f -print0 2>/dev/null | xargs -0 stat -f '%m %N' 2>/dev/null | sort -rn | cut -d' ' -f2- | head -1000"
-        #endif
-        let result = try await execCommand(command: cmd, timeoutMs: 10_000, workingDir: nil, envVars: nil)
-
-        if result.stdout.isEmpty {
-            return []
+        var isDirectory: ObjCBool = false
+        guard fileManager.fileExists(atPath: resolvedPath, isDirectory: &isDirectory), isDirectory.boolValue else {
+            throw ToolError.fileNotFound(resolvedPath)
         }
-        return result.stdout.components(separatedBy: "\n").filter { !$0.isEmpty }
+
+        let matches: [String]
+        if let ripgrepMatches = try await globWithRipgrep(pattern: pattern, path: resolvedPath) {
+            matches = ripgrepMatches
+        } else {
+            matches = try globWithFileEnumerator(pattern: pattern, path: resolvedPath)
+        }
+
+        return sortPathsByModificationDate(matches).prefix(1_000).map(\.self)
     }
 
     // MARK: - Lifecycle
@@ -342,6 +341,107 @@ public final class LocalExecutionEnvironment: ExecutionEnvironment, @unchecked S
             return path
         }
         return (workingDir as NSString).appendingPathComponent(path)
+    }
+
+    private func globWithRipgrep(pattern: String, path: String) async throws -> [String]? {
+        let command = "rg --files \(shellQuoted(path)) -g \(shellQuoted(pattern))"
+        let result = try await execCommand(command: command, timeoutMs: 10_000, workingDir: nil, envVars: nil)
+        if result.exitCode == 127 || result.stderr.localizedCaseInsensitiveContains("command not found") {
+            return nil
+        }
+        if result.exitCode != 0 && result.stdout.isEmpty {
+            return []
+        }
+
+        return result.stdout
+            .split(separator: "\n")
+            .map(String.init)
+            .filter { !$0.isEmpty }
+    }
+
+    private func globWithFileEnumerator(pattern: String, path: String) throws -> [String] {
+        let regex = try globRegularExpression(pattern: pattern)
+        guard let enumerator = fileManager.enumerator(atPath: path) else {
+            return []
+        }
+
+        var matches: [String] = []
+        while let relativePath = enumerator.nextObject() as? String {
+            let absolutePath = (path as NSString).appendingPathComponent(relativePath)
+            var isDirectory: ObjCBool = false
+            guard fileManager.fileExists(atPath: absolutePath, isDirectory: &isDirectory), !isDirectory.boolValue else {
+                continue
+            }
+
+            let normalizedRelativePath = relativePath.replacingOccurrences(of: "\\", with: "/")
+            let range = NSRange(normalizedRelativePath.startIndex..<normalizedRelativePath.endIndex, in: normalizedRelativePath)
+            guard regex.firstMatch(in: normalizedRelativePath, options: [], range: range) != nil else {
+                continue
+            }
+            matches.append(absolutePath)
+        }
+
+        return matches
+    }
+
+    private func globRegularExpression(pattern: String) throws -> NSRegularExpression {
+        let normalizedPattern = pattern.replacingOccurrences(of: "\\", with: "/")
+        var regex = "^"
+        var index = normalizedPattern.startIndex
+
+        while index < normalizedPattern.endIndex {
+            let character = normalizedPattern[index]
+            if character == "*" {
+                let nextIndex = normalizedPattern.index(after: index)
+                if nextIndex < normalizedPattern.endIndex, normalizedPattern[nextIndex] == "*" {
+                    let afterDoubleStar = normalizedPattern.index(after: nextIndex)
+                    if afterDoubleStar < normalizedPattern.endIndex, normalizedPattern[afterDoubleStar] == "/" {
+                        regex += "(?:.*/)?"
+                        index = normalizedPattern.index(after: afterDoubleStar)
+                    } else {
+                        regex += ".*"
+                        index = afterDoubleStar
+                    }
+                    continue
+                }
+
+                regex += "[^/]*"
+                index = nextIndex
+                continue
+            }
+
+            if character == "?" {
+                regex += "[^/]"
+                index = normalizedPattern.index(after: index)
+                continue
+            }
+
+            regex += NSRegularExpression.escapedPattern(for: String(character))
+            index = normalizedPattern.index(after: index)
+        }
+
+        regex += "$"
+        return try NSRegularExpression(pattern: regex)
+    }
+
+    private func sortPathsByModificationDate(_ paths: [String]) -> [String] {
+        let datedPaths: [(path: String, modificationDate: Date)] = paths.map { path in
+            let modificationDate = (try? fileManager.attributesOfItem(atPath: path)[.modificationDate] as? Date) ?? .distantPast
+            return (path: path, modificationDate: modificationDate)
+        }
+
+        return datedPaths
+            .sorted { lhs, rhs in
+                if lhs.modificationDate != rhs.modificationDate {
+                    return lhs.modificationDate > rhs.modificationDate
+                }
+                return lhs.path < rhs.path
+            }
+            .map(\.path)
+    }
+
+    private func shellQuoted(_ value: String) -> String {
+        "'\(value.replacingOccurrences(of: "'", with: "'\\''"))'"
     }
 
     private func filteredEnvironment() -> [String: String] {

@@ -353,7 +353,8 @@ public struct TimelineView<Content: View>: View, _PrimitiveView {
                 now = Date()
             }
         }
-        return ctx.buildChild(content(Context(date: now, cadence: .live)))
+        let renderDate = Swift.max(now, Date())
+        return ctx.buildChild(content(Context(date: renderDate, cadence: .live)))
     }
 }
 

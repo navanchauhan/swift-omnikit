@@ -4,6 +4,7 @@ public enum ACPBackendPreset: Sendable {
     case generic
     case codex
     case claudeCode
+    case gemini
 
     public func makeConfiguration(
         overrides: ACPBackendConfiguration = ACPBackendConfiguration(),
@@ -25,6 +26,14 @@ public enum ACPBackendPreset: Sendable {
                 defaultAgentPath: "npx",
                 defaultAgentArguments: ["-y", "@zed-industries/claude-agent-acp"],
                 environmentPrefixes: ["ATTRACTOR_CLAUDE_ACP", "ATTRACTOR_CLAUDE_CODE_ACP"],
+                overrides: overrides,
+                environment: environment
+            )
+        case .gemini:
+            return presetConfiguration(
+                defaultAgentPath: "gemini",
+                defaultAgentArguments: ["--acp"],
+                environmentPrefixes: ["ATTRACTOR_GEMINI_ACP"],
                 overrides: overrides,
                 environment: environment
             )

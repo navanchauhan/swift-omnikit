@@ -309,6 +309,8 @@ private struct CLICommand {
             return "codex-acp"
         case "claude-acp", "claude_acp", "claude-code-acp", "claude_code_acp", "claudeagentacp":
             return "claude-acp"
+        case "gemini-acp", "gemini_acp":
+            return "gemini-acp"
         default:
             return backend.lowercased()
         }
@@ -336,10 +338,12 @@ private struct CLICommand {
             return makeACPBackend(preset: .codex)
         case "claude-acp":
             return makeACPBackend(preset: .claudeCode)
+        case "gemini-acp":
+            return makeACPBackend(preset: .gemini)
         default:
             throw ExitError(
                 code: 2,
-                message: "Unknown backend '\(backend)'. Use one of: acp, agent, claude, claude-acp, cli, codex, codex-acp, gemini, llmkit, mock"
+                message: "Unknown backend '\(backend)'. Use one of: acp, agent, claude, claude-acp, cli, codex, codex-acp, gemini, gemini-acp, llmkit, mock"
             )
         }
     }

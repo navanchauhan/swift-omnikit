@@ -34,7 +34,9 @@ public enum HandoffFilters {
             preHandoffItems: filteredPre,
             newItems: filteredNew,
             runContext: handoffInputData.runContext,
-            inputItems: handoffInputData.inputItems
+            inputItems: handoffInputData.inputItems,
+            historyProjection: handoffInputData.historyProjection,
+            lineage: handoffInputData.lineage
         )
     }
 }

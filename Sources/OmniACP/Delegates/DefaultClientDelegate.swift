@@ -136,8 +136,9 @@ public actor DefaultClientDelegate: ClientDelegate {
             for (index, option) in options.enumerated() {
                 print("  [\(index + 1)] \(option.name) (\(option.kind))")
             }
-            print("Choose an option number, or press Enter to cancel:", terminator: " ")
-            fflush(stdout)
+            if let promptData = "Choose an option number, or press Enter to cancel: ".data(using: .utf8) {
+                try? FileHandle.standardOutput.write(contentsOf: promptData)
+            }
             guard let input = readLine(), let choice = Int(input), choice > 0, choice <= options.count else {
                 return .init(outcome: .cancelled)
             }

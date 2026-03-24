@@ -1,5 +1,18 @@
 import Foundation
 import OmniAICore
+import OmniAgentMesh
+
+public struct HandoffLineage: Sendable, Equatable {
+    public var taskID: String?
+    public var parentTaskID: String?
+    public var summary: String?
+
+    public init(taskID: String? = nil, parentTaskID: String? = nil, summary: String? = nil) {
+        self.taskID = taskID
+        self.parentTaskID = parentTaskID
+        self.summary = summary
+    }
+}
 
 public struct HandoffInputData: Sendable {
     public var inputHistory: StringOrInputList
@@ -7,19 +20,25 @@ public struct HandoffInputData: Sendable {
     public var newItems: [any RunItem]
     public var runContext: RunContextWrapper<Any>?
     public var inputItems: [any RunItem]?
+    public var historyProjection: HistoryProjection?
+    public var lineage: HandoffLineage?
 
     public init(
         inputHistory: StringOrInputList,
         preHandoffItems: [any RunItem] = [],
         newItems: [any RunItem] = [],
         runContext: RunContextWrapper<Any>? = nil,
-        inputItems: [any RunItem]? = nil
+        inputItems: [any RunItem]? = nil,
+        historyProjection: HistoryProjection? = nil,
+        lineage: HandoffLineage? = nil
     ) {
         self.inputHistory = inputHistory
         self.preHandoffItems = preHandoffItems
         self.newItems = newItems
         self.runContext = runContext
         self.inputItems = inputItems
+        self.historyProjection = historyProjection
+        self.lineage = lineage
     }
 
     public func clone() -> HandoffInputData {
@@ -28,7 +47,9 @@ public struct HandoffInputData: Sendable {
             preHandoffItems: preHandoffItems,
             newItems: newItems,
             runContext: runContext,
-            inputItems: inputItems
+            inputItems: inputItems,
+            historyProjection: historyProjection,
+            lineage: lineage
         )
     }
 }
@@ -123,6 +144,10 @@ public func resetConversationHistoryWrappers() {
 }
 
 public func defaultHandoffHistoryMapper(_ data: HandoffInputData) async throws -> [TResponseInputItem] {
+    if let projection = data.historyProjection {
+        return [historyProjectionInputItem(projection: projection, lineage: data.lineage)]
+    }
+
     var lines: [String] = []
     switch data.inputHistory {
     case .string(let text):
@@ -142,6 +167,13 @@ public func nestHandoffHistory(_ data: HandoffInputData) async throws -> [TRespo
         return try await mapper(data)
     }
     return try await defaultHandoffHistoryMapper(data)
+}
+
+public func historyProjectionHandoffHistory(_ data: HandoffInputData) async throws -> [TResponseInputItem] {
+    guard let projection = data.historyProjection else {
+        return try await defaultHandoffHistoryMapper(data)
+    }
+    return [historyProjectionInputItem(projection: projection, lineage: data.lineage)]
 }
 
 public func handoff<TContext>(
@@ -172,3 +204,40 @@ public func handoff<TContext>(
     )
 }
 
+private func historyProjectionInputItem(
+    projection: HistoryProjection,
+    lineage: HandoffLineage?
+) -> TResponseInputItem {
+    var lines: [String] = ["Delegated child context."]
+    if let lineage {
+        if let taskID = lineage.taskID, !taskID.isEmpty {
+            lines.append("Task ID: \(taskID)")
+        }
+        if let parentTaskID = lineage.parentTaskID, !parentTaskID.isEmpty {
+            lines.append("Parent task ID: \(parentTaskID)")
+        }
+        if let summary = lineage.summary, !summary.isEmpty {
+            lines.append("Lineage summary: \(summary)")
+        }
+    }
+    lines.append("Task brief: \(projection.taskBrief)")
+    if !projection.summaries.isEmpty {
+        lines.append("Relevant summaries:\n" + projection.summaries.map { "- \($0)" }.joined(separator: "\n"))
+    }
+    if !projection.parentExcerpts.isEmpty {
+        lines.append("Parent excerpts:\n" + projection.parentExcerpts.map { "- \($0)" }.joined(separator: "\n"))
+    }
+    if !projection.artifactRefs.isEmpty {
+        lines.append("Artifact references:\n" + projection.artifactRefs.map { "- \($0)" }.joined(separator: "\n"))
+    }
+    if !projection.constraints.isEmpty {
+        lines.append("Constraints:\n" + projection.constraints.map { "- \($0)" }.joined(separator: "\n"))
+    }
+    if !projection.expectedOutputs.isEmpty {
+        lines.append("Expected outputs:\n" + projection.expectedOutputs.map { "- \($0)" }.joined(separator: "\n"))
+    }
+    return [
+        "role": .string("assistant"),
+        "content": .string(lines.joined(separator: "\n\n")),
+    ]
+}

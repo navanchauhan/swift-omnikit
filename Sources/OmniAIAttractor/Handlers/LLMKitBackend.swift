@@ -52,7 +52,7 @@ public final class LLMKitBackend: CodergenBackend, Sendable {
                         break
                     }
                     let delay = pow(2.0, Double(attempt)) * 1.0 // 1s, 2s, 4s
-                    fputs("[LLMKitBackend] Transient error (attempt \(attempt + 1)/\(maxRetries)), retrying in \(delay)s: \(error)\n", stderr)
+                    writeToAttractorStderr("[LLMKitBackend] Transient error (attempt \(attempt + 1)/\(maxRetries)), retrying in \(delay)s: \(error)\n")
                     try await Task.sleep(for: .seconds(delay))
                 }
             }

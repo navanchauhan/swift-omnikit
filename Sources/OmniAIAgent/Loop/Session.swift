@@ -1,8 +1,25 @@
 import Foundation
 import OmniAICore
 import OmniMCP
+#if os(Linux)
+import Glibc
+#else
+import Darwin
+#endif
 
 private struct EmptyStreamResponseError: Error {}
+
+private func _sessionWriteToStderr(_ message: String) {
+    let bytes = Array(message.utf8)
+    bytes.withUnsafeBytes { raw in
+        guard let base = raw.baseAddress else { return }
+        #if os(Linux)
+        _ = Glibc.write(STDERR_FILENO, base, raw.count)
+        #else
+        _ = Darwin.write(STDERR_FILENO, base, raw.count)
+        #endif
+    }
+}
 
 public struct GitContext: Sendable {
     public var branch: String?
@@ -242,8 +259,8 @@ public actor Session {
     // MARK: - Core Agentic Loop
 
     private func processInput(_ userInput: String) async {
-        fputs("[Session] processInput START (\(userInput.count) chars)\n", stderr)
-        fputs("[Session] step: restoreFromStorage check\n", stderr)
+        _sessionWriteToStderr("[Session] processInput START (\(userInput.count) chars)\n")
+        _sessionWriteToStderr("[Session] step: restoreFromStorage check\n")
         if autoRestoreFromStorage && !didAttemptStorageRestore {
             do {
                 _ = try await restoreFromStorage()
@@ -256,7 +273,7 @@ public actor Session {
             }
         }
         await loadMCPToolsIfNeeded()
-        fputs("[Session] step: recoverPendingToolCalls\n", stderr)
+        _sessionWriteToStderr("[Session] step: recoverPendingToolCalls\n")
         await recoverPendingToolCallsIfNeeded()
 
         // Emit SESSION_START on first input
@@ -277,7 +294,7 @@ public actor Session {
             ))
         }
 
-        fputs("[Session] step: drainSteering\n", stderr)
+        _sessionWriteToStderr("[Session] step: drainSteering\n")
         await drainSteering()
 
         var roundCount = 0
@@ -303,17 +320,17 @@ public actor Session {
             // calls (git rev-parse, file reads) that cause scheduling pressure under
             // parallel session execution.
             if cachedProjectDocs == nil {
-                fputs("[Session] step: discoverProjectDocs\n", stderr)
+                _sessionWriteToStderr("[Session] step: discoverProjectDocs\n")
                 cachedProjectDocs = await discoverProjectDocs(workingDir: executionEnv.workingDirectory()) ?? ""
             }
             let projectDocs: String? = cachedProjectDocs?.isEmpty == true ? nil : cachedProjectDocs
-            fputs("[Session] step: gatherGitContext\n", stderr)
+            _sessionWriteToStderr("[Session] step: gatherGitContext\n")
             // Skip git context gathering in non-interactive mode to avoid intermittent
             // subprocess hangs that stall the pipeline. Git context is decorative only.
             let gitCtx: GitContext? = config.interactiveMode
                 ? await gatherGitContext()
                 : nil
-            fputs("[Session] step: buildSystemPrompt\n", stderr)
+            _sessionWriteToStderr("[Session] step: buildSystemPrompt\n")
             let systemPrompt = providerProfile.buildSystemPrompt(
                 environment: executionEnv,
                 projectDocs: projectDocs,
@@ -349,11 +366,11 @@ public actor Session {
             )
 
             // 3. Call LLM
-            fputs("[Session] Calling LLM: \(providerProfile.model) via \(providerProfile.id) (round \(roundCount), \(messages.count) messages, \(toolDefs.count) tools)\n", stderr)
+            _sessionWriteToStderr("[Session] Calling LLM: \(providerProfile.model) via \(providerProfile.id) (round \(roundCount), \(messages.count) messages, \(toolDefs.count) tools)\n")
             let response: Response
             do {
                 response = try await completeWithTransientRetries(request: request)
-                fputs("[Session] LLM returned: \(response.text.prefix(100))... (\(response.toolCalls.count) tool calls)\n", stderr)
+                _sessionWriteToStderr("[Session] LLM returned: \(response.text.prefix(100))... (\(response.toolCalls.count) tool calls)\n")
             } catch {
                 let errorDetail: String
                 if let sdkError = error as? SDKError {
@@ -419,12 +436,12 @@ public actor Session {
 
             // 6. Execute tool calls
             roundCount += 1
-            fputs("[Session] step: executeToolCalls (\(response.toolCalls.count) calls, round \(roundCount))\n", stderr)
+            _sessionWriteToStderr("[Session] step: executeToolCalls (\(response.toolCalls.count) calls, round \(roundCount))\n")
             let results = await executeToolCalls(response.toolCalls)
-            fputs("[Session] step: toolCalls complete, persisting\n", stderr)
+            _sessionWriteToStderr("[Session] step: toolCalls complete, persisting\n")
             appendTurn(.toolResults(ToolResultsTurn(results: results)))
             await persistStateIfNeeded()
-            fputs("[Session] step: persisted, draining steering\n", stderr)
+            _sessionWriteToStderr("[Session] step: persisted, draining steering\n")
 
             // 7. Drain steering
             await drainSteering()
@@ -442,9 +459,9 @@ public actor Session {
             finalizeTimelineEntry(responseId: resolvedResponseId)
 
             // Context window awareness
-            fputs("[Session] step: checkContextUsage\n", stderr)
+            _sessionWriteToStderr("[Session] step: checkContextUsage\n")
             await checkContextUsage()
-            fputs("[Session] step: looping to next LLM call\n", stderr)
+            _sessionWriteToStderr("[Session] step: looping to next LLM call\n")
         }
 
         // Process follow-up messages
@@ -745,7 +762,7 @@ public actor Session {
         eventEmitter: EventEmitter,
         sessionID: String
     ) async -> ToolResult {
-        fputs("[Session] executeSingleToolNonisolated: START \(toolCall.name) (\(toolCall.id))\n", stderr)
+        _sessionWriteToStderr("[Session] executeSingleToolNonisolated: START \(toolCall.name) (\(toolCall.id))\n")
         await eventEmitter.emit(SessionEvent(
             kind: .toolCallStart,
             sessionId: sessionID,
@@ -771,7 +788,7 @@ public actor Session {
             return ToolResult(toolCallId: toolCall.id, content: .string(denial), isError: true)
         }
 
-        fputs("[Session] executeSingleToolNonisolated: emitted toolCallStart, looking up \(toolCall.name)\n", stderr)
+        _sessionWriteToStderr("[Session] executeSingleToolNonisolated: emitted toolCallStart, looking up \(toolCall.name)\n")
         guard let registered = registry.get(toolCall.name) else {
             let errorMsg = "Unknown tool: \(toolCall.name)"
             await eventEmitter.emit(SessionEvent(
@@ -1130,7 +1147,7 @@ You are running in non-interactive (automated pipeline) mode. Complete your assi
     }
 
     private func completeWithTransientRetries(request: Request) async throws -> Response {
-        fputs("[Session] completeWithTransientRetries: entering (streaming=\(providerProfile.supportsStreaming), timeout=\(String(describing: config.llmInactivityTimeoutSeconds)))\n", stderr)
+        _sessionWriteToStderr("[Session] completeWithTransientRetries: entering (streaming=\(providerProfile.supportsStreaming), timeout=\(String(describing: config.llmInactivityTimeoutSeconds)))\n")
         let maxAttempts = 3
         var attempt = 1
 
@@ -1146,7 +1163,7 @@ You are running in non-interactive (automated pipeline) mode. Complete your assi
                     do {
                         return try await streamAndAccumulate(request: streamRequest)
                     } catch is EmptyStreamResponseError {
-                        fputs("[Session] Stream produced no response; falling back to complete()\n", stderr)
+                        _sessionWriteToStderr("[Session] Stream produced no response; falling back to complete()\n")
                         return try await llmClient.complete(request: request)
                     }
                 }
@@ -1251,7 +1268,7 @@ You are running in non-interactive (automated pipeline) mode. Complete your assi
             eventCount += 1
             eventTypes[event.type.rawValue, default: 0] += 1
             if event.type.rawValue == "finish" {
-                fputs("[Session] finish event: response=\(event.response != nil), finishReason=\(String(describing: event.finishReason)), usage=\(String(describing: event.usage)), text=\(event.response?.text.prefix(100) ?? "nil"), toolCalls=\(event.response?.toolCalls.count ?? -1)\n", stderr)
+                _sessionWriteToStderr("[Session] finish event: response=\(event.response != nil), finishReason=\(String(describing: event.finishReason)), usage=\(String(describing: event.usage)), text=\(event.response?.text.prefix(100) ?? "nil"), toolCalls=\(event.response?.toolCalls.count ?? -1)\n")
             }
             accumulator.process(event)
             if let delta = event.delta, !delta.isEmpty {
@@ -1263,7 +1280,7 @@ You are running in non-interactive (automated pipeline) mode. Complete your assi
             }
         }
 
-        fputs("[Session] Stream finished: \(eventCount) events, types: \(eventTypes)\n", stderr)
+        _sessionWriteToStderr("[Session] Stream finished: \(eventCount) events, types: \(eventTypes)\n")
         if accumulator.hasIncompleteToolCalls() {
             let count = accumulator.incompleteToolCallCount()
             let finish = accumulator.response()?.finishReason.rawValue ?? "unknown"
@@ -1274,13 +1291,13 @@ You are running in non-interactive (automated pipeline) mode. Complete your assi
             }
         }
         guard let response = accumulator.response() else {
-            fputs("[Session] StreamAccumulator produced no response from \(eventCount) events\n", stderr)
+            _sessionWriteToStderr("[Session] StreamAccumulator produced no response from \(eventCount) events\n")
             if eventCount == 0 {
                 throw EmptyStreamResponseError()
             }
             throw SDKError(message: "Stream completed without producing a response (\(eventCount) events)")
         }
-        fputs("[Session] Accumulated response: \(response.text.count) chars, \(response.toolCalls.count) tool calls\n", stderr)
+        _sessionWriteToStderr("[Session] Accumulated response: \(response.text.count) chars, \(response.toolCalls.count) tool calls\n")
         return response
     }
 

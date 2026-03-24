@@ -106,12 +106,18 @@ public actor StdioMCPTransport: MCPTransport {
                 do {
                     var buffer: [UInt8] = []
                     buffer.reserveCapacity(4096)
-                    for try await byte in handle.bytes {
-                        if byte == 0x0A {
-                            continuation.yield(Data(buffer))
-                            buffer.removeAll(keepingCapacity: true)
-                        } else {
-                            buffer.append(byte)
+                    while !Task.isCancelled {
+                        let chunk = try handle.read(upToCount: 4096) ?? Data()
+                        if chunk.isEmpty {
+                            break
+                        }
+                        for byte in chunk {
+                            if byte == 0x0A {
+                                continuation.yield(Data(buffer))
+                                buffer.removeAll(keepingCapacity: true)
+                            } else {
+                                buffer.append(byte)
+                            }
                         }
                     }
                     if !buffer.isEmpty {

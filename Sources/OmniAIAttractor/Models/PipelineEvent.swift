@@ -27,23 +27,43 @@ public enum PipelineEventKind: String, Sendable {
 
     // Checkpointing
     case checkpointSaved = "checkpoint_saved"
+
+    // Change / deploy flow
+    case changeImplementationStarted = "change_implementation_started"
+    case changeReviewCompleted = "change_review_completed"
+    case changeScenarioCompleted = "change_scenario_completed"
+    case deployStarted = "deploy_started"
+    case deployVerified = "deploy_verified"
+    case deployRolledBack = "deploy_rolled_back"
 }
 
 public struct PipelineEvent: Sendable {
     public var kind: PipelineEventKind
     public var timestamp: Date
     public var nodeId: String?
+    public var taskID: String?
+    public var lane: String?
+    public var releaseID: String?
+    public var artifactIDs: [String]
     public var data: [String: String]
 
     public init(
         kind: PipelineEventKind,
         timestamp: Date = Date(),
         nodeId: String? = nil,
+        taskID: String? = nil,
+        lane: String? = nil,
+        releaseID: String? = nil,
+        artifactIDs: [String] = [],
         data: [String: String] = [:]
     ) {
         self.kind = kind
         self.timestamp = timestamp
         self.nodeId = nodeId
+        self.taskID = taskID
+        self.lane = lane
+        self.releaseID = releaseID
+        self.artifactIDs = artifactIDs
         self.data = data
     }
 }

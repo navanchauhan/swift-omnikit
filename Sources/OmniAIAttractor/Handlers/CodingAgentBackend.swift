@@ -90,9 +90,9 @@ public final class CodingAgentBackend: CodergenBackend, Sendable {
         // stalled streams; callLLMWithRetry retries transient failures (including
         // RequestTimeoutError). No outer hard timeout here — sessions with many
         // tool call rounds legitimately run for minutes.
-        fputs("[CodingAgentBackend] Submitting prompt (\(prompt.count) chars) to \(provider)/\(model)...\n", stderr)
+        writeToAttractorStderr("[CodingAgentBackend] Submitting prompt (\(prompt.count) chars) to \(provider)/\(model)...\n")
         await session.submit(prompt)
-        fputs("[CodingAgentBackend] Submit returned.\n", stderr)
+        writeToAttractorStderr("[CodingAgentBackend] Submit returned.\n")
 
         // 7. Check response quality and request follow-ups if needed
         let initialHistory = await session.getHistory()
@@ -116,9 +116,9 @@ public final class CodingAgentBackend: CodergenBackend, Sendable {
         // Log errors if agent produced no output
         let errors = errorTracker.errors
         if !errors.isEmpty {
-            fputs("[CodingAgentBackend] Session errors:\n", stderr)
+            writeToAttractorStderr("[CodingAgentBackend] Session errors:\n")
             for err in errors {
-                fputs("  - \(err)\n", stderr)
+                writeToAttractorStderr("  - \(err)\n")
             }
         }
 
@@ -488,7 +488,7 @@ private final class ErrorTracker: @unchecked Sendable {
             lock.lock()
             _errors.append(detail)
             lock.unlock()
-            fputs("[CodingAgentBackend:ERROR] \(detail)\n", stderr)
+            writeToAttractorStderr("[CodingAgentBackend:ERROR] \(detail)\n")
         }
         if event.kind == .sessionEnd,
            let state = event.stringValue(for: "state"), state == "closed",
@@ -496,11 +496,11 @@ private final class ErrorTracker: @unchecked Sendable {
             lock.lock()
             _errors.append("Session closed with error: \(error)")
             lock.unlock()
-            fputs("[CodingAgentBackend:ERROR] Session closed: \(error)\n", stderr)
+            writeToAttractorStderr("[CodingAgentBackend:ERROR] Session closed: \(error)\n")
         }
         if event.kind == .warning {
             let msg = event.stringValue(for: "message") ?? ""
-            fputs("[CodingAgentBackend:WARN] \(msg)\n", stderr)
+            writeToAttractorStderr("[CodingAgentBackend:WARN] \(msg)\n")
         }
     }
 }

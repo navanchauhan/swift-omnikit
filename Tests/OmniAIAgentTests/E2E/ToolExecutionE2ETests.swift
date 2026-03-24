@@ -104,12 +104,19 @@ final class ToolExecutionE2ETests {
 
         await session.submit(
             "Use the glob tool to find all .json files (pattern '**/*.json') under \(tempDir.path). " +
-            "How many .json files did you find?"
+            "Reply with only the count in the form '<n> files'."
         )
 
         let response = await lastAssistantText(from: session)
-        let hasMultiple = response.contains("3") || response.lowercased().contains("three")
-        XCTAssertTrue(hasMultiple, "Expected to find 3 JSON files, response: \(response)")
+        let normalizedResponse = response.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        let reportedThreeFiles =
+            normalizedResponse == "3 files" ||
+            normalizedResponse == "three files" ||
+            normalizedResponse.range(
+                of: #"\b(?:3|three)\s+(?:\.?json\s+)?files\b"#,
+                options: .regularExpression
+            ) != nil
+        XCTAssertTrue(reportedThreeFiles, "Expected to find 3 JSON files, response: \(response)")
 
         await session.close()
     }

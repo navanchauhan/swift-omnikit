@@ -9,6 +9,7 @@ public struct ACPBackendConfiguration: Sendable {
     public var environment: [String: String]
     public var requestTimeout: Duration?
     public var modeID: String?
+    public var mcpServers: [MCPServer]
 
     public init(
         agentPath: String? = nil,
@@ -16,7 +17,8 @@ public struct ACPBackendConfiguration: Sendable {
         workingDirectory: String? = nil,
         environment: [String: String] = [:],
         requestTimeout: Duration? = .seconds(120),
-        modeID: String? = nil
+        modeID: String? = nil,
+        mcpServers: [MCPServer] = []
     ) {
         self.agentPath = agentPath
         self.agentArguments = agentArguments
@@ -24,6 +26,7 @@ public struct ACPBackendConfiguration: Sendable {
         self.environment = environment
         self.requestTimeout = requestTimeout
         self.modeID = modeID
+        self.mcpServers = mcpServers
     }
 }
 
@@ -34,6 +37,7 @@ public struct ACPExecutionConfiguration: Sendable {
     public var environment: [String: String]
     public var requestTimeout: Duration?
     public var modeID: String?
+    public var mcpServers: [MCPServer]
 
     public init(
         agentPath: String,
@@ -41,7 +45,8 @@ public struct ACPExecutionConfiguration: Sendable {
         workingDirectory: String,
         environment: [String: String],
         requestTimeout: Duration?,
-        modeID: String?
+        modeID: String?,
+        mcpServers: [MCPServer] = []
     ) {
         self.agentPath = agentPath
         self.agentArguments = agentArguments
@@ -49,6 +54,7 @@ public struct ACPExecutionConfiguration: Sendable {
         self.environment = environment
         self.requestTimeout = requestTimeout
         self.modeID = modeID
+        self.mcpServers = mcpServers
     }
 }
 
@@ -171,7 +177,7 @@ public final class ACPAgentBackend: CodergenBackend, Sendable {
 
             let session = try await client.newSession(
                 cwd: execution.workingDirectory,
-                mcpServers: [],
+                mcpServers: execution.mcpServers,
                 timeout: execution.requestTimeout
             )
             if let modeID = execution.modeID, !modeID.isEmpty {
@@ -268,6 +274,7 @@ public final class ACPAgentBackend: CodergenBackend, Sendable {
             configuration.modeID ?? "",
             environment["ATTRACTOR_ACP_MODE"] ?? "",
         ])
+        let mcpServers = try resolveMCPServers(context: context, environment: environment)
         var mergedEnvironment = configuration.environment
         if let extraPath = environment["ATTRACTOR_ACP_EXTRA_PATH"], !extraPath.isEmpty {
             let currentPath = mergedEnvironment["PATH"] ?? environment["PATH"] ?? ""
@@ -282,8 +289,34 @@ public final class ACPAgentBackend: CodergenBackend, Sendable {
             workingDirectory: workingDirectory,
             environment: mergedEnvironment,
             requestTimeout: timeout,
-            modeID: modeID.isEmpty ? nil : modeID
+            modeID: modeID.isEmpty ? nil : modeID,
+            mcpServers: mcpServers
         )
+    }
+
+    private func resolveMCPServers(
+        context: PipelineContext,
+        environment: [String: String]
+    ) throws -> [MCPServer] {
+        if !configuration.mcpServers.isEmpty {
+            return configuration.mcpServers
+        }
+
+        let rawServers = firstNonEmpty([
+            context.getString("_current_node_acp_mcp_servers_json"),
+            environment["ATTRACTOR_ACP_MCP_SERVERS"] ?? "",
+        ])
+        guard !rawServers.isEmpty else {
+            return []
+        }
+        guard let data = rawServers.data(using: .utf8) else {
+            throw AttractorError.llmError("ACP backend could not decode MCP server payload as UTF-8.")
+        }
+        do {
+            return try JSONDecoder().decode([MCPServer].self, from: data)
+        } catch {
+            throw AttractorError.llmError("ACP backend could not decode MCP server payload: \(error)")
+        }
     }
 
     private func buildPrompt(

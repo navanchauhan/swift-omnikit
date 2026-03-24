@@ -305,6 +305,28 @@ final class LocalExecutionEnvironmentTests {
         XCTAssertTrue(output.contains("Base64:"))
         XCTAssertTrue(output.contains(base64))
     }
+
+    @Test
+    func testGlobMatchesTopLevelAndNestedFilesForDoubleStarPatterns() async throws {
+        let tempDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("omnikit-glob-test-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+
+        try "{}".write(to: tempDir.appendingPathComponent("a.json"), atomically: true, encoding: .utf8)
+        try "{}".write(to: tempDir.appendingPathComponent("b.json"), atomically: true, encoding: .utf8)
+        try FileManager.default.createDirectory(at: tempDir.appendingPathComponent("sub"), withIntermediateDirectories: true)
+        try "{}".write(to: tempDir.appendingPathComponent("sub/d.json"), atomically: true, encoding: .utf8)
+        try "text".write(to: tempDir.appendingPathComponent("c.txt"), atomically: true, encoding: .utf8)
+
+        let env = LocalExecutionEnvironment(workingDir: tempDir.path)
+        let matches = try await env.glob(pattern: "**/*.json", path: tempDir.path)
+
+        XCTAssertEqual(matches.count, 3)
+        XCTAssertTrue(matches.contains(tempDir.appendingPathComponent("a.json").path))
+        XCTAssertTrue(matches.contains(tempDir.appendingPathComponent("b.json").path))
+        XCTAssertTrue(matches.contains(tempDir.appendingPathComponent("sub/d.json").path))
+    }
 }
 
 @Suite
