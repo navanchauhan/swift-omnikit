@@ -151,6 +151,14 @@ let package = Package(
             targets: ["TheAgentControlPlaneKit"]
         ),
         .library(
+            name: "TheAgentIngress",
+            targets: ["TheAgentIngress"]
+        ),
+        .library(
+            name: "TheAgentTelegram",
+            targets: ["TheAgentTelegram"]
+        ),
+        .library(
             name: "OmniAgentDeploy",
             targets: ["OmniAgentDeployKit"]
         ),
@@ -544,6 +552,7 @@ let package = Package(
             path: "Sources/TheAgentWorker",
             exclude: [
                 "ACP",
+                "Attractor",
                 "LocalTaskExecutor.swift",
                 "MCP",
                 "Review",
@@ -569,15 +578,39 @@ let package = Package(
             exclude: ["main.swift"],
             swiftSettings: swift6CommonSwiftSettings
         ),
+        .target(
+            name: "TheAgentIngress",
+            dependencies: [
+                "OmniAgentMesh",
+                "TheAgentControlPlaneKit",
+                .product(name: "NIOCore", package: "swift-nio"),
+                .product(name: "NIOHTTP1", package: "swift-nio"),
+                .product(name: "NIOPosix", package: "swift-nio"),
+            ],
+            path: "Sources/TheAgentIngress",
+            swiftSettings: swift6CommonSwiftSettings
+        ),
+        .target(
+            name: "TheAgentTelegram",
+            dependencies: [
+                "TheAgentIngress",
+                "OmniAgentMesh",
+            ],
+            path: "Sources/TheAgentTelegram",
+            swiftSettings: swift6CommonSwiftSettings
+        ),
         .executableTarget(
             name: "TheAgentControlPlaneCLI",
-            dependencies: ["TheAgentControlPlaneKit"],
+            dependencies: ["TheAgentControlPlaneKit", "TheAgentIngress", "TheAgentTelegram"],
             path: "Sources/TheAgentControlPlane",
             exclude: [
                 "Changes",
+                "Interaction",
+                "Missions",
                 "NotificationInbox.swift",
                 "Policy",
                 "Registry",
+                "Runtime",
                 "RootAgentRuntime.swift",
                 "RootAgentToolbox.swift",
                 "RootOrchestratorProfile.swift",
@@ -714,6 +747,18 @@ let package = Package(
             dependencies: [
                 "TheAgentControlPlaneKit",
                 "TheAgentWorkerKit",
+                "OmniAICore",
+                "OmniAgentMesh",
+                .product(name: "Testing", package: "swift-testing"),
+            ],
+            swiftSettings: swift6CommonSwiftSettings
+        ),
+        .testTarget(
+            name: "TheAgentIngressTests",
+            dependencies: [
+                "TheAgentIngress",
+                "TheAgentTelegram",
+                "TheAgentControlPlaneKit",
                 "OmniAICore",
                 "OmniAgentMesh",
                 .product(name: "Testing", package: "swift-testing"),

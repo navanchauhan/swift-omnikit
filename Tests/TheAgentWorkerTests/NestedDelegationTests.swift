@@ -80,6 +80,63 @@ struct NestedDelegationTests {
         #expect(finalParentEvents.last?.summary?.contains("completed") == true)
     }
 
+    @Test
+    func childWorkerManagerRejectsRecursionAndBudgetOverruns() async throws {
+        let stateRoot = try makeStateRoot()
+        let jobStore = try SQLiteJobStore(fileURL: stateRoot.jobsDatabaseURL)
+        let createdAt = Date(timeIntervalSince1970: 200)
+
+        let recursionBoundParent = TaskRecord(
+            taskID: "parent-depth",
+            rootSessionID: "root",
+            historyProjection: HistoryProjection(
+                taskBrief: "Parent with exhausted depth",
+                constraints: [
+                    "delegation_depth=1",
+                    "max_recursion_depth=1",
+                ]
+            ),
+            status: .running,
+            createdAt: createdAt,
+            updatedAt: createdAt
+        )
+        _ = try await jobStore.createTask(recursionBoundParent, idempotencyKey: "task.submitted.parent-depth")
+
+        let budgetBoundParent = TaskRecord(
+            taskID: "parent-budget",
+            rootSessionID: "root",
+            historyProjection: HistoryProjection(
+                taskBrief: "Parent with exhausted budget",
+                constraints: [
+                    "budget_units_remaining=0",
+                    "max_recursion_depth=2",
+                ]
+            ),
+            status: .running,
+            createdAt: createdAt,
+            updatedAt: createdAt
+        )
+        _ = try await jobStore.createTask(budgetBoundParent, idempotencyKey: "task.submitted.parent-budget")
+
+        let manager = ChildWorkerManager(jobStore: jobStore)
+
+        await #expect(throws: ChildWorkerManagerError.self) {
+            _ = try await manager.spawnChildTask(
+                parentTaskID: recursionBoundParent.taskID,
+                request: ChildTaskRequest(brief: "This should exceed max depth."),
+                createdAt: createdAt.addingTimeInterval(1)
+            )
+        }
+
+        await #expect(throws: ChildWorkerManagerError.self) {
+            _ = try await manager.spawnChildTask(
+                parentTaskID: budgetBoundParent.taskID,
+                request: ChildTaskRequest(brief: "This should exceed budget."),
+                createdAt: createdAt.addingTimeInterval(1)
+            )
+        }
+    }
+
     private func makeStateRoot() throws -> AgentFabricStateRoot {
         let rootDirectory = FileManager.default.temporaryDirectory.appending(
             path: "omnikit-nested-\(UUID().uuidString)",

@@ -1,6 +1,8 @@
 import Foundation
 import OmniAgentMesh
 import TheAgentControlPlaneKit
+import TheAgentIngress
+import TheAgentTelegram
 
 @main
 enum TheAgentControlPlaneMain {
@@ -17,19 +19,126 @@ enum TheAgentControlPlaneMain {
         try stateRoot.prepare()
 
         let conversationStore = try SQLiteConversationStore(fileURL: stateRoot.conversationDatabaseURL)
+        let identityStore = try SQLiteIdentityStore(fileURL: stateRoot.identityDatabaseURL)
         let jobStore = try SQLiteJobStore(fileURL: stateRoot.jobsDatabaseURL)
-        let rootServer = RootAgentServer(
-            sessionID: "root",
+        let missionStore = try SQLiteMissionStore(fileURL: stateRoot.missionsDatabaseURL)
+        let deliveryStore = try SQLiteDeliveryStore(fileURL: stateRoot.missionsDatabaseURL)
+        let artifactStore = try FileArtifactStore(rootDirectory: stateRoot.artifactsDirectoryURL)
+        _ = try await SessionScopeBootstrapper(
+            identityStore: identityStore,
             conversationStore: conversationStore,
             jobStore: jobStore
+        ).bootstrap()
+        let serverRegistry = WorkspaceSessionRegistry(
+            conversationStore: conversationStore,
+            jobStore: jobStore,
+            missionStore: missionStore,
+            artifactStore: artifactStore,
+            deliveryStore: deliveryStore
+        )
+        let runtimeRegistry = WorkspaceRuntimeRegistry(
+            serverRegistry: serverRegistry,
+            stateRoot: stateRoot,
+            runtimeOptions: RootAgentRuntimeOptions(
+                provider: options.provider,
+                model: options.model,
+                workingDirectory: options.workingDirectory
+            )
+        )
+        let gateway = IngressGateway(
+            identityStore: identityStore,
+            deliveryStore: deliveryStore,
+            missionStore: missionStore,
+            runtimeRegistry: runtimeRegistry
+        )
+        let rootServer = await serverRegistry.server(sessionID: "root")
+        let interactionBridge = MeshInteractionBridgeService(
+            serverRegistry: serverRegistry,
+            missionStore: missionStore
         )
 
         var meshServer: HTTPMeshServer?
         if let meshPort = options.meshPort {
-            let server = HTTPMeshServer(jobStore: jobStore, host: options.meshHost, port: meshPort)
+            let server = HTTPMeshServer(
+                jobStore: jobStore,
+                artifactStore: artifactStore,
+                interactionBridge: interactionBridge,
+                host: options.meshHost,
+                port: meshPort
+            )
             let listeningAddress = try await server.start()
             meshServer = server
             print("TheAgentControlPlane mesh listening on \(listeningAddress.host):\(listeningAddress.port)")
+        }
+
+        let telegramBotToken = options.telegramBotToken ?? ProcessInfo.processInfo.environment["THE_AGENT_TELEGRAM_BOT_TOKEN"]
+        var telegramWebhookHandler: TelegramWebhookHandler?
+        var telegramPollingTask: Task<Void, Never>?
+        if let telegramBotToken, !telegramBotToken.isEmpty {
+            let telegramClient = TelegramBotClient(token: telegramBotToken)
+            let handler = try await TelegramWebhookHandler.make(
+                client: telegramClient,
+                gateway: gateway,
+                deliveryStore: deliveryStore,
+                expectedSecretToken: options.telegramWebhookSecret
+            )
+            telegramWebhookHandler = handler
+
+            if let webhookURL = options.telegramWebhookURL, !webhookURL.isEmpty {
+                try await telegramClient.setWebhook(
+                    url: webhookURL,
+                    secretToken: options.telegramWebhookSecret,
+                    allowedUpdates: await handler.allowedUpdates()
+                )
+                print("TheAgentControlPlane telegram webhook configured for \(webhookURL)")
+            }
+
+            if options.telegramPollingEnabled {
+                try await telegramClient.deleteWebhook(dropPendingUpdates: false)
+                let runner = TelegramPollingRunner(
+                    client: telegramClient,
+                    webhookHandler: handler,
+                    allowedUpdates: await handler.allowedUpdates()
+                )
+                telegramPollingTask = Task {
+                    do {
+                        try await runner.run(
+                            timeoutSeconds: options.telegramPollTimeoutSeconds,
+                            limit: options.telegramPollLimit
+                        )
+                    } catch is CancellationError {
+                    } catch {
+                        fputs("Telegram polling stopped: \(error)\n", stderr)
+                    }
+                }
+                print("TheAgentControlPlane telegram polling enabled.")
+            }
+        }
+
+        var ingressServer: HTTPIngressServer?
+        if let ingressPort = options.httpIngressPort {
+            let telegramWebhookForwarder: HTTPIngressServer.TelegramWebhookForwarder?
+            if let handler = telegramWebhookHandler {
+                telegramWebhookForwarder = { body, headers in
+                    _ = try? await handler.handle(
+                        body: body,
+                        providedSecretToken: headers["x-telegram-bot-api-secret-token"]
+                    )
+                }
+            } else {
+                telegramWebhookForwarder = nil
+            }
+            let server = HTTPIngressServer(
+                gateway: gateway,
+                runtimeRegistry: runtimeRegistry,
+                expectedBearerToken: options.httpIngressBearerToken,
+                telegramWebhookForwarder: telegramWebhookForwarder,
+                host: options.httpIngressHost,
+                port: ingressPort
+            )
+            let listeningAddress = try await server.start()
+            ingressServer = server
+            print("TheAgentControlPlane ingress listening on \(listeningAddress.host):\(listeningAddress.port)")
         }
 
         if options.listWorkers {
@@ -58,6 +167,11 @@ enum TheAgentControlPlaneMain {
             if let meshServer {
                 try await meshServer.stop()
             }
+            if let ingressServer {
+                try await ingressServer.stop()
+            }
+            telegramPollingTask?.cancel()
+            await runtimeRegistry.closeAll()
             return
         }
 
@@ -75,10 +189,15 @@ enum TheAgentControlPlaneMain {
             if let meshServer {
                 try await meshServer.stop()
             }
+            if let ingressServer {
+                try await ingressServer.stop()
+            }
+            telegramPollingTask?.cancel()
+            await runtimeRegistry.closeAll()
             return
         }
 
-        if meshServer != nil {
+        if meshServer != nil || ingressServer != nil || telegramPollingTask != nil {
             do {
                 while true {
                     try await Task.sleep(for: .seconds(86_400))
@@ -87,7 +206,12 @@ enum TheAgentControlPlaneMain {
                 if let meshServer {
                     try? await meshServer.stop()
                 }
+                if let ingressServer {
+                    try? await ingressServer.stop()
+                }
+                telegramPollingTask?.cancel()
             }
+            await runtimeRegistry.closeAll()
             return
         }
 
@@ -150,6 +274,15 @@ private struct ControlPlaneCLIOptions {
     var provider: RootAgentProvider = .openai
     var model: String?
     var workingDirectory: String?
+    var httpIngressHost = "127.0.0.1"
+    var httpIngressPort: Int?
+    var httpIngressBearerToken: String?
+    var telegramBotToken: String?
+    var telegramWebhookURL: String?
+    var telegramWebhookSecret: String?
+    var telegramPollingEnabled = false
+    var telegramPollTimeoutSeconds = 1
+    var telegramPollLimit = 100
 
     init(arguments: [String]) throws {
         var index = 0
@@ -195,6 +328,44 @@ private struct ControlPlaneCLIOptions {
             case "--working-directory":
                 index += 1
                 workingDirectory = try Self.parseValue(arguments, index: index, flag: argument)
+            case "--http-ingress-host":
+                index += 1
+                httpIngressHost = try Self.parseValue(arguments, index: index, flag: argument)
+            case "--http-ingress-port":
+                index += 1
+                let value = try Self.parseValue(arguments, index: index, flag: argument)
+                guard let port = Int(value), port >= 0 else {
+                    throw ControlPlaneCLIError.invalidValue(flag: argument, value: value)
+                }
+                httpIngressPort = port
+            case "--http-ingress-bearer-token":
+                index += 1
+                httpIngressBearerToken = try Self.parseValue(arguments, index: index, flag: argument)
+            case "--telegram-bot-token":
+                index += 1
+                telegramBotToken = try Self.parseValue(arguments, index: index, flag: argument)
+            case "--telegram-webhook-url":
+                index += 1
+                telegramWebhookURL = try Self.parseValue(arguments, index: index, flag: argument)
+            case "--telegram-webhook-secret":
+                index += 1
+                telegramWebhookSecret = try Self.parseValue(arguments, index: index, flag: argument)
+            case "--telegram-polling":
+                telegramPollingEnabled = true
+            case "--telegram-poll-timeout-seconds":
+                index += 1
+                let value = try Self.parseValue(arguments, index: index, flag: argument)
+                guard let seconds = Int(value), seconds >= 0 else {
+                    throw ControlPlaneCLIError.invalidValue(flag: argument, value: value)
+                }
+                telegramPollTimeoutSeconds = seconds
+            case "--telegram-poll-limit":
+                index += 1
+                let value = try Self.parseValue(arguments, index: index, flag: argument)
+                guard let limit = Int(value), limit > 0 else {
+                    throw ControlPlaneCLIError.invalidValue(flag: argument, value: value)
+                }
+                telegramPollLimit = limit
             case "--list-workers":
                 listWorkers = true
             default:

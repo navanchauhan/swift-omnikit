@@ -1,5 +1,6 @@
 import Foundation
 import OmniAIAttractor
+import OmniAgentMesh
 
 public enum WorkerACPProfile: String, CaseIterable, Sendable {
     case codex
@@ -105,9 +106,38 @@ public struct ACPWorkerRuntimeOptions: Sendable {
     }
 }
 
+public struct AttractorWorkerRuntimeOptions: Sendable {
+    public var provider: String
+    public var model: String
+    public var reasoningEffort: String
+    public var workingDirectory: String?
+    public var logsRoot: String?
+    public var defaultHumanTimeoutSeconds: Double
+    public var backend: (any CodergenBackend)?
+
+    public init(
+        provider: String = "openai",
+        model: String = "gpt-5.2-codex",
+        reasoningEffort: String = "high",
+        workingDirectory: String? = nil,
+        logsRoot: String? = nil,
+        defaultHumanTimeoutSeconds: Double = 600,
+        backend: (any CodergenBackend)? = nil
+    ) {
+        self.provider = provider
+        self.model = model
+        self.reasoningEffort = reasoningEffort
+        self.workingDirectory = workingDirectory
+        self.logsRoot = logsRoot
+        self.defaultHumanTimeoutSeconds = max(1, defaultHumanTimeoutSeconds)
+        self.backend = backend
+    }
+}
+
 public enum WorkerExecutionMode: Sendable {
     case local
     case acp(ACPWorkerRuntimeOptions)
+    case attractor(AttractorWorkerRuntimeOptions)
 }
 
 public enum WorkerExecutorFactory {
@@ -116,7 +146,8 @@ public enum WorkerExecutorFactory {
         environment: [String: String] = ProcessInfo.processInfo.environment,
         toolRegistry: ToolRegistry? = nil,
         transportProvider: any ACPTransportProvider = DefaultACPTransportProvider(),
-        delegateProvider: any ACPClientDelegateProvider = DefaultACPClientDelegateProvider()
+        delegateProvider: any ACPClientDelegateProvider = DefaultACPClientDelegateProvider(),
+        interactionBridge: (any WorkerInteractionBridge)? = nil
     ) -> LocalTaskExecutor {
         switch mode {
         case .local:
@@ -145,6 +176,24 @@ public enum WorkerExecutorFactory {
                 profile: profile,
                 workingDirectory: options.workingDirectory ?? FileManager.default.currentDirectoryPath
             )
+        case .attractor(let options):
+            let workingDirectory = options.workingDirectory ?? FileManager.default.currentDirectoryPath
+            let logsRoot = URL(fileURLWithPath: options.logsRoot ?? workingDirectory, isDirectory: true)
+                .appending(path: ".ai/attractor-runs", directoryHint: .isDirectory)
+            let backend = options.backend ?? CodingAgentBackend(workingDirectory: workingDirectory)
+            let executor = AttractorTaskExecutor(
+                workflowTemplate: AttractorWorkflowTemplate(
+                    provider: options.provider,
+                    model: options.model,
+                    reasoningEffort: options.reasoningEffort
+                ),
+                backend: backend,
+                workingDirectory: workingDirectory,
+                logsRoot: logsRoot,
+                interactionBridge: interactionBridge,
+                defaultHumanTimeoutSeconds: options.defaultHumanTimeoutSeconds
+            )
+            return executor.makeLocalTaskExecutor()
         }
     }
 
@@ -159,6 +208,11 @@ public enum WorkerExecutorFactory {
             return Array(
                 Set(baseCapabilities)
                     .union(["acp", options.profile.capabilityLabel])
+            ).sorted()
+        case .attractor:
+            return Array(
+                Set(baseCapabilities)
+                    .union(["execution:attractor", "workflow:plan-implement-validate"])
             ).sorted()
         }
     }
@@ -175,6 +229,13 @@ public enum WorkerExecutorFactory {
                 "acp_model": options.model ?? options.profile.defaultModel,
                 "acp_reasoning_effort": options.reasoningEffort,
             ]
+        case .attractor(let options):
+            return [
+                "execution_mode": "attractor",
+                "attractor_provider": options.provider,
+                "attractor_model": options.model,
+                "attractor_reasoning_effort": options.reasoningEffort,
+            ]
         }
     }
 
@@ -185,6 +246,8 @@ public enum WorkerExecutorFactory {
         case .acp(let options):
             let model = options.model ?? options.profile.defaultModel
             return "using \(options.profile.rawValue) ACP executor (\(model))"
+        case .attractor(let options):
+            return "using attractor workflow executor (\(options.provider)/\(options.model))"
         }
     }
 }

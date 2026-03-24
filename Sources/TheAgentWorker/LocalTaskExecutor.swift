@@ -32,7 +32,7 @@ public struct LocalTaskExecutionResult: Sendable {
 }
 
 public struct LocalTaskExecutor: Sendable {
-    public typealias ExecutionHandler = @Sendable (TaskRecord, LocalTaskProgressReporter) async throws -> LocalTaskExecutionResult
+    public typealias ExecutionHandler = @Sendable (TaskRecord, @escaping LocalTaskProgressReporter) async throws -> LocalTaskExecutionResult
 
     private let handler: ExecutionHandler
 
@@ -42,13 +42,13 @@ public struct LocalTaskExecutor: Sendable {
         }
     }
 
-    public func execute(task: TaskRecord, reportProgress: LocalTaskProgressReporter) async throws -> LocalTaskExecutionResult {
+    public func execute(task: TaskRecord, reportProgress: @escaping LocalTaskProgressReporter) async throws -> LocalTaskExecutionResult {
         try await handler(task, reportProgress)
     }
 
     private static func defaultHandler(
         task: TaskRecord,
-        reportProgress: LocalTaskProgressReporter
+        reportProgress: @escaping LocalTaskProgressReporter
     ) async throws -> LocalTaskExecutionResult {
         try await reportProgress("Started local execution", ["task_id": task.taskID])
         try Task.checkCancellation()

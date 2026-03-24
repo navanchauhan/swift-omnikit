@@ -19,7 +19,12 @@ struct HTTPRemoteWorkerTransportTests {
             scheduler: RootScheduler(jobStore: jobStore)
         )
 
-        let meshServer = HTTPMeshServer(jobStore: jobStore, host: "127.0.0.1", port: 0)
+        let meshServer = HTTPMeshServer(
+            jobStore: jobStore,
+            artifactStore: artifactStore,
+            host: "127.0.0.1",
+            port: 0
+        )
         let listeningAddress = try await meshServer.start()
         defer {
             Task {
@@ -32,10 +37,19 @@ struct HTTPRemoteWorkerTransportTests {
             displayName: "linux-worker",
             capabilities: WorkerCapabilities(["linux"]),
             jobStore: remoteStore,
-            artifactStore: artifactStore,
+            artifactStore: remoteStore,
             executor: LocalTaskExecutor { task, reportProgress in
                 try await reportProgress("remote http progress", ["task_id": task.taskID])
-                return LocalTaskExecutionResult(summary: "remote http completed")
+                return LocalTaskExecutionResult(
+                    summary: "remote http completed",
+                    artifacts: [
+                        LocalTaskExecutionArtifact(
+                            name: "remote-http.txt",
+                            contentType: "text/plain",
+                            data: Data("remote artifact".utf8)
+                        ),
+                    ]
+                )
             },
             leaseDuration: 5
         )
@@ -56,10 +70,12 @@ struct HTTPRemoteWorkerTransportTests {
         let stored = try await jobStore.task(taskID: submittedTask.taskID)
         let events = try await jobStore.events(taskID: submittedTask.taskID, afterSequence: nil)
         let notifications = try await rootServer.refreshTaskNotifications()
+        let artifactID = try #require(stored?.artifactRefs.first)
 
         #expect(stored?.status == .completed)
         #expect(events.map(\.kind) == [.submitted, .assigned, .started, .progress, .completed])
         #expect(notifications.first?.taskID == submittedTask.taskID)
+        #expect(try await artifactStore.data(for: artifactID) == Data("remote artifact".utf8))
     }
 
     private func waitForTerminalTask(

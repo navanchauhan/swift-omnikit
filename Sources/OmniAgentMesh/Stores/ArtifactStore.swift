@@ -2,35 +2,76 @@ import Foundation
 
 public struct ArtifactPayload: Sendable {
     public var taskID: String?
+    public var missionID: String?
+    public var workspaceID: WorkspaceID?
+    public var channelID: ChannelID?
     public var name: String
     public var contentType: String
     public var data: Data
 
-    public init(taskID: String? = nil, name: String, contentType: String, data: Data) {
+    public init(
+        taskID: String? = nil,
+        missionID: String? = nil,
+        workspaceID: WorkspaceID? = nil,
+        channelID: ChannelID? = nil,
+        name: String,
+        contentType: String,
+        data: Data
+    ) {
         self.taskID = taskID
+        self.missionID = missionID
+        self.workspaceID = workspaceID
+        self.channelID = channelID
         self.name = name
         self.contentType = contentType
         self.data = data
     }
 }
 
+public enum ArtifactStoreError: Error, CustomStringConvertible, Sendable {
+    case artifactTooLarge(byteCount: Int, maximumBytes: Int)
+
+    public var description: String {
+        switch self {
+        case .artifactTooLarge(let byteCount, let maximumBytes):
+            return "Artifact payload \(byteCount) bytes exceeds the maximum allowed size of \(maximumBytes) bytes."
+        }
+    }
+}
+
 public protocol ArtifactStore: Sendable {
     func put(_ payload: ArtifactPayload) async throws -> ArtifactRecord
+    func record(artifactID: String) async throws -> ArtifactRecord?
     func data(for artifactID: String) async throws -> Data?
-    func list(taskID: String?) async throws -> [ArtifactRecord]
+    func list(
+        taskID: String?,
+        missionID: String?,
+        workspaceID: WorkspaceID?
+    ) async throws -> [ArtifactRecord]
+}
+
+public extension ArtifactStore {
+    func list(taskID: String? = nil) async throws -> [ArtifactRecord] {
+        try await list(taskID: taskID, missionID: nil, workspaceID: nil)
+    }
 }
 
 public actor FileArtifactStore: ArtifactStore {
     private let rootDirectory: URL
     private let filesDirectory: URL
     private let metadataDirectory: URL
+    private let maximumArtifactBytes: Int
     private let encoder: JSONEncoder
     private let decoder: JSONDecoder
 
-    public init(rootDirectory: URL) throws {
+    public init(
+        rootDirectory: URL,
+        maximumArtifactBytes: Int = 8 * 1_024 * 1_024
+    ) throws {
         self.rootDirectory = rootDirectory
         self.filesDirectory = rootDirectory.appending(path: "files", directoryHint: .isDirectory)
         self.metadataDirectory = rootDirectory.appending(path: "metadata", directoryHint: .isDirectory)
+        self.maximumArtifactBytes = max(1_024, maximumArtifactBytes)
         self.encoder = JSONEncoder()
         self.decoder = JSONDecoder()
         try FileManager.default.createDirectory(at: filesDirectory, withIntermediateDirectories: true)
@@ -38,6 +79,12 @@ public actor FileArtifactStore: ArtifactStore {
     }
 
     public func put(_ payload: ArtifactPayload) async throws -> ArtifactRecord {
+        if payload.data.count > maximumArtifactBytes {
+            throw ArtifactStoreError.artifactTooLarge(
+                byteCount: payload.data.count,
+                maximumBytes: maximumArtifactBytes
+            )
+        }
         let artifactID = UUID().uuidString
         let ownerDirectory = payload.taskID ?? "_shared"
         let relativePath = "\(ownerDirectory)/\(artifactID)-\(sanitizeFileName(payload.name))"
@@ -48,6 +95,9 @@ public actor FileArtifactStore: ArtifactStore {
         let record = ArtifactRecord(
             artifactID: artifactID,
             taskID: payload.taskID,
+            missionID: payload.missionID,
+            workspaceID: payload.workspaceID,
+            channelID: payload.channelID,
             name: payload.name,
             relativePath: relativePath,
             contentType: payload.contentType,
@@ -55,6 +105,10 @@ public actor FileArtifactStore: ArtifactStore {
         )
         try metadataData(for: record).write(to: metadataURL(for: artifactID), options: .atomic)
         return record
+    }
+
+    public func record(artifactID: String) async throws -> ArtifactRecord? {
+        try loadRecord(artifactID: artifactID)
     }
 
     public func data(for artifactID: String) async throws -> Data? {
@@ -68,7 +122,11 @@ public actor FileArtifactStore: ArtifactStore {
         return try Data(contentsOf: fileURL)
     }
 
-    public func list(taskID: String? = nil) async throws -> [ArtifactRecord] {
+    public func list(
+        taskID: String? = nil,
+        missionID: String? = nil,
+        workspaceID: WorkspaceID? = nil
+    ) async throws -> [ArtifactRecord] {
         let contents = try FileManager.default.contentsOfDirectory(
             at: metadataDirectory,
             includingPropertiesForKeys: nil
@@ -78,11 +136,19 @@ public actor FileArtifactStore: ArtifactStore {
             return try decoder.decode(ArtifactRecord.self, from: data)
         }
 
-        guard let taskID else {
-            return records.sorted { $0.createdAt < $1.createdAt }
-        }
         return records
-            .filter { $0.taskID == taskID }
+            .filter { record in
+                if let taskID, record.taskID != taskID {
+                    return false
+                }
+                if let missionID, record.missionID != missionID {
+                    return false
+                }
+                if let workspaceID, record.workspaceID != workspaceID {
+                    return false
+                }
+                return true
+            }
             .sorted { $0.createdAt < $1.createdAt }
     }
 

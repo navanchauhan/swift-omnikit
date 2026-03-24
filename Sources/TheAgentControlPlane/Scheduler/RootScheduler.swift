@@ -26,17 +26,35 @@ public actor RootScheduler {
 
     public func submitTask(
         rootSessionID: String,
+        requesterActorID: ActorID? = nil,
+        workspaceID: WorkspaceID? = nil,
+        channelID: ChannelID? = nil,
+        missionID: String? = nil,
         parentTaskID: String? = nil,
         historyProjection: HistoryProjection,
         capabilityRequirements: [String] = [],
+        attemptCount: Int = 0,
+        maxAttempts: Int = 1,
+        deadlineAt: Date? = nil,
+        restartPolicy: TaskRecord.RestartPolicy = .escalate,
+        escalationPolicy: TaskRecord.EscalationPolicy = .notifyRoot,
         priority: Int = 0,
         createdAt: Date = Date()
     ) async throws -> TaskRecord {
         let task = TaskRecord(
             rootSessionID: rootSessionID,
+            requesterActorID: requesterActorID,
+            workspaceID: workspaceID,
+            channelID: channelID,
+            missionID: missionID,
             parentTaskID: parentTaskID,
             capabilityRequirements: capabilityRequirements,
             historyProjection: historyProjection,
+            attemptCount: attemptCount,
+            maxAttempts: maxAttempts,
+            deadlineAt: deadlineAt,
+            restartPolicy: restartPolicy,
+            escalationPolicy: escalationPolicy,
             priority: priority,
             createdAt: createdAt,
             updatedAt: createdAt

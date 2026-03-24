@@ -72,6 +72,7 @@ public struct PipelineEvent: Sendable {
 
 public actor PipelineEventEmitter {
     private var handlers: [@Sendable (PipelineEvent) -> Void] = []
+    private var asyncHandlers: [@Sendable (PipelineEvent) async -> Void] = []
     private var allEvents: [PipelineEvent] = []
     private var continuations: [AsyncStream<PipelineEvent>.Continuation] = []
 
@@ -81,10 +82,17 @@ public actor PipelineEventEmitter {
         handlers.append(handler)
     }
 
-    public func emit(_ event: PipelineEvent) {
+    public func onAsync(_ handler: @escaping @Sendable (PipelineEvent) async -> Void) {
+        asyncHandlers.append(handler)
+    }
+
+    public func emit(_ event: PipelineEvent) async {
         allEvents.append(event)
         for handler in handlers {
             handler(event)
+        }
+        for handler in asyncHandlers {
+            await handler(event)
         }
         for continuation in continuations {
             continuation.yield(event)

@@ -14,6 +14,8 @@ public actor HTTPMeshServer {
     }
 
     private let jobStore: any JobStore
+    private let artifactStore: (any ArtifactStore)?
+    private let interactionBridge: (any WorkerInteractionBridge)?
     private let host: String
     private let port: Int
     private let encoder = JSONEncoder()
@@ -22,8 +24,16 @@ public actor HTTPMeshServer {
     private var eventLoopGroup: MultiThreadedEventLoopGroup?
     private var channel: Channel?
 
-    public init(jobStore: any JobStore, host: String = "127.0.0.1", port: Int = 0) {
+    public init(
+        jobStore: any JobStore,
+        artifactStore: (any ArtifactStore)? = nil,
+        interactionBridge: (any WorkerInteractionBridge)? = nil,
+        host: String = "127.0.0.1",
+        port: Int = 0
+    ) {
         self.jobStore = jobStore
+        self.artifactStore = artifactStore
+        self.interactionBridge = interactionBridge
         self.host = host
         self.port = port
     }
@@ -191,11 +201,57 @@ public actor HTTPMeshServer {
                 let request: HTTPMeshProtocol.HeartbeatRequest = try decode(body)
                 let worker = try await jobStore.recordHeartbeat(workerID: request.workerID, state: request.state, at: request.at)
                 return try jsonResponse(HTTPMeshProtocol.ValueResponse(value: worker))
+            case "/artifacts/put":
+                guard let artifactStore else {
+                    return errorResponse(status: .notImplemented, message: "Artifact transport is not configured.")
+                }
+                let request: HTTPMeshProtocol.ArtifactPutRequest = try decode(body)
+                let record = try await artifactStore.put(request.payload.decoded())
+                return try jsonResponse(HTTPMeshProtocol.ValueResponse(value: record))
+            case "/artifacts/get":
+                guard let artifactStore else {
+                    return errorResponse(status: .notImplemented, message: "Artifact transport is not configured.")
+                }
+                let request: HTTPMeshProtocol.ArtifactLookupRequest = try decode(body)
+                let record = try await artifactStore.record(artifactID: request.artifactID)
+                let data = try await artifactStore.data(for: request.artifactID)
+                return try jsonResponse(
+                    HTTPMeshProtocol.ValueResponse(
+                        value: HTTPMeshProtocol.ArtifactBlobResponse(record: record, data: data)
+                    )
+                )
+            case "/artifacts/list":
+                guard let artifactStore else {
+                    return errorResponse(status: .notImplemented, message: "Artifact transport is not configured.")
+                }
+                let request: HTTPMeshProtocol.ArtifactListRequest = try decode(body)
+                let records = try await artifactStore.list(
+                    taskID: request.taskID,
+                    missionID: request.missionID,
+                    workspaceID: request.workspaceID
+                )
+                return try jsonResponse(HTTPMeshProtocol.ValueResponse(value: records))
+            case "/interactions/request-approval":
+                guard let interactionBridge else {
+                    return errorResponse(status: .notImplemented, message: "Interaction bridge is not configured.")
+                }
+                let request: HTTPMeshProtocol.InteractionApprovalRequest = try decode(body)
+                let resolution = try await interactionBridge.requestApproval(request.prompt)
+                return try jsonResponse(HTTPMeshProtocol.ValueResponse(value: resolution))
+            case "/interactions/request-question":
+                guard let interactionBridge else {
+                    return errorResponse(status: .notImplemented, message: "Interaction bridge is not configured.")
+                }
+                let request: HTTPMeshProtocol.InteractionQuestionRequest = try decode(body)
+                let resolution = try await interactionBridge.requestQuestion(request.prompt)
+                return try jsonResponse(HTTPMeshProtocol.ValueResponse(value: resolution))
             default:
                 return errorResponse(status: .notFound, message: "Unknown mesh endpoint \(path)")
             }
         } catch let error as JobStoreError {
             return errorResponse(status: .notFound, message: String(describing: error))
+        } catch let error as ArtifactStoreError {
+            return errorResponse(status: .badRequest, message: error.description)
         } catch let error as HTTPMeshServerError {
             return errorResponse(status: .badRequest, message: error.description)
         } catch {
@@ -285,19 +341,20 @@ private final class HTTPMeshRequestHandler: ChannelInboundHandler, RemovableChan
             }
 
             let body = Data(requestBody.readableBytesView)
+            let contextBox = NIOChannelContextBox(context)
             context.eventLoop.makeFutureWithTask {
                 try await self.server.handle(method: requestHead.method.rawValue, uri: requestHead.uri, body: body)
             }.whenComplete { result in
                 switch result {
                 case .success(let response):
-                    self.write(response: response, context: context)
+                    self.write(response: response, context: contextBox.context)
                 case .failure(let error):
                     let response = HTTPMeshServerResponse(
                         status: .internalServerError,
                         body: Data("{\"error\":\"\(String(describing: error))\"}".utf8),
                         contentType: "application/json"
                     )
-                    self.write(response: response, context: context)
+                    self.write(response: response, context: contextBox.context)
                 }
             }
         }
@@ -322,9 +379,18 @@ private final class HTTPMeshRequestHandler: ChannelInboundHandler, RemovableChan
             context.write(wrapOutboundOut(.body(.byteBuffer(buffer))), promise: nil)
         }
 
+        let contextBox = NIOChannelContextBox(context)
         context.writeAndFlush(wrapOutboundOut(.end(nil))).whenComplete { _ in
-            context.close(promise: nil)
+            contextBox.context.close(promise: nil)
         }
+    }
+}
+
+private final class NIOChannelContextBox: @unchecked Sendable {
+    let context: ChannelHandlerContext
+
+    init(_ context: ChannelHandlerContext) {
+        self.context = context
     }
 }
 

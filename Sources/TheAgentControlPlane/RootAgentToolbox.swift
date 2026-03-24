@@ -11,6 +11,17 @@ public actor RootAgentToolbox {
 
     public func registeredTools() -> [RegisteredTool] {
         [
+            startMissionTool(),
+            listMissionsTool(),
+            missionStatusTool(),
+            waitForMissionTool(),
+            listInboxTool(),
+            approveRequestTool(),
+            answerQuestionTool(),
+            cancelMissionTool(),
+            pauseMissionTool(),
+            resumeMissionTool(),
+            retryMissionStageTool(),
             delegateTaskTool(),
             listWorkersTool(),
             listTasksTool(),
@@ -19,6 +30,369 @@ public actor RootAgentToolbox {
             listNotificationsTool(),
             resolveNotificationTool(),
         ]
+    }
+
+    private func startMissionTool() -> RegisteredTool {
+        RegisteredTool(
+            definition: AgentToolDefinition(
+                name: "start_mission",
+                description: "Create and start a durable mission owned by the root orchestrator.",
+                parameters: [
+                    "type": "object",
+                    "properties": [
+                        "title": ["type": "string"],
+                        "brief": ["type": "string"],
+                        "execution_mode": [
+                            "type": "string",
+                            "description": "Optional execution mode: direct, worker_task, attractor_workflow.",
+                        ],
+                        "capability_requirements": [
+                            "type": "array",
+                            "items": ["type": "string"],
+                        ],
+                        "expected_outputs": [
+                            "type": "array",
+                            "items": ["type": "string"],
+                        ],
+                        "constraints": [
+                            "type": "array",
+                            "items": ["type": "string"],
+                        ],
+                        "priority": ["type": "integer"],
+                        "budget_units": ["type": "integer"],
+                        "max_recursion_depth": ["type": "integer"],
+                        "require_approval": ["type": "boolean"],
+                        "approval_prompt": ["type": "string"],
+                    ],
+                    "required": ["title", "brief"],
+                    "additionalProperties": true,
+                ]
+            ),
+            executor: { [server] arguments, _ in
+                let title = try Self.requiredString("title", in: arguments)
+                let brief = try Self.requiredString("brief", in: arguments)
+                let executionMode = try Self.missionExecutionMode("execution_mode", in: arguments)
+                let capabilityRequirements = try Self.stringArray("capability_requirements", in: arguments)
+                let expectedOutputs = try Self.stringArray("expected_outputs", in: arguments)
+                let constraints = try Self.stringArray("constraints", in: arguments)
+                let priority = try Self.intValue("priority", in: arguments) ?? 0
+                let budgetUnits = try Self.intValue("budget_units", in: arguments) ?? 1
+                let maxRecursionDepth = try Self.intValue("max_recursion_depth", in: arguments)
+                let requireApproval = try Self.boolValue("require_approval", in: arguments) ?? false
+                let approvalPrompt = try Self.optionalString("approval_prompt", in: arguments)
+                let metadata = try Self.stringDictionary(excluding: [
+                    "title",
+                    "brief",
+                    "execution_mode",
+                    "capability_requirements",
+                    "expected_outputs",
+                    "constraints",
+                    "priority",
+                    "budget_units",
+                    "max_recursion_depth",
+                    "require_approval",
+                    "approval_prompt",
+                ], in: arguments)
+
+                let snapshot = try await server.startMission(
+                    MissionStartRequest(
+                        title: title,
+                        brief: brief,
+                        executionMode: executionMode,
+                        capabilityRequirements: capabilityRequirements,
+                        expectedOutputs: expectedOutputs,
+                        constraints: constraints,
+                        priority: priority,
+                        budgetUnits: budgetUnits,
+                        maxRecursionDepth: maxRecursionDepth,
+                        requireApproval: requireApproval,
+                        approvalPrompt: approvalPrompt,
+                        metadata: metadata
+                    )
+                )
+
+                return try Self.renderJSON([
+                    "mission": Self.serialize(mission: snapshot.mission),
+                    "stages": snapshot.stages.map(Self.serialize(stage:)),
+                    "task": snapshot.task.map(Self.serialize(task:)) ?? NSNull(),
+                    "approvals": snapshot.approvals.map(Self.serialize(approval:)),
+                    "questions": snapshot.questions.map(Self.serialize(question:)),
+                    "recent_events": snapshot.recentEvents.map(Self.serialize(event:)),
+                ])
+            }
+        )
+    }
+
+    private func listMissionsTool() -> RegisteredTool {
+        RegisteredTool(
+            definition: AgentToolDefinition(
+                name: "list_missions",
+                description: "List durable missions owned by the current root scope.",
+                parameters: [
+                    "type": "object",
+                    "properties": [
+                        "statuses": [
+                            "type": "array",
+                            "items": ["type": "string"],
+                        ],
+                        "limit": ["type": "integer"],
+                    ],
+                    "additionalProperties": false,
+                ]
+            ),
+            executor: { [server] arguments, _ in
+                let statuses = try Self.missionStatusArray("statuses", in: arguments)
+                let limit = max(0, try Self.intValue("limit", in: arguments) ?? 20)
+                let missions = try await server.listMissions(statuses: statuses, limit: limit)
+                return try Self.renderJSON([
+                    "missions": missions.map(Self.serialize(mission:)),
+                ])
+            }
+        )
+    }
+
+    private func missionStatusTool() -> RegisteredTool {
+        RegisteredTool(
+            definition: AgentToolDefinition(
+                name: "mission_status",
+                description: "Inspect the latest mission or one specific mission.",
+                parameters: [
+                    "type": "object",
+                    "properties": [
+                        "mission_id": ["type": "string"],
+                    ],
+                    "additionalProperties": false,
+                ]
+            ),
+            executor: { [server] arguments, _ in
+                let missionID = try Self.optionalString("mission_id", in: arguments)
+                let snapshot = try await server.missionStatus(missionID: missionID)
+                return try Self.renderJSON([
+                    "mission": Self.serialize(mission: snapshot.mission),
+                    "stages": snapshot.stages.map(Self.serialize(stage:)),
+                    "task": snapshot.task.map(Self.serialize(task:)) ?? NSNull(),
+                    "approvals": snapshot.approvals.map(Self.serialize(approval:)),
+                    "questions": snapshot.questions.map(Self.serialize(question:)),
+                    "recent_events": snapshot.recentEvents.map(Self.serialize(event:)),
+                ])
+            }
+        )
+    }
+
+    private func waitForMissionTool() -> RegisteredTool {
+        RegisteredTool(
+            definition: AgentToolDefinition(
+                name: "wait_for_mission",
+                description: "Wait for a mission to reach a terminal state.",
+                parameters: [
+                    "type": "object",
+                    "properties": [
+                        "mission_id": ["type": "string"],
+                        "timeout_seconds": ["type": "number"],
+                        "poll_interval_seconds": ["type": "number"],
+                    ],
+                    "additionalProperties": false,
+                ]
+            ),
+            executor: { [server] arguments, _ in
+                let missionID = try Self.optionalString("mission_id", in: arguments)
+                let timeoutSeconds = max(0.1, try Self.doubleValue("timeout_seconds", in: arguments) ?? 60)
+                let pollIntervalSeconds = max(0.05, try Self.doubleValue("poll_interval_seconds", in: arguments) ?? 0.25)
+                let snapshot = try await server.waitForMission(
+                    missionID: missionID,
+                    timeoutSeconds: timeoutSeconds,
+                    pollInterval: .milliseconds(Int64(pollIntervalSeconds * 1_000))
+                )
+                return try Self.renderJSON([
+                    "mission": Self.serialize(mission: snapshot.mission),
+                    "stages": snapshot.stages.map(Self.serialize(stage:)),
+                    "task": snapshot.task.map(Self.serialize(task:)) ?? NSNull(),
+                    "approvals": snapshot.approvals.map(Self.serialize(approval:)),
+                    "questions": snapshot.questions.map(Self.serialize(question:)),
+                    "recent_events": snapshot.recentEvents.map(Self.serialize(event:)),
+                ])
+            }
+        )
+    }
+
+    private func listInboxTool() -> RegisteredTool {
+        RegisteredTool(
+            definition: AgentToolDefinition(
+                name: "list_inbox",
+                description: "List root-owned inbox items, including notifications, approvals, and questions.",
+                parameters: [
+                    "type": "object",
+                    "properties": [
+                        "unresolved_only": ["type": "boolean"],
+                    ],
+                    "additionalProperties": false,
+                ]
+            ),
+            executor: { [server] arguments, _ in
+                let unresolvedOnly = try Self.boolValue("unresolved_only", in: arguments) ?? true
+                let items = try await server.listInbox(unresolvedOnly: unresolvedOnly)
+                return try Self.renderJSON([
+                    "items": items.map(Self.serialize(inboxItem:)),
+                ])
+            }
+        )
+    }
+
+    private func approveRequestTool() -> RegisteredTool {
+        RegisteredTool(
+            definition: AgentToolDefinition(
+                name: "approve_request",
+                description: "Approve or reject a pending approval request.",
+                parameters: [
+                    "type": "object",
+                    "properties": [
+                        "request_id": ["type": "string"],
+                        "approved": ["type": "boolean"],
+                        "response_text": ["type": "string"],
+                    ],
+                    "required": ["request_id", "approved"],
+                    "additionalProperties": false,
+                ]
+            ),
+            executor: { [server] arguments, _ in
+                let requestID = try Self.requiredString("request_id", in: arguments)
+                let approved = try Self.boolValue("approved", in: arguments) ?? false
+                let responseText = try Self.optionalString("response_text", in: arguments)
+                let request = try await server.approveRequest(
+                    requestID: requestID,
+                    approved: approved,
+                    responseText: responseText
+                )
+                return try Self.renderJSON([
+                    "approval": Self.serialize(approval: request),
+                ])
+            }
+        )
+    }
+
+    private func answerQuestionTool() -> RegisteredTool {
+        RegisteredTool(
+            definition: AgentToolDefinition(
+                name: "answer_question",
+                description: "Provide the answer for a pending mission question.",
+                parameters: [
+                    "type": "object",
+                    "properties": [
+                        "request_id": ["type": "string"],
+                        "answer_text": ["type": "string"],
+                    ],
+                    "required": ["request_id", "answer_text"],
+                    "additionalProperties": false,
+                ]
+            ),
+            executor: { [server] arguments, _ in
+                let requestID = try Self.requiredString("request_id", in: arguments)
+                let answerText = try Self.requiredString("answer_text", in: arguments)
+                let question = try await server.answerQuestion(
+                    requestID: requestID,
+                    answerText: answerText
+                )
+                return try Self.renderJSON([
+                    "question": Self.serialize(question: question),
+                ])
+            }
+        )
+    }
+
+    private func cancelMissionTool() -> RegisteredTool {
+        RegisteredTool(
+            definition: AgentToolDefinition(
+                name: "cancel_mission",
+                description: "Cancel a mission and its primary task if one exists.",
+                parameters: [
+                    "type": "object",
+                    "properties": [
+                        "mission_id": ["type": "string"],
+                    ],
+                    "required": ["mission_id"],
+                    "additionalProperties": false,
+                ]
+            ),
+            executor: { [server] arguments, _ in
+                let missionID = try Self.requiredString("mission_id", in: arguments)
+                let mission = try await server.cancelMission(missionID: missionID)
+                return try Self.renderJSON([
+                    "mission": Self.serialize(mission: mission),
+                ])
+            }
+        )
+    }
+
+    private func pauseMissionTool() -> RegisteredTool {
+        RegisteredTool(
+            definition: AgentToolDefinition(
+                name: "pause_mission",
+                description: "Mark a mission as paused.",
+                parameters: [
+                    "type": "object",
+                    "properties": [
+                        "mission_id": ["type": "string"],
+                    ],
+                    "required": ["mission_id"],
+                    "additionalProperties": false,
+                ]
+            ),
+            executor: { [server] arguments, _ in
+                let missionID = try Self.requiredString("mission_id", in: arguments)
+                let mission = try await server.pauseMission(missionID: missionID)
+                return try Self.renderJSON([
+                    "mission": Self.serialize(mission: mission),
+                ])
+            }
+        )
+    }
+
+    private func resumeMissionTool() -> RegisteredTool {
+        RegisteredTool(
+            definition: AgentToolDefinition(
+                name: "resume_mission",
+                description: "Resume a paused mission.",
+                parameters: [
+                    "type": "object",
+                    "properties": [
+                        "mission_id": ["type": "string"],
+                    ],
+                    "required": ["mission_id"],
+                    "additionalProperties": false,
+                ]
+            ),
+            executor: { [server] arguments, _ in
+                let missionID = try Self.requiredString("mission_id", in: arguments)
+                let mission = try await server.resumeMission(missionID: missionID)
+                return try Self.renderJSON([
+                    "mission": Self.serialize(mission: mission),
+                ])
+            }
+        )
+    }
+
+    private func retryMissionStageTool() -> RegisteredTool {
+        RegisteredTool(
+            definition: AgentToolDefinition(
+                name: "retry_mission_stage",
+                description: "Retry a failed mission stage.",
+                parameters: [
+                    "type": "object",
+                    "properties": [
+                        "stage_id": ["type": "string"],
+                    ],
+                    "required": ["stage_id"],
+                    "additionalProperties": false,
+                ]
+            ),
+            executor: { [server] arguments, _ in
+                let stageID = try Self.requiredString("stage_id", in: arguments)
+                let stage = try await server.retryMissionStage(stageID: stageID)
+                return try Self.renderJSON([
+                    "stage": Self.serialize(stage: stage),
+                ])
+            }
+        )
     }
 
     private func delegateTaskTool() -> RegisteredTool {
@@ -412,6 +786,47 @@ private extension RootAgentToolbox {
         }
     }
 
+    static func missionExecutionMode(_ key: String, in arguments: [String: Any]) throws -> MissionRecord.ExecutionMode? {
+        guard let rawValue = try optionalString(key, in: arguments) else {
+            return nil
+        }
+        guard let mode = MissionRecord.ExecutionMode(rawValue: rawValue.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()) else {
+            throw RootToolboxError.invalidMissionExecutionMode(rawValue)
+        }
+        return mode
+    }
+
+    static func missionStatusArray(_ key: String, in arguments: [String: Any]) throws -> [MissionRecord.Status]? {
+        let rawStatuses = try stringArray(key, in: arguments)
+        guard !rawStatuses.isEmpty else {
+            return nil
+        }
+        return try rawStatuses.map { rawValue in
+            guard let status = MissionRecord.Status(rawValue: rawValue.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()) else {
+                throw RootToolboxError.invalidMissionStatus(rawValue)
+            }
+            return status
+        }
+    }
+
+    static func stringDictionary(excluding excludedKeys: Set<String>, in arguments: [String: Any]) throws -> [String: String] {
+        arguments.reduce(into: [String: String]()) { partialResult, entry in
+            guard !excludedKeys.contains(entry.key) else {
+                return
+            }
+            switch entry.value {
+            case let string as String:
+                partialResult[entry.key] = string
+            case let number as NSNumber:
+                partialResult[entry.key] = number.stringValue
+            case let bool as Bool:
+                partialResult[entry.key] = bool ? "true" : "false"
+            default:
+                break
+            }
+        }
+    }
+
     static func resolveTask(taskID: String?, via server: RootAgentServer) async throws -> TaskRecord {
         if let taskID {
             guard let task = try await server.task(taskID: taskID) else {
@@ -434,6 +849,7 @@ private extension RootAgentToolbox {
         [
             "task_id": task.taskID,
             "root_session_id": task.rootSessionID,
+            "mission_id": task.missionID ?? NSNull(),
             "parent_task_id": task.parentTaskID ?? NSNull(),
             "assigned_agent_id": task.assignedAgentID ?? NSNull(),
             "status": task.status.rawValue,
@@ -442,6 +858,11 @@ private extension RootAgentToolbox {
             "expected_outputs": task.historyProjection.expectedOutputs,
             "constraints": task.historyProjection.constraints,
             "artifact_refs": task.artifactRefs,
+            "attempt_count": task.attemptCount,
+            "max_attempts": task.maxAttempts,
+            "deadline_at": task.deadlineAt.map(Self.iso8601String) ?? NSNull(),
+            "restart_policy": task.restartPolicy.rawValue,
+            "escalation_policy": task.escalationPolicy.rawValue,
             "priority": task.priority,
             "lease": serialize(lease: task.lease) ?? NSNull(),
             "created_at": iso8601String(task.createdAt),
@@ -487,6 +908,98 @@ private extension RootAgentToolbox {
         ]
     }
 
+    static func serialize(mission: MissionRecord) -> [String: Any] {
+        [
+            "mission_id": mission.missionID,
+            "root_session_id": mission.rootSessionID,
+            "title": mission.title,
+            "brief": mission.brief,
+            "execution_mode": mission.executionMode.rawValue,
+            "status": mission.status.rawValue,
+            "primary_task_id": mission.primaryTaskID ?? NSNull(),
+            "contract_artifact_id": mission.contractArtifactID ?? NSNull(),
+            "progress_artifact_id": mission.progressArtifactID ?? NSNull(),
+            "verification_artifact_id": mission.verificationArtifactID ?? NSNull(),
+            "budget_units": mission.budgetUnits,
+            "max_recursion_depth": mission.maxRecursionDepth,
+            "metadata": mission.metadata,
+            "created_at": iso8601String(mission.createdAt),
+            "updated_at": iso8601String(mission.updatedAt),
+            "completed_at": mission.completedAt.map(Self.iso8601String) ?? NSNull(),
+        ]
+    }
+
+    static func serialize(stage: MissionStageRecord) -> [String: Any] {
+        [
+            "stage_id": stage.stageID,
+            "mission_id": stage.missionID,
+            "task_id": stage.taskID ?? NSNull(),
+            "parent_stage_id": stage.parentStageID ?? NSNull(),
+            "kind": stage.kind.rawValue,
+            "execution_mode": stage.executionMode.rawValue,
+            "title": stage.title,
+            "status": stage.status.rawValue,
+            "attempt_count": stage.attemptCount,
+            "max_attempts": stage.maxAttempts,
+            "deadline_at": stage.deadlineAt.map(Self.iso8601String) ?? NSNull(),
+            "artifact_refs": stage.artifactRefs,
+            "metadata": stage.metadata,
+            "created_at": iso8601String(stage.createdAt),
+            "updated_at": iso8601String(stage.updatedAt),
+            "completed_at": stage.completedAt.map(Self.iso8601String) ?? NSNull(),
+        ]
+    }
+
+    static func serialize(approval: ApprovalRequestRecord) -> [String: Any] {
+        [
+            "request_id": approval.requestID,
+            "mission_id": approval.missionID ?? NSNull(),
+            "task_id": approval.taskID ?? NSNull(),
+            "title": approval.title,
+            "prompt": approval.prompt,
+            "sensitive": approval.sensitive,
+            "delivery_preference": approval.deliveryPreference.rawValue,
+            "status": approval.status.rawValue,
+            "response_actor_id": approval.responseActorID?.rawValue ?? NSNull(),
+            "response_text": approval.responseText ?? NSNull(),
+            "metadata": approval.metadata,
+            "created_at": iso8601String(approval.createdAt),
+            "updated_at": iso8601String(approval.updatedAt),
+            "responded_at": approval.respondedAt.map(Self.iso8601String) ?? NSNull(),
+        ]
+    }
+
+    static func serialize(question: QuestionRequestRecord) -> [String: Any] {
+        [
+            "request_id": question.requestID,
+            "mission_id": question.missionID ?? NSNull(),
+            "task_id": question.taskID ?? NSNull(),
+            "title": question.title,
+            "prompt": question.prompt,
+            "kind": question.kind.rawValue,
+            "options": question.options,
+            "status": question.status.rawValue,
+            "answer_actor_id": question.answerActorID?.rawValue ?? NSNull(),
+            "answer_text": question.answerText ?? NSNull(),
+            "metadata": question.metadata,
+            "created_at": iso8601String(question.createdAt),
+            "updated_at": iso8601String(question.updatedAt),
+            "answered_at": question.answeredAt.map(Self.iso8601String) ?? NSNull(),
+        ]
+    }
+
+    static func serialize(inboxItem: InteractionInboxItem) -> [String: Any] {
+        [
+            "id": inboxItem.id,
+            "kind": inboxItem.kind.rawValue,
+            "title": inboxItem.title,
+            "body": inboxItem.body,
+            "status": inboxItem.status,
+            "created_at": iso8601String(inboxItem.createdAt),
+            "metadata": inboxItem.metadata,
+        ]
+    }
+
     static func serialize(lease: TaskRecord.Lease?) -> [String: Any]? {
         guard let lease else {
             return nil
@@ -507,6 +1020,8 @@ private enum RootToolboxError: Error, CustomStringConvertible {
     case missingRequiredArgument(String)
     case invalidArgument(key: String, expected: String)
     case invalidStatus(String)
+    case invalidMissionStatus(String)
+    case invalidMissionExecutionMode(String)
 
     var description: String {
         switch self {
@@ -516,6 +1031,10 @@ private enum RootToolboxError: Error, CustomStringConvertible {
             return "Invalid argument '\(key)'; expected \(expected)."
         case .invalidStatus(let rawValue):
             return "Unknown task status '\(rawValue)'."
+        case .invalidMissionStatus(let rawValue):
+            return "Unknown mission status '\(rawValue)'."
+        case .invalidMissionExecutionMode(let rawValue):
+            return "Unknown mission execution mode '\(rawValue)'."
         }
     }
 }

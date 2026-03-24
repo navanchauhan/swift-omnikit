@@ -43,6 +43,10 @@ public final class WaitHumanHandler: NodeHandler, Sendable {
         }
 
         let questionType: QuestionType = options.count > 0 ? .singleSelect : .freeText
+        var metadata = node.rawAttributes.reduce(into: [String: String]()) { partialResult, entry in
+            partialResult[entry.key] = entry.value.stringValue
+        }
+        metadata["node_id"] = node.id
 
         let question = InterviewQuestion(
             text: questionText,
@@ -50,7 +54,8 @@ public final class WaitHumanHandler: NodeHandler, Sendable {
             options: options,
             defaultAnswer: defaultAnswer,
             timeoutSeconds: timeoutSeconds,
-            stage: node.id
+            stage: node.id,
+            metadata: metadata
         )
 
         let answer = await interviewer.ask(question)

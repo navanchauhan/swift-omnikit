@@ -160,6 +160,9 @@ public actor WorkerDaemon: WorkerDispatching {
                 let record = try await artifactStore.put(
                     ArtifactPayload(
                         taskID: task.taskID,
+                        missionID: task.missionID,
+                        workspaceID: task.workspaceID,
+                        channelID: task.channelID,
                         name: artifact.name,
                         contentType: artifact.contentType,
                         data: artifact.data

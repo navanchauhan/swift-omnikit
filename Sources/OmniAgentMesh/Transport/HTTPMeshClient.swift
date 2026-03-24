@@ -18,7 +18,7 @@ public enum HTTPMeshClientError: Error, CustomStringConvertible, Sendable {
     }
 }
 
-public actor HTTPMeshClient: JobStore {
+public actor HTTPMeshClient: JobStore, ArtifactStore, WorkerInteractionBridge {
     private let baseURL: URL
     private let session: URLSession
     private let encoder = JSONEncoder()
@@ -257,16 +257,81 @@ public actor HTTPMeshClient: JobStore {
         return response.value
     }
 
+    public func put(_ payload: ArtifactPayload) async throws -> ArtifactRecord {
+        let response = try await request(
+            path: "artifacts/put",
+            payload: HTTPMeshProtocol.ArtifactPutRequest(payload: .init(payload: payload)),
+            responseType: HTTPMeshProtocol.ValueResponse<ArtifactRecord>.self
+        )
+        return response.value
+    }
+
+    public func record(artifactID: String) async throws -> ArtifactRecord? {
+        let response = try await request(
+            path: "artifacts/get",
+            payload: HTTPMeshProtocol.ArtifactLookupRequest(artifactID: artifactID),
+            responseType: HTTPMeshProtocol.ValueResponse<HTTPMeshProtocol.ArtifactBlobResponse>.self
+        )
+        return response.value.record
+    }
+
+    public func data(for artifactID: String) async throws -> Data? {
+        let response = try await request(
+            path: "artifacts/get",
+            payload: HTTPMeshProtocol.ArtifactLookupRequest(artifactID: artifactID),
+            responseType: HTTPMeshProtocol.ValueResponse<HTTPMeshProtocol.ArtifactBlobResponse>.self
+        )
+        return response.value.data
+    }
+
+    public func list(
+        taskID: String?,
+        missionID: String?,
+        workspaceID: WorkspaceID?
+    ) async throws -> [ArtifactRecord] {
+        let response = try await request(
+            path: "artifacts/list",
+            payload: HTTPMeshProtocol.ArtifactListRequest(
+                taskID: taskID,
+                missionID: missionID,
+                workspaceID: workspaceID
+            ),
+            responseType: HTTPMeshProtocol.ValueResponse<[ArtifactRecord]>.self
+        )
+        return response.value
+    }
+
+    public func requestApproval(_ prompt: WorkerApprovalPrompt) async throws -> WorkerInteractionResolution {
+        let response = try await request(
+            path: "interactions/request-approval",
+            payload: HTTPMeshProtocol.InteractionApprovalRequest(prompt: prompt),
+            responseType: HTTPMeshProtocol.ValueResponse<WorkerInteractionResolution>.self,
+            timeoutInterval: max(30, (prompt.timeoutSeconds ?? 600) + 10)
+        )
+        return response.value
+    }
+
+    public func requestQuestion(_ prompt: WorkerQuestionPrompt) async throws -> WorkerInteractionResolution {
+        let response = try await request(
+            path: "interactions/request-question",
+            payload: HTTPMeshProtocol.InteractionQuestionRequest(prompt: prompt),
+            responseType: HTTPMeshProtocol.ValueResponse<WorkerInteractionResolution>.self,
+            timeoutInterval: max(30, (prompt.timeoutSeconds ?? 600) + 10)
+        )
+        return response.value
+    }
+
     private func request<Request: Encodable, Response: Decodable>(
         path: String,
         payload: Request,
-        responseType: Response.Type
+        responseType: Response.Type,
+        timeoutInterval: TimeInterval = 15
     ) async throws -> Response {
         let body = try encoder.encode(payload)
         var request = URLRequest(url: baseURL.appending(path: path))
         request.httpMethod = "POST"
         request.httpBody = body
-        request.timeoutInterval = 15
+        request.timeoutInterval = timeoutInterval
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.setValue("application/json", forHTTPHeaderField: "Accept")
 

@@ -18,8 +18,16 @@ public struct AgentFabricStateRoot: Sendable, Equatable {
         rootDirectory.appending(path: "conversation.sqlite")
     }
 
+    public var identityDatabaseURL: URL {
+        rootDirectory.appending(path: "identity.sqlite")
+    }
+
     public var jobsDatabaseURL: URL {
         rootDirectory.appending(path: "jobs.sqlite")
+    }
+
+    public var missionsDatabaseURL: URL {
+        rootDirectory.appending(path: "missions.sqlite")
     }
 
     public var deploymentDatabaseURL: URL {

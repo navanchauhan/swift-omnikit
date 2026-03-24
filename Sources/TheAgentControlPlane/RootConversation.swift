@@ -19,19 +19,33 @@ public struct RootConversationSnapshot: Sendable, Equatable {
 
 public actor RootConversation {
     public let sessionID: String
+    public let scope: SessionScope
 
     private let store: any ConversationStore
     private let hotWindowLimit: Int
 
+    public init(scope: SessionScope, store: any ConversationStore, hotWindowLimit: Int = 12) {
+        self.sessionID = scope.sessionID
+        self.scope = scope
+        self.store = store
+        self.hotWindowLimit = hotWindowLimit
+    }
+
     public init(sessionID: String, store: any ConversationStore, hotWindowLimit: Int = 12) {
+        let scope = SessionScope.bestEffort(sessionID: sessionID)
         self.sessionID = sessionID
+        self.scope = scope
         self.store = store
         self.hotWindowLimit = hotWindowLimit
     }
 
     @discardableResult
-    public func recordUserText(_ content: String, metadata: [String: String] = [:]) async throws -> InteractionItem {
-        try await append(role: .user, modality: .text, content: content, metadata: metadata)
+    public func recordUserText(
+        _ content: String,
+        actorID: ActorID? = nil,
+        metadata: [String: String] = [:]
+    ) async throws -> InteractionItem {
+        try await append(role: .user, modality: .text, actorID: actorID, content: content, metadata: metadata)
     }
 
     @discardableResult
@@ -40,8 +54,12 @@ public actor RootConversation {
     }
 
     @discardableResult
-    public func recordAudioTranscript(_ content: String, metadata: [String: String] = [:]) async throws -> InteractionItem {
-        try await append(role: .user, modality: .audioTranscript, content: content, metadata: metadata)
+    public func recordAudioTranscript(
+        _ content: String,
+        actorID: ActorID? = nil,
+        metadata: [String: String] = [:]
+    ) async throws -> InteractionItem {
+        try await append(role: .user, modality: .audioTranscript, actorID: actorID, content: content, metadata: metadata)
     }
 
     public func recordNotification(_ notification: NotificationRecord) async throws {
@@ -69,12 +87,16 @@ public actor RootConversation {
     private func append(
         role: InteractionItem.Role,
         modality: InteractionItem.Modality,
+        actorID: ActorID? = nil,
         content: String,
         metadata: [String: String]
     ) async throws -> InteractionItem {
         let stored = try await store.appendInteraction(
             InteractionItem(
                 sessionID: sessionID,
+                actorID: actorID ?? scope.actorID,
+                workspaceID: scope.workspaceID,
+                channelID: scope.channelID,
                 role: role,
                 modality: modality,
                 content: content,
@@ -116,6 +138,8 @@ public actor RootConversation {
         try await store.saveSummary(
             ConversationSummary(
                 sessionID: sessionID,
+                workspaceID: scope.workspaceID,
+                channelID: scope.channelID,
                 summaryText: summaryText,
                 hotWindowLimit: hotWindowLimit,
                 lastCompactedSequence: newestCompactedSequence

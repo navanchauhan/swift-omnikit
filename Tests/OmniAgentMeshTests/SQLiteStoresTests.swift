@@ -136,6 +136,9 @@ struct SQLiteStoresTests {
         let record = try await store.put(
             ArtifactPayload(
                 taskID: "task-1",
+                missionID: "mission-1",
+                workspaceID: "workspace-alpha",
+                channelID: "telegram-dm",
                 name: "build log.txt",
                 contentType: "text/plain",
                 data: Data("build output".utf8)
@@ -149,6 +152,9 @@ struct SQLiteStoresTests {
         #expect(restoredData.map { String(decoding: $0, as: UTF8.self) } == "build output")
         #expect(taskArtifacts.count == 1)
         #expect(taskArtifacts.first?.name == "build log.txt")
+        #expect(taskArtifacts.first?.missionID == "mission-1")
+        #expect(taskArtifacts.first?.workspaceID == "workspace-alpha")
+        #expect(taskArtifacts.first?.channelID == "telegram-dm")
     }
 
     @Test

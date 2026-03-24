@@ -38,7 +38,7 @@ public struct RootAgentTurnResult: Sendable, Equatable {
     }
 }
 
-public final class RootAgentRuntime {
+public final class RootAgentRuntime: @unchecked Sendable {
     public let server: RootAgentServer
     public let session: Session
 
@@ -76,7 +76,7 @@ public final class RootAgentRuntime {
         try await environment.initialize()
 
         let sessionStorageRoot = stateRoot.checkpointsDirectoryURL.appending(
-            path: "root-session",
+            path: "root-session-\(safeDirectoryName(options.sessionID))",
             directoryHint: .isDirectory
         )
         try FileManager.default.createDirectory(at: sessionStorageRoot, withIntermediateDirectories: true)
@@ -115,10 +115,11 @@ public final class RootAgentRuntime {
 
     public func submitUserText(
         _ text: String,
+        actorID: ActorID? = nil,
         metadata: [String: String] = [:]
     ) async throws -> RootAgentTurnResult {
         _ = try await server.refreshTaskNotifications()
-        _ = try await server.handleUserText(text, metadata: metadata)
+        _ = try await server.handleUserText(text, actorID: actorID, metadata: metadata)
         try await refreshPromptContext()
 
         _ = try? await session.restoreFromStorage()
@@ -159,5 +160,11 @@ public final class RootAgentRuntime {
             }
         }
         return ""
+    }
+
+    private static func safeDirectoryName(_ rawValue: String) -> String {
+        let allowed = Set("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_.")
+        let sanitized = String(rawValue.map { allowed.contains($0) ? $0 : "_" })
+        return sanitized.isEmpty ? "root" : sanitized
     }
 }

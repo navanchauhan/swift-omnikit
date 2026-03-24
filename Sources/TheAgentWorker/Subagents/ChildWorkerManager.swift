@@ -26,6 +26,20 @@ public struct ChildTaskRequest: Sendable, Equatable {
     }
 }
 
+public enum ChildWorkerManagerError: Error, CustomStringConvertible {
+    case recursionDepthExceeded(parentTaskID: String, maximumDepth: Int)
+    case delegationBudgetExhausted(parentTaskID: String)
+
+    public var description: String {
+        switch self {
+        case .recursionDepthExceeded(let parentTaskID, let maximumDepth):
+            return "Task \(parentTaskID) already reached the maximum delegation depth of \(maximumDepth)."
+        case .delegationBudgetExhausted(let parentTaskID):
+            return "Task \(parentTaskID) exhausted its remaining delegation budget."
+        }
+    }
+}
+
 public actor ChildWorkerManager {
     private let jobStore: any JobStore
     private let projectionBuilder: HistoryProjectionBuilder
@@ -46,15 +60,44 @@ public actor ChildWorkerManager {
         guard let parentTask = try await jobStore.task(taskID: parentTaskID) else {
             throw JobStoreError.taskNotFound(parentTaskID)
         }
+        let currentDepth = try await delegationDepth(task: parentTask)
+        if let maxDepth = maxRecursionDepth(for: parentTask),
+           currentDepth >= maxDepth {
+            throw ChildWorkerManagerError.recursionDepthExceeded(
+                parentTaskID: parentTaskID,
+                maximumDepth: maxDepth
+            )
+        }
+        if let remainingBudget = remainingDelegationBudget(for: parentTask),
+           remainingBudget <= 0 {
+            throw ChildWorkerManagerError.delegationBudgetExhausted(parentTaskID: parentTaskID)
+        }
+
+        var constraints = request.constraints
+        constraints.append("delegation_depth=\(currentDepth + 1)")
+        if let maxDepth = maxRecursionDepth(for: parentTask) {
+            constraints.append("max_recursion_depth=\(maxDepth)")
+        }
+        if let remainingBudget = remainingDelegationBudget(for: parentTask) {
+            constraints.append("budget_units_remaining=\(max(0, remainingBudget - 1))")
+        }
+        if let missionID = parentTask.missionID {
+            constraints.append("mission_id=\(missionID)")
+        }
+        constraints = normalizedConstraints(constraints)
         let projection = try await projectionBuilder.buildChildProjection(
             parentTask: parentTask,
             brief: request.brief,
-            constraints: request.constraints,
+            constraints: constraints,
             expectedOutputs: request.expectedOutputs,
             artifactRefs: request.artifactRefs
         )
         let childTask = TaskRecord(
             rootSessionID: parentTask.rootSessionID,
+            requesterActorID: parentTask.requesterActorID,
+            workspaceID: parentTask.workspaceID,
+            channelID: parentTask.channelID,
+            missionID: parentTask.missionID,
             parentTaskID: parentTask.taskID,
             capabilityRequirements: request.capabilityRequirements,
             historyProjection: projection,
@@ -116,6 +159,53 @@ public actor ChildWorkerManager {
             idempotencyKey: idempotencyKey,
             now: now
         )
+    }
+
+    private func delegationDepth(task: TaskRecord) async throws -> Int {
+        var depth = constraintIntValue(prefix: "delegation_depth=", constraints: task.historyProjection.constraints) ?? 0
+        var currentParentID: String? = task.parentTaskID
+        while let parentTaskID = currentParentID {
+            guard let parent = try await jobStore.task(taskID: parentTaskID) else {
+                break
+            }
+            depth = max(depth, (constraintIntValue(prefix: "delegation_depth=", constraints: parent.historyProjection.constraints) ?? 0) + 1)
+            currentParentID = parent.parentTaskID
+        }
+        return depth
+    }
+
+    private func maxRecursionDepth(for task: TaskRecord) -> Int? {
+        constraintIntValue(prefix: "max_recursion_depth=", constraints: task.historyProjection.constraints)
+    }
+
+    private func remainingDelegationBudget(for task: TaskRecord) -> Int? {
+        constraintIntValue(prefix: "budget_units_remaining=", constraints: task.historyProjection.constraints)
+    }
+
+    private func constraintIntValue(prefix: String, constraints: [String]) -> Int? {
+        constraints.first(where: { $0.hasPrefix(prefix) })
+            .flatMap { Int($0.dropFirst(prefix.count)) }
+    }
+
+    private func normalizedConstraints(_ constraints: [String]) -> [String] {
+        var mergedByPrefix: [String: String] = [:]
+        let knownPrefixes = [
+            "delegation_depth=",
+            "max_recursion_depth=",
+            "budget_units_remaining=",
+            "mission_id=",
+        ]
+
+        var passthrough: [String] = []
+        for constraint in constraints {
+            if let prefix = knownPrefixes.first(where: { constraint.hasPrefix($0) }) {
+                mergedByPrefix[prefix] = constraint
+            } else if !passthrough.contains(constraint) {
+                passthrough.append(constraint)
+            }
+        }
+
+        return passthrough + knownPrefixes.compactMap { mergedByPrefix[$0] }
     }
 }
 

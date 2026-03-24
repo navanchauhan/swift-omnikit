@@ -3,12 +3,27 @@ import Foundation
 public protocol ConversationStore: Sendable {
     func appendInteraction(_ item: InteractionItem) async throws -> InteractionItem
     func interactions(sessionID: String, limit: Int?) async throws -> [InteractionItem]
+    func sessionIDs() async throws -> [String]
     func saveSummary(_ summary: ConversationSummary) async throws
     func loadSummary(sessionID: String) async throws -> ConversationSummary?
     func saveNotification(_ notification: NotificationRecord) async throws -> NotificationRecord
     func notifications(sessionID: String, unresolvedOnly: Bool) async throws -> [NotificationRecord]
     func markNotificationDelivered(notificationID: String, at: Date) async throws -> NotificationRecord?
     func markNotificationResolved(notificationID: String, at: Date) async throws -> NotificationRecord?
+}
+
+public extension ConversationStore {
+    func interactions(scope: SessionScope, limit: Int?) async throws -> [InteractionItem] {
+        try await interactions(sessionID: scope.sessionID, limit: limit)
+    }
+
+    func loadSummary(scope: SessionScope) async throws -> ConversationSummary? {
+        try await loadSummary(sessionID: scope.sessionID)
+    }
+
+    func notifications(scope: SessionScope, unresolvedOnly: Bool) async throws -> [NotificationRecord] {
+        try await notifications(sessionID: scope.sessionID, unresolvedOnly: unresolvedOnly)
+    }
 }
 
 public actor SQLiteConversationStore: ConversationStore {
@@ -78,6 +93,23 @@ public actor SQLiteConversationStore: ConversationStore {
 
         let decoded = try rows.compactMap(decodeInteraction)
         return limit == nil ? decoded : decoded.reversed()
+    }
+
+    public func sessionIDs() async throws -> [String] {
+        let rows = try connection.query(
+            """
+            SELECT session_id
+            FROM (
+                SELECT session_id FROM interactions
+                UNION
+                SELECT session_id FROM conversation_summaries
+                UNION
+                SELECT session_id FROM notifications
+            )
+            ORDER BY session_id ASC;
+            """
+        )
+        return rows.compactMap { $0["session_id"]?.stringValue }
     }
 
     public func saveSummary(_ summary: ConversationSummary) async throws {

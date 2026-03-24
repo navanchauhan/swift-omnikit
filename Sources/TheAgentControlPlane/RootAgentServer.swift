@@ -5,6 +5,9 @@ public enum RootAgentServerError: Error, CustomStringConvertible, Sendable, Equa
     case taskNotFound(String)
     case taskNotManagedBySession(taskID: String, sessionID: String)
     case noManagedTasks(sessionID: String)
+    case missionNotFound(String)
+    case noManagedMissions(sessionID: String)
+    case missionSupportUnavailable(sessionID: String)
     case notificationNotFound(String)
     case noUnresolvedNotifications(sessionID: String)
 
@@ -16,6 +19,12 @@ public enum RootAgentServerError: Error, CustomStringConvertible, Sendable, Equa
             return "Task \(taskID) does not belong to root session \(sessionID)."
         case .noManagedTasks(let sessionID):
             return "Root session \(sessionID) does not have any managed tasks."
+        case .missionNotFound(let missionID):
+            return "Mission \(missionID) was not found."
+        case .noManagedMissions(let sessionID):
+            return "Root session \(sessionID) does not have any managed missions."
+        case .missionSupportUnavailable(let sessionID):
+            return "Root session \(sessionID) is not configured with mission support."
         case .notificationNotFound(let notificationID):
             return "Notification \(notificationID) was not found."
         case .noUnresolvedNotifications(let sessionID):
@@ -45,33 +54,112 @@ public struct RootTaskWaitResult: Sendable, Equatable {
 
 public actor RootAgentServer {
     public nonisolated let sessionID: String
+    public nonisolated let scope: SessionScope
 
     private let conversation: RootConversation
     private let inbox: NotificationInbox
     private let scheduler: RootScheduler
     private let jobStore: any JobStore
+    private let missionStore: (any MissionStore)?
+    private let interactionBroker: InteractionBroker?
+    private let missionCoordinator: MissionCoordinator?
+    private let workspacePolicy: WorkspacePolicy
+
+    public init(
+        scope: SessionScope,
+        conversationStore: any ConversationStore,
+        jobStore: any JobStore,
+        missionStore: (any MissionStore)? = nil,
+        artifactStore: (any ArtifactStore)? = nil,
+        deliveryStore: (any DeliveryStore)? = nil,
+        hotWindowLimit: Int = 12,
+        notificationPolicy: NotificationPolicy = NotificationPolicy(),
+        workspacePolicy: WorkspacePolicy = WorkspacePolicy(),
+        scheduler: RootScheduler? = nil
+    ) {
+        self.sessionID = scope.sessionID
+        self.scope = scope
+        self.jobStore = jobStore
+        self.missionStore = missionStore
+        self.workspacePolicy = workspacePolicy
+        self.scheduler = scheduler ?? RootScheduler(jobStore: jobStore)
+        self.conversation = RootConversation(
+            scope: scope,
+            store: conversationStore,
+            hotWindowLimit: hotWindowLimit
+        )
+        self.inbox = NotificationInbox(
+            scope: scope,
+            store: conversationStore,
+            policy: notificationPolicy
+        )
+        if let missionStore, let artifactStore {
+            let interactionBroker = InteractionBroker(
+                missionStore: missionStore,
+                conversationStore: conversationStore,
+                deliveryStore: deliveryStore,
+                notificationPolicy: notificationPolicy
+            )
+            self.interactionBroker = interactionBroker
+            self.missionCoordinator = MissionCoordinator(
+                scope: scope,
+                scheduler: self.scheduler,
+                jobStore: jobStore,
+                missionStore: missionStore,
+                artifactStore: artifactStore,
+                interactionBroker: interactionBroker,
+                workspacePolicy: workspacePolicy,
+                changeCoordinator: ChangeCoordinator(jobStore: jobStore)
+            )
+        } else {
+            self.interactionBroker = nil
+            self.missionCoordinator = nil
+        }
+    }
 
     public init(
         sessionID: String,
         conversationStore: any ConversationStore,
         jobStore: any JobStore,
+        missionStore: (any MissionStore)? = nil,
+        artifactStore: (any ArtifactStore)? = nil,
+        deliveryStore: (any DeliveryStore)? = nil,
         hotWindowLimit: Int = 12,
         notificationPolicy: NotificationPolicy = NotificationPolicy(),
+        workspacePolicy: WorkspacePolicy = WorkspacePolicy(),
         scheduler: RootScheduler? = nil
     ) {
+        let scope = SessionScope.bestEffort(sessionID: sessionID)
         self.sessionID = sessionID
+        self.scope = scope
         self.jobStore = jobStore
+        self.missionStore = missionStore
+        self.workspacePolicy = workspacePolicy
         self.scheduler = scheduler ?? RootScheduler(jobStore: jobStore)
-        self.conversation = RootConversation(
-            sessionID: sessionID,
-            store: conversationStore,
-            hotWindowLimit: hotWindowLimit
-        )
-        self.inbox = NotificationInbox(
-            sessionID: sessionID,
-            store: conversationStore,
-            policy: notificationPolicy
-        )
+        self.conversation = RootConversation(sessionID: sessionID, store: conversationStore, hotWindowLimit: hotWindowLimit)
+        self.inbox = NotificationInbox(sessionID: sessionID, store: conversationStore, policy: notificationPolicy)
+        if let missionStore, let artifactStore {
+            let interactionBroker = InteractionBroker(
+                missionStore: missionStore,
+                conversationStore: conversationStore,
+                deliveryStore: deliveryStore,
+                notificationPolicy: notificationPolicy
+            )
+            self.interactionBroker = interactionBroker
+            self.missionCoordinator = MissionCoordinator(
+                scope: scope,
+                scheduler: self.scheduler,
+                jobStore: jobStore,
+                missionStore: missionStore,
+                artifactStore: artifactStore,
+                interactionBroker: interactionBroker,
+                workspacePolicy: workspacePolicy,
+                changeCoordinator: ChangeCoordinator(jobStore: jobStore)
+            )
+        } else {
+            self.interactionBroker = nil
+            self.missionCoordinator = nil
+        }
     }
 
     public func registerLocalWorker(_ worker: any WorkerDispatching, at: Date = Date()) async throws {
@@ -86,8 +174,12 @@ public actor RootAgentServer {
         try await conversation.snapshot()
     }
 
-    public func handleUserText(_ content: String, metadata: [String: String] = [:]) async throws -> RootConversationSnapshot {
-        _ = try await conversation.recordUserText(content, metadata: metadata)
+    public func handleUserText(
+        _ content: String,
+        actorID: ActorID? = nil,
+        metadata: [String: String] = [:]
+    ) async throws -> RootConversationSnapshot {
+        _ = try await conversation.recordUserText(content, actorID: actorID, metadata: metadata)
         return try await restoreState()
     }
 
@@ -96,8 +188,12 @@ public actor RootAgentServer {
         return try await restoreState()
     }
 
-    public func recordAudioTranscript(_ content: String, metadata: [String: String] = [:]) async throws -> RootConversationSnapshot {
-        _ = try await conversation.recordAudioTranscript(content, metadata: metadata)
+    public func recordAudioTranscript(
+        _ content: String,
+        actorID: ActorID? = nil,
+        metadata: [String: String] = [:]
+    ) async throws -> RootConversationSnapshot {
+        _ = try await conversation.recordAudioTranscript(content, actorID: actorID, metadata: metadata)
         return try await restoreState()
     }
 
@@ -122,6 +218,9 @@ public actor RootAgentServer {
         )
         let task = try await scheduler.submitTask(
             rootSessionID: sessionID,
+            requesterActorID: scope.actorID,
+            workspaceID: scope.workspaceID,
+            channelID: scope.channelID,
             parentTaskID: parentTaskID,
             historyProjection: historyProjection,
             capabilityRequirements: capabilityRequirements,
@@ -133,6 +232,190 @@ public actor RootAgentServer {
 
     public func listWorkers() async throws -> [WorkerRecord] {
         try await jobStore.workers()
+    }
+
+    public func startMission(_ request: MissionStartRequest) async throws -> MissionStatusSnapshot {
+        guard let missionCoordinator else {
+            throw RootAgentServerError.missionSupportUnavailable(sessionID: sessionID)
+        }
+        return try await missionCoordinator.startMission(request)
+    }
+
+    public func listMissions(
+        statuses: [MissionRecord.Status]? = nil,
+        limit: Int? = nil
+    ) async throws -> [MissionRecord] {
+        guard let missionCoordinator else {
+            throw RootAgentServerError.missionSupportUnavailable(sessionID: sessionID)
+        }
+        return try await missionCoordinator.listMissions(statuses: statuses, limit: limit)
+    }
+
+    public func latestMission() async throws -> MissionRecord? {
+        guard let missionStore else {
+            throw RootAgentServerError.missionSupportUnavailable(sessionID: sessionID)
+        }
+        return try await missionStore.missions(
+            sessionID: sessionID,
+            workspaceID: scope.workspaceID,
+            statuses: nil
+        ).first
+    }
+
+    public func missionStatus(missionID: String? = nil) async throws -> MissionStatusSnapshot {
+        guard let missionCoordinator else {
+            throw RootAgentServerError.missionSupportUnavailable(sessionID: sessionID)
+        }
+        let resolvedMissionID: String
+        if let missionID {
+            resolvedMissionID = missionID
+        } else if let latest = try await latestMission() {
+            resolvedMissionID = latest.missionID
+        } else {
+            throw RootAgentServerError.noManagedMissions(sessionID: sessionID)
+        }
+        return try await missionCoordinator.missionStatus(missionID: resolvedMissionID)
+    }
+
+    public func waitForMission(
+        missionID: String? = nil,
+        timeoutSeconds: Double = 60,
+        pollInterval: Duration = .milliseconds(250)
+    ) async throws -> MissionStatusSnapshot {
+        guard let missionCoordinator else {
+            throw RootAgentServerError.missionSupportUnavailable(sessionID: sessionID)
+        }
+        let resolvedMissionID: String
+        if let missionID {
+            resolvedMissionID = missionID
+        } else if let latest = try await latestMission() {
+            resolvedMissionID = latest.missionID
+        } else {
+            throw RootAgentServerError.noManagedMissions(sessionID: sessionID)
+        }
+        return try await missionCoordinator.waitForMission(
+            missionID: resolvedMissionID,
+            timeoutSeconds: timeoutSeconds,
+            pollInterval: pollInterval
+        )
+    }
+
+    public func cancelMission(missionID: String) async throws -> MissionRecord {
+        guard let missionCoordinator else {
+            throw RootAgentServerError.missionSupportUnavailable(sessionID: sessionID)
+        }
+        return try await missionCoordinator.cancelMission(missionID: missionID)
+    }
+
+    public func pauseMission(missionID: String) async throws -> MissionRecord {
+        guard let missionCoordinator else {
+            throw RootAgentServerError.missionSupportUnavailable(sessionID: sessionID)
+        }
+        return try await missionCoordinator.pauseMission(missionID: missionID)
+    }
+
+    public func resumeMission(missionID: String) async throws -> MissionRecord {
+        guard let missionCoordinator else {
+            throw RootAgentServerError.missionSupportUnavailable(sessionID: sessionID)
+        }
+        return try await missionCoordinator.resumeMission(missionID: missionID)
+    }
+
+    public func retryMissionStage(stageID: String) async throws -> MissionStageRecord {
+        guard let missionCoordinator else {
+            throw RootAgentServerError.missionSupportUnavailable(sessionID: sessionID)
+        }
+        return try await missionCoordinator.retryMissionStage(stageID: stageID)
+    }
+
+    public func listInbox(unresolvedOnly: Bool = true) async throws -> [InteractionInboxItem] {
+        guard let interactionBroker else {
+            throw RootAgentServerError.missionSupportUnavailable(sessionID: sessionID)
+        }
+        return try await interactionBroker.listInbox(scope: scope, unresolvedOnly: unresolvedOnly)
+    }
+
+    public func approveRequest(
+        requestID: String,
+        approved: Bool,
+        actorID: ActorID? = nil,
+        responseText: String? = nil
+    ) async throws -> ApprovalRequestRecord {
+        guard let missionCoordinator else {
+            throw RootAgentServerError.missionSupportUnavailable(sessionID: sessionID)
+        }
+        return try await missionCoordinator.approveRequest(
+            requestID: requestID,
+            approved: approved,
+            actorID: actorID,
+            responseText: responseText
+        )
+    }
+
+    public func answerQuestion(
+        requestID: String,
+        answerText: String,
+        actorID: ActorID? = nil
+    ) async throws -> QuestionRequestRecord {
+        guard let missionCoordinator else {
+            throw RootAgentServerError.missionSupportUnavailable(sessionID: sessionID)
+        }
+        return try await missionCoordinator.answerQuestion(
+            requestID: requestID,
+            answerText: answerText,
+            actorID: actorID
+        )
+    }
+
+    public func requestApprovalPrompt(
+        title: String,
+        prompt: String,
+        missionID: String? = nil,
+        taskID: String? = nil,
+        requesterActorID: ActorID? = nil,
+        sensitive: Bool = true,
+        metadata: [String: String] = [:]
+    ) async throws -> ApprovalRequestRecord {
+        guard let interactionBroker else {
+            throw RootAgentServerError.missionSupportUnavailable(sessionID: sessionID)
+        }
+        return try await interactionBroker.requestApproval(
+            scope: scope,
+            title: title,
+            prompt: prompt,
+            missionID: missionID,
+            taskID: taskID,
+            requesterActorID: requesterActorID,
+            sensitive: sensitive,
+            policy: workspacePolicy,
+            metadata: metadata
+        )
+    }
+
+    public func requestQuestionPrompt(
+        title: String,
+        prompt: String,
+        kind: QuestionRequestRecord.Kind = .freeText,
+        options: [String] = [],
+        missionID: String? = nil,
+        taskID: String? = nil,
+        requesterActorID: ActorID? = nil,
+        metadata: [String: String] = [:]
+    ) async throws -> QuestionRequestRecord {
+        guard let interactionBroker else {
+            throw RootAgentServerError.missionSupportUnavailable(sessionID: sessionID)
+        }
+        return try await interactionBroker.requestQuestion(
+            scope: scope,
+            title: title,
+            prompt: prompt,
+            kind: kind,
+            options: options,
+            missionID: missionID,
+            taskID: taskID,
+            requesterActorID: requesterActorID,
+            metadata: metadata
+        )
     }
 
     public func listTasks(

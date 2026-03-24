@@ -16,29 +16,37 @@ enum TheAgentWorkerMain {
         }
         try stateRoot.prepare()
 
-        let artifactStore = try FileArtifactStore(rootDirectory: stateRoot.artifactsDirectoryURL)
         let executionMode = try options.executionMode()
         let requestedCapabilities = options.capabilities.isEmpty
             ? defaultCapabilities(remote: options.meshURL != nil)
             : options.capabilities
         let capabilities = WorkerExecutorFactory.augmentCapabilities(requestedCapabilities, mode: executionMode)
-        let executor = WorkerExecutorFactory.makeExecutor(mode: executionMode)
 
         let mode: String
         let transport: String
         let jobStore: any JobStore
+        let artifactStore: any ArtifactStore
+        let interactionBridge: (any WorkerInteractionBridge)?
 
         if let meshURL = options.meshURL {
             let remoteStore = HTTPMeshClient(baseURL: meshURL)
             try await remoteStore.ping()
             jobStore = remoteStore
+            artifactStore = remoteStore
+            interactionBridge = remoteStore
             mode = "remote-http"
             transport = "http"
         } else {
             jobStore = try SQLiteJobStore(fileURL: stateRoot.jobsDatabaseURL)
+            artifactStore = try FileArtifactStore(rootDirectory: stateRoot.artifactsDirectoryURL)
+            interactionBridge = nil
             mode = "local"
             transport = "sqlite"
         }
+        let executor = WorkerExecutorFactory.makeExecutor(
+            mode: executionMode,
+            interactionBridge: interactionBridge
+        )
 
         let worker = WorkerDaemon(
             displayName: options.displayName ?? ProcessInfo.processInfo.hostName,
@@ -109,6 +117,13 @@ private struct WorkerCLIOptions {
     var acpModeID: String?
     var acpTimeoutSeconds: Double?
     var acpWorkingDirectory: String?
+    var attractorEnabled = false
+    var attractorProvider = "openai"
+    var attractorModel: String?
+    var attractorReasoningEffort = "high"
+    var attractorWorkingDirectory: String?
+    var attractorLogsRoot: String?
+    var attractorHumanTimeoutSeconds: Double?
 
     init(arguments: [String]) throws {
         var index = 0
@@ -161,6 +176,30 @@ private struct WorkerCLIOptions {
             case "--acp-working-directory":
                 index += 1
                 acpWorkingDirectory = try Self.parseValue(arguments, index: index, flag: argument)
+            case "--attractor":
+                attractorEnabled = true
+            case "--attractor-provider":
+                index += 1
+                attractorProvider = try Self.parseValue(arguments, index: index, flag: argument)
+            case "--attractor-model":
+                index += 1
+                attractorModel = try Self.parseValue(arguments, index: index, flag: argument)
+            case "--attractor-reasoning-effort":
+                index += 1
+                attractorReasoningEffort = try Self.parseValue(arguments, index: index, flag: argument)
+            case "--attractor-working-directory":
+                index += 1
+                attractorWorkingDirectory = try Self.parseValue(arguments, index: index, flag: argument)
+            case "--attractor-logs-root":
+                index += 1
+                attractorLogsRoot = try Self.parseValue(arguments, index: index, flag: argument)
+            case "--attractor-human-timeout-seconds":
+                index += 1
+                let value = try Self.parseValue(arguments, index: index, flag: argument)
+                guard let seconds = Double(value), seconds > 0 else {
+                    throw WorkerCLIError.invalidValue(flag: argument, value: value)
+                }
+                attractorHumanTimeoutSeconds = seconds
             default:
                 throw WorkerCLIError.unknownArgument(argument)
             }
@@ -193,7 +232,34 @@ private struct WorkerCLIOptions {
             acpWorkingDirectory != nil
     }
 
+    private var hasAttractorOptions: Bool {
+        attractorEnabled ||
+            attractorModel != nil ||
+            attractorWorkingDirectory != nil ||
+            attractorLogsRoot != nil ||
+            attractorHumanTimeoutSeconds != nil ||
+            attractorProvider != "openai" ||
+            attractorReasoningEffort != "high"
+    }
+
     func executionMode() throws -> WorkerExecutionMode {
+        if hasACPOptions && hasAttractorOptions {
+            throw WorkerCLIError.conflictingModes("--acp-*", "--attractor*")
+        }
+
+        if hasAttractorOptions {
+            return .attractor(
+                AttractorWorkerRuntimeOptions(
+                    provider: attractorProvider,
+                    model: attractorModel ?? "gpt-5.2-codex",
+                    reasoningEffort: attractorReasoningEffort,
+                    workingDirectory: attractorWorkingDirectory,
+                    logsRoot: attractorLogsRoot,
+                    defaultHumanTimeoutSeconds: attractorHumanTimeoutSeconds ?? 600
+                )
+            )
+        }
+
         guard hasACPOptions else {
             return .local
         }
@@ -234,6 +300,7 @@ private enum WorkerCLIError: Error, CustomStringConvertible {
     case missingValue(String)
     case invalidValue(flag: String, value: String)
     case unknownArgument(String)
+    case conflictingModes(String, String)
 
     var description: String {
         switch self {
@@ -243,6 +310,8 @@ private enum WorkerCLIError: Error, CustomStringConvertible {
             return "Invalid value '\(value)' for \(flag)."
         case .unknownArgument(let argument):
             return "Unknown argument \(argument)."
+        case .conflictingModes(let lhs, let rhs):
+            return "Arguments \(lhs) and \(rhs) cannot be used together."
         }
     }
 }
