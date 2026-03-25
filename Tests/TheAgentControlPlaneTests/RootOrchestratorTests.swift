@@ -1,6 +1,7 @@
 import Foundation
 import Testing
 import OmniAICore
+import OmniAIAgent
 import OmniAgentMesh
 import TheAgentWorkerKit
 @testable import TheAgentControlPlaneKit
@@ -93,6 +94,92 @@ private func rootOrchestratorResponse(
 
 @Suite
 struct RootOrchestratorTests {
+    @Test
+    func openAIRootDefaultsToGPT54AndAdvertisesDirectCodingTools() async throws {
+        let contextBuffer = RootPromptContextBuffer()
+        let profile = RootOrchestratorProfile(
+            wrapping: OpenAIProfile(
+                model: RootAgentProvider.openai.defaultModel,
+                includeWebSearch: true
+            ),
+            contextBuffer: contextBuffer,
+            additionalTools: [],
+            enableNativeWebSearch: true,
+            enableSubagentTools: true
+        )
+        let environment = LocalExecutionEnvironment(workingDir: FileManager.default.currentDirectoryPath)
+        try await environment.initialize()
+
+        let prompt = profile.buildSystemPrompt(
+            environment: environment,
+            projectDocs: nil,
+            userInstructions: nil,
+            gitContext: nil
+        )
+
+        #expect(RootAgentProvider.openai.defaultModel == "gpt-5.4")
+        #expect(profile.toolRegistry.names().contains("exec_command"))
+        #expect(profile.toolRegistry.names().contains("write_stdin"))
+        #expect(prompt.localizedStandardContains("exec_command"))
+        #expect(prompt.localizedStandardContains("write_stdin"))
+        #expect(prompt.localizedStandardContains("native web research"))
+        #expect(prompt.localizedStandardContains("spawn_agent"))
+        #expect(prompt.localizedStandardContains("do not claim you lack tool access"))
+    }
+
+    @Test
+    func rootRuntimeYoloEnablesSubagentsAndNativeWebSearch() async throws {
+        let stateRoot = try makeStateRoot(prefix: "root-yolo-runtime")
+        let conversationStore = try SQLiteConversationStore(fileURL: stateRoot.conversationDatabaseURL)
+        let jobStore = try SQLiteJobStore(fileURL: stateRoot.jobsDatabaseURL)
+        let rootServer = RootAgentServer(
+            sessionID: "root",
+            conversationStore: conversationStore,
+            jobStore: jobStore,
+            hotWindowLimit: 4,
+            notificationPolicy: NotificationPolicy(interruptThreshold: .important),
+            scheduler: RootScheduler(jobStore: jobStore)
+        )
+        let adapter = RootOrchestratorTestAdapter(
+            responses: [
+                rootOrchestratorResponse(text: "ready"),
+            ]
+        )
+        let client = try Client(
+            providers: ["openai": adapter],
+            defaultProvider: "openai"
+        )
+
+        let runtime = try await RootAgentRuntime.make(
+            server: rootServer,
+            stateRoot: stateRoot,
+            options: RootAgentRuntimeOptions(
+                provider: .openai,
+                model: "gpt-5.4",
+                workingDirectory: stateRoot.rootDirectory.path(),
+                yoloMode: true
+            ),
+            client: client
+        )
+
+        let toolNames = runtime.profile.toolRegistry.names()
+        let sessionConfig = await runtime.session.config
+        let providerOptions = runtime.profile.providerOptions()
+        let openAIOptions = providerOptions?["openai"]?.objectValue
+
+        #expect(toolNames.contains("spawn_agent"))
+        #expect(toolNames.contains("send_input"))
+        #expect(toolNames.contains("wait"))
+        #expect(toolNames.contains("close_agent"))
+        #expect(sessionConfig.reasoningEffort == "high")
+        #expect(sessionConfig.parallelToolCalls == true)
+        #expect(sessionConfig.maxSubagentDepth >= 3)
+        #expect(openAIOptions?[OpenAIProviderOptionKeys.includeNativeWebSearch]?.boolValue == true)
+        #expect(openAIOptions?[OpenAIProviderOptionKeys.webSearchExternalWebAccess]?.boolValue == true)
+
+        await runtime.close()
+    }
+
     @Test
     func rootRuntimeUsesSessionLoopToDelegateWaitAndResolveNotifications() async throws {
         let stateRoot = try makeStateRoot(prefix: "root-orchestrator")
@@ -218,7 +305,10 @@ struct RootOrchestratorTests {
 
         if let taskID = tasks.first?.taskID {
             let events = try await jobStore.events(taskID: taskID, afterSequence: nil)
-            #expect(events.map(\.kind) == [.submitted, .assigned, .started, .progress, .completed])
+            let progressEvents = events.filter { $0.kind == .progress }
+            #expect(events.map(\.kind) == [.submitted, .assigned, .started, .progress, .progress, .completed])
+            #expect(progressEvents.contains { $0.summary?.localizedStandardContains("task started") == true })
+            #expect(progressEvents.contains { $0.summary == "Worker started task" })
         } else {
             Issue.record("Expected one task to be created by delegate_task.")
         }

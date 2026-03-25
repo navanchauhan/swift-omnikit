@@ -132,15 +132,31 @@ public actor WorkerDaemon: WorkerDispatching {
                 idempotencyKey: "task.started.\(task.taskID).\(Int(claimedAt.timeIntervalSince1970 * 1_000))"
             )
             await eventStream.publish(started)
+            let workerStartedHeartbeat = try await jobStore.appendProgress(
+                taskID: task.taskID,
+                workerID: workerID,
+                summary: "Worker heartbeat: task started",
+                data: [
+                    "heartbeat_source": "worker",
+                    "heartbeat_phase": "started",
+                    "task_id": task.taskID,
+                ],
+                idempotencyKey: "task.heartbeat.started.\(task.taskID)",
+                now: claimedAt
+            )
+            await eventStream.publish(workerStartedHeartbeat)
 
             let result = try await executor.execute(task: task) { summary, data in
                 try Task.checkCancellation()
                 let timestamp = Date()
+                var heartbeatData = data
+                heartbeatData["heartbeat_source"] = heartbeatData["heartbeat_source"] ?? "worker"
+                heartbeatData["heartbeat_phase"] = heartbeatData["heartbeat_phase"] ?? "progress"
                 let progress = try await self.jobStore.appendProgress(
                     taskID: task.taskID,
                     workerID: self.workerID,
                     summary: summary,
-                    data: data,
+                    data: heartbeatData,
                     idempotencyKey: "task.progress.\(task.taskID).\(UUID().uuidString)",
                     now: timestamp
                 )
@@ -191,6 +207,21 @@ public actor WorkerDaemon: WorkerDispatching {
                 await eventStream.publish(cancelled)
             }
         } catch {
+            let timestamp = Date()
+            if let failureHeartbeat = try? await jobStore.appendProgress(
+                taskID: task.taskID,
+                workerID: workerID,
+                summary: "Worker heartbeat: task failed",
+                data: [
+                    "heartbeat_source": "worker",
+                    "heartbeat_phase": "failed",
+                    "error": String(describing: error),
+                ],
+                idempotencyKey: "task.heartbeat.failed.\(task.taskID)",
+                now: timestamp
+            ) {
+                await eventStream.publish(failureHeartbeat)
+            }
             if let failed = try? await jobStore.failTask(
                 taskID: task.taskID,
                 workerID: workerID,

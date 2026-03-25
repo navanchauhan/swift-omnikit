@@ -101,6 +101,7 @@ public actor ChildWorkerManager {
             parentTaskID: parentTask.taskID,
             capabilityRequirements: request.capabilityRequirements,
             historyProjection: projection,
+            metadata: parentTask.metadata,
             priority: request.priority,
             createdAt: createdAt,
             updatedAt: createdAt

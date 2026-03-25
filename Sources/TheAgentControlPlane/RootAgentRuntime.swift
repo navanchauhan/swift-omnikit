@@ -10,6 +10,11 @@ public struct RootAgentRuntimeOptions: Sendable {
     public var sessionID: String
     public var sessionConfig: SessionConfig
     public var autoRestoreFromStorage: Bool
+    public var enableNativeWebSearch: Bool
+    public var nativeWebSearchExternalWebAccess: Bool?
+    public var enableSubagentTools: Bool
+    public var forceCodexSystemPrompt: Bool
+    public var yoloMode: Bool
 
     public init(
         provider: RootAgentProvider = .openai,
@@ -17,7 +22,12 @@ public struct RootAgentRuntimeOptions: Sendable {
         workingDirectory: String? = nil,
         sessionID: String = "root",
         sessionConfig: SessionConfig = SessionConfig(),
-        autoRestoreFromStorage: Bool = true
+        autoRestoreFromStorage: Bool = true,
+        enableNativeWebSearch: Bool = true,
+        nativeWebSearchExternalWebAccess: Bool? = true,
+        enableSubagentTools: Bool = true,
+        forceCodexSystemPrompt: Bool = false,
+        yoloMode: Bool = false
     ) {
         self.provider = provider
         self.model = model
@@ -25,6 +35,11 @@ public struct RootAgentRuntimeOptions: Sendable {
         self.sessionID = sessionID
         self.sessionConfig = sessionConfig
         self.autoRestoreFromStorage = autoRestoreFromStorage
+        self.enableNativeWebSearch = enableNativeWebSearch
+        self.nativeWebSearchExternalWebAccess = nativeWebSearchExternalWebAccess
+        self.enableSubagentTools = enableSubagentTools
+        self.forceCodexSystemPrompt = forceCodexSystemPrompt
+        self.yoloMode = yoloMode
     }
 }
 
@@ -41,16 +56,19 @@ public struct RootAgentTurnResult: Sendable, Equatable {
 public final class RootAgentRuntime: @unchecked Sendable {
     public let server: RootAgentServer
     public let session: Session
+    public let profile: RootOrchestratorProfile
 
     private let contextBuffer: RootPromptContextBuffer
 
     init(
         server: RootAgentServer,
         session: Session,
+        profile: RootOrchestratorProfile,
         contextBuffer: RootPromptContextBuffer
     ) {
         self.server = server
         self.session = session
+        self.profile = profile
         self.contextBuffer = contextBuffer
     }
 
@@ -64,11 +82,18 @@ public final class RootAgentRuntime: @unchecked Sendable {
         let contextBuffer = RootPromptContextBuffer()
         let toolbox = RootAgentToolbox(server: server)
         let additionalTools = await toolbox.registeredTools()
-        let wrappedProfile = baseProfile ?? options.provider.makeProfile(model: options.model)
+        let wrappedProfile = baseProfile ?? options.provider.makeProfile(
+            model: options.model,
+            enableNativeWebSearch: options.effectiveEnableNativeWebSearch,
+            nativeWebSearchExternalWebAccess: options.effectiveNativeWebSearchExternalWebAccess,
+            forceCodexSystemPrompt: options.effectiveForceCodexSystemPrompt
+        )
         let profile = RootOrchestratorProfile(
             wrapping: wrappedProfile,
             contextBuffer: contextBuffer,
-            additionalTools: additionalTools
+            additionalTools: additionalTools,
+            enableNativeWebSearch: options.effectiveEnableNativeWebSearch && wrappedProfile.id == "openai",
+            enableSubagentTools: options.effectiveEnableSubagentTools
         )
 
         let workingDirectory = options.workingDirectory ?? FileManager.default.currentDirectoryPath
@@ -93,15 +118,22 @@ public final class RootAgentRuntime: @unchecked Sendable {
             profile: profile,
             environment: environment,
             client: resolvedClient,
-            config: options.sessionConfig,
+            config: options.effectiveSessionConfig(),
             sessionID: options.sessionID,
             storageBackend: storageBackend,
             autoRestoreFromStorage: options.autoRestoreFromStorage
         )
+        if options.effectiveEnableSubagentTools {
+            profile.toolRegistry.register(codexSpawnAgentTool(parentSession: session))
+            profile.toolRegistry.register(codexSendInputTool(parentSession: session))
+            profile.toolRegistry.register(codexWaitTool(parentSession: session))
+            profile.toolRegistry.register(codexCloseAgentTool(parentSession: session))
+        }
 
         let runtime = RootAgentRuntime(
             server: server,
             session: session,
+            profile: profile,
             contextBuffer: contextBuffer
         )
         try await runtime.refreshPromptContext()
@@ -146,6 +178,7 @@ public final class RootAgentRuntime: @unchecked Sendable {
     private func refreshPromptContext() async throws {
         let snapshot = try await server.restoreState()
         contextBuffer.update(snapshot: snapshot)
+        contextBuffer.update(skillContext: try await server.activeSkillPromptContext())
     }
 
     private func newestAssistantText(from history: [Turn], afterTurnCount: Int) -> String {
@@ -166,5 +199,40 @@ public final class RootAgentRuntime: @unchecked Sendable {
         let allowed = Set("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_.")
         let sanitized = String(rawValue.map { allowed.contains($0) ? $0 : "_" })
         return sanitized.isEmpty ? "root" : sanitized
+    }
+}
+
+private extension RootAgentRuntimeOptions {
+    var effectiveEnableNativeWebSearch: Bool {
+        provider == .openai && (enableNativeWebSearch || yoloMode)
+    }
+
+    var effectiveNativeWebSearchExternalWebAccess: Bool? {
+        guard provider == .openai else {
+            return nil
+        }
+        return nativeWebSearchExternalWebAccess
+    }
+
+    var effectiveEnableSubagentTools: Bool {
+        enableSubagentTools || yoloMode
+    }
+
+    var effectiveForceCodexSystemPrompt: Bool {
+        provider == .openai && (forceCodexSystemPrompt || yoloMode)
+    }
+
+    func effectiveSessionConfig() -> SessionConfig {
+        var resolved = sessionConfig
+        if yoloMode {
+            if resolved.reasoningEffort == nil {
+                resolved.reasoningEffort = "high"
+            }
+            if resolved.parallelToolCalls == nil {
+                resolved.parallelToolCalls = true
+            }
+            resolved.maxSubagentDepth = max(resolved.maxSubagentDepth, 3)
+        }
+        return resolved
     }
 }

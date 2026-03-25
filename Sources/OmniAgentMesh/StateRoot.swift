@@ -30,8 +30,20 @@ public struct AgentFabricStateRoot: Sendable, Equatable {
         rootDirectory.appending(path: "missions.sqlite")
     }
 
+    public var skillsDatabaseURL: URL {
+        rootDirectory.appending(path: "skills.sqlite")
+    }
+
+    public var deliveriesDatabaseURL: URL {
+        rootDirectory.appending(path: "deliveries.sqlite")
+    }
+
     public var deploymentDatabaseURL: URL {
         rootDirectory.appending(path: "deploy.sqlite")
+    }
+
+    public var skillsDirectoryURL: URL {
+        rootDirectory.appending(path: "skills", directoryHint: .isDirectory)
     }
 
     public var artifactsDirectoryURL: URL {
@@ -46,10 +58,16 @@ public struct AgentFabricStateRoot: Sendable, Equatable {
         rootDirectory.appending(path: "checkpoints", directoryHint: .isDirectory)
     }
 
+    public var runtimeDirectoryURL: URL {
+        rootDirectory.appending(path: "runtime", directoryHint: .isDirectory)
+    }
+
     public func prepare() throws {
         try FileManager.default.createDirectory(at: rootDirectory, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: skillsDirectoryURL, withIntermediateDirectories: true)
         try FileManager.default.createDirectory(at: artifactsDirectoryURL, withIntermediateDirectories: true)
         try FileManager.default.createDirectory(at: releasesDirectoryURL, withIntermediateDirectories: true)
         try FileManager.default.createDirectory(at: checkpointsDirectoryURL, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: runtimeDirectoryURL, withIntermediateDirectories: true)
     }
 }

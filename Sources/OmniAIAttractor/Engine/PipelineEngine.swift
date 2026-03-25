@@ -10,6 +10,7 @@ public struct PipelineConfig: Sendable {
     public var transforms: [GraphTransform]
     public var eventEmitter: PipelineEventEmitter?
     public var client: (any Sendable)?
+    public var initialContextValues: [String: String]
 
     public init(
         logsRoot: URL,
@@ -18,7 +19,8 @@ public struct PipelineConfig: Sendable {
         interviewer: Interviewer = AutoApproveInterviewer(),
         transforms: [GraphTransform] = [],
         eventEmitter: PipelineEventEmitter? = nil,
-        client: (any Sendable)? = nil
+        client: (any Sendable)? = nil,
+        initialContextValues: [String: String] = [:]
     ) {
         self.logsRoot = logsRoot
         self.retryPolicy = retryPolicy
@@ -27,6 +29,7 @@ public struct PipelineConfig: Sendable {
         self.transforms = transforms
         self.eventEmitter = eventEmitter
         self.client = client
+        self.initialContextValues = initialContextValues
     }
 }
 
@@ -106,6 +109,7 @@ public final class PipelineEngine: Sendable {
         while true {
             let cycleLogsRoot = logsRootForCycle(base: config.logsRoot, cycleIndex: cycleIndex)
             let context = PipelineContext()
+            context.applyUpdates(config.initialContextValues)
             if loopRestartCount > 0 {
                 context.set("internal.loop_restart_count", String(loopRestartCount))
                 context.set("loop_restart", "true")
@@ -159,6 +163,7 @@ public final class PipelineEngine: Sendable {
         try PipelineValidator.validateOrRaise(g)
 
         let context = PipelineContext()
+        context.applyUpdates(config.initialContextValues)
         // Restore context from checkpoint
         for (key, value) in checkpoint.contextValues {
             context.set(key, value)

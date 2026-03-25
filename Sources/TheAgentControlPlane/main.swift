@@ -22,19 +22,31 @@ enum TheAgentControlPlaneMain {
         let identityStore = try SQLiteIdentityStore(fileURL: stateRoot.identityDatabaseURL)
         let jobStore = try SQLiteJobStore(fileURL: stateRoot.jobsDatabaseURL)
         let missionStore = try SQLiteMissionStore(fileURL: stateRoot.missionsDatabaseURL)
-        let deliveryStore = try SQLiteDeliveryStore(fileURL: stateRoot.missionsDatabaseURL)
+        let skillStore = try SQLiteSkillStore(fileURL: stateRoot.skillsDatabaseURL)
+        let deliveryStore = try SQLiteDeliveryStore(fileURL: stateRoot.deliveriesDatabaseURL)
         let artifactStore = try FileArtifactStore(rootDirectory: stateRoot.artifactsDirectoryURL)
+        let pairingStore = PairingStore(fileURL: stateRoot.runtimeDirectoryURL.appending(path: "pairings.json"))
+        let channelPolicyManager = ChannelPolicyManager(
+            identityStore: identityStore,
+            pairingStore: pairingStore
+        )
+        let onboardingWizard = OnboardingWizard(policyManager: channelPolicyManager)
+        let attachmentStager = AttachmentStager(artifactStore: artifactStore)
         _ = try await SessionScopeBootstrapper(
             identityStore: identityStore,
             conversationStore: conversationStore,
             jobStore: jobStore
         ).bootstrap()
         let serverRegistry = WorkspaceSessionRegistry(
+            stateRoot: stateRoot,
+            identityStore: identityStore,
             conversationStore: conversationStore,
             jobStore: jobStore,
             missionStore: missionStore,
+            skillStore: skillStore,
             artifactStore: artifactStore,
-            deliveryStore: deliveryStore
+            deliveryStore: deliveryStore,
+            pairingStore: pairingStore
         )
         let runtimeRegistry = WorkspaceRuntimeRegistry(
             serverRegistry: serverRegistry,
@@ -42,20 +54,25 @@ enum TheAgentControlPlaneMain {
             runtimeOptions: RootAgentRuntimeOptions(
                 provider: options.provider,
                 model: options.model,
-                workingDirectory: options.workingDirectory
+                workingDirectory: options.workingDirectory,
+                yoloMode: options.yoloMode
             )
         )
         let gateway = IngressGateway(
             identityStore: identityStore,
             deliveryStore: deliveryStore,
             missionStore: missionStore,
-            runtimeRegistry: runtimeRegistry
+            runtimeRegistry: runtimeRegistry,
+            policyManager: channelPolicyManager,
+            onboardingWizard: onboardingWizard,
+            attachmentStager: attachmentStager
         )
         let rootServer = await serverRegistry.server(sessionID: "root")
         let interactionBridge = MeshInteractionBridgeService(
             serverRegistry: serverRegistry,
             missionStore: missionStore
         )
+        var supervisorTask: Task<Void, Never>?
 
         var meshServer: HTTPMeshServer?
         if let meshPort = options.meshPort {
@@ -153,7 +170,8 @@ enum TheAgentControlPlaneMain {
                     provider: options.provider,
                     model: options.model,
                     workingDirectory: options.workingDirectory,
-                    sessionID: rootServer.sessionID
+                    sessionID: rootServer.sessionID,
+                    yoloMode: options.yoloMode
                 )
             )
             let result = try await runtime.submitUserText(prompt)
@@ -171,6 +189,7 @@ enum TheAgentControlPlaneMain {
                 try await ingressServer.stop()
             }
             telegramPollingTask?.cancel()
+            supervisorTask?.cancel()
             await runtimeRegistry.closeAll()
             return
         }
@@ -193,11 +212,23 @@ enum TheAgentControlPlaneMain {
                 try await ingressServer.stop()
             }
             telegramPollingTask?.cancel()
+            supervisorTask?.cancel()
             await runtimeRegistry.closeAll()
             return
         }
 
         if meshServer != nil || ingressServer != nil || telegramPollingTask != nil {
+            supervisorTask = Task {
+                do {
+                    while !Task.isCancelled {
+                        _ = try await rootServer.runSupervisorSweep(now: Date())
+                        try await Task.sleep(for: .seconds(5))
+                    }
+                } catch is CancellationError {
+                } catch {
+                    fputs("Supervisor loop stopped: \(error)\n", stderr)
+                }
+            }
             do {
                 while true {
                     try await Task.sleep(for: .seconds(86_400))
@@ -210,6 +241,7 @@ enum TheAgentControlPlaneMain {
                     try? await ingressServer.stop()
                 }
                 telegramPollingTask?.cancel()
+                supervisorTask?.cancel()
             }
             await runtimeRegistry.closeAll()
             return
@@ -273,6 +305,7 @@ private struct ControlPlaneCLIOptions {
     var listWorkers = false
     var provider: RootAgentProvider = .openai
     var model: String?
+    var yoloMode = false
     var workingDirectory: String?
     var httpIngressHost = "127.0.0.1"
     var httpIngressPort: Int?
@@ -325,6 +358,8 @@ private struct ControlPlaneCLIOptions {
             case "--model":
                 index += 1
                 model = try Self.parseValue(arguments, index: index, flag: argument)
+            case "--yolo":
+                yoloMode = true
             case "--working-directory":
                 index += 1
                 workingDirectory = try Self.parseValue(arguments, index: index, flag: argument)

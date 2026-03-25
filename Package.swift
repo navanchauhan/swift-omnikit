@@ -91,6 +91,10 @@ let package = Package(
             targets: ["OmniAgentMesh"]
         ),
         .library(
+            name: "OmniSkills",
+            targets: ["OmniSkills"]
+        ),
+        .library(
             name: "OmniUICore",
             targets: ["OmniUICore"]
         ),
@@ -141,6 +145,10 @@ let package = Package(
         .executable(
             name: "TheAgentControlPlane",
             targets: ["TheAgentControlPlaneCLI"]
+        ),
+        .executable(
+            name: "TheAgentSupervisor",
+            targets: ["TheAgentSupervisor"]
         ),
         .library(
             name: "TheAgentWorkerKit",
@@ -399,7 +407,7 @@ let package = Package(
         .target(
             name: "OmniAIAgent",
             dependencies: [
-                "OmniAICore", "OmniMCP", "OmniExecution",
+                "OmniAICore", "OmniMCP", "OmniExecution", "OmniSkills",
                 .target(name: "OmniContainer", condition: .when(platforms: [.macOS, .linux])),
             ],
             path: "Sources/OmniAIAgent",
@@ -433,7 +441,7 @@ let package = Package(
         ),
         .target(
             name: "OmniAgentsSDK",
-            dependencies: ["OmniAICore", "OmniAgentMesh", "OmniMCP"],
+            dependencies: ["OmniAICore", "OmniAgentMesh", "OmniMCP", "OmniSkills"],
             path: "Sources/OmniAgentsSDK",
             swiftSettings: swift6CommonSwiftSettings
         ),
@@ -446,6 +454,14 @@ let package = Package(
                 .product(name: "NIOPosix", package: "swift-nio"),
             ],
             path: "Sources/OmniAgentMesh",
+            swiftSettings: swift6CommonSwiftSettings
+        ),
+        .target(
+            name: "OmniSkills",
+            dependencies: [
+                "OmniAgentMesh",
+            ],
+            path: "Sources/OmniSkills",
             swiftSettings: swift6CommonSwiftSettings
         ),
         .target(
@@ -541,6 +557,7 @@ let package = Package(
                 "OmniAIAttractor",
                 "OmniAgentMesh",
                 "OmniMCP",
+                "OmniSkills",
             ],
             path: "Sources/TheAgentWorker",
             exclude: ["main.swift"],
@@ -572,6 +589,7 @@ let package = Package(
                 "OmniAIAgent",
                 "OmniAICore",
                 "OmniAgentMesh",
+                "OmniSkills",
                 "TheAgentWorkerKit",
             ],
             path: "Sources/TheAgentControlPlane",
@@ -605,11 +623,15 @@ let package = Package(
             path: "Sources/TheAgentControlPlane",
             exclude: [
                 "Changes",
+                "Diagnostics",
                 "Interaction",
+                "Memory",
                 "Missions",
                 "NotificationInbox.swift",
+                "Onboarding",
                 "Policy",
                 "Registry",
+                "Routing",
                 "Runtime",
                 "RootAgentRuntime.swift",
                 "RootAgentToolbox.swift",
@@ -617,8 +639,16 @@ let package = Package(
                 "RootAgentServer.swift",
                 "RootConversation.swift",
                 "Scheduler",
+                "Skills",
+                "Supervision",
             ],
             sources: ["main.swift"],
+            swiftSettings: swift6CommonSwiftSettings
+        ),
+        .executableTarget(
+            name: "TheAgentSupervisor",
+            dependencies: ["TheAgentControlPlaneKit", "TheAgentWorkerKit", "OmniAgentMesh"],
+            path: "Sources/TheAgentSupervisor",
             swiftSettings: swift6CommonSwiftSettings
         ),
         .target(
@@ -708,6 +738,7 @@ let package = Package(
             name: "OmniAgentsSDKTests",
             dependencies: [
                 "OmniAgentsSDK",
+                "OmniSkills",
                 .product(name: "Testing", package: "swift-testing"),
             ],
             swiftSettings: commonSwiftSettings
@@ -721,9 +752,19 @@ let package = Package(
             swiftSettings: swift6CommonSwiftSettings
         ),
         .testTarget(
+            name: "OmniSkillsTests",
+            dependencies: [
+                "OmniSkills",
+                "OmniAgentMesh",
+                .product(name: "Testing", package: "swift-testing"),
+            ],
+            swiftSettings: swift6CommonSwiftSettings
+        ),
+        .testTarget(
             name: "OmniAIAgentTests",
             dependencies: [
                 "OmniAIAgent",
+                "OmniSkills",
                 "OmniAICore",
                 .product(name: "Testing", package: "swift-testing"),
             ],
@@ -733,7 +774,9 @@ let package = Package(
             name: "TheAgentWorkerTests",
             dependencies: [
                 "TheAgentWorkerKit",
+                "TheAgentControlPlaneKit",
                 "OmniAgentMesh",
+                "OmniSkills",
                 "OmniACP",
                 "OmniACPModel",
                 "OmniAIAttractor",
@@ -749,6 +792,7 @@ let package = Package(
                 "TheAgentWorkerKit",
                 "OmniAICore",
                 "OmniAgentMesh",
+                "OmniSkills",
                 .product(name: "Testing", package: "swift-testing"),
             ],
             swiftSettings: swift6CommonSwiftSettings
@@ -759,6 +803,7 @@ let package = Package(
                 "TheAgentIngress",
                 "TheAgentTelegram",
                 "TheAgentControlPlaneKit",
+                "TheAgentWorkerKit",
                 "OmniAICore",
                 "OmniAgentMesh",
                 .product(name: "Testing", package: "swift-testing"),

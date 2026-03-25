@@ -7,17 +7,26 @@ public actor IngressGateway {
     private let deliveryStore: any DeliveryStore
     private let missionStore: (any MissionStore)?
     private let runtimeRegistry: WorkspaceRuntimeRegistry
+    private let policyManager: ChannelPolicyManager?
+    private let onboardingWizard: OnboardingWizard?
+    private let attachmentStager: AttachmentStager?
 
     public init(
         identityStore: any IdentityStore,
         deliveryStore: any DeliveryStore,
         missionStore: (any MissionStore)? = nil,
-        runtimeRegistry: WorkspaceRuntimeRegistry
+        runtimeRegistry: WorkspaceRuntimeRegistry,
+        policyManager: ChannelPolicyManager? = nil,
+        onboardingWizard: OnboardingWizard? = nil,
+        attachmentStager: AttachmentStager? = nil
     ) {
         self.identityStore = identityStore
         self.deliveryStore = deliveryStore
         self.missionStore = missionStore
         self.runtimeRegistry = runtimeRegistry
+        self.policyManager = policyManager
+        self.onboardingWizard = onboardingWizard
+        self.attachmentStager = attachmentStager
     }
 
     public func handle(_ envelope: IngressEnvelope) async throws -> IngressGatewayResult {
@@ -26,6 +35,46 @@ public actor IngressGateway {
         }
 
         let route = try await resolveRoute(for: envelope)
+        if let onboardingWizard,
+           let context = onboardingContext(for: envelope),
+           let outcome = try await onboardingWizard.evaluate(
+               context: context,
+               actorID: route.messageActorID,
+               workspace: route.workspace,
+               binding: route.binding
+           ),
+           outcome.disposition == .replyAndStop {
+            let message = outcome.message ?? "This channel is not ready yet."
+            let instruction = IngressDeliveryInstruction(
+                idempotencyKey: "\(envelope.idempotencyKey).onboarding",
+                kind: .message,
+                transport: envelope.transport,
+                visibility: .sameChannel,
+                workspaceID: route.runtimeScope.workspaceID,
+                channelID: route.runtimeScope.channelID,
+                actorID: route.messageActorID,
+                targetExternalID: envelope.channelExternalID,
+                chunks: IngressDeliveryFormatter.chunkText(message),
+                metadata: envelope.metadata.merging([
+                    "interaction_kind": "onboarding",
+                ]) { _, new in new }
+            )
+            try await saveInboundDelivery(
+                envelope: envelope,
+                route: route,
+                status: .processed,
+                summary: envelope.text ?? "Handled by onboarding gate."
+            )
+            try await saveOutboundDelivery(instruction, route: route)
+            return IngressGatewayResult(
+                disposition: .processed,
+                runtimeScope: route.runtimeScope,
+                actorID: route.messageActorID,
+                assistantText: message,
+                deliveries: [instruction]
+            )
+        }
+
         if envelope.payloadKind != .callback && shouldIgnore(envelope: envelope, route: route) {
             try await saveInboundDelivery(
                 envelope: envelope,
@@ -153,11 +202,19 @@ public actor IngressGateway {
                 )
             }
 
+            let stagedAttachments = try await attachmentStager?.stage(
+                attachments: envelope.attachments,
+                workspaceID: route.runtimeScope.workspaceID,
+                channelID: route.runtimeScope.channelID
+            ) ?? AttachmentStageResult()
             let runtime = try await runtimeRegistry.runtime(for: route.runtimeScope)
             let turn = try await runtime.submitUserText(
                 trimmed,
                 actorID: route.messageActorID,
-                metadata: route.messageMetadata(merging: envelope.metadata, envelope: envelope)
+                metadata: route.messageMetadata(
+                    merging: envelope.metadata.merging(stagedAttachments.metadata) { _, new in new },
+                    envelope: envelope
+                )
             )
             let deferredInstructions = try await collectDeferredInteractionDeliveries(
                 route: route,
@@ -300,6 +357,26 @@ public actor IngressGateway {
         }
     }
 
+    private func onboardingContext(for envelope: IngressEnvelope) -> ChannelIngressContext? {
+        let channelKind: ChannelIngressContext.ChannelKind
+        switch envelope.channelKind {
+        case .directMessage:
+            channelKind = .directMessage
+        case .group:
+            channelKind = .group
+        case .topic:
+            channelKind = .topic
+        case .api:
+            channelKind = .api
+        }
+        return ChannelIngressContext(
+            transport: envelope.transport,
+            actorExternalID: envelope.actorExternalID,
+            channelKind: channelKind,
+            text: envelope.text
+        )
+    }
+
     private func provisionalWorkspaceID(for envelope: IngressEnvelope) -> WorkspaceID {
         switch envelope.channelKind {
         case .directMessage:
@@ -331,14 +408,7 @@ public actor IngressGateway {
                 )
             )
         }
-        if try await identityStore.membership(workspaceID: workspaceID, actorID: actorID) == nil,
-           try await identityStore.workspace(workspaceID: workspaceID) != nil {
-            let existingMembers = try await identityStore.memberships(workspaceID: workspaceID)
-            let role: WorkspaceMembership.Role = existingMembers.isEmpty ? .owner : .member
-            try await identityStore.saveMembership(
-                WorkspaceMembership(workspaceID: workspaceID, actorID: actorID, role: role)
-            )
-        }
+        _ = workspaceID
         return actorID
     }
 

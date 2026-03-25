@@ -1,7 +1,9 @@
 import Foundation
+import OmniAICore
 import OmniAIAttractor
 import OmniAgentMesh
 import OmniACPModel
+import OmniSkills
 
 public struct ACPWorkerProfile: Sendable {
     public var profileID: String
@@ -119,10 +121,12 @@ public actor ACPWorkerSession {
         workingDirectory: String
     ) async throws -> ACPWorkerExecutionResult {
         let toolServerName = "\(profile.profileID)-worker-tools"
-        let mcpServers: [OmniACPModel.MCPServer] = if let toolRegistry {
-            await toolRegistry.makeACPServers(serverName: toolServerName)
+        let mcpServers: [OmniACPModel.MCPServer]
+        if let toolRegistry {
+            try await registerProjectedTools(from: task, in: toolRegistry)
+            mcpServers = await toolRegistry.makeACPServers(serverName: toolServerName)
         } else {
-            []
+            mcpServers = []
         }
 
         var configuration = profile.preset.makeConfiguration(
@@ -163,6 +167,27 @@ public actor ACPWorkerSession {
             "task.root_session_id": task.rootSessionID,
             "task.parent_task_id": task.parentTaskID ?? "",
         ])
+        if let activeSkillIDs = task.metadata["omni_skills.active_ids"], !activeSkillIDs.isEmpty {
+            context.set("task.active_skill_ids", activeSkillIDs)
+        }
+        if let overlay = task.metadata["omni_skills.prompt_overlay"], !overlay.isEmpty {
+            context.set("task.skill_prompt_overlay", overlay)
+        }
+        if let overlay = task.metadata["omni_skills.codergen_overlay"], !overlay.isEmpty {
+            context.set("task.skill_codergen_overlay", overlay)
+        }
+        if let modelRouteTier = task.metadata["model_route_tier"], !modelRouteTier.isEmpty {
+            context.set("task.model_route_tier", modelRouteTier)
+        }
+        if let modelRouteProvider = task.metadata["model_route_provider"], !modelRouteProvider.isEmpty {
+            context.set("task.model_route_provider", modelRouteProvider)
+        }
+        if let modelRouteModel = task.metadata["model_route_model"], !modelRouteModel.isEmpty {
+            context.set("task.model_route_model", modelRouteModel)
+        }
+        if let modelRouteReasoningEffort = task.metadata["model_route_reasoning_effort"], !modelRouteReasoningEffort.isEmpty {
+            context.set("task.model_route_reasoning_effort", modelRouteReasoningEffort)
+        }
         if !projection.expectedOutputs.isEmpty {
             context.set("task.expected_outputs", projection.expectedOutputs.joined(separator: ", "))
         }
@@ -205,6 +230,53 @@ public actor ACPWorkerSession {
                 "Expected outputs:\n" + projection.expectedOutputs.map { "- \($0)" }.joined(separator: "\n")
             )
         }
+        if let activeSkillIDs = task.metadata["omni_skills.active_ids"], !activeSkillIDs.isEmpty {
+            sections.append("Active skills:\n- " + activeSkillIDs.replacingOccurrences(of: ",", with: "\n- "))
+        }
+        if let overlay = task.metadata["omni_skills.prompt_overlay"],
+           !overlay.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            sections.append("Skill overlay:\n\(overlay)")
+        }
+        if let overlay = task.metadata["omni_skills.codergen_overlay"],
+           !overlay.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            sections.append("Codergen skill guidance:\n\(overlay)")
+        }
+        if let modelRouteTier = task.metadata["model_route_tier"], !modelRouteTier.isEmpty {
+            sections.append("Model route tier: \(modelRouteTier)")
+        }
+        if let modelRouteModel = task.metadata["model_route_model"], !modelRouteModel.isEmpty {
+            sections.append("Preferred model route: \(task.metadata["model_route_provider"] ?? "unknown")/\(modelRouteModel)")
+        }
         return sections.joined(separator: "\n\n")
+    }
+
+    private func registerProjectedTools(
+        from task: TaskRecord,
+        in toolRegistry: ToolRegistry
+    ) async throws {
+        guard let rawJSON = task.metadata["omni_skills.worker_tools_json"],
+              let data = rawJSON.data(using: .utf8),
+              let projections = try? JSONDecoder().decode([OmniSkillWorkerToolProjection].self, from: data)
+        else {
+            return
+        }
+
+        for projection in projections {
+            let toolName = "skill.\(projection.skillID).\(projection.name)"
+            await toolRegistry.registerOrReplace(
+                WorkerTool(
+                    name: toolName,
+                    description: projection.description,
+                    handler: { arguments in
+                        .object([
+                            "skill_id": .string(projection.skillID),
+                            "tool_name": .string(projection.name),
+                            "instruction": .string(projection.instruction),
+                            "arguments": arguments,
+                        ])
+                    }
+                )
+            )
+        }
     }
 }

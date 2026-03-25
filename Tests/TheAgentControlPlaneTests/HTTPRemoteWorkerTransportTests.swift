@@ -71,9 +71,12 @@ struct HTTPRemoteWorkerTransportTests {
         let events = try await jobStore.events(taskID: submittedTask.taskID, afterSequence: nil)
         let notifications = try await rootServer.refreshTaskNotifications()
         let artifactID = try #require(stored?.artifactRefs.first)
+        let progressEvents = events.filter { $0.kind == .progress }
 
         #expect(stored?.status == .completed)
-        #expect(events.map(\.kind) == [.submitted, .assigned, .started, .progress, .completed])
+        #expect(events.map(\.kind) == [.submitted, .assigned, .started, .progress, .progress, .completed])
+        #expect(progressEvents.contains { $0.summary?.localizedStandardContains("task started") == true })
+        #expect(progressEvents.contains { $0.summary == "remote http progress" })
         #expect(notifications.first?.taskID == submittedTask.taskID)
         #expect(try await artifactStore.data(for: artifactID) == Data("remote artifact".utf8))
     }

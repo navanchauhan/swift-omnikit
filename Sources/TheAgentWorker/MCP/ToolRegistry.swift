@@ -56,6 +56,10 @@ public actor ToolRegistry {
         tools[tool.name] = tool
     }
 
+    public func registerOrReplace(_ tool: WorkerTool) {
+        tools[tool.name] = tool
+    }
+
     public func tool(named name: String) -> WorkerTool? {
         tools[name]
     }

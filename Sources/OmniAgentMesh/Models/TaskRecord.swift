@@ -13,6 +13,7 @@ public struct TaskRecord: Codable, Sendable, Equatable {
         case capabilityRequirements
         case historyProjection
         case artifactRefs
+        case metadata
         case attemptCount
         case maxAttempts
         case deadlineAt
@@ -71,6 +72,7 @@ public struct TaskRecord: Codable, Sendable, Equatable {
     public var capabilityRequirements: [String]
     public var historyProjection: HistoryProjection
     public var artifactRefs: [String]
+    public var metadata: [String: String]
     public var attemptCount: Int
     public var maxAttempts: Int
     public var deadlineAt: Date?
@@ -94,6 +96,7 @@ public struct TaskRecord: Codable, Sendable, Equatable {
         capabilityRequirements: [String] = [],
         historyProjection: HistoryProjection,
         artifactRefs: [String] = [],
+        metadata: [String: String] = [:],
         attemptCount: Int = 0,
         maxAttempts: Int = 1,
         deadlineAt: Date? = nil,
@@ -117,6 +120,7 @@ public struct TaskRecord: Codable, Sendable, Equatable {
         self.capabilityRequirements = Array(Set(capabilityRequirements)).sorted()
         self.historyProjection = historyProjection
         self.artifactRefs = artifactRefs
+        self.metadata = metadata
         self.attemptCount = max(0, attemptCount)
         self.maxAttempts = max(1, maxAttempts)
         self.deadlineAt = deadlineAt
@@ -144,6 +148,7 @@ public struct TaskRecord: Codable, Sendable, Equatable {
         self.capabilityRequirements = try container.decode([String].self, forKey: .capabilityRequirements)
         self.historyProjection = try container.decode(HistoryProjection.self, forKey: .historyProjection)
         self.artifactRefs = try container.decode([String].self, forKey: .artifactRefs)
+        self.metadata = try container.decodeIfPresent([String: String].self, forKey: .metadata) ?? [:]
         self.attemptCount = try container.decodeIfPresent(Int.self, forKey: .attemptCount) ?? 0
         self.maxAttempts = try container.decodeIfPresent(Int.self, forKey: .maxAttempts) ?? 1
         self.deadlineAt = try container.decodeIfPresent(Date.self, forKey: .deadlineAt)
@@ -169,6 +174,7 @@ public struct TaskRecord: Codable, Sendable, Equatable {
         try container.encode(capabilityRequirements, forKey: .capabilityRequirements)
         try container.encode(historyProjection, forKey: .historyProjection)
         try container.encode(artifactRefs, forKey: .artifactRefs)
+        try container.encode(metadata, forKey: .metadata)
         try container.encode(attemptCount, forKey: .attemptCount)
         try container.encode(maxAttempts, forKey: .maxAttempts)
         try container.encodeIfPresent(deadlineAt, forKey: .deadlineAt)

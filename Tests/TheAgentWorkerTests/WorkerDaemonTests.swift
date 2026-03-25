@@ -44,9 +44,12 @@ struct WorkerDaemonTests {
         let finishedTask = try await worker.drainOnce(now: Date(timeIntervalSince1970: 1_001))
         let events = try await jobStore.events(taskID: task.taskID, afterSequence: nil)
         let artifacts = try await artifactStore.list(taskID: task.taskID)
+        let progressEvents = events.filter { $0.kind == .progress }
 
         #expect(finishedTask?.status == .completed)
-        #expect(events.map(\.kind) == [.submitted, .assigned, .started, .progress, .completed])
+        #expect(events.map(\.kind) == [.submitted, .assigned, .started, .progress, .progress, .completed])
+        #expect(progressEvents.contains { $0.summary?.localizedStandardContains("task started") == true })
+        #expect(progressEvents.contains { $0.summary == "Task is running" })
         #expect(artifacts.count == 1)
         #expect(artifacts.first?.name == "summary.txt")
     }

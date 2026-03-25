@@ -34,7 +34,12 @@ public actor ACPExecutor {
         return LocalTaskExecutor { task, reportProgress in
             try await reportProgress(
                 "Launching \(profile.profileID) ACP session",
-                ["provider": profile.provider, "profile": profile.profileID]
+                [
+                    "provider": profile.provider,
+                    "profile": profile.profileID,
+                    "heartbeat_source": "acp",
+                    "heartbeat_phase": "launch",
+                ]
             )
             let result = try await session.run(
                 task: task,
@@ -53,6 +58,8 @@ public actor ACPExecutor {
                     [
                         "profile_id": result.profileID,
                         "response_preview": responsePreview,
+                        "heartbeat_source": "acp",
+                        "heartbeat_phase": "result_preview",
                     ].merging(result.contextUpdates) { current, _ in current }
                 )
             }

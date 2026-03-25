@@ -39,11 +39,14 @@ struct RemoteSchedulingTests {
 
         let finished = try await scheduler.dispatchNextAvailableTask(now: Date(timeIntervalSince1970: 1_002))
         let stored = try await jobStore.task(taskID: task.taskID)
-        let streamedEvents = await take(5, from: stream)
+        let streamedEvents = await take(6, from: stream)
+        let progressEvents = streamedEvents.filter { $0.kind == .progress }
 
         #expect(finished?.taskID == task.taskID)
         #expect(stored?.status == .completed)
-        #expect(streamedEvents.map(\.kind) == [.submitted, .assigned, .started, .progress, .completed])
+        #expect(streamedEvents.map(\.kind) == [.submitted, .assigned, .started, .progress, .progress, .completed])
+        #expect(progressEvents.contains { $0.summary?.localizedStandardContains("task started") == true })
+        #expect(progressEvents.contains { $0.summary == "remote progress" })
     }
 
     private func take(_ count: Int, from stream: AsyncStream<TaskEvent>) async -> [TaskEvent] {

@@ -1,6 +1,7 @@
 import Foundation
 import OmniAIAgent
 import OmniAgentMesh
+import OmniSkills
 
 public actor RootAgentToolbox {
     private let server: RootAgentServer
@@ -11,6 +12,12 @@ public actor RootAgentToolbox {
 
     public func registeredTools() -> [RegisteredTool] {
         [
+            listSkillsTool(),
+            installSkillTool(),
+            activateSkillTool(),
+            deactivateSkillTool(),
+            skillStatusTool(),
+            doctorTool(),
             startMissionTool(),
             listMissionsTool(),
             missionStatusTool(),
@@ -30,6 +37,199 @@ public actor RootAgentToolbox {
             listNotificationsTool(),
             resolveNotificationTool(),
         ]
+    }
+
+    private func listSkillsTool() -> RegisteredTool {
+        RegisteredTool(
+            definition: AgentToolDefinition(
+                name: "list_skills",
+                description: "List installed and active OmniSkills for the current workspace or mission.",
+                parameters: [
+                    "type": "object",
+                    "properties": [
+                        "skill_id": ["type": "string"],
+                        "mission_id": ["type": "string"],
+                    ],
+                    "additionalProperties": false,
+                ]
+            ),
+            executor: { [server] arguments, _ in
+                let skillID = try Self.optionalString("skill_id", in: arguments)
+                let missionID = try Self.optionalString("mission_id", in: arguments)
+                return try Self.renderJSON(
+                    Self.serialize(
+                        skillStatus: try await server.listSkills(skillID: skillID, missionID: missionID)
+                    )
+                )
+            }
+        )
+    }
+
+    private func installSkillTool() -> RegisteredTool {
+        RegisteredTool(
+            definition: AgentToolDefinition(
+                name: "install_skill",
+                description: "Install an OmniSkill from a local directory or zip archive.",
+                parameters: [
+                    "type": "object",
+                    "properties": [
+                        "source_path": ["type": "string"],
+                        "scope": ["type": "string"],
+                        "activate_after_install": ["type": "boolean"],
+                        "activation_scope": ["type": "string"],
+                        "mission_id": ["type": "string"],
+                        "reason": ["type": "string"],
+                        "approved": ["type": "boolean"],
+                    ],
+                    "required": ["source_path"],
+                    "additionalProperties": false,
+                ]
+            ),
+            executor: { [server] arguments, _ in
+                let sourcePath = try Self.requiredString("source_path", in: arguments)
+                let installationScope = try Self.installationScope("scope", in: arguments) ?? .workspace
+                let activateAfterInstall = try Self.boolValue("activate_after_install", in: arguments) ?? false
+                let activationScope = try Self.activationScope("activation_scope", in: arguments) ?? .workspace
+                let missionID = try Self.optionalString("mission_id", in: arguments)
+                let reason = try Self.optionalString("reason", in: arguments) ?? "Installed by root agent."
+                let approved = try Self.boolValue("approved", in: arguments) ?? false
+                return try Self.renderJSON(
+                    Self.serialize(
+                        skillOperation: try await server.installSkill(
+                            from: sourcePath,
+                            scope: installationScope,
+                            activateAfterInstall: activateAfterInstall,
+                            activationScope: activationScope,
+                            missionID: missionID,
+                            reason: reason,
+                            approved: approved
+                        )
+                    )
+                )
+            }
+        )
+    }
+
+    private func activateSkillTool() -> RegisteredTool {
+        RegisteredTool(
+            definition: AgentToolDefinition(
+                name: "activate_skill",
+                description: "Activate an OmniSkill for workspace or mission scope.",
+                parameters: [
+                    "type": "object",
+                    "properties": [
+                        "skill_id": ["type": "string"],
+                        "scope": ["type": "string"],
+                        "mission_id": ["type": "string"],
+                        "reason": ["type": "string"],
+                        "approved": ["type": "boolean"],
+                    ],
+                    "required": ["skill_id"],
+                    "additionalProperties": false,
+                ]
+            ),
+            executor: { [server] arguments, _ in
+                let skillID = try Self.requiredString("skill_id", in: arguments)
+                let activationScope = try Self.activationScope("scope", in: arguments) ?? .workspace
+                let missionID = try Self.optionalString("mission_id", in: arguments)
+                let reason = try Self.optionalString("reason", in: arguments) ?? "Activated by root agent."
+                let approved = try Self.boolValue("approved", in: arguments) ?? false
+                return try Self.renderJSON(
+                    Self.serialize(
+                        skillOperation: try await server.activateSkill(
+                            skillID: skillID,
+                            activationScope: activationScope,
+                            missionID: missionID,
+                            reason: reason,
+                            approved: approved
+                        )
+                    )
+                )
+            }
+        )
+    }
+
+    private func deactivateSkillTool() -> RegisteredTool {
+        RegisteredTool(
+            definition: AgentToolDefinition(
+                name: "deactivate_skill",
+                description: "Deactivate an OmniSkill for workspace or mission scope.",
+                parameters: [
+                    "type": "object",
+                    "properties": [
+                        "skill_id": ["type": "string"],
+                        "scope": ["type": "string"],
+                        "mission_id": ["type": "string"],
+                        "reason": ["type": "string"],
+                    ],
+                    "required": ["skill_id"],
+                    "additionalProperties": false,
+                ]
+            ),
+            executor: { [server] arguments, _ in
+                let skillID = try Self.requiredString("skill_id", in: arguments)
+                let activationScope = try Self.activationScope("scope", in: arguments) ?? .workspace
+                let missionID = try Self.optionalString("mission_id", in: arguments)
+                let reason = try Self.optionalString("reason", in: arguments) ?? "Deactivated by root agent."
+                return try Self.renderJSON(
+                    Self.serialize(
+                        skillOperation: try await server.deactivateSkill(
+                            skillID: skillID,
+                            activationScope: activationScope,
+                            missionID: missionID,
+                            reason: reason
+                        )
+                    )
+                )
+            }
+        )
+    }
+
+    private func skillStatusTool() -> RegisteredTool {
+        RegisteredTool(
+            definition: AgentToolDefinition(
+                name: "skill_status",
+                description: "Inspect detailed OmniSkill installation, activation, and projection state.",
+                parameters: [
+                    "type": "object",
+                    "properties": [
+                        "skill_id": ["type": "string"],
+                        "mission_id": ["type": "string"],
+                    ],
+                    "additionalProperties": false,
+                ]
+            ),
+            executor: { [server] arguments, _ in
+                let skillID = try Self.optionalString("skill_id", in: arguments)
+                let missionID = try Self.optionalString("mission_id", in: arguments)
+                return try Self.renderJSON(
+                    Self.serialize(
+                        skillStatus: try await server.listSkills(skillID: skillID, missionID: missionID)
+                    )
+                )
+            }
+        )
+    }
+
+    private func doctorTool() -> RegisteredTool {
+        RegisteredTool(
+            definition: AgentToolDefinition(
+                name: "doctor",
+                description: "Generate a root-owned diagnostics report covering channels, workers, skills, missions, and deliveries.",
+                parameters: [
+                    "type": "object",
+                    "properties": [:],
+                    "additionalProperties": false,
+                ]
+            ),
+            executor: { [server] _, _ in
+                return try Self.renderJSON(
+                    [
+                        "report": Self.serialize(doctorReport: try await server.doctorReport()),
+                    ]
+                )
+            }
+        )
     }
 
     private func startMissionTool() -> RegisteredTool {
@@ -809,6 +1009,26 @@ private extension RootAgentToolbox {
         }
     }
 
+    static func installationScope(_ key: String, in arguments: [String: Any]) throws -> SkillInstallationRecord.Scope? {
+        guard let rawValue = try optionalString(key, in: arguments) else {
+            return nil
+        }
+        guard let scope = SkillInstallationRecord.Scope(rawValue: rawValue.lowercased()) else {
+            throw RootToolboxError.invalidArgument(key: key, expected: "system, workspace, or mission")
+        }
+        return scope
+    }
+
+    static func activationScope(_ key: String, in arguments: [String: Any]) throws -> SkillActivationRecord.Scope? {
+        guard let rawValue = try optionalString(key, in: arguments) else {
+            return nil
+        }
+        guard let scope = SkillActivationRecord.Scope(rawValue: rawValue.lowercased()) else {
+            throw RootToolboxError.invalidArgument(key: key, expected: "system, workspace, or mission")
+        }
+        return scope
+    }
+
     static func stringDictionary(excluding excludedKeys: Set<String>, in arguments: [String: Any]) throws -> [String: String] {
         arguments.reduce(into: [String: String]()) { partialResult, entry in
             guard !excludedKeys.contains(entry.key) else {
@@ -858,6 +1078,7 @@ private extension RootAgentToolbox {
             "expected_outputs": task.historyProjection.expectedOutputs,
             "constraints": task.historyProjection.constraints,
             "artifact_refs": task.artifactRefs,
+            "metadata": task.metadata,
             "attempt_count": task.attemptCount,
             "max_attempts": task.maxAttempts,
             "deadline_at": task.deadlineAt.map(Self.iso8601String) ?? NSNull(),
@@ -867,6 +1088,105 @@ private extension RootAgentToolbox {
             "lease": serialize(lease: task.lease) ?? NSNull(),
             "created_at": iso8601String(task.createdAt),
             "updated_at": iso8601String(task.updatedAt),
+        ]
+    }
+
+    static func serialize(skillStatus: SkillStatusSnapshot) -> [String: Any] {
+        [
+            "installed": skillStatus.installed.map(serialize(installation:)),
+            "activations": skillStatus.activations.map(serialize(activation:)),
+            "projection": serialize(projection: skillStatus.projection),
+        ]
+    }
+
+    static func serialize(skillOperation: SkillOperationResult) -> [String: Any] {
+        [
+            "installation": skillOperation.installation.map(serialize(installation:)) ?? NSNull(),
+            "activation": skillOperation.activation.map(serialize(activation:)) ?? NSNull(),
+            "approval_request": skillOperation.approvalRequest.map(serialize(approval:)) ?? NSNull(),
+            "projection": serialize(projection: skillOperation.projection),
+        ]
+    }
+
+    static func serialize(installation: SkillInstallationRecord) -> [String: Any] {
+        [
+            "installation_id": installation.installationID,
+            "skill_id": installation.skillID,
+            "version": installation.version,
+            "scope": installation.scope.rawValue,
+            "workspace_id": installation.workspaceID?.rawValue ?? NSNull(),
+            "source_type": installation.sourceType.rawValue,
+            "source_path": installation.sourcePath,
+            "installed_path": installation.installedPath,
+            "digest": installation.digest,
+            "metadata": installation.metadata,
+        ]
+    }
+
+    static func serialize(activation: SkillActivationRecord) -> [String: Any] {
+        [
+            "activation_id": activation.activationID,
+            "installation_id": activation.installationID ?? NSNull(),
+            "skill_id": activation.skillID,
+            "version": activation.version ?? NSNull(),
+            "scope": activation.scope.rawValue,
+            "root_session_id": activation.rootSessionID,
+            "mission_id": activation.missionID ?? NSNull(),
+            "status": activation.status.rawValue,
+            "reason": activation.reason,
+            "approval_request_id": activation.approvalRequestID ?? NSNull(),
+            "metadata": activation.metadata,
+        ]
+    }
+
+    static func serialize(projection: OmniSkillProjectionBundle) -> [String: Any] {
+        [
+            "active_skills": projection.activeSkills.map { skill in
+                [
+                    "skill_id": skill.skillID,
+                    "version": skill.version,
+                    "display_name": skill.displayName,
+                    "summary": skill.summary,
+                ]
+            },
+            "prompt_overlay": projection.promptOverlay,
+            "codergen_overlay": projection.codergenOverlay,
+            "attractor_overlay": projection.attractorOverlay,
+            "required_capabilities": projection.requiredCapabilities,
+            "allowed_domains": projection.allowedDomains,
+            "preferred_model_tier": projection.preferredModelTier ?? NSNull(),
+            "shell_skills": projection.shellSkills.map { skill in
+                [
+                    "name": skill.name,
+                    "description": skill.description,
+                    "path": skill.path,
+                ]
+            },
+            "worker_tools": projection.workerTools.map { tool in
+                [
+                    "skill_id": tool.skillID,
+                    "name": tool.name,
+                    "description": tool.description,
+                ]
+            },
+        ]
+    }
+
+    static func serialize(doctorReport: DoctorReport) -> [String: Any] {
+        [
+            "workspace_id": doctorReport.workspaceID,
+            "channel_bindings": doctorReport.channelBindings,
+            "pending_pairings": doctorReport.pendingPairings,
+            "registered_workers": doctorReport.registeredWorkers,
+            "stale_workers": doctorReport.staleWorkers,
+            "stalled_tasks": doctorReport.stalledTasks,
+            "installed_skills": doctorReport.installedSkills,
+            "active_skill_activations": doctorReport.activeSkillActivations,
+            "active_missions": doctorReport.activeMissions,
+            "deferred_deliveries": doctorReport.deferredDeliveries,
+            "route_tiers": doctorReport.routeTiers,
+            "warnings": doctorReport.warnings,
+            "summary_text": doctorReport.summaryText,
         ]
     }
 

@@ -167,6 +167,88 @@ struct IdentityStoreTests {
         #expect(restoredLegacyHistory.first?.channelID == rootScope.channelID)
     }
 
+    @Test
+    func identityStoreReadsWorkspacePayloadAfterSQLiteJSONTextUpdate() async throws {
+        let stateRoot = try makeStateRoot()
+        let store = try SQLiteIdentityStore(fileURL: stateRoot.identityDatabaseURL)
+        let workspaceID: WorkspaceID = "root"
+
+        try await store.saveWorkspace(
+            WorkspaceRecord(
+                workspaceID: workspaceID,
+                displayName: "TheAgent Root Workspace",
+                kind: .service,
+                metadata: [
+                    "bootstrap_source": "session_scope",
+                    "storage_session_id": "root",
+                ]
+            )
+        )
+
+        let connection = try SQLiteConnection(fileURL: stateRoot.identityDatabaseURL)
+        try connection.execute(
+            """
+            UPDATE workspaces
+            SET payload_json = json_set(
+                CAST(payload_json AS TEXT),
+                '$.metadata.telegram_allowlist_external_actor_ids',
+                '7960102564'
+            )
+            WHERE workspace_id = ?;
+            """,
+            bindings: [.text(workspaceID.rawValue)]
+        )
+
+        let restored = try await store.workspace(workspaceID: workspaceID)
+
+        #expect(restored?.metadata["telegram_allowlist_external_actor_ids"] == "7960102564")
+    }
+
+    @Test
+    func bootstrapperPreservesWorkspaceMetadataWhenPayloadWasRewrittenAsText() async throws {
+        let stateRoot = try makeStateRoot()
+        let conversationStore = try SQLiteConversationStore(fileURL: stateRoot.conversationDatabaseURL)
+        let identityStore = try SQLiteIdentityStore(fileURL: stateRoot.identityDatabaseURL)
+        let jobStore = try SQLiteJobStore(fileURL: stateRoot.jobsDatabaseURL)
+        let rootScope = SessionScope.bestEffort(sessionID: "root")
+
+        try await identityStore.saveWorkspace(
+            WorkspaceRecord(
+                workspaceID: rootScope.workspaceID,
+                displayName: "TheAgent Root Workspace",
+                kind: .service,
+                metadata: [
+                    "bootstrap_source": "session_scope",
+                    "storage_session_id": "root",
+                ]
+            )
+        )
+
+        let connection = try SQLiteConnection(fileURL: stateRoot.identityDatabaseURL)
+        try connection.execute(
+            """
+            UPDATE workspaces
+            SET payload_json = json_set(
+                CAST(payload_json AS TEXT),
+                '$.metadata.telegram_allowlist_external_actor_ids',
+                '7960102564'
+            )
+            WHERE workspace_id = ?;
+            """,
+            bindings: [.text(rootScope.workspaceID.rawValue)]
+        )
+
+        _ = try await SessionScopeBootstrapper(
+            identityStore: identityStore,
+            conversationStore: conversationStore,
+            jobStore: jobStore
+        ).bootstrap()
+
+        let restored = try await identityStore.workspace(workspaceID: rootScope.workspaceID)
+
+        #expect(restored?.metadata["telegram_allowlist_external_actor_ids"] == "7960102564")
+    }
+
     private func makeStateRoot() throws -> AgentFabricStateRoot {
         let rootDirectory = FileManager.default.temporaryDirectory.appending(
             path: "omnikit-identity-\(UUID().uuidString)",

@@ -56,7 +56,37 @@ public final class CodergenHandler: NodeHandler, Sendable {
         logsRoot: URL
     ) async throws -> Outcome {
         // 1. Build prompt
-        let prompt = node.prompt.isEmpty ? node.label : node.prompt
+        var prompt = node.prompt.isEmpty ? node.label : node.prompt
+        let activeSkillIDs = context.getString("task.active_skill_ids")
+        let skillPromptOverlay = context.getString("task.skill_prompt_overlay")
+        let skillCodergenOverlay = context.getString("task.skill_codergen_overlay")
+        let modelRouteTier = context.getString("task.model_route_tier")
+        let modelRouteModel = context.getString("task.model_route_model")
+        let modelRouteProvider = context.getString("task.model_route_provider")
+        if !activeSkillIDs.isEmpty ||
+            !skillPromptOverlay.isEmpty ||
+            !skillCodergenOverlay.isEmpty ||
+            !modelRouteTier.isEmpty {
+            var sections: [String] = []
+            if !activeSkillIDs.isEmpty {
+                sections.append("Active skills: \(activeSkillIDs)")
+            }
+            if !skillPromptOverlay.isEmpty {
+                sections.append("Skill overlay:\n\(skillPromptOverlay)")
+            }
+            if !skillCodergenOverlay.isEmpty {
+                sections.append("Codergen skill guidance:\n\(skillCodergenOverlay)")
+            }
+            if !modelRouteTier.isEmpty {
+                var routeSection = "Model route tier: \(modelRouteTier)"
+                if !modelRouteProvider.isEmpty || !modelRouteModel.isEmpty {
+                    routeSection += "\nPreferred route: \(modelRouteProvider)/\(modelRouteModel)"
+                }
+                sections.append(routeSection)
+            }
+            sections.append(prompt)
+            prompt = sections.joined(separator: "\n\n")
+        }
 
         // 2. Create stage directory
         let stageDir = logsRoot.appendingPathComponent(node.id)
@@ -92,9 +122,15 @@ public final class CodergenHandler: NodeHandler, Sendable {
         }
 
         // 5. Call LLM backend
-        let model = node.llmModel.isEmpty ? "claude-sonnet-4-5-20250929" : node.llmModel
-        let provider = node.llmProvider.isEmpty ? "anthropic" : node.llmProvider
-        let reasoningEffort = node.reasoningEffort.isEmpty ? "high" : node.reasoningEffort
+        let model = node.llmModel.isEmpty
+            ? (context.getString("task.model_route_model").isEmpty ? "claude-sonnet-4-5-20250929" : context.getString("task.model_route_model"))
+            : node.llmModel
+        let provider = node.llmProvider.isEmpty
+            ? (context.getString("task.model_route_provider").isEmpty ? "anthropic" : context.getString("task.model_route_provider"))
+            : node.llmProvider
+        let reasoningEffort = node.reasoningEffort.isEmpty
+            ? (context.getString("task.model_route_reasoning_effort").isEmpty ? "high" : context.getString("task.model_route_reasoning_effort"))
+            : node.reasoningEffort
 
         // Pass node-level agent config to context for CodingAgentBackend.
         if let maxTurns = node.rawAttributes["max_agent_turns"]?.intValue {

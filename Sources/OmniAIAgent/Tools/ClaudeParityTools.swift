@@ -1,5 +1,6 @@
 import Foundation
 import OmniAICore
+import OmniSkills
 
 // MARK: - Claude file tools
 
@@ -1656,18 +1657,24 @@ public func claudeSkillTool() -> RegisteredTool {
                 "required": ["skill"],
             ] as [String: Any]
         ),
-        executor: { args, _ in
+        executor: { args, env in
             guard let skill = args["skill"] as? String else {
                 throw ToolError.validationError("skill is required")
             }
             let skillArgs = (args["args"] as? String) ?? ""
+            let workingDirectory = URL(fileURLWithPath: env.workingDirectory(), isDirectory: true)
+            guard let package = try OmniSkillRegistry().resolveSkill(named: skill, workingDirectory: workingDirectory),
+                  let content = try package.textAsset(at: package.manifest.promptFile) else {
+                throw ToolError.validationError("Skill '\(skill)' not found")
+            }
             return """
-            <skill-invocation name="\(skill)">
-            args: \(skillArgs)
-            </skill-invocation>
-
-            Skill execution passthrough acknowledged.
-            """
+<activated_skill name="\(package.manifest.skillID)">
+  <args>\(skillArgs)</args>
+  <instructions>
+\(content)
+  </instructions>
+</activated_skill>
+"""
         }
     )
 }

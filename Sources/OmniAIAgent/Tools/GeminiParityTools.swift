@@ -1,5 +1,6 @@
 import Foundation
 import OmniAICore
+import OmniSkills
 
 // MARK: - Tool Name Constants (Gemini CLI parity)
 
@@ -798,22 +799,18 @@ public func geminiActivateSkillTool() -> RegisteredTool {
             guard let name = args["name"] as? String else {
                 throw ToolError.validationError("name is required")
             }
-            let candidates = [
-                (env.workingDirectory() as NSString).appendingPathComponent(".gemini/skills/\(name).md"),
-                (env.workingDirectory() as NSString).appendingPathComponent(".gemini/skills/\(name)/SKILL.md"),
-                (env.workingDirectory() as NSString).appendingPathComponent("skills/\(name).md"),
-            ]
-            for path in candidates where FileManager.default.fileExists(atPath: path) {
-                let content = try String(contentsOfFile: path, encoding: .utf8)
-                return """
+            let workingDirectory = URL(fileURLWithPath: env.workingDirectory(), isDirectory: true)
+            guard let package = try OmniSkillRegistry().resolveSkill(named: name, workingDirectory: workingDirectory),
+                  let content = try package.textAsset(at: package.manifest.promptFile) else {
+                throw ToolError.validationError("Skill '\(name)' not found")
+            }
+            return """
 <activated_skill name="\(name)">
   <instructions>
 \(content)
   </instructions>
 </activated_skill>
 """
-            }
-            throw ToolError.validationError("Skill '\(name)' not found")
         }
     )
 }

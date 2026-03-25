@@ -1,5 +1,6 @@
 import Foundation
 import OmniAgentMesh
+import OmniSkills
 
 public enum RootAgentServerError: Error, CustomStringConvertible, Sendable, Equatable {
     case taskNotFound(String)
@@ -8,6 +9,8 @@ public enum RootAgentServerError: Error, CustomStringConvertible, Sendable, Equa
     case missionNotFound(String)
     case noManagedMissions(sessionID: String)
     case missionSupportUnavailable(sessionID: String)
+    case skillSupportUnavailable(sessionID: String)
+    case doctorSupportUnavailable(sessionID: String)
     case notificationNotFound(String)
     case noUnresolvedNotifications(sessionID: String)
 
@@ -25,6 +28,10 @@ public enum RootAgentServerError: Error, CustomStringConvertible, Sendable, Equa
             return "Root session \(sessionID) does not have any managed missions."
         case .missionSupportUnavailable(let sessionID):
             return "Root session \(sessionID) is not configured with mission support."
+        case .skillSupportUnavailable(let sessionID):
+            return "Root session \(sessionID) is not configured with skill support."
+        case .doctorSupportUnavailable(let sessionID):
+            return "Root session \(sessionID) is not configured with doctor diagnostics."
         case .notificationNotFound(let notificationID):
             return "Notification \(notificationID) was not found."
         case .noUnresolvedNotifications(let sessionID):
@@ -61,6 +68,12 @@ public actor RootAgentServer {
     private let scheduler: RootScheduler
     private let jobStore: any JobStore
     private let missionStore: (any MissionStore)?
+    private let skillService: WorkspaceSkillStore?
+    private let doctorService: DoctorService?
+    private let modelRouter: ModelRouter
+    private let reflectionLoop: ReflectionLoop?
+    private let supervisorService: SupervisorService
+    private let watchdog: TimeoutWatchdog
     private let interactionBroker: InteractionBroker?
     private let missionCoordinator: MissionCoordinator?
     private let workspacePolicy: WorkspacePolicy
@@ -70,12 +83,18 @@ public actor RootAgentServer {
         conversationStore: any ConversationStore,
         jobStore: any JobStore,
         missionStore: (any MissionStore)? = nil,
+        skillStore: (any SkillStore)? = nil,
+        identityStore: (any IdentityStore)? = nil,
+        pairingStore: PairingStore? = nil,
+        skillsRootDirectory: URL? = nil,
+        runtimeRootDirectory: URL? = nil,
         artifactStore: (any ArtifactStore)? = nil,
         deliveryStore: (any DeliveryStore)? = nil,
         hotWindowLimit: Int = 12,
         notificationPolicy: NotificationPolicy = NotificationPolicy(),
         workspacePolicy: WorkspacePolicy = WorkspacePolicy(),
-        scheduler: RootScheduler? = nil
+        scheduler: RootScheduler? = nil,
+        workingDirectory: String = FileManager.default.currentDirectoryPath
     ) {
         self.sessionID = scope.sessionID
         self.scope = scope
@@ -83,6 +102,13 @@ public actor RootAgentServer {
         self.missionStore = missionStore
         self.workspacePolicy = workspacePolicy
         self.scheduler = scheduler ?? RootScheduler(jobStore: jobStore)
+        self.modelRouter = ModelRouter()
+        self.watchdog = TimeoutWatchdog(jobStore: jobStore)
+        self.supervisorService = SupervisorService(
+            jobStore: jobStore,
+            conversationStore: conversationStore,
+            watchdog: self.watchdog
+        )
         self.conversation = RootConversation(
             scope: scope,
             store: conversationStore,
@@ -93,6 +119,42 @@ public actor RootAgentServer {
             store: conversationStore,
             policy: notificationPolicy
         )
+        if let runtimeRootDirectory {
+            self.reflectionLoop = ReflectionLoop(
+                conversationStore: conversationStore,
+                memoryStore: WorkspaceMemoryStore(
+                    rootDirectory: runtimeRootDirectory.appending(path: "memory", directoryHint: .isDirectory)
+                ),
+                notificationPlanner: NotificationPlanner(conversationStore: conversationStore)
+            )
+        } else {
+            self.reflectionLoop = nil
+        }
+        if let skillStore, let skillsRootDirectory {
+            self.skillService = WorkspaceSkillStore(
+                scope: scope,
+                store: skillStore,
+                skillsRootDirectory: skillsRootDirectory,
+                workingDirectory: workingDirectory
+            )
+        } else {
+            self.skillService = nil
+        }
+        if let identityStore {
+            self.doctorService = DoctorService(
+                scope: scope,
+                identityStore: identityStore,
+                jobStore: jobStore,
+                missionStore: missionStore,
+                deliveryStore: deliveryStore,
+                skillStore: skillStore,
+                pairingStore: pairingStore,
+                watchdog: self.watchdog,
+                modelRouter: self.modelRouter
+            )
+        } else {
+            self.doctorService = nil
+        }
         if let missionStore, let artifactStore {
             let interactionBroker = InteractionBroker(
                 missionStore: missionStore,
@@ -109,6 +171,8 @@ public actor RootAgentServer {
                 artifactStore: artifactStore,
                 interactionBroker: interactionBroker,
                 workspacePolicy: workspacePolicy,
+                reflectionLoop: self.reflectionLoop,
+                modelRouter: self.modelRouter,
                 changeCoordinator: ChangeCoordinator(jobStore: jobStore)
             )
         } else {
@@ -122,12 +186,18 @@ public actor RootAgentServer {
         conversationStore: any ConversationStore,
         jobStore: any JobStore,
         missionStore: (any MissionStore)? = nil,
+        skillStore: (any SkillStore)? = nil,
+        identityStore: (any IdentityStore)? = nil,
+        pairingStore: PairingStore? = nil,
+        skillsRootDirectory: URL? = nil,
+        runtimeRootDirectory: URL? = nil,
         artifactStore: (any ArtifactStore)? = nil,
         deliveryStore: (any DeliveryStore)? = nil,
         hotWindowLimit: Int = 12,
         notificationPolicy: NotificationPolicy = NotificationPolicy(),
         workspacePolicy: WorkspacePolicy = WorkspacePolicy(),
-        scheduler: RootScheduler? = nil
+        scheduler: RootScheduler? = nil,
+        workingDirectory: String = FileManager.default.currentDirectoryPath
     ) {
         let scope = SessionScope.bestEffort(sessionID: sessionID)
         self.sessionID = sessionID
@@ -136,8 +206,51 @@ public actor RootAgentServer {
         self.missionStore = missionStore
         self.workspacePolicy = workspacePolicy
         self.scheduler = scheduler ?? RootScheduler(jobStore: jobStore)
+        self.modelRouter = ModelRouter()
+        self.watchdog = TimeoutWatchdog(jobStore: jobStore)
+        self.supervisorService = SupervisorService(
+            jobStore: jobStore,
+            conversationStore: conversationStore,
+            watchdog: self.watchdog
+        )
         self.conversation = RootConversation(sessionID: sessionID, store: conversationStore, hotWindowLimit: hotWindowLimit)
         self.inbox = NotificationInbox(sessionID: sessionID, store: conversationStore, policy: notificationPolicy)
+        if let runtimeRootDirectory {
+            self.reflectionLoop = ReflectionLoop(
+                conversationStore: conversationStore,
+                memoryStore: WorkspaceMemoryStore(
+                    rootDirectory: runtimeRootDirectory.appending(path: "memory", directoryHint: .isDirectory)
+                ),
+                notificationPlanner: NotificationPlanner(conversationStore: conversationStore)
+            )
+        } else {
+            self.reflectionLoop = nil
+        }
+        if let skillStore, let skillsRootDirectory {
+            self.skillService = WorkspaceSkillStore(
+                scope: scope,
+                store: skillStore,
+                skillsRootDirectory: skillsRootDirectory,
+                workingDirectory: workingDirectory
+            )
+        } else {
+            self.skillService = nil
+        }
+        if let identityStore {
+            self.doctorService = DoctorService(
+                scope: scope,
+                identityStore: identityStore,
+                jobStore: jobStore,
+                missionStore: missionStore,
+                deliveryStore: deliveryStore,
+                skillStore: skillStore,
+                pairingStore: pairingStore,
+                watchdog: self.watchdog,
+                modelRouter: self.modelRouter
+            )
+        } else {
+            self.doctorService = nil
+        }
         if let missionStore, let artifactStore {
             let interactionBroker = InteractionBroker(
                 missionStore: missionStore,
@@ -154,6 +267,8 @@ public actor RootAgentServer {
                 artifactStore: artifactStore,
                 interactionBroker: interactionBroker,
                 workspacePolicy: workspacePolicy,
+                reflectionLoop: self.reflectionLoop,
+                modelRouter: self.modelRouter,
                 changeCoordinator: ChangeCoordinator(jobStore: jobStore)
             )
         } else {
@@ -206,6 +321,17 @@ public actor RootAgentServer {
         parentTaskID: String? = nil
     ) async throws -> TaskRecord {
         let snapshot = try await conversation.snapshot()
+        let skillMetadata = try await skillService?.promptContext() ?? [:]
+        let routingDecision = await modelRouter.route(
+            for: ModelRoutingRequest(
+                stageKind: .implement,
+                requiresCoding: expectedOutputs.contains(where: { $0.localizedStandardContains("code") || $0.localizedStandardContains("implementation") }) ||
+                    brief.localizedStandardContains("code"),
+                hasAttachments: false,
+                budgetUnits: 1,
+                preferredTierHint: skillMetadata["omni_skills.preferred_model_tier"]
+            )
+        )
         let historyProjection = HistoryProjection(
             taskBrief: brief,
             summaries: snapshot.summary.map { [$0.summaryText] } ?? [],
@@ -224,6 +350,7 @@ public actor RootAgentServer {
             parentTaskID: parentTaskID,
             historyProjection: historyProjection,
             capabilityRequirements: capabilityRequirements,
+            metadata: skillMetadata.merging(routingDecision.metadata) { _, new in new },
             priority: priority
         )
         _ = try? await kickLocalDispatch(now: Date())
@@ -234,11 +361,16 @@ public actor RootAgentServer {
         try await jobStore.workers()
     }
 
-    public func startMission(_ request: MissionStartRequest) async throws -> MissionStatusSnapshot {
+    public func startMission(
+        _ request: MissionStartRequest,
+        now: Date = Date()
+    ) async throws -> MissionStatusSnapshot {
         guard let missionCoordinator else {
             throw RootAgentServerError.missionSupportUnavailable(sessionID: sessionID)
         }
-        return try await missionCoordinator.startMission(request)
+        var decorated = request
+        decorated.metadata.merge(try await skillService?.promptContext() ?? [:]) { _, new in new }
+        return try await missionCoordinator.startMission(decorated, now: now)
     }
 
     public func listMissions(
@@ -344,12 +476,20 @@ public actor RootAgentServer {
         guard let missionCoordinator else {
             throw RootAgentServerError.missionSupportUnavailable(sessionID: sessionID)
         }
-        return try await missionCoordinator.approveRequest(
+        let approval = try await missionCoordinator.approveRequest(
             requestID: requestID,
             approved: approved,
             actorID: actorID,
             responseText: responseText
         )
+        if approved, let activationID = approval.metadata["skill_activation_id"] {
+            _ = try await skillService?.markActivation(
+                activationID: activationID,
+                status: .active,
+                approvalRequestID: approval.requestID
+            )
+        }
+        return approval
     }
 
     public func answerQuestion(
@@ -493,6 +633,147 @@ public actor RootAgentServer {
         return resolved
     }
 
+    public func listSkills(skillID: String? = nil, missionID: String? = nil) async throws -> SkillStatusSnapshot {
+        guard let skillService else {
+            throw RootAgentServerError.skillSupportUnavailable(sessionID: sessionID)
+        }
+        return try await skillService.status(skillID: skillID, missionID: missionID)
+    }
+
+    public func installSkill(
+        from sourcePath: String,
+        scope installationScope: SkillInstallationRecord.Scope = .workspace,
+        activateAfterInstall: Bool = false,
+        activationScope: SkillActivationRecord.Scope = .workspace,
+        missionID: String? = nil,
+        reason: String = "Installed by root agent.",
+        approved: Bool = false
+    ) async throws -> SkillOperationResult {
+        guard let skillService else {
+            throw RootAgentServerError.skillSupportUnavailable(sessionID: sessionID)
+        }
+        let installation = try await skillService.installSkill(from: sourcePath, scope: installationScope)
+        guard activateAfterInstall else {
+            return SkillOperationResult(
+                installation: installation,
+                projection: try await skillService.activeProjection(missionID: missionID)
+            )
+        }
+        return try await activateSkill(
+            skillID: installation.skillID,
+            activationScope: activationScope,
+            missionID: missionID,
+            reason: reason,
+            approved: approved,
+            installation: installation
+        )
+    }
+
+    public func activateSkill(
+        skillID: String,
+        activationScope: SkillActivationRecord.Scope = .workspace,
+        missionID: String? = nil,
+        reason: String = "Activated by root agent.",
+        approved: Bool = false,
+        installation: SkillInstallationRecord? = nil
+    ) async throws -> SkillOperationResult {
+        guard let skillService else {
+            throw RootAgentServerError.skillSupportUnavailable(sessionID: sessionID)
+        }
+        guard let package = try await skillService.resolvePackage(skillID: skillID) else {
+            throw WorkspaceSkillStoreError.skillNotFound(skillID)
+        }
+
+        if OmniSkillPolicy.requiresApproval(package.manifest), !approved {
+            let pending = try await skillService.activateSkill(
+                skillID: package.manifest.skillID,
+                activationScope: activationScope,
+                missionID: missionID,
+                reason: reason,
+                actorID: scope.actorID,
+                status: .pendingApproval,
+                metadata: ["approval_required": "true"]
+            )
+            let approval = try await requestApprovalPrompt(
+                title: "Approve skill activation",
+                prompt: "Activate \(package.manifest.displayName) (\(package.manifest.skillID)) for \(activationScope.rawValue) scope?",
+                missionID: missionID,
+                requesterActorID: scope.actorID,
+                sensitive: true,
+                metadata: [
+                    "skill_activation_id": pending.activationID,
+                    "skill_id": package.manifest.skillID,
+                    "skill_scope": activationScope.rawValue,
+                ]
+            )
+            _ = try await skillService.markActivation(
+                activationID: pending.activationID,
+                status: .pendingApproval,
+                approvalRequestID: approval.requestID
+            )
+            return SkillOperationResult(
+                installation: installation,
+                activation: pending,
+                approvalRequest: approval,
+                projection: try await skillService.activeProjection(missionID: missionID)
+            )
+        }
+
+        let activation = try await skillService.activateSkill(
+            skillID: package.manifest.skillID,
+            activationScope: activationScope,
+            missionID: missionID,
+            reason: reason,
+            actorID: scope.actorID,
+            status: .active
+        )
+        return SkillOperationResult(
+            installation: installation,
+            activation: activation,
+            projection: try await skillService.activeProjection(missionID: missionID)
+        )
+    }
+
+    public func deactivateSkill(
+        skillID: String,
+        activationScope: SkillActivationRecord.Scope = .workspace,
+        missionID: String? = nil,
+        reason: String = "Deactivated by root agent."
+    ) async throws -> SkillOperationResult {
+        guard let skillService else {
+            throw RootAgentServerError.skillSupportUnavailable(sessionID: sessionID)
+        }
+        let activation = try await skillService.deactivateSkill(
+            skillID: skillID,
+            activationScope: activationScope,
+            missionID: missionID,
+            reason: reason
+        )
+        return SkillOperationResult(
+            activation: activation,
+            projection: try await skillService.activeProjection(missionID: missionID)
+        )
+    }
+
+    public func activeSkillPromptContext(missionID: String? = nil) async throws -> [String: String] {
+        try await skillService?.promptContext(missionID: missionID) ?? [:]
+    }
+
+    public func activeSkillProjection(missionID: String? = nil) async throws -> OmniSkillProjectionBundle {
+        try await skillService?.activeProjection(missionID: missionID) ?? OmniSkillProjectionBundle()
+    }
+
+    public func doctorReport() async throws -> DoctorReport {
+        guard let doctorService else {
+            throw RootAgentServerError.doctorSupportUnavailable(sessionID: sessionID)
+        }
+        return try await doctorService.report()
+    }
+
+    public func runSupervisorSweep(now: Date = Date()) async throws -> SupervisorSweepReport {
+        try await supervisorService.reconcile(now: now)
+    }
+
     public func kickLocalDispatch(now: Date = Date()) async throws -> [TaskRecord] {
         try await scheduler.dispatchAllAvailableTasksInBackground(now: now)
     }
@@ -509,6 +790,7 @@ public actor RootAgentServer {
 
         while true {
             _ = try? await kickLocalDispatch(now: Date())
+            _ = try? await supervisorService.reconcile(now: Date())
 
             let newEvents = try await taskEvents(taskID: resolvedTaskID, afterSequence: lastSequence)
             if let latestSequence = newEvents.last?.sequenceNumber {
@@ -547,6 +829,7 @@ public actor RootAgentServer {
     }
 
     public func refreshTaskNotifications() async throws -> [NotificationRecord] {
+        _ = try? await supervisorService.reconcile(now: Date())
         let terminalTasks = try await jobStore.tasks(statuses: [.completed, .failed, .cancelled])
         var existingNotificationIDs = Set(try await inbox.all().map(\.notificationID))
 

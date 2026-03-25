@@ -38,8 +38,14 @@ enum SQLiteValue: Sendable {
     }
 
     var dataValue: Data? {
-        guard case .blob(let value) = self else { return nil }
-        return value
+        switch self {
+        case .blob(let value):
+            return value
+        case .text(let value):
+            return Data(value.utf8)
+        default:
+            return nil
+        }
     }
 }
 

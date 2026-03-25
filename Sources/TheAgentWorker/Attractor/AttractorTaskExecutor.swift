@@ -62,6 +62,8 @@ public struct AttractorTaskExecutor: Sendable {
             [
                 "task_id": task.taskID,
                 "workflow": "plan-implement-validate",
+                "heartbeat_source": "attractor",
+                "heartbeat_phase": "launch",
             ]
         )
 
@@ -94,7 +96,8 @@ public struct AttractorTaskExecutor: Sendable {
                     logsRoot: taskLogsRoot,
                     backend: backend,
                     interviewer: interviewer,
-                    eventEmitter: eventEmitter
+                    eventEmitter: eventEmitter,
+                    initialContextValues: initialContextValues(for: task)
                 )
             ).run(dot: dot)
         } catch {
@@ -167,6 +170,8 @@ public struct AttractorTaskExecutor: Sendable {
         var data = event.data
         data["task_id"] = taskID
         data["event_kind"] = event.kind.rawValue
+        data["heartbeat_source"] = data["heartbeat_source"] ?? "attractor"
+        data["heartbeat_phase"] = data["heartbeat_phase"] ?? event.kind.rawValue
         if let nodeID = event.nodeId {
             data["node_id"] = nodeID
         }
@@ -241,5 +246,48 @@ public struct AttractorTaskExecutor: Sendable {
         default:
             return "application/octet-stream"
         }
+    }
+
+    private func initialContextValues(for task: TaskRecord) -> [String: String] {
+        var values: [String: String] = [
+            "task.id": task.taskID,
+            "task.root_session_id": task.rootSessionID,
+        ]
+        for key in [
+            "omni_skills.active_ids",
+            "omni_skills.prompt_overlay",
+            "omni_skills.codergen_overlay",
+            "omni_skills.attractor_overlay",
+            "omni_skills.preferred_model_tier",
+        ] {
+            if let value = task.metadata[key], !value.isEmpty {
+                values[key] = value
+            }
+        }
+        if let value = task.metadata["omni_skills.active_ids"], !value.isEmpty {
+            values["task.active_skill_ids"] = value
+        }
+        if let value = task.metadata["omni_skills.prompt_overlay"], !value.isEmpty {
+            values["task.skill_prompt_overlay"] = value
+        }
+        if let value = task.metadata["omni_skills.codergen_overlay"], !value.isEmpty {
+            values["task.skill_codergen_overlay"] = value
+        }
+        if let value = task.metadata["omni_skills.attractor_overlay"], !value.isEmpty {
+            values["task.skill_attractor_overlay"] = value
+        }
+        if let value = task.metadata["model_route_tier"], !value.isEmpty {
+            values["task.model_route_tier"] = value
+        }
+        if let value = task.metadata["model_route_provider"], !value.isEmpty {
+            values["task.model_route_provider"] = value
+        }
+        if let value = task.metadata["model_route_model"], !value.isEmpty {
+            values["task.model_route_model"] = value
+        }
+        if let value = task.metadata["model_route_reasoning_effort"], !value.isEmpty {
+            values["task.model_route_reasoning_effort"] = value
+        }
+        return values
     }
 }

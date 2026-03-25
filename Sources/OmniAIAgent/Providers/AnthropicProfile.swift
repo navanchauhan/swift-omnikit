@@ -1,5 +1,6 @@
 import Foundation
 import OmniAICore
+import OmniSkills
 
 public final class AnthropicProfile: ProviderProfile, @unchecked Sendable {
 
@@ -108,63 +109,22 @@ public final class AnthropicProfile: ProviderProfile, @unchecked Sendable {
     }
 
     private func loadSkills(from workingDirectory: URL) -> [ClaudePromptSkill] {
-        let commandsDir = workingDirectory.appendingPathComponent(".claude/commands")
-
-        guard FileManager.default.fileExists(atPath: commandsDir.path) else {
+        do {
+            return try OmniSkillRegistry()
+                .availablePackages(in: workingDirectory)
+                .compactMap { package in
+                    guard let content = try package.textAsset(at: package.manifest.promptFile) else {
+                        return nil
+                    }
+                    return ClaudePromptSkill(
+                        name: package.manifest.skillID,
+                        description: package.manifest.summary,
+                        content: content.trimmingCharacters(in: .whitespacesAndNewlines)
+                    )
+                }
+        } catch {
             return []
         }
-
-        var skills: [ClaudePromptSkill] = []
-
-        do {
-            let files = try FileManager.default.contentsOfDirectory(
-                at: commandsDir,
-                includingPropertiesForKeys: [.isRegularFileKey],
-                options: [.skipsHiddenFiles]
-            )
-
-            for file in files where file.pathExtension == "md" {
-                if let skill = parseSkillFile(at: file) {
-                    skills.append(skill)
-                }
-            }
-        } catch {
-            // Ignore skill loading errors for prompt generation.
-        }
-
-        return skills
-    }
-
-    private func parseSkillFile(at url: URL) -> ClaudePromptSkill? {
-        guard let content = try? String(contentsOf: url, encoding: .utf8) else {
-            return nil
-        }
-
-        let name = url.deletingPathExtension().lastPathComponent
-        var description = "No description"
-        var body = content
-
-        if content.hasPrefix("---") {
-            let parts = content.components(separatedBy: "---")
-            if parts.count >= 3 {
-                let yamlContent = parts[1]
-                body = parts.dropFirst(2).joined(separator: "---")
-
-                for line in yamlContent.components(separatedBy: .newlines) {
-                    let trimmed = line.trimmingCharacters(in: .whitespaces)
-                    if trimmed.hasPrefix("description:") {
-                        description = String(trimmed.dropFirst("description:".count)).trimmingCharacters(in: .whitespaces)
-                        break
-                    }
-                }
-            }
-        }
-
-        return ClaudePromptSkill(
-            name: name,
-            description: description,
-            content: body.trimmingCharacters(in: .whitespacesAndNewlines)
-        )
     }
 
     private var modelDisplayName: String {

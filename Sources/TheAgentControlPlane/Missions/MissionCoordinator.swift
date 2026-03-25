@@ -95,6 +95,8 @@ public actor MissionCoordinator {
     private let interactionBroker: InteractionBroker
     private let workspacePolicy: WorkspacePolicy
     private let supervisor: MissionSupervisor
+    private let reflectionLoop: ReflectionLoop?
+    private let modelRouter: ModelRouter
     private let changeCoordinator: ChangeCoordinator?
 
     public init(
@@ -106,6 +108,8 @@ public actor MissionCoordinator {
         interactionBroker: InteractionBroker,
         workspacePolicy: WorkspacePolicy = WorkspacePolicy(),
         supervisor: MissionSupervisor? = nil,
+        reflectionLoop: ReflectionLoop? = nil,
+        modelRouter: ModelRouter = ModelRouter(),
         changeCoordinator: ChangeCoordinator? = nil
     ) {
         self.scope = scope
@@ -116,6 +120,8 @@ public actor MissionCoordinator {
         self.interactionBroker = interactionBroker
         self.workspacePolicy = workspacePolicy
         self.supervisor = supervisor ?? MissionSupervisor(policy: workspacePolicy)
+        self.reflectionLoop = reflectionLoop
+        self.modelRouter = modelRouter
         self.changeCoordinator = changeCoordinator
     }
 
@@ -123,6 +129,7 @@ public actor MissionCoordinator {
         _ request: MissionStartRequest,
         now: Date = Date()
     ) async throws -> MissionStatusSnapshot {
+        var request = request
         let activeMissions = try await missionStore.missions(
             sessionID: scope.sessionID,
             workspaceID: scope.workspaceID,
@@ -134,6 +141,20 @@ public actor MissionCoordinator {
                 limit: workspacePolicy.maxActiveMissions
             )
         }
+
+        let routingDecision = await modelRouter.route(
+            for: ModelRoutingRequest(
+                explicitTier: request.metadata["model_route_tier"].flatMap(ModelRoutePolicy.Tier.init(rawValue:)),
+                stageKind: .implement,
+                requiresCoding: request.metadata["mission_kind"] == "code_change" ||
+                    request.expectedOutputs.contains(where: { $0.localizedStandardContains("implementation") || $0.localizedStandardContains("code") }) ||
+                    request.brief.localizedStandardContains("code"),
+                hasAttachments: request.metadata["staged_artifact_refs"]?.isEmpty == false,
+                budgetUnits: request.budgetUnits,
+                preferredTierHint: request.metadata["omni_skills.preferred_model_tier"]
+            )
+        )
+        request.metadata.merge(routingDecision.metadata) { _, new in new }
 
         let executionMode = resolveExecutionMode(for: request)
         let contractArtifact = try await writeArtifact(
@@ -427,10 +448,17 @@ public actor MissionCoordinator {
                 expectedOutputs: splitCSV(metadata["expected_outputs"])
             ),
             capabilityRequirements: splitCSV(metadata["capability_requirements"]),
+            metadata: metadata,
             priority: Int(metadata["priority"] ?? "") ?? 0,
             createdAt: at
         )
         stage.taskID = task.taskID
+        if var mission = try await missionStore.mission(missionID: stage.missionID) {
+            mission.primaryTaskID = task.taskID
+            mission.status = .executing
+            mission.updatedAt = at
+            _ = try await missionStore.saveMission(mission)
+        }
         _ = try? await scheduler.dispatchAllAvailableTasksInBackground(now: at)
         return try await missionStore.saveStage(stage)
     }
@@ -494,6 +522,7 @@ public actor MissionCoordinator {
                     expectedOutputs: request.expectedOutputs
                 ),
                 capabilityRequirements: capabilityRequirements,
+                metadata: request.metadata,
                 priority: request.priority,
                 createdAt: now
             )
@@ -574,10 +603,24 @@ public actor MissionCoordinator {
                     task: task,
                     summary: task.historyProjection.taskBrief
                 )
+                if mission.metadata["reflection_completed"] != "true" {
+                    _ = try await reflectionLoop?.reflectOnMissionCompletion(
+                        mission: mission,
+                        task: task,
+                        events: try await jobStore.events(taskID: taskID, afterSequence: nil)
+                    )
+                    mission.metadata["reflection_completed"] = "true"
+                    mission.updatedAt = now
+                }
             case .failed, .cancelled:
                 if await supervisor.shouldRetry(stage: latestStage, task: task, now: now) {
                     _ = try await retryMissionStage(stageID: latestStage.stageID, at: now)
-                    mission.status = .executing
+                    if let refreshedMission = try await missionStore.mission(missionID: missionID) {
+                        mission = refreshedMission
+                    } else {
+                        mission.status = .executing
+                        mission.updatedAt = now
+                    }
                     stages = try await missionStore.stages(missionID: missionID)
                     latestStage = try await missionStore.stage(stageID: latestStage.stageID) ?? latestStage
                 } else {
@@ -625,6 +668,14 @@ public actor MissionCoordinator {
         mission.status = .completed
         mission.completedAt = at
         mission.updatedAt = at
+        if mission.metadata["reflection_completed"] != "true" {
+            _ = try await reflectionLoop?.reflectOnMissionCompletion(
+                mission: mission,
+                task: nil,
+                events: []
+            )
+            mission.metadata["reflection_completed"] = "true"
+        }
         _ = try await missionStore.saveMission(mission)
         _ = try await missionStore.saveStage(
             MissionStageRecord(

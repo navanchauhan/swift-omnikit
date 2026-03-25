@@ -52,6 +52,7 @@ public final class OpenAIProfile: ProviderProfile, @unchecked Sendable {
 
         registry.register(codexReadFileTool())
         registry.register(grepFilesTool())
+        registry.register(globTool())
         registry.register(codexListDirTool())
         registry.register(updatePlanTool())
         registry.register(viewImageTool())
@@ -70,7 +71,12 @@ public final class OpenAIProfile: ProviderProfile, @unchecked Sendable {
     }
 
     public func buildSystemPrompt(environment: ExecutionEnvironment, projectDocs: String?, userInstructions: String? = nil, gitContext: GitContext? = nil) -> String {
-        let basePrompt = CodexSystemPrompt.openAIPrompt(for: model)
+        let basePrompt: String
+        if forceCodexSystemPrompt {
+            basePrompt = CodexSystemPrompt.prompt(for: model)
+        } else {
+            basePrompt = CodexSystemPrompt.openAIPrompt(for: model)
+        }
         let workingDir = environment.workingDirectory()
         let envContext = """
 
