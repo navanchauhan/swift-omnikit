@@ -366,7 +366,6 @@ extension NotcursesApp {
                 case .popClip:
                     if clipStack.count > 1 { _ = clipStack.popLast() }
                 case .shape(let rect, let shape):
-                    guard canSprixel else { continue }
                     guard let top = clipStack.last,
                           let clippedToOp = intersect(rect, top),
                           let visible = intersect(clippedToOp, fullClip) else { continue }
@@ -483,9 +482,27 @@ extension NotcursesApp {
                         planeEntry.rect = visibleRect
                         shapePlanes[idx] = planeEntry
                     } else {
-                        // Pixel blit failed; clear all planes and retry next frame.
+                        // Pixel blit failed; tear down planes and fall back to braille.
                         for (_, e) in shapePlanes { ncplane_destroy(e.plane) }
                         shapePlanes.removeAll()
+                        let brailleShapes: [(_Rect, _ShapeNode)] = shapesForSprixel.map { ($0.visibleRect, $0.shape) }
+                        let termSz = _Size(width: width, height: height)
+                        BrailleRaster.render(
+                            termSize: termSz,
+                            shapes: brailleShapes,
+                            clip: fullClip,
+                            fillBG: shapeFillBG,
+                            strokeFG: borderFG,
+                            baseBG: baseBG,
+                            isEmpty: { x, y in
+                                guard x >= 0, y >= 0, x < width, y < height else { return false }
+                                let idx = y * width + x
+                                return curr[idx].ch == " "
+                            },
+                            set: { x, y, ch, fg, bg in
+                                setCell(x, y, ch, fg, bg, z: 500)
+                            }
+                        )
                         break
                     }
                 }
@@ -504,6 +521,28 @@ extension NotcursesApp {
                 // No pixel support; tear down any existing sprixel planes so they can't leave artifacts.
                 for (_, e) in shapePlanes { ncplane_destroy(e.plane) }
                 shapePlanes.removeAll()
+
+                // Braille character fallback for shapes when sprixel is unavailable.
+                if !shapesForSprixel.isEmpty {
+                    let brailleShapes: [(_Rect, _ShapeNode)] = shapesForSprixel.map { ($0.visibleRect, $0.shape) }
+                    let termSz = _Size(width: width, height: height)
+                    BrailleRaster.render(
+                        termSize: termSz,
+                        shapes: brailleShapes,
+                        clip: fullClip,
+                        fillBG: shapeFillBG,
+                        strokeFG: borderFG,
+                        baseBG: baseBG,
+                        isEmpty: { x, y in
+                            guard x >= 0, y >= 0, x < width, y < height else { return false }
+                            let idx = y * width + x
+                            return curr[idx].ch == " "
+                        },
+                        set: { x, y, ch, fg, bg in
+                            setCell(x, y, ch, fg, bg, z: 500)
+                        }
+                    )
+                }
             }
 
             if let fr = focusRect {
@@ -1120,13 +1159,19 @@ extension NotcursesApp {
                 }
             } else if id == pgup {
                 // Page Up: scroll up by a larger amount.
+                // Use center of viewport to reliably hit the main scroll region
+                // (avoids toolbar/header rows that may intercept at (0,0)).
                 if let snap = lastSnapshot {
-                    snap.scroll(x: 0, y: 0, deltaY: -10)
+                    let midX = Int(cols / 2)
+                    let midY = Int(rows / 2)
+                    snap.scroll(x: midX, y: midY, deltaY: -10)
                 }
             } else if id == pgdown {
                 // Page Down: scroll down by a larger amount.
                 if let snap = lastSnapshot {
-                    snap.scroll(x: 0, y: 0, deltaY: 10)
+                    let midX = Int(cols / 2)
+                    let midY = Int(rows / 2)
+                    snap.scroll(x: midX, y: midY, deltaY: 10)
                 }
             } else if id == enter || id == 10 || id == 13 {
                 if runtime.hasExpandedPicker() {

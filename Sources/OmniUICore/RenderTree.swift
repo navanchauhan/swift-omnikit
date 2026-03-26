@@ -44,8 +44,11 @@ public struct RenderSnapshot: Sendable {
 
     public func scroll(x: Int, y: Int, deltaY: Int) {
         let p = _Point(x: x, y: y)
-        guard let r = scrollRegions.last(where: { $0.rect.contains(p) }) else { return }
-        runtime._scroll(path: r.path, deltaY: deltaY, maxOffset: r.maxOffsetY)
+        for r in scrollRegions.reversed() where r.rect.contains(p) {
+            if runtime._scroll(path: r.path, deltaY: deltaY, maxOffset: r.maxOffsetY) {
+                return
+            }
+        }
     }
 
     public func hover(x: Int, y: Int) {

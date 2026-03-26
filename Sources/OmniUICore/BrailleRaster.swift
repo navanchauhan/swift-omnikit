@@ -278,7 +278,8 @@ public enum BrailleRaster {
             let subH = regionH * 4
             if subW <= 0 || subH <= 0 { continue }
 
-            let fillEnabled = (shape.fillStyle != nil)
+            let hasNoStyle = shape.fillStyle == nil && shape.strokeStyle == nil
+            let fillEnabled = shape.fillStyle != nil || hasNoStyle
             let eoFill = shape.fillStyle?.isEOFilled ?? false
 
             func insideFilledShape(_ sx: Int, _ sy: Int) -> Bool {

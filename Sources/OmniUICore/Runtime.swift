@@ -573,13 +573,15 @@ public final class _UIRuntime: @unchecked Sendable {
         _markDirty(path: path)
     }
 
-    func _scroll(path: [Int], deltaY: Int, maxOffset: Int) {
+    @discardableResult
+    func _scroll(path: [Int], deltaY: Int, maxOffset: Int) -> Bool {
         let key = _pathKey(prefix: "scroll", path: path)
         let current = scrollOffsets[key] ?? 0
         let next = min(max(0, current + deltaY), max(0, maxOffset))
-        if next == current { return }
+        if next == current { return false }
         scrollOffsets[key] = next
         _markDirty(path: path)
+        return true
     }
 
     func _requestScrollTo(id: AnyHashable, anchor: Alignment?, scopePath: [Int]) {
@@ -1382,8 +1384,11 @@ public struct DebugSnapshot: Sendable {
     /// Emulate a scroll wheel event at a coordinate in the last rendered snapshot.
     public func scroll(x: Int, y: Int, deltaY: Int) {
         let p = _Point(x: x, y: y)
-        guard let r = scrollRegions.last(where: { $0.rect.contains(p) }) else { return }
-        runtime._scroll(path: r.path, deltaY: deltaY, maxOffset: r.maxOffsetY)
+        for r in scrollRegions.reversed() where r.rect.contains(p) {
+            if runtime._scroll(path: r.path, deltaY: deltaY, maxOffset: r.maxOffsetY) {
+                return
+            }
+        }
     }
 
     public func hover(x: Int, y: Int) {
