@@ -35,7 +35,7 @@ rm -f "$STDERR_LOG"
 docker run --rm -it \
     --entrypoint bash \
     -v "${HOST_WORKSPACE_DIR}:${HOST_WORKSPACE_DIR}" \
-    -e TERM="${TERM:-xterm-256color}" \
+    -e TERM="xterm-256color" \
     -e COLORTERM="${COLORTERM:-truecolor}" \
     -e OMNIUI_SMOKE_SECONDS="$SMOKE_SECONDS" \
     -e OMNIUI_DEMO_ANIM="$DEMO_ANIM" \
