@@ -1,0 +1,44 @@
+FROM swiftlang/swift:nightly-6.1-jammy
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential \
+    ca-certificates \
+    cmake \
+    curl \
+    git \
+    libdeflate-dev \
+    libgpm-dev \
+    libncurses-dev \
+    libsqlite3-dev \
+    libtinfo-dev \
+    libunistring-dev \
+    pkg-config \
+    zlib1g-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN git clone --depth 1 --branch v3.0.11 https://github.com/dankamongmen/notcurses.git /tmp/notcurses \
+    && cd /tmp/notcurses \
+    && mkdir build \
+    && cd build \
+    && cmake .. \
+        -DCMAKE_INSTALL_PREFIX=/usr \
+        -DUSE_MULTIMEDIA=none \
+        -DUSE_DOCTEST=off \
+        -DUSE_GPM=off \
+        -DUSE_QRCODEGEN=off \
+        -DUSE_PANDOC=off \
+        -DUSE_DOXYGEN=off \
+    && make -j"$(nproc)" \
+    && make install \
+    && ldconfig \
+    && rm -rf /tmp/notcurses
+
+WORKDIR /app
+
+COPY Package.swift Package.resolved ./
+COPY Sources/ Sources/
+COPY Tests/ Tests/
+
+RUN swift build --product KitchenSink
+
+ENTRYPOINT ["/bin/bash"]

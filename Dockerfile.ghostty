@@ -1,0 +1,49 @@
+FROM alpine:edge
+
+RUN printf '%s\n' 'https://dl-cdn.alpinelinux.org/alpine/edge/testing' >> /etc/apk/repositories \
+    && apk update \
+    && apk add --no-cache \
+        bash \
+        dbus \
+        dbus-x11 \
+        docker-cli \
+        font-dejavu \
+        ghostty \
+        imagemagick \
+        mesa-dri-gallium \
+        mesa-egl \
+        mesa-gl \
+        mesa-gles \
+        novnc \
+        openbox \
+        scrot \
+        wmctrl \
+        x11vnc \
+        xdpyinfo \
+        xdotool \
+        xprop \
+        xwininfo \
+        xvfb
+
+WORKDIR /workspace
+
+COPY scripts/ghostty-lab-entrypoint.sh /usr/local/bin/ghostty-lab-entrypoint
+COPY scripts/ghostty-lab-control.sh /usr/local/bin/ghostty-lab-control
+
+RUN chmod +x /usr/local/bin/ghostty-lab-entrypoint /usr/local/bin/ghostty-lab-control \
+    && mkdir -p /workspace /tmp/ghostty-lab
+
+ENV DISPLAY=:99
+ENV GHOSTTY_LAB_SCREEN=1440x900x24
+ENV GHOSTTY_LAB_COMMAND=exec\ bash\ -li
+ENV GHOSTTY_LAB_FULLSCREEN=1
+ENV GHOSTTY_LAB_ENABLE_VNC=1
+ENV GHOSTTY_LAB_VNC_PORT=5900
+ENV GHOSTTY_LAB_NOVNC_PORT=6080
+ENV GHOSTTY_LAB_STATE_DIR=/tmp/ghostty-lab
+ENV GHOSTTY_LAB_ARTIFACT_DIR=/workspace/Tests/tui/output/ghostty-lab
+ENV GHOSTTY_LAB_WORKDIR=/workspace
+
+EXPOSE 5900 6080
+
+ENTRYPOINT ["ghostty-lab-entrypoint"]
