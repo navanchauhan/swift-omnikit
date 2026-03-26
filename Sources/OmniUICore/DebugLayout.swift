@@ -805,9 +805,12 @@ enum _DebugLayout {
                     let prefixCount = 2
                     let s = prefixCount + 2 + display.count
                     return _Size(width: min(maxSize.width, s), height: 1)
-                case .scrollView:
-                    // ScrollView takes all available size.
-                    return _Size(width: maxSize.width, height: maxSize.height)
+                case .scrollView(_, _, _, let axis, _, let content):
+                    let contentMax = _Size(width: maxSize.width, height: 2048)
+                    let cs = measure(content, contentMax)
+                    let w = min(maxSize.width, cs.width)
+                    let h = (axis == .vertical) ? min(maxSize.height, cs.height) : min(maxSize.height, cs.height)
+                    return _Size(width: w, height: h)
                 case .menu(_, let isFocused, _, let title, let value, _):
                     let headText = title.isEmpty ? "\(value) v" : "\(title): \(value) v"
                     let inner = " " + headText + " "
@@ -896,9 +899,39 @@ enum _DebugLayout {
             let spacingTotal = max(0, (children.count - 1) * spacing)
             let leftover = max(0, availablePrimary - fixedPrimary - spacingTotal)
             let flexibleCount = flexible.reduce(0) { $0 + ($1 ? 1 : 0) }
-            let flexiblePrimary = flexibleCount > 0 ? (leftover / flexibleCount) : 0
-            let flexibleRemainder = flexibleCount > 0 ? (leftover % flexibleCount) : 0
-            var seenFlexible = 0
+
+            // Two-pass flex allocation: cap each flexible child by its measured
+            // content size, redistribute surplus to truly greedy children (Spacers).
+            var flexAllocations = [Int](repeating: 0, count: children.count)
+            if flexibleCount > 0 {
+                let equalShare = leftover / flexibleCount
+                var surplus = leftover % flexibleCount
+                var greedyIndices: [Int] = []
+                for idx in 0..<children.count where flexible[idx] {
+                    let measuredPrimary: Int
+                    switch axis {
+                    case .horizontal: measuredPrimary = measured[idx].width
+                    case .vertical: measuredPrimary = measured[idx].height
+                    }
+                    if case .spacer = children[idx] {
+                        flexAllocations[idx] = equalShare
+                        greedyIndices.append(idx)
+                    } else if measuredPrimary < equalShare {
+                        flexAllocations[idx] = measuredPrimary
+                        surplus += (equalShare - measuredPrimary)
+                    } else {
+                        flexAllocations[idx] = equalShare
+                        greedyIndices.append(idx)
+                    }
+                }
+                if !greedyIndices.isEmpty {
+                    let extra = surplus / greedyIndices.count
+                    let extraRem = surplus % greedyIndices.count
+                    for (i, idx) in greedyIndices.enumerated() {
+                        flexAllocations[idx] += extra + (i < extraRem ? 1 : 0)
+                    }
+                }
+            }
 
             for (idx, child) in children.enumerated() {
                 let remaining: _Size
@@ -910,9 +943,7 @@ enum _DebugLayout {
                 }
                 let s: _Size
                 if flexible[idx] {
-                    var allocated = flexiblePrimary
-                    if seenFlexible < flexibleRemainder { allocated += 1 }
-                    seenFlexible += 1
+                    let allocated = flexAllocations[idx]
 
                     let proposed: _Size
                     switch axis {
@@ -1225,8 +1256,12 @@ enum _DebugLayout {
                         let prefixCount = 2
                         let s = prefixCount + 2 + display.count
                         return _Size(width: min(maxSize.width, s), height: 1)
-                    case .scrollView:
-                        return _Size(width: maxSize.width, height: maxSize.height)
+                    case .scrollView(_, _, _, let axis, _, let innerContent):
+                        let cMax = _Size(width: maxSize.width, height: 2048)
+                        let cs = m(innerContent, cMax)
+                        let w = min(maxSize.width, cs.width)
+                        let h = (axis == .vertical) ? min(maxSize.height, cs.height) : min(maxSize.height, cs.height)
+                        return _Size(width: w, height: h)
                     case .menu(_, let isFocused, _, let title, let value, _):
                         let headText = title.isEmpty ? "\(value) v" : "\(title): \(value) v"
                         let inner = " " + headText + " "

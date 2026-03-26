@@ -561,9 +561,40 @@ enum _RenderLayout {
             let spacingTotal = max(0, (children.count - 1) * spacing)
             let leftover = max(0, availablePrimary - fixedPrimary - spacingTotal)
             let flexibleCount = flexible.reduce(0) { $0 + ($1 ? 1 : 0) }
-            let flexiblePrimary = flexibleCount > 0 ? (leftover / flexibleCount) : 0
-            let flexibleRemainder = flexibleCount > 0 ? (leftover % flexibleCount) : 0
-            var seenFlexible = 0
+
+            // Two-pass flex allocation: first cap each flexible child by its measured
+            // content size, then redistribute any surplus to truly greedy children
+            // (Spacers). This prevents inner scrollViews with small content from
+            // consuming equal shares of the viewport and starving later siblings.
+            var flexAllocations = [Int](repeating: 0, count: children.count)
+            if flexibleCount > 0 {
+                let equalShare = leftover / flexibleCount
+                var surplus = leftover % flexibleCount
+                var greedyIndices: [Int] = []
+                for idx in 0..<children.count where flexible[idx] {
+                    let measuredPrimary = (axis == .horizontal) ? measured[idx].width : measured[idx].height
+                    if case .spacer = children[idx] {
+                        // Spacers are truly greedy — give them full share
+                        flexAllocations[idx] = equalShare
+                        greedyIndices.append(idx)
+                    } else if measuredPrimary < equalShare {
+                        // Content is smaller than equal share — cap at measured size
+                        flexAllocations[idx] = measuredPrimary
+                        surplus += (equalShare - measuredPrimary)
+                    } else {
+                        flexAllocations[idx] = equalShare
+                        greedyIndices.append(idx)
+                    }
+                }
+                // Redistribute surplus to greedy children
+                if !greedyIndices.isEmpty {
+                    let extra = surplus / greedyIndices.count
+                    let extraRem = surplus % greedyIndices.count
+                    for (i, idx) in greedyIndices.enumerated() {
+                        flexAllocations[idx] += extra + (i < extraRem ? 1 : 0)
+                    }
+                }
+            }
 
             for (idx, child) in children.enumerated() {
                 let remaining: _Size = (axis == .vertical)
@@ -572,9 +603,7 @@ enum _RenderLayout {
 
                 let s: _Size
                 if flexible[idx] {
-                    var allocated = flexiblePrimary
-                    if seenFlexible < flexibleRemainder { allocated += 1 }
-                    seenFlexible += 1
+                    let allocated = flexAllocations[idx]
 
                     let proposed: _Size = (axis == .horizontal)
                         ? _Size(width: min(remaining.width, allocated), height: remaining.height)
@@ -1108,8 +1137,15 @@ enum _RenderLayout {
             let boxExtra = style == .plain ? 0 : 2
             let s = prefixCount + boxExtra + display.count
             return _Size(width: min(maxSize.width, s), height: 1)
-        case .scrollView:
-            return _Size(width: maxSize.width, height: maxSize.height)
+        case .scrollView(_, _, _, let axis, _, let content):
+            // Measure content to report honest size instead of greedily consuming all
+            // available space. This prevents inner scroll views from each claiming ~2048
+            // rows in flex allocation, which starves later siblings of space.
+            let contentMax = _Size(width: maxSize.width, height: 2048)
+            let cs = measure(content, contentMax)
+            let w = min(maxSize.width, cs.width)
+            let h = (axis == .vertical) ? min(maxSize.height, cs.height) : min(maxSize.height, cs.height)
+            return _Size(width: w, height: h)
         case .menu(_, let isFocused, _, let title, let value, _):
             let headText = title.isEmpty ? "\(value) v" : "\(title): \(value) v"
             let inner = " " + headText + " "
