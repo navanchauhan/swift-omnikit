@@ -41,9 +41,21 @@ private actor ACPProgressRecorder {
 private struct ACPRecordingTransportProvider: ACPTransportProvider {
     let recorder: ACPRecordedConfigs
     let taskStore: ACPAgentTasks
+    var seededOutputFiles: [String: String] = [:]
 
     func makeTransport(configuration: ACPExecutionConfiguration) async throws -> any Transport {
         await recorder.append(configuration)
+        if !seededOutputFiles.isEmpty,
+           let outputDirectory = configuration.environment["THE_AGENT_TASK_OUTPUT_DIR"] {
+            let outputURL = URL(fileURLWithPath: outputDirectory, isDirectory: true)
+            try FileManager.default.createDirectory(at: outputURL, withIntermediateDirectories: true)
+            for (name, contents) in seededOutputFiles {
+                try Data(contents.utf8).write(
+                    to: outputURL.appending(path: name),
+                    options: .atomic
+                )
+            }
+        }
         let (clientTransport, agentTransport) = await InMemoryTransport.createConnectedPair()
         try await clientTransport.connect()
         try await agentTransport.connect()
@@ -253,5 +265,65 @@ struct ACPWorkerIntegrationTests {
         #expect(metadata["acp_profile"] == "codex")
         #expect(metadata["acp_model"] == "gpt-5.3-codex-test")
         #expect(WorkerExecutorFactory.startupDescription(for: executionMode) == "using codex ACP executor (gpt-5.3-codex-test)")
+    }
+
+    @Test
+    func workerExecutorFactoryHarvestsTaskOutputArtifactsIntoDurableResults() async throws {
+        let rootDirectory = FileManager.default.temporaryDirectory.appending(
+            path: "worker-acp-output-\(UUID().uuidString)",
+            directoryHint: .isDirectory
+        )
+        try FileManager.default.createDirectory(at: rootDirectory, withIntermediateDirectories: true)
+
+        let recorder = ACPRecordedConfigs()
+        let taskStore = ACPAgentTasks()
+        defer {
+            Task { await taskStore.cancelAll() }
+        }
+
+        let executionMode = WorkerExecutionMode.acp(
+            ACPWorkerRuntimeOptions(
+                profile: .codex,
+                agentPath: "codex-agent",
+                workingDirectory: rootDirectory.path()
+            )
+        )
+
+        let executor = WorkerExecutorFactory.makeExecutor(
+            mode: executionMode,
+            transportProvider: ACPRecordingTransportProvider(
+                recorder: recorder,
+                taskStore: taskStore,
+                seededOutputFiles: [
+                    "tpu-status.json": #"{"training_active":false}"#,
+                    "tpu-status.md": "# TPU status\n",
+                ]
+            ),
+            delegateProvider: DefaultACPClientDelegateProvider(permissionStrategy: .autoApprove)
+        )
+
+        let task = TaskRecord(
+            taskID: "worker-output-task",
+            rootSessionID: "root",
+            capabilityRequirements: ["tpu"],
+            historyProjection: HistoryProjection(
+                taskBrief: "Inspect TPU status",
+                expectedOutputs: ["tpu-status.md", "tpu-status.json"]
+            ),
+            metadata: ["mission_kind": "tpu_experiment"]
+        )
+
+        let result = try await executor.execute(task: task) { _, _ in }
+        let configs = await recorder.values
+        let config = try #require(configs.first)
+        let outputDirectory = try #require(config.environment["THE_AGENT_TASK_OUTPUT_DIR"])
+
+        #expect(config.workingDirectory == outputDirectory)
+        #expect(config.environment["THE_AGENT_REPOSITORY_ROOT"] == rootDirectory.path())
+        #expect(result.artifacts.map(\.name).contains("tpu-status.json"))
+        #expect(result.artifacts.map(\.name).contains("tpu-status.md"))
+        #expect(result.metadata["task_output_directory"] == outputDirectory)
+        #expect(FileManager.default.fileExists(atPath: rootDirectory.appending(path: "tpu-status.json").path()) == false)
+        #expect(outputDirectory.localizedStandardContains(".ai/the-agent/acp-tasks"))
     }
 }

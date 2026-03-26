@@ -586,6 +586,8 @@ public actor MissionCoordinator {
         var latestStage = stages[latestStageIndex]
 
         if let taskID = latestStage.taskID, let task = try await jobStore.task(taskID: taskID) {
+            let latestTaskSummary = try await jobStore.events(taskID: taskID, afterSequence: nil).last?.summary
+                ?? task.historyProjection.taskBrief
             switch task.status {
             case .submitted, .assigned, .running, .waiting:
                 latestStage.status = task.status == .waiting ? .waiting : .running
@@ -598,11 +600,12 @@ public actor MissionCoordinator {
                 mission.status = .completed
                 mission.completedAt = now
                 mission.updatedAt = now
-                try await updateVerificationArtifact(
+                let verificationArtifact = try await writeVerificationArtifact(
                     mission: mission,
                     task: task,
-                    summary: task.historyProjection.taskBrief
+                    summary: latestTaskSummary
                 )
+                mission.verificationArtifactID = verificationArtifact.artifactID
                 if mission.metadata["reflection_completed"] != "true" {
                     _ = try await reflectionLoop?.reflectOnMissionCompletion(
                         mission: mission,
@@ -630,6 +633,12 @@ public actor MissionCoordinator {
                     mission.status = task.status == .cancelled ? .cancelled : .failed
                     mission.completedAt = now
                     mission.updatedAt = now
+                    let verificationArtifact = try await writeVerificationArtifact(
+                        mission: mission,
+                        task: task,
+                        summary: latestTaskSummary
+                    )
+                    mission.verificationArtifactID = verificationArtifact.artifactID
                 }
             }
             _ = try await missionStore.saveStage(latestStage)
@@ -676,6 +685,12 @@ public actor MissionCoordinator {
             )
             mission.metadata["reflection_completed"] = "true"
         }
+        let verificationArtifact = try await writeVerificationArtifact(
+            mission: mission,
+            task: nil,
+            summary: summary
+        )
+        mission.verificationArtifactID = verificationArtifact.artifactID
         _ = try await missionStore.saveMission(mission)
         _ = try await missionStore.saveStage(
             MissionStageRecord(
@@ -693,17 +708,13 @@ public actor MissionCoordinator {
                 completedAt: at
             )
         )
-        try await updateVerificationArtifact(mission: mission, task: nil, summary: summary)
     }
 
-    private func updateVerificationArtifact(
+    private func writeVerificationArtifact(
         mission: MissionRecord,
         task: TaskRecord?,
         summary: String
-    ) async throws {
-        guard mission.verificationArtifactID != nil else {
-            return
-        }
+    ) async throws -> ArtifactRecord {
         let body = [
             "Mission: \(mission.title)",
             "Status: \(mission.status.rawValue)",
@@ -712,9 +723,9 @@ public actor MissionCoordinator {
         ]
         .compactMap { $0 }
         .joined(separator: "\n")
-        _ = try await artifactStore.put(
+        return try await artifactStore.put(
             ArtifactPayload(
-                taskID: task?.taskID,
+                taskID: nil,
                 missionID: mission.missionID,
                 workspaceID: mission.workspaceID,
                 channelID: mission.channelID,

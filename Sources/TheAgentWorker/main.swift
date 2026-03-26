@@ -78,7 +78,13 @@ enum TheAgentWorkerMain {
                 "TheAgentWorker connected to \(meshURL.absoluteString) as \(worker.workerID) " +
                 "with capabilities \(capabilities.joined(separator: ","))\(executionDescription)"
             )
-            try await worker.runLoop(pollInterval: .milliseconds(Int64(options.pollIntervalSeconds * 1_000)))
+            do {
+                try await worker.runLoop(pollInterval: .milliseconds(Int64(options.pollIntervalSeconds * 1_000)))
+            } catch {
+                FileHandle.standardError.write(
+                    Data("TheAgentWorker stopped after mesh transport failure: \(error)\n".utf8)
+                )
+            }
         } else {
             print("TheAgentWorker registered as \(worker.workerID)\(executionDescription)")
         }

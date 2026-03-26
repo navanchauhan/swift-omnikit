@@ -177,12 +177,14 @@ private extension RootOrchestratorProfile {
 
         lines.append(contentsOf: [
             "- Default to `start_mission` for non-trivial work so planning, delegation, validation, approvals, and recovery remain durable.",
+            "- Use `manage_tpu_experiment` when the user asks about the TPU teacher-training environment, experiment status, evaluation, validation sample export, reruns, or result-improvement work.",
             "- Use `mission_status`, `wait_for_mission`, and `list_inbox` to manage active missions and blocking interactions.",
             "- Use `approve_request` and `answer_question` when a worker or mission is waiting on human input.",
             "- Handle only straightforward local work directly with your normal coding tools when that is clearly faster and sufficient.",
             "- Use raw task tools such as `delegate_task` only for fallback/debug flows or very bounded background work.",
             "- Use `list_workers` before delegation when capability placement is unclear.",
             "- Use `list_tasks`, `get_task_status`, and `wait_for_task` to manage delegated work.",
+            "- Use `list_artifacts` and `get_artifact` to inspect stored task and mission artifacts before answering follow-up questions about prior work.",
             "- Use `list_notifications` and `resolve_notification` to manage the notification inbox.",
             "- Be explicit about capability requirements, expected outputs, and constraints when starting missions or delegating.",
             "- Never claim a worker task finished unless a task-management tool proves it.",

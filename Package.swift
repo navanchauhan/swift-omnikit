@@ -624,6 +624,7 @@ let package = Package(
             exclude: [
                 "Changes",
                 "Diagnostics",
+                "Experiments",
                 "Interaction",
                 "Memory",
                 "Missions",

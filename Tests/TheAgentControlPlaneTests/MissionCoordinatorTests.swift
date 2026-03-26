@@ -63,7 +63,12 @@ struct MissionCoordinatorTests {
             Issue.record("Expected a progress artifact to be created.")
         }
         if let verificationArtifactID = finished.mission.verificationArtifactID {
-            #expect(try await harness.artifactStore.data(for: verificationArtifactID) != nil)
+            let data = try await harness.artifactStore.data(for: verificationArtifactID)
+            let text = data.flatMap { String(data: $0, encoding: .utf8) }
+            #expect(data != nil)
+            #expect(text?.localizedStandardContains("Mission verification pending") == false)
+            #expect(text?.localizedStandardContains("Status: completed") == true)
+            #expect(text?.localizedStandardContains(finished.task?.taskID ?? "") == true)
         } else {
             Issue.record("Expected a verification artifact to be created.")
         }

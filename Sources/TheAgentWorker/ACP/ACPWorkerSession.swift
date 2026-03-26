@@ -118,7 +118,9 @@ public actor ACPWorkerSession {
     public func run(
         task: TaskRecord,
         profile: ACPWorkerProfile,
-        workingDirectory: String
+        workingDirectory: String,
+        artifactOutputDirectory: String? = nil,
+        repositoryWorkingDirectory: String? = nil
     ) async throws -> ACPWorkerExecutionResult {
         let toolServerName = "\(profile.profileID)-worker-tools"
         let mcpServers: [OmniACPModel.MCPServer]
@@ -133,9 +135,17 @@ public actor ACPWorkerSession {
             overrides: profile.configuration,
             environment: environment
         )
-        if configuration.workingDirectory == nil {
-            configuration.workingDirectory = workingDirectory
+        configuration.workingDirectory = workingDirectory
+        var mergedEnvironment = configuration.environment
+        mergedEnvironment["THE_AGENT_TASK_ID"] = task.taskID
+        mergedEnvironment["THE_AGENT_ROOT_SESSION_ID"] = task.rootSessionID
+        if let artifactOutputDirectory, !artifactOutputDirectory.isEmpty {
+            mergedEnvironment["THE_AGENT_TASK_OUTPUT_DIR"] = artifactOutputDirectory
         }
+        if let repositoryWorkingDirectory, !repositoryWorkingDirectory.isEmpty {
+            mergedEnvironment["THE_AGENT_REPOSITORY_ROOT"] = repositoryWorkingDirectory
+        }
+        configuration.environment = mergedEnvironment
         configuration.mcpServers = mcpServers
 
         let backend = ACPAgentBackend(
@@ -144,11 +154,21 @@ public actor ACPWorkerSession {
             delegateProvider: delegateProvider
         )
         let result = try await backend.run(
-            prompt: prompt(for: task),
+            prompt: prompt(
+                for: task,
+                executionWorkingDirectory: configuration.workingDirectory ?? workingDirectory,
+                artifactOutputDirectory: artifactOutputDirectory,
+                repositoryWorkingDirectory: repositoryWorkingDirectory
+            ),
             model: profile.model,
             provider: profile.provider,
             reasoningEffort: profile.reasoningEffort,
-            context: context(for: task)
+            context: context(
+                for: task,
+                executionWorkingDirectory: configuration.workingDirectory ?? workingDirectory,
+                artifactOutputDirectory: artifactOutputDirectory,
+                repositoryWorkingDirectory: repositoryWorkingDirectory
+            )
         )
         return ACPWorkerExecutionResult(
             profileID: profile.profileID,
@@ -159,14 +179,26 @@ public actor ACPWorkerSession {
         )
     }
 
-    private func context(for task: TaskRecord) -> PipelineContext {
+    private func context(
+        for task: TaskRecord,
+        executionWorkingDirectory: String,
+        artifactOutputDirectory: String?,
+        repositoryWorkingDirectory: String?
+    ) -> PipelineContext {
         let projection = task.historyProjection
         let context = PipelineContext([
             "_graph_goal": projection.taskBrief,
             "task.id": task.taskID,
             "task.root_session_id": task.rootSessionID,
             "task.parent_task_id": task.parentTaskID ?? "",
+            "task.execution_working_directory": executionWorkingDirectory,
         ])
+        if let artifactOutputDirectory, !artifactOutputDirectory.isEmpty {
+            context.set("task.output_directory", artifactOutputDirectory)
+        }
+        if let repositoryWorkingDirectory, !repositoryWorkingDirectory.isEmpty {
+            context.set("task.repository_root", repositoryWorkingDirectory)
+        }
         if let activeSkillIDs = task.metadata["omni_skills.active_ids"], !activeSkillIDs.isEmpty {
             context.set("task.active_skill_ids", activeSkillIDs)
         }
@@ -197,13 +229,25 @@ public actor ACPWorkerSession {
         return context
     }
 
-    private func prompt(for task: TaskRecord) -> String {
+    private func prompt(
+        for task: TaskRecord,
+        executionWorkingDirectory: String,
+        artifactOutputDirectory: String?,
+        repositoryWorkingDirectory: String?
+    ) -> String {
         let projection = task.historyProjection
         var sections: [String] = [
             "You are executing a delegated durable worker task.",
             "Task ID: \(task.taskID)",
             "Task brief:\n\(projection.taskBrief)",
+            "Execution working directory: \(executionWorkingDirectory)",
         ]
+
+        if let repositoryWorkingDirectory,
+           !repositoryWorkingDirectory.isEmpty,
+           repositoryWorkingDirectory != executionWorkingDirectory {
+            sections.append("Repository root directory: \(repositoryWorkingDirectory)")
+        }
 
         if !projection.summaries.isEmpty {
             sections.append(
@@ -228,6 +272,18 @@ public actor ACPWorkerSession {
         if !projection.expectedOutputs.isEmpty {
             sections.append(
                 "Expected outputs:\n" + projection.expectedOutputs.map { "- \($0)" }.joined(separator: "\n")
+            )
+        }
+        if let artifactOutputDirectory,
+           !artifactOutputDirectory.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+           !projection.expectedOutputs.isEmpty {
+            sections.append(
+                """
+                Task artifact output directory:
+                - Write requested report/status/output files inside \(artifactOutputDirectory)
+                - Prefer the exact filenames from the expected outputs list when practical
+                - Do not write generated output files into the repository root or unrelated directories
+                """
             )
         }
         if let activeSkillIDs = task.metadata["omni_skills.active_ids"], !activeSkillIDs.isEmpty {

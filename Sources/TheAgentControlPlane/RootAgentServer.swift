@@ -11,6 +11,8 @@ public enum RootAgentServerError: Error, CustomStringConvertible, Sendable, Equa
     case missionSupportUnavailable(sessionID: String)
     case skillSupportUnavailable(sessionID: String)
     case doctorSupportUnavailable(sessionID: String)
+    case artifactSupportUnavailable(sessionID: String)
+    case artifactNotFound(String)
     case notificationNotFound(String)
     case noUnresolvedNotifications(sessionID: String)
 
@@ -32,6 +34,10 @@ public enum RootAgentServerError: Error, CustomStringConvertible, Sendable, Equa
             return "Root session \(sessionID) is not configured with skill support."
         case .doctorSupportUnavailable(let sessionID):
             return "Root session \(sessionID) is not configured with doctor diagnostics."
+        case .artifactSupportUnavailable(let sessionID):
+            return "Root session \(sessionID) is not configured with artifact support."
+        case .artifactNotFound(let artifactID):
+            return "Artifact \(artifactID) was not found."
         case .notificationNotFound(let notificationID):
             return "Notification \(notificationID) was not found."
         case .noUnresolvedNotifications(let sessionID):
@@ -59,6 +65,18 @@ public struct RootTaskWaitResult: Sendable, Equatable {
     }
 }
 
+public struct RootArtifactReadResult: Sendable, Equatable {
+    public var record: ArtifactRecord
+    public var text: String?
+    public var truncated: Bool
+
+    public init(record: ArtifactRecord, text: String?, truncated: Bool) {
+        self.record = record
+        self.text = text
+        self.truncated = truncated
+    }
+}
+
 public actor RootAgentServer {
     public nonisolated let sessionID: String
     public nonisolated let scope: SessionScope
@@ -67,6 +85,7 @@ public actor RootAgentServer {
     private let inbox: NotificationInbox
     private let scheduler: RootScheduler
     private let jobStore: any JobStore
+    private let artifactStore: (any ArtifactStore)?
     private let missionStore: (any MissionStore)?
     private let skillService: WorkspaceSkillStore?
     private let doctorService: DoctorService?
@@ -99,6 +118,7 @@ public actor RootAgentServer {
         self.sessionID = scope.sessionID
         self.scope = scope
         self.jobStore = jobStore
+        self.artifactStore = artifactStore
         self.missionStore = missionStore
         self.workspacePolicy = workspacePolicy
         self.scheduler = scheduler ?? RootScheduler(jobStore: jobStore)
@@ -203,6 +223,7 @@ public actor RootAgentServer {
         self.sessionID = sessionID
         self.scope = scope
         self.jobStore = jobStore
+        self.artifactStore = artifactStore
         self.missionStore = missionStore
         self.workspacePolicy = workspacePolicy
         self.scheduler = scheduler ?? RootScheduler(jobStore: jobStore)
@@ -369,8 +390,32 @@ public actor RootAgentServer {
             throw RootAgentServerError.missionSupportUnavailable(sessionID: sessionID)
         }
         var decorated = request
-        decorated.metadata.merge(try await skillService?.promptContext() ?? [:]) { _, new in new }
+        decorated.metadata = (try await skillService?.promptContext() ?? [:]).merging(request.metadata) { _, new in new }
         return try await missionCoordinator.startMission(decorated, now: now)
+    }
+
+    public func startTPUExperimentMission(
+        operation: TPUExperimentOperation,
+        domain: String = "singing",
+        notes: String? = nil,
+        extraCapabilityRequirements: [String] = [],
+        executionMode: MissionRecord.ExecutionMode? = nil,
+        requireApproval: Bool? = nil,
+        now: Date = Date()
+    ) async throws -> MissionStatusSnapshot {
+        let template = TPUExperimentRunbook.template(
+            for: operation,
+            domain: domain,
+            notes: notes,
+            extraCapabilityRequirements: extraCapabilityRequirements,
+            executionModeOverride: executionMode,
+            requireApprovalOverride: requireApproval
+        )
+        var request = template.request
+        request.metadata.merge(
+            try await projectedSkillMetadata(skillIDs: template.skillIDs)
+        ) { _, new in new }
+        return try await startMission(request, now: now)
     }
 
     public func listMissions(
@@ -388,10 +433,10 @@ public actor RootAgentServer {
             throw RootAgentServerError.missionSupportUnavailable(sessionID: sessionID)
         }
         return try await missionStore.missions(
-            sessionID: sessionID,
+            sessionID: nil,
             workspaceID: scope.workspaceID,
             statuses: nil
-        ).first
+        ).first(where: { managesRootSessionID($0.rootSessionID) })
     }
 
     public func missionStatus(missionID: String? = nil) async throws -> MissionStatusSnapshot {
@@ -565,13 +610,66 @@ public actor RootAgentServer {
     ) async throws -> [TaskRecord] {
         var tasks = try await jobStore.tasks(statuses: statuses)
         if currentRootOnly {
-            tasks.removeAll { $0.rootSessionID != sessionID }
+            tasks.removeAll { !managesRootSessionID($0.rootSessionID) }
         }
         tasks.sort(by: RootAgentServer.taskSortComparator)
         if let limit, tasks.count > limit {
             return Array(tasks.prefix(limit))
         }
         return tasks
+    }
+
+    public func listArtifacts(
+        taskID: String? = nil,
+        missionID: String? = nil,
+        limit: Int? = nil,
+        currentRootOnly: Bool = true
+    ) async throws -> [ArtifactRecord] {
+        guard let artifactStore else {
+            throw RootAgentServerError.artifactSupportUnavailable(sessionID: sessionID)
+        }
+        if currentRootOnly {
+            if let taskID {
+                _ = try await requireManagedTask(taskID: taskID)
+            }
+            if let missionID {
+                _ = try await requireManagedMission(missionID: missionID)
+            }
+        }
+        var artifacts = try await artifactStore.list(
+            taskID: taskID,
+            missionID: missionID,
+            workspaceID: scope.workspaceID
+        ).sorted { lhs, rhs in
+            if lhs.createdAt != rhs.createdAt {
+                return lhs.createdAt > rhs.createdAt
+            }
+            return lhs.artifactID < rhs.artifactID
+        }
+        if let limit, artifacts.count > limit {
+            artifacts = Array(artifacts.prefix(limit))
+        }
+        return artifacts
+    }
+
+    public func getArtifact(
+        artifactID: String,
+        maxBytes: Int = 128 * 1_024,
+        currentRootOnly: Bool = true
+    ) async throws -> RootArtifactReadResult {
+        guard let artifactStore else {
+            throw RootAgentServerError.artifactSupportUnavailable(sessionID: sessionID)
+        }
+        guard let record = try await artifactStore.record(artifactID: artifactID) else {
+            throw RootAgentServerError.artifactNotFound(artifactID)
+        }
+        try await ensureArtifactVisible(record, currentRootOnly: currentRootOnly)
+        let data = try await artifactStore.data(for: artifactID) ?? Data()
+        let resolvedLimit = max(1_024, min(maxBytes, 2 * 1_024 * 1_024))
+        let truncated = data.count > resolvedLimit
+        let prefix = Data(data.prefix(resolvedLimit))
+        let text = String(data: prefix, encoding: .utf8)
+        return RootArtifactReadResult(record: record, text: text, truncated: truncated)
     }
 
     public func latestTask(currentRootOnly: Bool = true) async throws -> TaskRecord? {
@@ -583,7 +681,7 @@ public actor RootAgentServer {
         guard let task = try await jobStore.task(taskID: taskID) else {
             return nil
         }
-        if currentRootOnly && task.rootSessionID != sessionID {
+        if currentRootOnly && !managesRootSessionID(task.rootSessionID) {
             return nil
         }
         return task
@@ -833,7 +931,7 @@ public actor RootAgentServer {
         let terminalTasks = try await jobStore.tasks(statuses: [.completed, .failed, .cancelled])
         var existingNotificationIDs = Set(try await inbox.all().map(\.notificationID))
 
-        for task in terminalTasks where task.rootSessionID == sessionID {
+        for task in terminalTasks where managesRootSessionID(task.rootSessionID) {
             let notificationID = "task.\(task.taskID).\(task.status.rawValue)"
             guard !existingNotificationIDs.contains(notificationID) else {
                 continue
@@ -877,10 +975,67 @@ public actor RootAgentServer {
         guard let task = try await jobStore.task(taskID: taskID) else {
             throw RootAgentServerError.taskNotFound(taskID)
         }
-        guard task.rootSessionID == sessionID else {
+        guard managesRootSessionID(task.rootSessionID) else {
             throw RootAgentServerError.taskNotManagedBySession(taskID: taskID, sessionID: sessionID)
         }
         return task
+    }
+
+    private func requireManagedMission(missionID: String) async throws -> MissionRecord {
+        guard let missionStore else {
+            throw RootAgentServerError.missionSupportUnavailable(sessionID: sessionID)
+        }
+        guard let mission = try await missionStore.mission(missionID: missionID) else {
+            throw RootAgentServerError.missionNotFound(missionID)
+        }
+        guard managesRootSessionID(mission.rootSessionID) else {
+            throw RootAgentServerError.missionNotFound(missionID)
+        }
+        return mission
+    }
+
+    private func managesRootSessionID(_ rootSessionID: String) -> Bool {
+        if rootSessionID == sessionID || rootSessionID == scope.sessionID {
+            return true
+        }
+        return SessionScope.bestEffort(sessionID: rootSessionID) == scope
+    }
+
+    private func projectedSkillMetadata(skillIDs: [String]) async throws -> [String: String] {
+        guard let skillService else {
+            return [:]
+        }
+        var packages: [OmniSkillPackage] = []
+        for skillID in skillIDs {
+            guard let package = try await skillService.resolvePackage(skillID: skillID) else {
+                continue
+            }
+            packages.append(package)
+        }
+        guard !packages.isEmpty else {
+            return [:]
+        }
+        let projection = try OmniSkillProjectionCompiler.compile(packages: packages)
+        return WorkspaceSkillStore.metadata(from: projection)
+    }
+
+    private func ensureArtifactVisible(
+        _ record: ArtifactRecord,
+        currentRootOnly: Bool
+    ) async throws {
+        if let workspaceID = record.workspaceID, workspaceID != scope.workspaceID {
+            throw RootAgentServerError.artifactNotFound(record.artifactID)
+        }
+        guard currentRootOnly else {
+            return
+        }
+        if let taskID = record.taskID {
+            _ = try await requireManagedTask(taskID: taskID)
+            return
+        }
+        if let missionID = record.missionID {
+            _ = try await requireManagedMission(missionID: missionID)
+        }
     }
 
     private func resolveTaskID(_ explicitTaskID: String?) async throws -> String {

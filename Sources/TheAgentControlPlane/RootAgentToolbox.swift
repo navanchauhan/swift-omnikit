@@ -18,6 +18,7 @@ public actor RootAgentToolbox {
             deactivateSkillTool(),
             skillStatusTool(),
             doctorTool(),
+            manageTPUExperimentTool(),
             startMissionTool(),
             listMissionsTool(),
             missionStatusTool(),
@@ -34,6 +35,8 @@ public actor RootAgentToolbox {
             listTasksTool(),
             getTaskStatusTool(),
             waitForTaskTool(),
+            listArtifactsTool(),
+            getArtifactTool(),
             listNotificationsTool(),
             resolveNotificationTool(),
         ]
@@ -228,6 +231,69 @@ public actor RootAgentToolbox {
                         "report": Self.serialize(doctorReport: try await server.doctorReport()),
                     ]
                 )
+            }
+        )
+    }
+
+    private func manageTPUExperimentTool() -> RegisteredTool {
+        RegisteredTool(
+            definition: AgentToolDefinition(
+                name: "manage_tpu_experiment",
+                description: "Start a durable TPU experiment mission for status, comparison, evaluation, sample export, reruns, or improvement work.",
+                parameters: [
+                    "type": "object",
+                    "properties": [
+                        "operation": [
+                            "type": "string",
+                            "description": "One of: inspect_status, compare_best_runs, evaluate_best_checkpoint, export_best_validation_samples, rerun_best_known_config, improve_singing_results.",
+                        ],
+                        "domain": ["type": "string"],
+                        "notes": ["type": "string"],
+                        "extra_capabilities": [
+                            "type": "array",
+                            "items": ["type": "string"],
+                        ],
+                        "execution_mode": ["type": "string"],
+                        "require_approval": ["type": "boolean"],
+                    ],
+                    "required": ["operation"],
+                    "additionalProperties": false,
+                ]
+            ),
+            executor: { [server] arguments, _ in
+                let operation = try Self.tpuExperimentOperation("operation", in: arguments)
+                let domain = try Self.optionalString("domain", in: arguments) ?? "singing"
+                let notes = try Self.optionalString("notes", in: arguments)
+                let extraCapabilities = try Self.stringArray("extra_capabilities", in: arguments)
+                let executionMode = try Self.missionExecutionMode("execution_mode", in: arguments)
+                let requireApproval = try Self.boolValue("require_approval", in: arguments)
+                let template = TPUExperimentRunbook.template(
+                    for: operation,
+                    domain: domain,
+                    notes: notes,
+                    extraCapabilityRequirements: extraCapabilities,
+                    executionModeOverride: executionMode,
+                    requireApprovalOverride: requireApproval
+                )
+                let snapshot = try await server.startTPUExperimentMission(
+                    operation: operation,
+                    domain: domain,
+                    notes: notes,
+                    extraCapabilityRequirements: extraCapabilities,
+                    executionMode: executionMode,
+                    requireApproval: requireApproval
+                )
+
+                return try Self.renderJSON([
+                    "operation": operation.rawValue,
+                    "template": Self.serialize(tpuMissionTemplate: template),
+                    "mission": Self.serialize(mission: snapshot.mission),
+                    "stages": snapshot.stages.map(Self.serialize(stage:)),
+                    "task": snapshot.task.map(Self.serialize(task:)) ?? NSNull(),
+                    "approvals": snapshot.approvals.map(Self.serialize(approval:)),
+                    "questions": snapshot.questions.map(Self.serialize(question:)),
+                    "recent_events": snapshot.recentEvents.map(Self.serialize(event:)),
+                ])
             }
         )
     }
@@ -809,6 +875,59 @@ public actor RootAgentToolbox {
         )
     }
 
+    private func listArtifactsTool() -> RegisteredTool {
+        RegisteredTool(
+            definition: AgentToolDefinition(
+                name: "list_artifacts",
+                description: "List stored artifacts for the current workspace, or narrow by task or mission.",
+                parameters: [
+                    "type": "object",
+                    "properties": [
+                        "task_id": ["type": "string"],
+                        "mission_id": ["type": "string"],
+                        "limit": ["type": "integer"],
+                    ],
+                    "additionalProperties": false,
+                ]
+            ),
+            executor: { [server] arguments, _ in
+                let taskID = try Self.optionalString("task_id", in: arguments)
+                let missionID = try Self.optionalString("mission_id", in: arguments)
+                let limit = try Self.intValue("limit", in: arguments)
+                let artifacts = try await server.listArtifacts(taskID: taskID, missionID: missionID, limit: limit)
+                return try Self.renderJSON([
+                    "artifacts": artifacts.map(Self.serialize(artifact:)),
+                ])
+            }
+        )
+    }
+
+    private func getArtifactTool() -> RegisteredTool {
+        RegisteredTool(
+            definition: AgentToolDefinition(
+                name: "get_artifact",
+                description: "Read stored artifact metadata and, when UTF-8 decodable, its text content.",
+                parameters: [
+                    "type": "object",
+                    "properties": [
+                        "artifact_id": ["type": "string"],
+                        "max_bytes": ["type": "integer"],
+                    ],
+                    "required": ["artifact_id"],
+                    "additionalProperties": false,
+                ]
+            ),
+            executor: { [server] arguments, _ in
+                let artifactID = try Self.requiredString("artifact_id", in: arguments)
+                let maxBytes = try Self.intValue("max_bytes", in: arguments) ?? 128 * 1_024
+                let result = try await server.getArtifact(artifactID: artifactID, maxBytes: maxBytes)
+                return try Self.renderJSON([
+                    "artifact": Self.serialize(artifactRead: result),
+                ])
+            }
+        )
+    }
+
     private func listNotificationsTool() -> RegisteredTool {
         RegisteredTool(
             definition: AgentToolDefinition(
@@ -1009,6 +1128,17 @@ private extension RootAgentToolbox {
         }
     }
 
+    static func tpuExperimentOperation(_ key: String, in arguments: [String: Any]) throws -> TPUExperimentOperation {
+        let rawValue = try requiredString(key, in: arguments)
+        guard let operation = TPUExperimentOperation(rawValue: rawValue.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()) else {
+            throw RootToolboxError.invalidArgument(
+                key: key,
+                expected: "inspect_status, compare_best_runs, evaluate_best_checkpoint, export_best_validation_samples, rerun_best_known_config, or improve_singing_results"
+            )
+        }
+        return operation
+    }
+
     static func installationScope(_ key: String, in arguments: [String: Any]) throws -> SkillInstallationRecord.Scope? {
         guard let rawValue = try optionalString(key, in: arguments) else {
             return nil
@@ -1201,6 +1331,29 @@ private extension RootAgentToolbox {
         ]
     }
 
+    static func serialize(artifact: ArtifactRecord) -> [String: Any] {
+        [
+            "artifact_id": artifact.artifactID,
+            "task_id": artifact.taskID ?? NSNull(),
+            "mission_id": artifact.missionID ?? NSNull(),
+            "workspace_id": artifact.workspaceID?.rawValue ?? NSNull(),
+            "channel_id": artifact.channelID?.rawValue ?? NSNull(),
+            "name": artifact.name,
+            "relative_path": artifact.relativePath,
+            "content_type": artifact.contentType,
+            "byte_count": artifact.byteCount,
+            "created_at": iso8601String(artifact.createdAt),
+        ]
+    }
+
+    static func serialize(artifactRead: RootArtifactReadResult) -> [String: Any] {
+        [
+            "record": serialize(artifact: artifactRead.record),
+            "text": artifactRead.text ?? NSNull(),
+            "truncated": artifactRead.truncated,
+        ]
+    }
+
     static func serialize(event: TaskEvent) -> [String: Any] {
         [
             "task_id": event.taskID,
@@ -1246,6 +1399,27 @@ private extension RootAgentToolbox {
             "created_at": iso8601String(mission.createdAt),
             "updated_at": iso8601String(mission.updatedAt),
             "completed_at": mission.completedAt.map(Self.iso8601String) ?? NSNull(),
+        ]
+    }
+
+    static func serialize(tpuMissionTemplate: TPUExperimentMissionTemplate) -> [String: Any] {
+        [
+            "operation": tpuMissionTemplate.operation.rawValue,
+            "skill_ids": tpuMissionTemplate.skillIDs,
+            "request": [
+                "title": tpuMissionTemplate.request.title,
+                "brief": tpuMissionTemplate.request.brief,
+                "execution_mode": tpuMissionTemplate.request.executionMode?.rawValue ?? NSNull(),
+                "capability_requirements": tpuMissionTemplate.request.capabilityRequirements,
+                "expected_outputs": tpuMissionTemplate.request.expectedOutputs,
+                "constraints": tpuMissionTemplate.request.constraints,
+                "priority": tpuMissionTemplate.request.priority,
+                "budget_units": tpuMissionTemplate.request.budgetUnits,
+                "max_recursion_depth": tpuMissionTemplate.request.maxRecursionDepth ?? NSNull(),
+                "require_approval": tpuMissionTemplate.request.requireApproval,
+                "approval_prompt": tpuMissionTemplate.request.approvalPrompt ?? NSNull(),
+                "metadata": tpuMissionTemplate.request.metadata,
+            ],
         ]
     }
 
