@@ -77,6 +77,7 @@ indirect enum _VNode {
     )
     case tagged(value: AnyHashable, label: _VNode)
     case divider
+    case gestureTarget(id: _ActionID, child: _VNode)
 }
 
 public enum _ShapeKind: Hashable, Sendable {

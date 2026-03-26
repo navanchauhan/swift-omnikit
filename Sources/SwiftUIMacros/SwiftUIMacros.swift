@@ -5,6 +5,7 @@ import SwiftSyntaxMacros
 struct SwiftUIMacrosPlugin: CompilerPlugin {
     let providingMacros: [Macro.Type] = [
         PreviewMacro.self,
-        ObservableMacro.self
+        ObservableMacro.self,
+        ObservationTrackedMacro.self
     ]
 }

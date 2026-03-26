@@ -1,8 +1,19 @@
+import OmniUICore
+
 public struct AnimationTimelineSchedule: Hashable, Sendable { public init() {} }
 
 public struct Animation: Hashable, Sendable {
     public let rawValue: String
-    public init(_ rawValue: String) { self.rawValue = rawValue }
+    /// The parsed duration in seconds (used by withAnimation to schedule ticks).
+    public let duration: Double
+    /// The parsed curve kind (used by the runtime for easing).
+    public let curve: AnimationCurve
+
+    public init(_ rawValue: String) {
+        self.rawValue = rawValue
+        self.duration = Animation._parseDuration(rawValue)
+        self.curve = Animation._parseCurve(rawValue)
+    }
 
     public static let `default` = Animation("default")
 
@@ -19,12 +30,41 @@ public struct Animation: Hashable, Sendable {
     public func repeatForever(autoreverses: Bool = true) -> Animation {
         Animation("\(rawValue).repeatForever(\(autoreverses))")
     }
+
+    // MARK: - Parsing helpers
+
+    private static func _parseDuration(_ raw: String) -> Double {
+        // Extract e.g. "0.35" from "easeInOut(0.35)"
+        guard let open = raw.firstIndex(of: "("),
+              let close = raw.firstIndex(of: ")") else {
+            return 0.35 // default duration
+        }
+        let inner = String(raw[raw.index(after: open)..<close])
+        return Double(inner) ?? 0.35
+    }
+
+    private static func _parseCurve(_ raw: String) -> AnimationCurve {
+        let lower = raw.lowercased()
+        if lower.hasPrefix("easeinout") || lower == "default" { return .easeInOut }
+        if lower.hasPrefix("easein") { return .easeIn }
+        if lower.hasPrefix("easeout") { return .easeOut }
+        if lower.hasPrefix("linear") { return .linear }
+        if lower.hasPrefix("spring") { return .spring }
+        return .easeInOut
+    }
 }
 
+/// Execute the body immediately (state changes are synchronous), then register an
+/// animation on the runtime so it keeps re-rendering with eased progress over N ticks.
 @discardableResult
 public func withAnimation<T>(_ animation: Animation? = nil, _ body: () -> T) -> T {
-    _ = animation
-    return body()
+    let result = body()
+    // If a runtime is available on the current task, register the animation for tick scheduling.
+    if let runtime = _UIRuntime._current {
+        let anim = animation ?? .default
+        runtime._registerAnimation(curve: anim.curve, duration: anim.duration)
+    }
+    return result
 }
 
 public extension View {

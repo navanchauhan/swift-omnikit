@@ -270,25 +270,37 @@ public struct AsyncImage<Content: View>: View, _PrimitiveView {
     @State private var didAttemptLoad = false
     @State private var didLoadSucceed = false
     @State private var failureDescription: String? = nil
+    @State private var loadedFilename: String? = nil
 
     let url: URL?
     let content: (AsyncImagePhase) -> Content
+
+    /// Maximum allowed response size: 10 MB.
+    private static var _maxResponseBytes: Int { 10 * 1024 * 1024 }
+    /// Request timeout: 10 seconds.
+    private static var _timeoutInterval: TimeInterval { 10 }
 
     public init(url: URL?, @ViewBuilder content: @escaping (AsyncImagePhase) -> Content) {
         self.url = url
         self.content = content
     }
 
-    public init(url: URL?) where Content == Image {
+    public init(url: URL?) where Content == _AsyncImageDefaultContent {
         self.url = url
         self.content = { phase in
-            switch phase {
-            case .success(let image):
-                return image
-            case .empty, .failure:
-                return Image(systemName: "photo")
-            }
+            _AsyncImageDefaultContent(phase: phase, url: url)
         }
+    }
+
+    /// Validate that the URL uses an allowed scheme (http or https only).
+    private static func _validateURL(_ url: URL) -> String? {
+        guard let scheme = url.scheme?.lowercased() else {
+            return "No URL scheme"
+        }
+        guard scheme == "http" || scheme == "https" else {
+            return "Unsupported URL scheme '\(scheme)' (only http/https allowed)"
+        }
+        return nil
     }
 
     func _makeNode(_ ctx: inout _BuildContext) -> _VNode {
@@ -296,13 +308,34 @@ public struct AsyncImage<Content: View>: View, _PrimitiveView {
             let path = ctx.path
             ctx.runtime._registerTask(path: path) {
                 didAttemptLoad = true
+
+                // Security: reject non-http(s) URLs
+                if let error = AsyncImage._validateURL(url) {
+                    failureDescription = error
+                    return
+                }
+
                 do {
-                    if url.isFileURL {
-                        _ = try Data(contentsOf: url)
-                    } else {
-                        _ = try await URLSession.shared.data(from: url)
+                    var request = URLRequest(url: url)
+                    request.timeoutInterval = AsyncImage._timeoutInterval
+
+                    let (data, response) = try await URLSession.shared.data(for: request)
+
+                    // Enforce 10 MB max response size
+                    if data.count > AsyncImage._maxResponseBytes {
+                        failureDescription = "Response too large (\(data.count) bytes, max \(AsyncImage._maxResponseBytes))"
+                        return
                     }
+
+                    // Check HTTP status code
+                    if let httpResponse = response as? HTTPURLResponse,
+                       !(200..<300).contains(httpResponse.statusCode) {
+                        failureDescription = "HTTP \(httpResponse.statusCode)"
+                        return
+                    }
+
                     didLoadSucceed = true
+                    loadedFilename = url.lastPathComponent
                     failureDescription = nil
                 } catch {
                     failureDescription = error.localizedDescription
@@ -310,7 +343,9 @@ public struct AsyncImage<Content: View>: View, _PrimitiveView {
             }
         }
         let phase: AsyncImagePhase
-        if let failureDescription {
+        if url == nil {
+            phase = .empty
+        } else if let failureDescription {
             phase = .failure(failureDescription)
         } else if didLoadSucceed {
             phase = .success(Image(systemName: "photo"))
@@ -318,6 +353,30 @@ public struct AsyncImage<Content: View>: View, _PrimitiveView {
             phase = .empty
         }
         return ctx.buildChild(content(phase))
+    }
+}
+
+/// Default content view for AsyncImage when no custom content closure is provided.
+/// Shows contextual placeholder text for each loading phase in the terminal.
+public struct _AsyncImageDefaultContent: View, _PrimitiveView {
+    public typealias Body = Never
+
+    let phase: AsyncImagePhase
+    let url: URL?
+
+    func _makeNode(_ ctx: inout _BuildContext) -> _VNode {
+        switch phase {
+        case .empty:
+            if url == nil {
+                return .text("[No image]")
+            }
+            return .text("[Loading...]")
+        case .success:
+            let filename = url?.lastPathComponent ?? "image"
+            return .text("[img: \(filename)]")
+        case .failure(let description):
+            return .text("[Error: \(description)]")
+        }
     }
 }
 

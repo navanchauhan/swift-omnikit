@@ -3,7 +3,68 @@
 // NOTE: This intentionally does not use Combine (portable to Linux).
 // Updates are reflected because the renderer rebuilds the view hierarchy every frame.
 
-public protocol ObservableObject: AnyObject {}
+/// Observation registrar that tracks interested runtimes and notifies them when
+/// an `@Observable` object's properties change.
+///
+/// The `@Observable` macro synthesizes a `_$observationRegistrar` stored property
+/// of this type on each annotated class.  Property wrappers like `@Bindable`,
+/// `@ObservedObject`, and `@EnvironmentObject` call ``track()`` during body
+/// evaluation so the runtime knows to re-render when ``notify()`` fires.
+public final class _ObservationRegistrar: @unchecked Sendable {
+    private struct _Entry {
+        weak var runtime: _UIRuntime?
+        var path: [Int]
+    }
+    private var entries: [_Entry] = []
+
+    public init() {}
+
+    /// Register the current runtime / view path as an observer of this object.
+    /// Called automatically by property wrappers during view body evaluation.
+    public func track() {
+        guard let runtime = _UIRuntime._current, let path = _UIRuntime._currentPath else { return }
+        // Avoid duplicate registrations for the same runtime + path within one render pass.
+        if !entries.contains(where: { $0.runtime === runtime && $0.path == path }) {
+            entries.append(_Entry(runtime: runtime, path: path))
+        }
+    }
+
+    /// Notify all registered runtimes that a property changed.
+    /// Call this from property `didSet` or from the macro-synthesized setter.
+    public func notify() {
+        var didPurge = false
+        for entry in entries {
+            if let runtime = entry.runtime {
+                runtime._markDirtyFromObservation(path: entry.path)
+            } else {
+                didPurge = true
+            }
+        }
+        if didPurge {
+            entries.removeAll(where: { $0.runtime == nil })
+        }
+    }
+}
+
+public protocol ObservableObject: AnyObject {
+    /// The registrar that tracks observation interest and delivers change
+    /// notifications.  The ``@Observable`` macro synthesizes this automatically.
+    var _$observationRegistrar: _ObservationRegistrar { get }
+}
+
+/// Default implementation so existing manual `ObservableObject` conformances
+/// that predate the registrar continue to compile.  They simply won't get
+/// automatic change notifications (bindings still work via `_markDirtyFromBinding`).
+extension ObservableObject {
+    public var _$observationRegistrar: _ObservationRegistrar {
+        _DefaultObservationRegistrar.shared
+    }
+}
+
+/// A shared no-op registrar used by the default protocol extension.
+private enum _DefaultObservationRegistrar {
+    nonisolated(unsafe) static let shared = _ObservationRegistrar()
+}
 
 @propertyWrapper
 @dynamicMemberLookup
@@ -17,6 +78,7 @@ public struct ObservedObject<ObjectType: ObservableObject> {
     public var projectedValue: ObservedObject<ObjectType> { self }
 
     public subscript<Value>(dynamicMember keyPath: ReferenceWritableKeyPath<ObjectType, Value>) -> Binding<Value> {
+        wrappedValue._$observationRegistrar.track()
         let runtime = _UIRuntime._current
         let path = _UIRuntime._currentPath
         return Binding(
@@ -52,6 +114,7 @@ public struct StateObject<ObjectType: ObservableObject> {
     public var projectedValue: StateObject<ObjectType> { self }
 
     public subscript<Value>(dynamicMember keyPath: ReferenceWritableKeyPath<ObjectType, Value>) -> Binding<Value> {
+        wrappedValue._$observationRegistrar.track()
         let runtime = _UIRuntime._current
         let path = _UIRuntime._currentPath
         return Binding(
@@ -93,6 +156,7 @@ public struct EnvironmentObject<ObjectType: ObservableObject> {
     public subscript<Value>(dynamicMember keyPath: ReferenceWritableKeyPath<ObjectType, Value>) -> Binding<Value> {
         // Capture the object now so later event contexts (keypresses, clicks) don't need TaskLocal environment.
         let object = wrappedValue
+        object._$observationRegistrar.track()
         let runtime = _UIRuntime._current
         let path = _UIRuntime._currentPath
         return Binding(
@@ -114,11 +178,19 @@ public struct Bindable<ObjectType: AnyObject> {
 
     public init(wrappedValue: ObjectType) {
         self.wrappedValue = wrappedValue
+        // Register observation interest when the wrapper is initialised during a build.
+        if let obs = wrappedValue as? ObservableObject {
+            obs._$observationRegistrar.track()
+        }
     }
 
     public var projectedValue: Bindable<ObjectType> { self }
 
     public subscript<Value>(dynamicMember keyPath: ReferenceWritableKeyPath<ObjectType, Value>) -> Binding<Value> {
+        // Re-track on every binding creation (covers body re-evaluations).
+        if let obs = wrappedValue as? ObservableObject {
+            obs._$observationRegistrar.track()
+        }
         let runtime = _UIRuntime._current
         let path = _UIRuntime._currentPath
         return Binding(

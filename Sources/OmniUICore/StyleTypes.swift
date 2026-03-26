@@ -274,9 +274,46 @@ public struct AnyTransition: Hashable, Sendable {
     public init(_ rawValue: String) { self.rawValue = rawValue }
 
     public static var opacity: AnyTransition { AnyTransition("opacity") }
+    public static var slide: AnyTransition { AnyTransition("slide") }
+    public static var scale: AnyTransition { AnyTransition("scale") }
+    public static var identity: AnyTransition { AnyTransition("identity") }
     public static func move(edge: Edge) -> AnyTransition { AnyTransition("move(\(edge))") }
+
+    public static func asymmetric(insertion: AnyTransition, removal: AnyTransition) -> AnyTransition {
+        AnyTransition("asymmetric(insertion:\(insertion.rawValue),removal:\(removal.rawValue))")
+    }
 
     public func combined(with other: AnyTransition) -> AnyTransition {
         AnyTransition("\(rawValue)+\(other.rawValue)")
+    }
+}
+
+/// Easing curves for terminal tick-driven animations.
+public enum AnimationCurve: Hashable, Sendable {
+    case linear
+    case easeIn
+    case easeOut
+    case easeInOut
+    case spring
+
+    /// Evaluate the curve at a linear progress value t ∈ [0,1], returning the eased value.
+    public func evaluate(_ t: Double) -> Double {
+        let t = min(max(t, 0), 1)
+        switch self {
+        case .linear:
+            return t
+        case .easeIn:
+            return t * t
+        case .easeOut:
+            return 1 - (1 - t) * (1 - t)
+        case .easeInOut:
+            // Cubic bezier approximation: ease-in-out
+            return t < 0.5
+                ? 2 * t * t
+                : 1 - 2 * (1 - t) * (1 - t)
+        case .spring:
+            // Simple damped spring approximation for terminal use
+            return 1 - (1 - t) * (1 - t)
+        }
     }
 }

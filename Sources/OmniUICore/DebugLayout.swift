@@ -121,6 +121,8 @@ enum _DebugLayout {
             return hasContentShapeRect(child)
         case .clip(_, let child):
             return hasContentShapeRect(child)
+        case .gestureTarget(_, let child):
+            return hasContentShapeRect(child)
         case .group(let nodes):
             return nodes.contains(where: hasContentShapeRect)
         case .stack(_, _, let children):
@@ -788,6 +790,8 @@ enum _DebugLayout {
                     return _Size(width: min(maxSize.width, xPad + 4 + l.width), height: 1)
                 case .tapTarget(_, let child):
                     return measure(child, maxSize)
+                case .gestureTarget(_, let child):
+                    return measure(child, maxSize)
                 case .hover(_, let child):
                     return measure(child, maxSize)
                 case .toggle(_, let isFocused, _, let label):
@@ -846,6 +850,8 @@ enum _DebugLayout {
                 case .tagged(_, let label):
                     return isFlexibleCandidate(label)
                 case .edgePadding(_, _, _, _, let child):
+                    return isFlexibleCandidate(child)
+                case .gestureTarget(_, let child):
                     return isFlexibleCandidate(child)
                 case .group(let nodes):
                     return nodes.contains(where: isFlexibleCandidate)
@@ -1023,6 +1029,26 @@ enum _DebugLayout {
             hitRegions.append((rect, id))
             return s
 
+        case .gestureTarget(let gid, let gchild):
+            let s = draw(
+                node: gchild,
+                origin: origin,
+                maxSize: maxSize,
+                canvas: &canvas,
+                hitRegions: &hitRegions,
+                hoverRegions: &hoverRegions,
+                scrollRegions: &scrollRegions,
+                shapeRegions: &shapeRegions,
+                renderShapeGlyphs: renderShapeGlyphs,
+                overlays: &overlays,
+                style: style
+            )
+            let w = min(maxSize.width, max(1, s.width))
+            let h = min(maxSize.height, max(1, s.height))
+            let rect = _Rect(origin: origin, size: _Size(width: w, height: h))
+            hitRegions.append((rect, gid))
+            return s
+
         case .toggle(let id, let isFocused, let isOn, let label):
             // Render as [x] label / [ ] label
             let box = isOn ? "[x] " : "[ ] "
@@ -1185,6 +1211,8 @@ enum _DebugLayout {
                         let l = m(label, labelMax)
                         return _Size(width: min(maxSize.width, xPad + 4 + l.width), height: 1)
                     case .tapTarget(_, let child):
+                        return m(child, maxSize)
+                    case .gestureTarget(_, let child):
                         return m(child, maxSize)
                     case .toggle(_, let isFocused, _, let label):
                         let xPad = isFocused ? 1 : 0

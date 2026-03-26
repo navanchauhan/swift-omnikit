@@ -1,6 +1,6 @@
 public final class _UIRuntime: @unchecked Sendable {
     /// Build-time ambient runtime. Set by `_BuildContext.withRuntime`.
-    @TaskLocal static var _current: _UIRuntime?
+    @TaskLocal public static var _current: _UIRuntime?
 
     /// A traversal path to disambiguate state keys for repeated view instances.
     @TaskLocal static var _currentPath: [Int]?
@@ -134,6 +134,55 @@ public final class _UIRuntime: @unchecked Sendable {
 
     private var _lastRenderedSize: _Size? = nil
     private var _hasRenderedAtLeastOnce: Bool = false
+
+    // ── Animation tick scheduler ──────────────────────────────────────
+    private struct _ActiveAnimation {
+        let curve: AnimationCurve
+        /// Total ticks for this animation (derived from duration at ~60fps ≈ 16ms/tick).
+        let totalTicks: Int
+        /// Current tick counter (0 ..< totalTicks).
+        var currentTick: Int = 0
+    }
+    private var _activeAnimations: [_ActiveAnimation] = []
+
+    /// Register a new animation that should drive re-renders over the given duration.
+    public func _registerAnimation(curve: AnimationCurve, duration: Double) {
+        let tickRate: Double = 0.016 // ~16ms per tick
+        let ticks = max(1, Int((duration / tickRate).rounded()))
+        _activeAnimations.append(_ActiveAnimation(curve: curve, totalTicks: ticks))
+        _markDirty()
+    }
+
+    /// Advance all active animations by one tick. Returns true if any are still running.
+    public func _tickAnimations() -> Bool {
+        guard !_activeAnimations.isEmpty else { return false }
+        var i = 0
+        while i < _activeAnimations.count {
+            _activeAnimations[i].currentTick += 1
+            if _activeAnimations[i].currentTick >= _activeAnimations[i].totalTicks {
+                _activeAnimations.remove(at: i)
+            } else {
+                i += 1
+            }
+        }
+        if !_activeAnimations.isEmpty {
+            _markDirty()
+        }
+        return !_activeAnimations.isEmpty
+    }
+
+    /// The current animation progress fraction t ∈ [0,1] for the most recently registered animation,
+    /// or 1.0 if no animation is active.
+    public var _animationProgress: Double {
+        guard let anim = _activeAnimations.last else { return 1.0 }
+        let linearT = Double(anim.currentTick) / Double(max(1, anim.totalTicks))
+        return anim.curve.evaluate(linearT)
+    }
+
+    /// Whether any animations are currently in-flight.
+    public var _hasActiveAnimations: Bool {
+        !_activeAnimations.isEmpty
+    }
 
     // Base environment at the root render call.
     var _baseEnvironment: EnvironmentValues = EnvironmentValues()
@@ -502,6 +551,7 @@ public final class _UIRuntime: @unchecked Sendable {
         if !_hasRenderedAtLeastOnce { return true }
         if _lastRenderedSize != size { return true }
         if _pendingDirtyEverything { return true }
+        if !_activeAnimations.isEmpty { return true }
         return !_pendingDirtyPaths.isEmpty
     }
 
@@ -1074,6 +1124,13 @@ public final class _UIRuntime: @unchecked Sendable {
 extension _UIRuntime {
     func _markDirtyFromModelContext() {
         _markDirty()
+    }
+
+    /// Called by `_ObservationRegistrar.notify()` when an `@Observable` object's
+    /// property changes.  Marks the specific view path dirty so only the relevant
+    /// subtree is rebuilt.
+    public func _markDirtyFromObservation(path: [Int]) {
+        _markDirty(path: path)
     }
 
     func _registerOverlay(view: AnyView, dismiss: @escaping () -> Void) {

@@ -521,6 +521,8 @@ enum _RenderLayout {
                     return isFlexibleCandidate(label)
                 case .edgePadding(_, _, _, _, let child):
                     return isFlexibleCandidate(child)
+                case .gestureTarget(_, let child):
+                    return isFlexibleCandidate(child)
                 case .group(let nodes):
                     return nodes.contains(where: isFlexibleCandidate)
                 case .zstack(let nodes):
@@ -664,6 +666,15 @@ enum _RenderLayout {
             let hitWidth = wantsFullHitRect ? maxSize.width : w
             let rect = _Rect(origin: origin, size: _Size(width: min(maxSize.width, hitWidth), height: h))
             hitRegions.append((rect, id))
+            return s
+
+        case .gestureTarget(let gid, let gchild):
+            let s = draw(node: gchild, origin: origin, maxSize: maxSize, ctx: &ctx, ops: &ops, hitRegions: &hitRegions, hoverRegions: &hoverRegions, scrollRegions: &scrollRegions, scrollTargets: &scrollTargets, shapeRegions: &shapeRegions, cursorPosition: &cursorPosition, activeMenu: &activeMenu, activePicker: &activePicker, activeTextField: &activeTextField,
+                scrollContext: scrollContext)
+            let w = min(maxSize.width, max(1, s.width))
+            let h = min(maxSize.height, max(1, s.height))
+            let rect = _Rect(origin: origin, size: _Size(width: w, height: h))
+            hitRegions.append((rect, gid))
             return s
 
         case .hover(let id, let child):
@@ -969,6 +980,8 @@ enum _RenderLayout {
             return hasContentShapeRect(child)
         case .clip(_, let child):
             return hasContentShapeRect(child)
+        case .gestureTarget(_, let child):
+            return hasContentShapeRect(child)
         case .group(let nodes):
             return nodes.contains(where: hasContentShapeRect)
         case .stack(_, _, let children):
@@ -1078,6 +1091,8 @@ enum _RenderLayout {
             let l = measure(label, labelMax)
             return _Size(width: min(maxSize.width, xPad + 4 + l.width), height: 1)
         case .tapTarget(_, let child):
+            return measure(child, maxSize)
+        case .gestureTarget(_, let child):
             return measure(child, maxSize)
         case .hover(_, let child):
             return measure(child, maxSize)

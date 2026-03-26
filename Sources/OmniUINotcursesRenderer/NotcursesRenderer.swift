@@ -939,6 +939,9 @@ extension NotcursesApp {
                 exitNote = "notcurses_render() failed (\(rr))"
                 return
             }
+
+            // Advance any in-flight animations so the next frame reflects updated progress.
+            _ = runtime._tickAnimations()
             }
 
             guard let snapshot = lastSnapshot else {

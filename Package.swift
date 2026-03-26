@@ -135,6 +135,10 @@ let package = Package(
             targets: ["AttractorCLI"]
         ),
         .executable(
+            name: "KitchenSinkAttractorRunner",
+            targets: ["KitchenSinkAttractorRunner"]
+        ),
+        .executable(
             name: "OmniAICode",
             targets: ["OmniAICode"]
         ),
@@ -520,6 +524,12 @@ let package = Package(
                 .unsafeFlags(["-enable-actor-data-race-checks"], .when(configuration: .debug)),
                 .unsafeFlags(["-Xfrontend", "-solver-expression-time-threshold=300"]),
             ]
+        ),
+        .executableTarget(
+            name: "KitchenSinkAttractorRunner",
+            dependencies: ["TheAgentWorkerKit"],
+            path: "Sources/KitchenSinkAttractorRunner",
+            swiftSettings: commonSwiftSettings
         ),
         .executableTarget(
             name: "AttractorCLI",

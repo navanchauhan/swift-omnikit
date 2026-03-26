@@ -4,6 +4,12 @@
 
 import Foundation
 
+public enum CoordinateSpace: @unchecked Sendable {
+    case local
+    case global
+    case named(AnyHashable)
+}
+
 public enum AccessibilityActionCategory {
 }
 
@@ -654,11 +660,48 @@ public enum DragDropPreviewsFormation {
 }
 
 
-public enum DragGesture {
-    public enum Body {
+public struct DragGesture: Sendable {
+    public struct Value: Sendable {
+        public var startLocation: CGPoint
+        public var location: CGPoint
+        public var translation: CGSize
+
+        public init(startLocation: CGPoint, location: CGPoint, translation: CGSize) {
+            self.startLocation = startLocation
+            self.location = location
+            self.translation = translation
+        }
     }
 
-    public enum Value {
+    public var minimumDistance: CGFloat
+    public var coordinateSpace: CoordinateSpace
+
+    public init(minimumDistance: CGFloat = 10, coordinateSpace: CoordinateSpace = .local) {
+        self.minimumDistance = minimumDistance
+        self.coordinateSpace = coordinateSpace
+    }
+
+    private var _onChanged: (@Sendable (Value) -> Void)?
+    private var _onEnded: (@Sendable (Value) -> Void)?
+
+    public func onChanged(_ action: @escaping @Sendable (Value) -> Void) -> DragGesture {
+        var copy = self
+        copy._onChanged = action
+        return copy
+    }
+
+    public func onEnded(_ action: @escaping @Sendable (Value) -> Void) -> DragGesture {
+        var copy = self
+        copy._onEnded = action
+        return copy
+    }
+
+    public func _fireChanged(_ value: Value) {
+        _onChanged?(value)
+    }
+
+    public func _fireEnded(_ value: Value) {
+        _onEnded?(value)
     }
 }
 
@@ -1006,12 +1049,6 @@ public enum GlassProminentButtonStyle {
 }
 
 
-public enum Grid {
-    public enum Body {
-    }
-}
-
-
 public enum GridLayout {
     public enum AnimatableData {
     }
@@ -1020,12 +1057,6 @@ public enum GridLayout {
     }
 
     public enum Cache {
-    }
-}
-
-
-public enum GridRow {
-    public enum Body {
     }
 }
 
@@ -1203,12 +1234,6 @@ public enum LabeledToolbarItemGroupContent {
 }
 
 
-public enum LazyHGrid {
-    public enum Body {
-    }
-}
-
-
 public enum LimitedAvailabilityConfiguration {
     public enum Body {
     }
@@ -1249,11 +1274,25 @@ public enum ListItemTint {
 }
 
 
-public enum LongPressGesture {
-    public enum Body {
+public struct LongPressGesture: Sendable {
+    public var minimumDuration: Double
+    public var maximumDistance: CGFloat
+
+    public init(minimumDuration: Double = 0.5, maximumDistance: CGFloat = 10) {
+        self.minimumDuration = minimumDuration
+        self.maximumDistance = maximumDistance
     }
 
-    public enum Value {
+    private var _onEnded: (@Sendable (Bool) -> Void)?
+
+    public func onEnded(_ action: @escaping @Sendable (Bool) -> Void) -> LongPressGesture {
+        var copy = self
+        copy._onEnded = action
+        return copy
+    }
+
+    public func _fireEnded(_ value: Bool) {
+        _onEnded?(value)
     }
 }
 

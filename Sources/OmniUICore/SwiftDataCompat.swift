@@ -63,8 +63,11 @@ public final class ModelContext: @unchecked Sendable {
         self.allowedTypeIDs = schema.map { Set($0.modelTypes.map(ObjectIdentifier.init)) }
         self.store = _ModelStore()
         self.observerID = UUID()
-        store.registerObserver(id: observerID) {
-            _UIRuntime._current?._markDirtyFromModelContext()
+        // Capture the runtime at registration time so notifications work even when
+        // called outside a build/action context.  Fall back to _current for lazy resolution.
+        store.registerObserver(id: observerID) { [weak capturedRuntime = _UIRuntime._current] in
+            let runtime = capturedRuntime ?? _UIRuntime._current
+            runtime?._markDirtyFromModelContext()
         }
     }
 
@@ -73,8 +76,9 @@ public final class ModelContext: @unchecked Sendable {
         self.allowedTypeIDs = schema.map { Set($0.modelTypes.map(ObjectIdentifier.init)) }
         self.store = store
         self.observerID = UUID()
-        store.registerObserver(id: observerID) {
-            _UIRuntime._current?._markDirtyFromModelContext()
+        store.registerObserver(id: observerID) { [weak capturedRuntime = _UIRuntime._current] in
+            let runtime = capturedRuntime ?? _UIRuntime._current
+            runtime?._markDirtyFromModelContext()
         }
     }
 

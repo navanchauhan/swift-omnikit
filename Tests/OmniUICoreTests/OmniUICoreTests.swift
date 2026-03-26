@@ -1205,7 +1205,7 @@ struct _DrawingParityProbe: View {
     }
 }
 
-@Test func asyncImage_loads_local_file() async throws {
+@Test func asyncImage_rejects_file_url_for_security() async throws {
     let runtime = _UIRuntime()
     let tempURL = URL.temporaryDirectory.appending(path: "omniui-async-image-test.bin")
     try Data([0x89, 0x50, 0x4E, 0x47]).write(to: tempURL)
@@ -1228,7 +1228,8 @@ struct _DrawingParityProbe: View {
     #expect(initial.text.contains("empty"))
     try await Task.sleep(nanoseconds: 100_000_000)
     let next = runtime.debugRender(Probe(url: tempURL), size: _Size(width: 20, height: 4))
-    #expect(next.text.contains("photo"))
+    // file:// URLs are rejected for security — should report failure, not success
+    #expect(next.text.contains("failure"))
 }
 
 @Test func timelineView_ticks_over_time() async throws {

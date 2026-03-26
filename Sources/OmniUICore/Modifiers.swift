@@ -1519,7 +1519,15 @@ private struct _ModelContainerBuilder: View, _PrimitiveView {
     }
 }
 
-/// Used for API compatibility: modifiers that we don't yet model in the node tree.
+/// Transition modifier: applies terminal-appropriate enter/exit effects.
+///
+/// In a real GPU renderer these would animate over many frames. In a terminal we approximate:
+/// - `.opacity` — renders the view with reduced opacity (secondary color hint) on appear.
+/// - `.slide` — offsets the view by -1 from the leading edge (appears to slide in).
+/// - `.scale` — wraps the view in a scale-effect hint (rendered as secondary on first tick).
+/// - `.identity` — no visual effect (passthrough).
+/// - `.asymmetric(insertion:removal:)` — uses the insertion transition on appear.
+/// - `.move(edge:)` — offsets the view by one cell from the given edge.
 private struct _TransitionModifier: View, _PrimitiveView {
     typealias Body = Never
 
@@ -1529,6 +1537,27 @@ private struct _TransitionModifier: View, _PrimitiveView {
     func _makeNode(_ ctx: inout _BuildContext) -> _VNode {
         let raw = transition.rawValue.lowercased()
         let base = ctx.buildChild(content)
+
+        // Identity — no effect
+        if raw == "identity" {
+            return base
+        }
+
+        // Asymmetric — use the insertion transition for the appear pass.
+        // Parse "asymmetric(insertion:X,removal:Y)" and apply X.
+        if raw.hasPrefix("asymmetric(") {
+            if let insertionStart = raw.range(of: "insertion:"),
+               let commaRange = raw.range(of: ",removal:") {
+                let insertionRaw = String(raw[insertionStart.upperBound..<commaRange.lowerBound])
+                return _applyTransitionEffect(insertionRaw, to: base)
+            }
+            return base
+        }
+
+        return _applyTransitionEffect(raw, to: base)
+    }
+
+    private func _applyTransitionEffect(_ raw: String, to base: _VNode) -> _VNode {
         if raw.contains("move(") {
             if raw.contains("top") {
                 return .offset(x: 0, y: -1, child: base)
@@ -1544,7 +1573,34 @@ private struct _TransitionModifier: View, _PrimitiveView {
             }
         }
         if raw.contains("opacity") {
+            // Terminal approximation: reduced opacity on appear tick.
+            // When an animation is active, use the animation progress for opacity.
+            if let runtime = _UIRuntime._current, runtime._hasActiveAnimations {
+                let progress = runtime._animationProgress
+                return .opacity(CGFloat(progress), child: base)
+            }
             return .opacity(0.85, child: base)
+        }
+        if raw.contains("slide") {
+            // Terminal approximation: offset from the leading edge.
+            // When an animation is active, progressively reduce the offset.
+            if let runtime = _UIRuntime._current, runtime._hasActiveAnimations {
+                let progress = runtime._animationProgress
+                let offset = Int(round((1.0 - progress) * -2.0))
+                return .offset(x: offset, y: 0, child: base)
+            }
+            return .offset(x: -1, y: 0, child: base)
+        }
+        if raw.contains("scale") {
+            // Terminal approximation: show with secondary styling on first tick,
+            // then normal. In terminal we can't truly scale text.
+            if let runtime = _UIRuntime._current, runtime._hasActiveAnimations {
+                let progress = runtime._animationProgress
+                if progress < 0.5 {
+                    return .style(fg: .secondary, bg: nil, child: base)
+                }
+            }
+            return base
         }
         return base
     }
