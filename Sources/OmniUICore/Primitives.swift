@@ -2234,6 +2234,16 @@ func _flatten(_ node: _VNode) -> [_VNode] {
     case .identified:
         // Preserve identity wrappers so `ScrollViewReader.scrollTo(...)` can resolve targets.
         return [node]
+    // Recurse through layout-transparent modifiers to find nested groups
+    case .style(let fg, let bg, let child):
+        let flat = _flatten(child)
+        return flat.count > 1 ? flat.map { .style(fg: fg, bg: bg, child: $0) } : [node]
+    case .edgePadding(let top, let leading, let bottom, let trailing, let child):
+        let flat = _flatten(child)
+        return flat.count > 1 ? flat.map { .edgePadding(top: top, leading: leading, bottom: bottom, trailing: trailing, child: $0) } : [node]
+    case .opacity(let o, let child):
+        let flat = _flatten(child)
+        return flat.count > 1 ? flat.map { .opacity(o, child: $0) } : [node]
     default:
         return [node]
     }

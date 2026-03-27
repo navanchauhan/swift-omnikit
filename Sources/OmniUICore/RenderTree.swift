@@ -291,6 +291,8 @@ enum _RenderLayout {
                 scrollContext: scrollContext)
 
         case .clip(_, let child):
+            // Terminal limitation: clipShape uses bounding-box clipping only.
+            // Non-rectangular shapes (RoundedRectangle, Circle) clip as rectangles.
             let sz = measure(child, maxSize)
             let rect = _Rect(origin: origin, size: sz)
             ops.append(RenderOp(zIndex: ctx.z, kind: .pushClip(rect: rect)))
@@ -477,12 +479,17 @@ enum _RenderLayout {
             return _Size(width: min(s.count, maxSize.width), height: 1)
 
         case .shape(let shape):
+            // Inherit foregroundStyle color if shape has no explicit fill/stroke
+            var resolvedShape = shape
+            if resolvedShape.fillColor == nil, resolvedShape.strokeColor == nil {
+                resolvedShape.fillColor = ctx.style.fg
+            }
             // Intrinsic placeholder size unless constrained by a frame.
             let w = min(maxSize.width, 11)
-            let h = min(maxSize.height, 5)
+            let h = min(maxSize.height, 8)
             let r = _Rect(origin: origin, size: _Size(width: w, height: h))
-            ops.append(RenderOp(zIndex: ctx.z, kind: .shape(rect: r, shape: shape)))
-            shapeRegions.append((r, shape))
+            ops.append(RenderOp(zIndex: ctx.z, kind: .shape(rect: r, shape: resolvedShape)))
+            shapeRegions.append((r, resolvedShape))
             return _Size(width: w, height: h)
 
         case .spacer:
@@ -636,10 +643,19 @@ enum _RenderLayout {
                         )
                     }
                 } else {
+                    // Constrain non-flex children to their measured primary-axis size
+                    // to prevent them from consuming all remaining space.
+                    let m = Self.measure(child, remaining)
+                    let constrained: _Size
+                    if axis == .vertical {
+                        constrained = _Size(width: remaining.width, height: min(remaining.height, m.height))
+                    } else {
+                        constrained = _Size(width: min(remaining.width, m.width), height: remaining.height)
+                    }
                     s = draw(
                         node: child,
                         origin: cursor,
-                        maxSize: remaining,
+                        maxSize: constrained,
                         ctx: &ctx,
                         ops: &ops,
                         hitRegions: &hitRegions,
@@ -1089,7 +1105,7 @@ enum _RenderLayout {
             let s = _imageString(name)
             return _Size(width: min(s.count, maxSize.width), height: 1)
         case .shape:
-            return _Size(width: min(maxSize.width, 11), height: min(maxSize.height, 5))
+            return _Size(width: min(maxSize.width, 11), height: min(maxSize.height, 8))
         case .spacer:
             return _Size(width: 0, height: 0)
         case .stack(let axis, let spacing, let children):

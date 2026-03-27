@@ -560,7 +560,7 @@ public extension View {
 
     func navigationSplitViewColumnWidth(min: CGFloat? = nil, ideal: CGFloat, max maxWidth: CGFloat? = nil) -> some View {
         let fallback = ideal > 0 ? ideal : (min ?? maxWidth ?? 0)
-        let columns = Swift.max(1, Int((fallback / 8).rounded()))
+        let columns = Swift.max(1, Int(fallback.rounded()))
         return frame(width: CGFloat(columns))
     }
 

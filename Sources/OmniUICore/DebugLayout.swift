@@ -575,9 +575,9 @@ enum _DebugLayout {
             // The notcurses renderer maps the fill token to a real background fill, so the
             // interior becomes solid without printing noisy characters.
             //
-            // Target size: 11x5 (clipped by maxSize).
+            // Target size: 11x8 (clipped by maxSize).
             let w = min(maxSize.width, 11)
-            let h = min(maxSize.height, 5)
+            let h = min(maxSize.height, 8)
             guard w > 0, h > 0 else { return _Size(width: 0, height: 0) }
 
             func putLine(_ y: Int, _ s: String) {
@@ -743,7 +743,7 @@ enum _DebugLayout {
                 case .gradient:
                     return maxSize
                 case .shape:
-                    return _Size(width: min(maxSize.width, 11), height: min(maxSize.height, 5))
+                    return _Size(width: min(maxSize.width, 11), height: min(maxSize.height, 8))
                 case .spacer:
                     return _Size(width: 0, height: 0)
                 // `padding` is modeled as `.edgePadding` now.
@@ -976,10 +976,20 @@ enum _DebugLayout {
                         )
                     }
                 } else {
+                    // Constrain non-flex children to their measured primary-axis size
+                    // to prevent them from consuming all remaining space.
+                    let m = measure(child, remaining)
+                    let constrained: _Size
+                    switch axis {
+                    case .vertical:
+                        constrained = _Size(width: remaining.width, height: min(remaining.height, m.height))
+                    case .horizontal:
+                        constrained = _Size(width: min(remaining.width, m.width), height: remaining.height)
+                    }
                     s = draw(
                         node: child,
                         origin: cursor,
-                        maxSize: remaining,
+                        maxSize: constrained,
                         canvas: &canvas,
                         hitRegions: &hitRegions,
                         hoverRegions: &hoverRegions,
@@ -1208,7 +1218,7 @@ enum _DebugLayout {
                         let s = _DebugLayout.imageString(name)
                         return _Size(width: min(s.count, maxSize.width), height: 1)
                     case .shape:
-                        return _Size(width: min(maxSize.width, 11), height: min(maxSize.height, 5))
+                        return _Size(width: min(maxSize.width, 11), height: min(maxSize.height, 8))
                     case .spacer: return _Size(width: 0, height: 0)
                     // `padding` is modeled as `.edgePadding` now.
                     case .stack(let axis, let spacing, let children):
