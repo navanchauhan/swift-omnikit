@@ -1,0 +1,20 @@
+{
+  "version": 1,
+  "skills": {
+    "sprint-execute": {
+      "source": "strongdm/skills",
+      "sourceType": "github",
+      "computedHash": "ced2cfc5afbb497968bfc5c17726d174bc74dfd8f39e14aeacc0f93b54a97cbc"
+    },
+    "sprint-plan": {
+      "source": "strongdm/skills",
+      "sourceType": "github",
+      "computedHash": "5c19155ca90d7da4ffe84d6a4c84a2cc695731c03dfcfb955ea08ea5cd3fa321"
+    },
+    "swift-concurrency": {
+      "source": "avdlee/swift-concurrency-agent-skill",
+      "sourceType": "github",
+      "computedHash": "fb91a851df4a0aabcb8eb8f9b3af98aa2fda5775c0f2ebc9aa61e8206e37d6ef"
+    }
+  }
+}

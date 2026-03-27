@@ -1,0 +1,912 @@
+{
+  "title": "SwiftUI Non-Renderer Parity Audit",
+  "summary": "Current-state parity inventory and implementation roadmap for the non-renderer SwiftUI compatibility stack.",
+  "baseline": "Full public SwiftUI API (validated against the local SwiftUI SDK symbol graph when available)",
+  "scope": {
+    "included_modules": [
+      "Sources/SwiftUI",
+      "Sources/OmniUI",
+      "Sources/OmniUICore",
+      "Sources/SwiftData",
+      "Sources/OmniSwiftUISymbolExtras"
+    ],
+    "supporting_targets": [
+      "Sources/SwiftUIMacros",
+      "Sources/SwiftDataMacros",
+      "Sources/SwiftUICompatibilityHarness",
+      "Tests/OmniUICoreTests"
+    ],
+    "excluded_modules": [
+      {
+        "name": "Sources/OmniUINotcursesRenderer",
+        "reason": "Renderer behavior is explicitly out of scope for this audit."
+      },
+      {
+        "name": "Sources/OmniKit",
+        "reason": "General utility module, not part of the SwiftUI compatibility surface."
+      }
+    ]
+  },
+  "taxonomy": {
+    "supported": "API or behavior exists with meaningful semantics and no known category-level gaps.",
+    "partial": "The category is present, but important APIs are missing or implemented as approximations.",
+    "compile-only": "The surface mainly keeps call sites compiling; behavior is passthrough, placeholder, or intentionally lightweight.",
+    "missing": "The category is not present in the non-renderer stack.",
+    "unknown": "The category has not been audited yet."
+  },
+  "source_roots": [
+    "Sources/OmniUICore",
+    "Sources/OmniUI",
+    "Sources/SwiftUI",
+    "Sources/SwiftUIMacros",
+    "Sources/SwiftData",
+    "Sources/SwiftDataMacros",
+    "Sources/OmniSwiftUISymbolExtras"
+  ],
+  "domains": [
+    {
+      "id": "app_scene_commands",
+      "title": "App / Scene / Commands",
+      "api_status": "partial",
+      "behavior_status": "partial",
+      "summary": "App, Scene, and Commands now compose into a concrete OmniUI/notcurses root, with lightweight command-bar and preferred-size metadata support instead of pure compile-time shims.",
+      "implemented_examples": [
+        "`App`, `Scene`, `WindowGroup`, `Settings`, `CommandGroup`, `SidebarCommands`, `DocumentGroup`, `MenuBarExtra`, and related app/window compile-surface names now exist in the non-renderer stack.",
+        "`SwiftUICompatibilityHarnessApp` exercises `App`, `WindowGroup`, and `.commands { ... }`, while the generated shim catalog covers much more of the app-scene name surface."
+      ],
+      "compile_only_examples": [
+        "`App.main()` in `OmniUI` now launches the notcurses runner, but lifecycle/window ownership still remains far lighter than Apple SwiftUI platforms.",
+        "`defaultSize(...)` is preserved as preferred-size metadata and command groups are rendered as a lightweight bottom command bar rather than native platform menus."
+      ],
+      "missing_examples": [
+        "Real platform lifecycle ownership",
+        "Window launch/resizability semantics",
+        "Command removal semantics",
+        "External-event routing semantics"
+      ],
+      "evidence": [
+        {
+          "path": "Sources/OmniUICore/AppScene.swift",
+          "patterns": [
+            "public protocol App",
+            "public struct WindowGroup<Content: View>",
+            "public struct CommandGroup<Content: View>",
+            "func commands<C: Commands>(@CommandsBuilder _ content: () -> C)",
+            "func defaultSize(width: CGFloat, height: CGFloat)",
+            "public func _sceneRootView<S: Scene>(_ scene: S) -> AnyView?",
+            "public func _sceneCommandsView<S: Scene>(_ scene: S) -> AnyView?"
+          ],
+          "notes": "Core scene metadata and command composition now feed the portable renderer instead of being discarded."
+        },
+        {
+          "path": "Sources/SwiftUICompatibilityHarness/main.swift",
+          "patterns": [
+            "struct SwiftUICompatibilityHarnessApp: App",
+            "WindowGroup {",
+            "CommandGroup(after: .appInfo)"
+          ],
+          "notes": "Compatibility harness exercises the public app/scene surface."
+        },
+        {
+          "path": "Sources/OmniUI/OmniUI.swift",
+          "patterns": [
+            "static func main() async throws",
+            "NotcursesApp(scene: app.body).run()"
+          ],
+          "notes": "The OmniUI-facing App entry point now launches the notcurses renderer using extracted scene root/commands metadata."
+        }
+      ],
+      "missing_patterns": [],
+      "swiftui_reference_patterns": [
+        "App",
+        "Scene",
+        "WindowGroup",
+        "DocumentGroup",
+        "MenuBarExtra",
+        "OpenWindowAction"
+      ]
+    },
+    {
+      "id": "state_observation_environment",
+      "title": "State / Observation / Environment",
+      "api_status": "partial",
+      "behavior_status": "partial",
+      "summary": "Runtime-backed property wrappers and environment access exist, but observation is simplified and the environment surface is selective rather than SwiftUI-complete.",
+      "implemented_examples": [
+        "`State`, `Binding`, `Environment`, `EnvironmentObject`, `ObservedObject`, `StateObject`, `Bindable`, `FocusState`, `AppStorage`, `Namespace`, and many focused/default-app-storage compile-surface names are present.",
+        "Dismiss/openURL environment actions exist and are used by navigation and keyboard shortcut tests."
+      ],
+      "compile_only_examples": [
+        "The `@Observable` compatibility macro only adds `ObservableObject` conformance rather than full Observation tracking.",
+        "Observation updates rely on the runtime rebuild model instead of SwiftUI's native dependency graph."
+      ],
+      "missing_examples": [
+        "Projected wrapper symbols such as `$document`, `$isExpanded`, `$isOn`, and `$selection`",
+        "Semantic focus/value propagation parity beyond compile surface",
+        "Preference propagation semantics",
+        "Scene-phase behavior parity"
+      ],
+      "evidence": [
+        {
+          "path": "Sources/OmniUICore/State.swift",
+          "patterns": [
+            "public struct Binding<Value>",
+            "public struct State<Value>"
+          ],
+          "notes": "State and binding are runtime-backed rather than compiler-special-cased."
+        },
+        {
+          "path": "Sources/OmniUICore/Environment.swift",
+          "patterns": [
+            "public struct Environment<Value>",
+            "public struct DismissAction",
+            "public struct OpenURLAction"
+          ],
+          "notes": "Environment values include a focused subset of common SwiftUI keys."
+        },
+        {
+          "path": "Sources/OmniUICore/ObservableObjects.swift",
+          "patterns": [
+            "public protocol ObservableObject: AnyObject {}",
+            "public struct EnvironmentObject<ObjectType: ObservableObject>",
+            "public struct Bindable<ObjectType: AnyObject>"
+          ],
+          "notes": "Object wrappers exist without Combine or Observation runtime integration."
+        },
+        {
+          "path": "Sources/OmniUICore/SwiftUIPropertyWrappers.swift",
+          "patterns": [
+            "public struct AppStorage<Value>",
+            "public struct Namespace"
+          ],
+          "notes": "Common property wrappers are available for compatibility-heavy call sites."
+        },
+        {
+          "path": "Sources/OmniUICore/FocusState.swift",
+          "patterns": [
+            "public struct FocusState<Value: Hashable>",
+            "public struct Binding"
+          ],
+          "notes": "Focus state is modeled explicitly in the portable runtime."
+        },
+        {
+          "path": "Sources/SwiftUI/SwiftUI.swift",
+          "patterns": [
+            "public macro Observable()"
+          ],
+          "notes": "The compatibility module re-exports the `@Observable` macro surface."
+        },
+        {
+          "path": "Sources/SwiftUIMacros/ObservableMacro.swift",
+          "patterns": [
+            "extension \\(type.trimmed): OmniUICore.ObservableObject {}"
+          ],
+          "notes": "Macro expansion is intentionally minimal."
+        },
+        {
+          "path": "Sources/SwiftUICompatibilityHarness/main.swift",
+          "patterns": [
+            "@AppStorage(\"harnessFlag\")",
+            "@Observable",
+            "@Bindable"
+          ],
+          "notes": "Harness exercises the public wrapper surface."
+        }
+      ],
+      "missing_patterns": [
+        "$document",
+        "$isExpanded",
+        "$isOn",
+        "$selection"
+      ],
+      "swiftui_reference_patterns": [
+        "AppStorage",
+        "SceneStorage",
+        "FocusedValue",
+        "scenePhase",
+        "onPreferenceChange("
+      ]
+    },
+    {
+      "id": "core_views_controls",
+      "title": "Core Views / Controls",
+      "api_status": "partial",
+      "behavior_status": "partial",
+      "summary": "The non-renderer stack covers many high-traffic view and control types, but some controls remain stubs or simplified approximations.",
+      "implemented_examples": [
+        "`Text`, `Image`, `Button`, `Toggle`, `TextField`, `SecureField`, `Picker`, `Menu`, `Label`, `GroupBox`, `LabeledContent`, `ContentUnavailableView`, `ShareLink`, `ProgressView`, `GeometryReader`, `Canvas`, `DatePicker`, `Gauge`, `AsyncImage`, and `TimelineView` are present.",
+        "`SwiftUICompatibilityHarness` exercises `Toggle`, `TextField`, `Menu`, `GroupBox`, `LabeledContent`, `ContentUnavailableView`, `ShareLink`, and `ColorPicker`, while `OmniUICoreTests` now cover the newly added core parity views."
+      ],
+      "compile_only_examples": [
+        "`ColorPicker` is explicitly described as a minimal stub for SwiftUI compatibility.",
+        "`quickLookPreview(_:)` is a passthrough compatibility modifier rather than a full Quick Look integration."
+      ],
+      "missing_examples": [
+        "`DatePickerStyle.Configuration`",
+        "`GaugeStyle.Configuration`",
+        "`AsyncImagePhase.failure(_:)`",
+        "`TimelineViewDefaultContext`"
+      ],
+      "evidence": [
+        {
+          "path": "Sources/OmniUICore/Primitives.swift",
+          "patterns": [
+            "public struct Text: View, _PrimitiveView",
+            "public struct Button<Label: View>: View, _PrimitiveView",
+            "public struct Toggle<Label: View>: View, _PrimitiveView",
+            "public struct TextField: View, _PrimitiveView",
+            "public struct Picker<SelectionValue: Hashable>: View, _PrimitiveView",
+            "public struct Menu<Content: View, Label: View>: View, _PrimitiveView",
+            "public struct GroupBox<Label: View, Content: View>: View, _PrimitiveView",
+            "public struct ContentUnavailableView<Description: View>: View, _PrimitiveView",
+            "public struct DatePicker<Label: View>: View, _PrimitiveView",
+            "public struct Gauge<Label: View, CurrentValueLabel: View>: View, _PrimitiveView",
+            "public struct AsyncImage<Content: View>: View, _PrimitiveView",
+            "public struct TimelineView<Content: View>: View, _PrimitiveView"
+          ],
+          "notes": "A broad set of primitive views and controls are implemented in a portable way, including the newer date/gauge/async/timeline surfaces."
+        },
+        {
+          "path": "Sources/OmniUICore/ColorPicker.swift",
+          "patterns": [
+            "// Terminal-friendly ColorPicker approximation for SwiftUI compatibility.",
+            "public struct ColorPicker: View, _PrimitiveView",
+            "selection.wrappedValue = ColorPicker._nextColor(after: selection.wrappedValue)"
+          ],
+          "notes": "ColorPicker now exposes a concrete terminal approximation that cycles a palette through a focusable control."
+        },
+        {
+          "path": "Sources/SwiftUICompatibilityHarness/main.swift",
+          "patterns": [
+            "Toggle(\"Flag\", isOn: $harnessFlag)",
+            "TextField(\"Search\", text: $text)",
+            "ShareLink(item: shareURL)",
+            "ColorPicker(\"Color\", selection: $picked)",
+            "Menu {"
+          ],
+          "notes": "Harness covers representative control types from the public API surface."
+        },
+        {
+          "path": "Tests/OmniUICoreTests/OmniUICoreTests.swift",
+          "patterns": [
+            "debugSnapshot_textField_focus_and_typing_updates_state",
+            "debugSnapshot_menu_click_selects_item",
+            "core_parity_views_render_basic_output"
+          ],
+          "notes": "Focused tests cover interactive controls plus the newly added core parity views."
+        }
+      ],
+      "missing_patterns": [],
+      "swiftui_reference_patterns": [
+        "Button",
+        "Toggle",
+        "TextField",
+        "DatePicker",
+        "Gauge",
+        "AsyncImage",
+        "TimelineView"
+      ]
+    },
+    {
+      "id": "collections_data_driven",
+      "title": "Collections / Data-driven Containers",
+      "api_status": "partial",
+      "behavior_status": "partial",
+      "summary": "Lists, forms, grids, tables, and data-driven repetition are available, but identity handling and richer collection APIs are still simplified.",
+      "implemented_examples": [
+        "`List`, `Form`, `ForEach`, `LazyVGrid`, `Table`, `Section`, and `ScrollViewReader` exist in the non-renderer stack.",
+        "The current test suite covers list rendering, list interaction, on-delete edit mode, and model-backed queries."
+      ],
+      "compile_only_examples": [
+        "`Table` is currently implemented as a list-backed table approximation rather than a native multi-column SwiftUI table.",
+        "`ForEach` intentionally does not incorporate `id` into the runtime path, so state can move when data reorders."
+      ],
+      "missing_examples": [
+        "`TableStyle.Configuration`",
+        "`ForEach.TableRowBody`",
+        "`SectionedFetchResults` iterator/value surfaces",
+        "`Grid` layout semantics beyond compile surface"
+      ],
+      "evidence": [
+        {
+          "path": "Sources/OmniUICore/Primitives.swift",
+          "patterns": [
+            "public struct List<Content: View>: View, _PrimitiveView",
+            "public struct Form<Content: View>: View, _PrimitiveView",
+            "public struct ForEach<Data: RandomAccessCollection, ID: Hashable, Content: View>: View, _PrimitiveView",
+            "public struct LazyVGrid<Content: View>: View, _PrimitiveView",
+            "public struct Table<Data: RandomAccessCollection, ID: Hashable, RowContent: View>: View, _PrimitiveView",
+            "state may \"move\" if data is reordered",
+            "List(data, id: id, rowContent: rowContent)"
+          ],
+          "notes": "Collections are present, with table currently funneled through the richer list implementation rather than a separate native table widget."
+        },
+        {
+          "path": "Tests/OmniUICoreTests/OmniUICoreTests.swift",
+          "patterns": [
+            "debugSnapshot_list_renders_rows",
+            "debugSnapshot_list_row_button_updates_parent_state",
+            "editButton_enables_onDelete_actions"
+          ],
+          "notes": "Existing tests cover row rendering, nested interaction, and delete support."
+        }
+      ],
+      "missing_patterns": [],
+      "swiftui_reference_patterns": [
+        "List",
+        "ForEach",
+        "Table",
+        "LazyHGrid",
+        "GridRow",
+        "TableColumn"
+      ]
+    },
+    {
+      "id": "navigation_presentation",
+      "title": "Navigation / Presentation",
+      "api_status": "partial",
+      "behavior_status": "partial",
+      "summary": "Navigation stacks, split views, tabs, alerts, and sheets are implemented with real runtime behavior, but the long-tail navigation and presentation APIs remain absent.",
+      "implemented_examples": [
+        "`NavigationView`, `NavigationViewStyle`, `NavigationStack`, `NavigationPath`, `NavigationLink`, `NavigationLink(value:)`, `NavigationSplitView`, `TabView`, `.tabItem`, `.sheet`, `.sheet(item:)`, `.popover(isPresented:...)`, `.popover(item:...)`, `.fullScreenCover`, `.alert`, `.confirmationDialog`, and `.navigationDestination(...)` are present.",
+        "The test suite covers adaptive split-view behavior, item-sheet presentation, popovers, confirmation-dialog action capture, and the bool/item/value navigation-destination flows; additional compile-surface names are supplied by generated shims."
+      ],
+      "compile_only_examples": [
+        "`NavigationLink` outside a `NavigationStack` degrades to an inert button to preserve call-site compatibility.",
+        "Presentation modifiers such as detents and drag indicators exist but remain passthrough wrappers."
+      ],
+      "missing_examples": [
+        "`PopoverAttachmentAnchor.point(_:)`",
+        "`PopoverAttachmentAnchor.rect(_:)`",
+        "Navigation transition semantics",
+        "Split-view style semantics"
+      ],
+      "evidence": [
+        {
+          "path": "Sources/OmniUICore/Primitives.swift",
+          "patterns": [
+            "public struct NavigationView<Content: View>: View, _PrimitiveView",
+            "public struct NavigationPath: Hashable, @unchecked Sendable",
+            "public struct NavigationStack<Content: View>: View, _PrimitiveView",
+            "public init(path: Binding<NavigationPath>, @ViewBuilder content: () -> Content)",
+            "public init<V: Hashable>(value: V, @ViewBuilder label: () -> Label) where Destination == EmptyView",
+            "public struct NavigationSplitView<Sidebar: View, Detail: View>: View, _PrimitiveView"
+          ],
+          "notes": "Core navigation containers now include `NavigationView`, a lightweight `NavigationPath`, and value-based links."
+        },
+        {
+          "path": "Sources/OmniUICore/Modifiers.swift",
+          "patterns": [
+            "func sheet<Item: Identifiable, Content: View>(item: Binding<Item?>, onDismiss: (() -> Void)? = nil, @ViewBuilder content: @escaping (Item) -> Content)",
+            "func popover<Item: Identifiable, Content: View>(item: Binding<Item?>, attachmentAnchor: Any = (), arrowEdge: Edge = .top, @ViewBuilder content: @escaping (Item) -> Content)",
+            "func fullScreenCover<Content: View>(isPresented: Binding<Bool>, onDismiss: (() -> Void)? = nil, @ViewBuilder content: () -> Content)",
+            "func confirmationDialog<Data, Actions: View>(_ title: String, isPresented: Binding<Bool>, titleVisibility: Visibility = .automatic, presenting data: Data, @ViewBuilder actions: (Data) -> Actions)",
+            "func navigationDestination<Value: Hashable, Destination: View>(for value: Value.Type, @ViewBuilder destination: @escaping (Value) -> Destination)",
+            "func navigationDestination<Destination: View>(isPresented: Binding<Bool>, @ViewBuilder destination: () -> Destination)",
+            "func navigationDestination<Item: Identifiable, Destination: View>(item: Binding<Item?>, @ViewBuilder destination: @escaping (Item) -> Destination)",
+            "func presentationDetents(_ detents: Set<PresentationDetent>) -> some View"
+          ],
+          "notes": "Overlay/presentation APIs now include item popovers, presented confirmation dialogs, and all three navigation-destination families; detents remain passthrough-only polish."
+        },
+        {
+          "path": "Tests/OmniUICoreTests/OmniUICoreTests.swift",
+          "patterns": [
+            "navigationSplitView_automatic_adapts_by_width",
+            "sheet_item_presents_and_dismisses",
+            "popover_isPresented_shows_and_dismisses",
+            "popover_item_presents_and_dismisses",
+            "confirmationDialog_captures_buttons_and_runs_selected_action",
+            "navigationDestination_isPresented_pushes_and_pops",
+            "navigationDestination_item_pushes_and_clears_on_back",
+            "navigationDestination_for_value_pushes_resolved_destination"
+          ],
+          "notes": "Focused tests cover split-view adaptation plus the bool/item/value navigation flows and the newer presentation overlays."
+        },
+        {
+          "path": "Sources/SwiftUICompatibilityHarness/main.swift",
+          "patterns": [
+            ".toolbar {",
+            ".alert(isPresented: $showAlert)"
+          ],
+          "notes": "Harness exercises toolbar-backed presentation flows."
+        },
+        {
+          "path": "Sources/OmniUICore/SwiftUIStyleProtocols.swift",
+          "patterns": [
+            "public protocol NavigationViewStyle {}",
+            "public struct DefaultNavigationViewStyle: NavigationViewStyle, Hashable, Sendable { public init() {} }",
+            "public struct ColumnNavigationViewStyle: NavigationViewStyle, Hashable, Sendable { public init() {} }",
+            "public struct DoubleColumnNavigationViewStyle: NavigationViewStyle, Hashable, Sendable { public init() {} }"
+          ],
+          "notes": "The compatibility layer now exposes the core `NavigationViewStyle` names used by older SwiftUI code."
+        }
+      ],
+      "missing_patterns": [
+        "PopoverAttachmentAnchor.point(",
+        "PopoverAttachmentAnchor.rect("
+      ],
+      "swiftui_reference_patterns": [
+        "NavigationStack",
+        "NavigationLink",
+        "NavigationSplitView",
+        "NavigationPath",
+        "navigationDestination(",
+        "confirmationDialog(",
+        "fullScreenCover",
+        "popover("
+      ]
+    },
+    {
+      "id": "layout_interaction_modifiers",
+      "title": "Layout / Interaction Modifiers",
+      "api_status": "partial",
+      "behavior_status": "partial",
+      "summary": "The stack/layout core and a growing subset of lifecycle and interaction modifiers are implemented, including terminal-backed search, refresh, disabled-state, help, and exit-command behavior.",
+      "implemented_examples": [
+        "`HStack`, `VStack`, `ZStack`, `Group`, `.frame(...)`, `.padding(...)`, `.onTapGesture`, `.onAppear`, `.onDisappear`, `.onChange`, `.task`, `.keyboardShortcut`, `.focused(...)`, `.safeAreaInset(...)`, `.searchable`, `.refreshable`, `.disabled`, `.help`, and `.onExitCommand` now have concrete OmniUI/notcurses behavior.",
+        "The current test suite covers tap gestures, keyboard shortcuts, tasks, on-appear lifecycle, search-field editing, refresh actions, disabled controls, Quick Look overlays, and exit-command dispatch."
+      ],
+      "compile_only_examples": [
+        "Several platform-specific modifiers still lower to `_Passthrough`, including `.onHover`, most text-input platform configuration modifiers, and many gesture/animation compatibility overloads.",
+        "Multi-tap gesture counts are accepted for source compatibility but not behaviorally modeled."
+      ],
+      "missing_examples": [
+        "Gesture/drag semantic parity behind the generated compile-surface names",
+        "Matched-geometry runtime behavior",
+        "High-priority/simultaneous gesture conflict resolution",
+        "Drag-and-drop runtime semantics"
+      ],
+      "evidence": [
+        {
+          "path": "Sources/OmniUICore/Modifiers.swift",
+          "patterns": [
+            "func onTapGesture(perform action: @escaping () -> Void)",
+            "func onChange<V: Equatable>(of value: V, perform action: @escaping (_ newValue: V) -> Void)",
+            "func task(priority: Any? = nil, _ action: @escaping () async -> Void)",
+            "func searchable(text: Binding<String>) -> some View",
+            "func refreshable(action: @escaping () async -> Void) -> some View",
+            "func disabled(_ disabled: Bool) -> some View",
+            "func help(_ text: String) -> some View",
+            "func onExitCommand(perform action: @escaping () -> Void)",
+            "func onAppear(perform action: @escaping () -> Void)",
+            "func safeAreaInset<Content: View>(edge: Edge, @ViewBuilder content: () -> Content)",
+            "multi-tap not modeled"
+          ],
+          "notes": "This file now separates concrete terminal-backed modifiers from the remaining passthrough-only platform shims."
+        },
+        {
+          "path": "Tests/OmniUICoreTests/OmniUICoreTests.swift",
+          "patterns": [
+            "debugSnapshot_onTapGesture_click_updates_state",
+            "keyboardShortcut_defaultAction_invokes_button_action",
+            "task_runs_and_cancels_with_view_lifecycle",
+            "searchable_renders_field_and_updates_binding",
+            "refreshable_exposes_button_and_runs_action",
+            "disabled_button_blocks_interaction",
+            "onExitCommand_registers_runtime_handler"
+          ],
+          "notes": "Focused tests now cover representative lifecycle, search, refresh, disabled-state, and exit-command behavior."
+        }
+      ],
+      "missing_patterns": [],
+      "swiftui_reference_patterns": [
+        "safeAreaInset(",
+        "task(",
+        "onTapGesture(",
+        "matchedGeometryEffect(",
+        "simultaneousGesture(",
+        "highPriorityGesture(",
+        "draggable("
+      ]
+    },
+    {
+      "id": "drawing_shapes_animation",
+      "title": "Drawing / Shapes / Animation",
+      "api_status": "partial",
+      "behavior_status": "partial",
+      "summary": "Shape and gradient APIs now emit real render-tree operations for OmniUI/notcurses, while animation-heavy SwiftUI semantics still remain simplified or compile-surface only.",
+      "implemented_examples": [
+        "`Path`, `Rectangle`, `RoundedRectangle`, `Circle`, `Ellipse`, `Capsule`, `Canvas`, `Gradient`, `LinearGradient`, `RadialGradient`, `Animation`, `AnimationTimelineSchedule`, `NavigationTransition`, `ContentTransition`, many matched/symbol-effect compile-surface names, `withAnimation`, and `.phaseAnimator(...)` are present.",
+        "Canvas now records filled shapes into the render tree, and the gradient views now emit renderer-visible nodes rather than no-op placeholders."
+      ],
+      "compile_only_examples": [
+        "Arbitrary shape styles are still collapsed to simplified fills, and animation/transition types largely remain terminal-friendly approximations rather than full SwiftUI semantics.",
+        "High-fidelity animation timing, matched-transition behavior, and mesh-gradient semantics are still deferred."
+      ],
+      "missing_examples": [
+        "`AnimationTimelineSchedule.Entries` runtime behavior",
+        "Matched-transition semantics",
+        "Glass transition semantics",
+        "Mesh-gradient semantics"
+      ],
+      "evidence": [
+        {
+          "path": "Sources/OmniUICore/Drawing.swift",
+          "patterns": [
+            "public struct GraphicsContext: Sendable",
+            "public struct Canvas: View, _PrimitiveView",
+            "public struct LinearGradient: View, _PrimitiveView",
+            "public struct RadialGradient: View, _PrimitiveView",
+            "return .gradient("
+          ],
+          "notes": "Drawing APIs now lower to concrete gradient/shape nodes that the render tree and notcurses renderer consume."
+        },
+        {
+          "path": "Sources/OmniUICore/Shapes.swift",
+          "patterns": [
+            "// Minimal shape API surface for SwiftUI compatibility.",
+            "public struct Path: Hashable, Sendable, Shape, _PrimitiveView",
+            "public struct RoundedRectangle: Shape, _PrimitiveView",
+            "public struct Circle: Shape, _PrimitiveView",
+            "Stub: treat arbitrary ShapeStyle-ish values"
+          ],
+          "notes": "Shapes lower into the render tree, but style fidelity is still intentionally limited."
+        },
+        {
+          "path": "Sources/SwiftUI/Animation.swift",
+          "patterns": [
+            "public struct AnimationTimelineSchedule: Hashable, Sendable { public init() {} }",
+            "public struct Animation: Hashable, Sendable",
+            "public func withAnimation<T>(_ animation: Animation? = nil, _ body: () -> T) -> T",
+            "func phaseAnimator<Phases: Collection, Content: View>"
+          ],
+          "notes": "Animation surface now also exposes an `AnimationTimelineSchedule` shim alongside lightweight animation hooks."
+        },
+        {
+          "path": "Sources/SwiftUICompatibilityHarness/main.swift",
+          "patterns": [
+            "Canvas { context, size in",
+            "RoundedRectangle(cornerRadius: 2, style: .continuous)",
+            "LinearGradient(colors: [.red, .blue]",
+            ".phaseAnimator([false, true])"
+          ],
+          "notes": "Harness covers the currently implemented public drawing and animation entry points."
+        },
+        {
+          "path": "Sources/OmniUICore/StyleTypes.swift",
+          "patterns": [
+            "public struct NavigationTransition: Hashable, Sendable",
+            "public struct ContentTransition: Hashable, Sendable"
+          ],
+          "notes": "Transition shims now exist as public drawing/navigation-adjacent surface types."
+        },
+        {
+          "path": "Sources/OmniUICore/Modifiers.swift",
+          "patterns": [
+            "func navigationTransition(_ transition: NavigationTransition) -> some View {",
+            "func contentTransition(_ transition: ContentTransition) -> some View {",
+            "private struct _NavigationTransitionModifier: View, _PrimitiveView",
+            "private struct _ContentTransitionModifier: View, _PrimitiveView"
+          ],
+          "notes": "Transition modifiers now have terminal-friendly approximations instead of pure passthrough shims."
+        }
+      ],
+      "missing_patterns": [
+        "AnimationTimelineSchedule.Entries.Element",
+        "AnimationTimelineSchedule.Entries.Iterator"
+      ],
+      "swiftui_reference_patterns": [
+        "AnimationTimelineSchedule",
+        "contentTransition(",
+        "navigationTransition(",
+        "matchedTransitionSource(",
+        "glassEffectTransition(",
+        "FillShapeStyle"
+      ]
+    },
+    {
+      "id": "styles_materials_platform",
+      "title": "Styles / Materials / Platform Bridges",
+      "api_status": "partial",
+      "behavior_status": "partial",
+      "summary": "Style protocols still lean compile-surface, but many style modifiers, glass effects, and representable bridges now produce concrete terminal-visible approximations instead of being ignored.",
+      "implemented_examples": [
+        "`ButtonStyle`, `ToggleStyle`, `PickerStyle`, `TextFieldStyle`, `DatePickerStyle`, `GaugeStyle`, `ListStyle`, `FormStyle`, `LabelStyle`, `NavigationViewStyle`, `Material`, `GlassEffect`, platform color bridges, representable protocols, and many style-related compile-surface modifiers are present.",
+        "`Color(uiColor:)` and `UIColor(Color)` bridging are available through lightweight cross-platform stand-ins."
+      ],
+      "compile_only_examples": [
+        "Many style protocol bodies still collapse to simplified terminal renderings rather than full SwiftUI configuration semantics.",
+        "Platform bridges remain placeholder approximations rather than true AppKit/UIKit embedding."
+      ],
+      "missing_examples": [
+        "Style-configuration semantic bodies",
+        "Menu/progress/control-group style runtime semantics",
+        "Button border shape rendering semantics",
+        "Representable runtime integration beyond compile surface"
+      ],
+      "evidence": [
+        {
+          "path": "Sources/OmniUICore/SwiftUIStyleProtocols.swift",
+          "patterns": [
+            "// These are primarily compile-surface shims so third-party SwiftUI code can build.",
+            "public protocol ButtonStyle",
+            "public protocol ToggleStyle {}",
+            "public protocol PickerStyle {}",
+            "public protocol TextFieldStyle {}",
+            "public protocol ListStyle {}",
+            "public protocol FormStyle {}",
+            "public protocol LabelStyle"
+          ],
+          "notes": "Style protocols are explicitly called out as compile-surface shims."
+        },
+        {
+          "path": "Sources/OmniUICore/PlatformColors.swift",
+          "patterns": [
+            "We provide lightweight stubs when UIKit/AppKit are unavailable so cross-platform sources compile.",
+            "public final class UIColor: NSObject, NSSecureCoding, @unchecked Sendable",
+            "public static let systemGray6 = UIColor(\"systemGray6\")"
+          ],
+          "notes": "Platform color bridges are compile-friendly rather than semantically complete."
+        },
+        {
+          "path": "Sources/OmniUICore/Representable.swift",
+          "patterns": [
+            "public protocol NSViewRepresentable: View where Body == Never",
+            "public protocol UIViewRepresentable: View where Body == Never",
+            "return .style(fg: .secondary, bg: nil, child: .text(\"NSView:",
+            "return .style(fg: .secondary, bg: nil, child: .text(\"UIView:"
+          ],
+          "notes": "Representable protocols now render placeholder type-name nodes instead of disappearing entirely."
+        },
+        {
+          "path": "Sources/OmniUICore/GlassEffect.swift",
+          "patterns": [
+            "// Terminal-friendly approximations for iOS/macOS 26 \"Liquid Glass\" APIs.",
+            "public struct GlassEffect: Hashable, Sendable"
+          ],
+          "notes": "The public Liquid Glass types still exist, while the modifier path now maps them to terminal-friendly background/shadow approximations."
+        }
+      ],
+      "missing_patterns": [],
+      "swiftui_reference_patterns": [
+        "ProgressViewStyle",
+        "MenuStyle",
+        "ControlGroupStyle",
+        "FillShapeStyle",
+        "buttonBorderShape("
+      ]
+    },
+    {
+      "id": "swiftdata_compatibility",
+      "title": "SwiftData Compatibility",
+      "api_status": "partial",
+      "behavior_status": "partial",
+      "summary": "The SwiftData shim provides a useful in-memory subset for model containers, contexts, and queries, but it intentionally stops far short of full persistence and schema semantics.",
+      "implemented_examples": [
+        "`SwiftData` re-exports `Schema`, `ModelConfiguration`, `ModelContainer`, `ModelContext`, `Query`, and `SortOrder`.",
+        "`ModelContainer`, `ModelContext`, and `Query` work together in the in-memory compatibility layer and are covered by tests and the harness."
+      ],
+      "compile_only_examples": [
+        "The top-level `SwiftData` module explicitly states that it exists so common call sites compile on non-Apple platforms.",
+        "Persistence, migrations, and advanced model metadata are intentionally out of scope for the current shim."
+      ],
+      "missing_examples": [
+        "`FetchDescriptor`",
+        "`PersistentIdentifier`",
+        "`DeleteRule`",
+        "`ModelActor`"
+      ],
+      "evidence": [
+        {
+          "path": "Sources/SwiftData/SwiftData.swift",
+          "patterns": [
+            "// Minimal SwiftData compatibility surface.",
+            "public typealias Query = OmniUICore.Query",
+            "public typealias ModelContext = OmniUICore.ModelContext"
+          ],
+          "notes": "The public SwiftData shim is deliberately small and forwarding."
+        },
+        {
+          "path": "Sources/OmniUICore/SwiftDataCompat.swift",
+          "patterns": [
+            "public struct Schema: @unchecked Sendable",
+            "public struct ModelConfiguration: Sendable",
+            "public final class ModelContainer: @unchecked Sendable",
+            "public final class ModelContext: @unchecked Sendable",
+            "public struct Query<Element: AnyObject>"
+          ],
+          "notes": "The compatibility layer implements an in-memory data model."
+        },
+        {
+          "path": "Sources/SwiftUICompatibilityHarness/main.swift",
+          "patterns": [
+            "@Model",
+            "@Query(sort: \\HarnessModel.id, order: .reverse)",
+            ".modelContainer(container)"
+          ],
+          "notes": "Harness uses the public SwiftData compatibility surface end to end."
+        },
+        {
+          "path": "Tests/OmniUICoreTests/OmniUICoreTests.swift",
+          "patterns": [
+            "swiftDataCompat_query_reflects_modelContext_inserts",
+            "modelContainer_for_keeps_context_stable_across_renders"
+          ],
+          "notes": "The current test suite covers query refresh and model-container stability."
+        }
+      ],
+      "missing_patterns": [
+        "FetchDescriptor",
+        "PersistentIdentifier",
+        "DeleteRule",
+        "ModelActor"
+      ],
+      "swiftui_reference_patterns": []
+    },
+    {
+      "id": "compatibility_macros",
+      "title": "Compatibility Macros",
+      "api_status": "partial",
+      "behavior_status": "compile-only",
+      "summary": "The public `SwiftUI` and `SwiftData` modules expose the key macro names needed by portability-focused code, but the expansions are intentionally minimal.",
+      "implemented_examples": [
+        "`#Preview`, `@Observable`, and `@Model` are available through the compatibility modules.",
+        "`SwiftUICompatibilityHarness` uses both `@Observable` and `@Model`."
+      ],
+      "compile_only_examples": [
+        "`#Preview` expands to nothing so preview blocks parse and are ignored.",
+        "`@Observable` only adds `ObservableObject` conformance, and `@Model` only adds `Identifiable` conformance."
+      ],
+      "missing_examples": [
+        "Generated preview providers or preview metadata",
+        "Observation registrar synthesis",
+        "SwiftData persistence metadata synthesis"
+      ],
+      "evidence": [
+        {
+          "path": "Sources/SwiftUI/SwiftUI.swift",
+          "patterns": [
+            "public macro Preview(_ name: String? = nil, @ViewBuilder _ body: () -> AnyView)",
+            "public macro Observable()"
+          ],
+          "notes": "The public SwiftUI compatibility module exposes the expected macro names."
+        },
+        {
+          "path": "Sources/SwiftUIMacros/PreviewMacro.swift",
+          "patterns": [
+            "Stub for SwiftUI's `#Preview` macro.",
+            "[]"
+          ],
+          "notes": "Preview blocks are intentionally ignored after parsing."
+        },
+        {
+          "path": "Sources/SwiftUIMacros/ObservableMacro.swift",
+          "patterns": [
+            "Lightweight fallback for Observation's `@Observable`.",
+            "extension \\(type.trimmed): OmniUICore.ObservableObject {}"
+          ],
+          "notes": "Observable compatibility is intentionally restricted to `ObservableObject` conformance."
+        },
+        {
+          "path": "Sources/SwiftDataMacros/ModelMacro.swift",
+          "patterns": [
+            "Stub implementation for SwiftData's `@Model` macro.",
+            "extension \\(type.trimmed): Identifiable {}"
+          ],
+          "notes": "SwiftData models gain just enough synthesis for common list/query call sites."
+        }
+      ],
+      "missing_patterns": [],
+      "swiftui_reference_patterns": []
+    }
+  ],
+  "roadmap": [
+    {
+      "wave": 1,
+      "title": "Surface Correctness",
+      "domains": [
+        "app_scene_commands",
+        "styles_materials_platform",
+        "swiftdata_compatibility",
+        "compatibility_macros"
+      ],
+      "goals": [
+        "Turn the highest-risk silent passthroughs into explicit, documented compatibility behavior.",
+        "Close the most painful public signature gaps blocking compile-time portability in the app/scene, style, SwiftData, and macro surfaces.",
+        "Keep hard-cutover behavior: prefer clear support or explicit deferral over backward-compat wrappers."
+      ],
+      "acceptance": [
+        "Representative scene, command, style, macro, and SwiftData compile samples build through the compatibility modules.",
+        "The parity manifest cleanly distinguishes implemented behavior from compile-only shims in these domains."
+      ],
+      "verification": [
+        "`python3 scripts/swiftui_non_renderer_parity.py --check`",
+        "`swift build --target SwiftUICompatibilityHarness`"
+      ]
+    },
+    {
+      "wave": 2,
+      "title": "Semantic Correctness",
+      "domains": [
+        "state_observation_environment",
+        "core_views_controls",
+        "collections_data_driven",
+        "navigation_presentation",
+        "layout_interaction_modifiers"
+      ],
+      "goals": [
+        "Strengthen state identity, focus, environment propagation, and lifecycle behavior.",
+        "Improve list/table/grid selection and deletion semantics, then tighten navigation and presentation behavior.",
+        "Replace the most misleading passthrough interaction modifiers with real semantics or explicit deferrals."
+      ],
+      "acceptance": [
+        "Focused `OmniUICoreTests` cover state stability, navigation push/pop, tab selection, modifier lifecycle, and collection updates.",
+        "The compatibility harness can exercise these flows without depending on renderer-specific behavior."
+      ],
+      "verification": [
+        "`swift test --filter OmniUICoreTests`",
+        "`python3 scripts/swiftui_non_renderer_parity.py --check`"
+      ]
+    },
+    {
+      "wave": 3,
+      "title": "Visual and Interaction Fidelity",
+      "domains": [
+        "drawing_shapes_animation",
+        "styles_materials_platform",
+        "layout_interaction_modifiers",
+        "core_views_controls"
+      ],
+      "goals": [
+        "Replace placeholder drawing and style behavior with node-tree semantics that can be consumed consistently by non-renderer runtimes.",
+        "Connect style protocols and materials to meaningful render-tree state instead of pure passthrough wrappers.",
+        "Improve control and layout modifiers whose current behavior is visually misleading compared with SwiftUI."
+      ],
+      "acceptance": [
+        "Shapes, gradients, materials, and style-driven controls no longer degrade to obvious placeholders in the debug/runtime path.",
+        "Animation-related modifiers either change runtime behavior meaningfully or are explicitly documented as deferred."
+      ],
+      "verification": [
+        "`swift test --filter OmniUICoreTests`",
+        "`swift build --target SwiftUICompatibilityHarness`",
+        "`python3 scripts/swiftui_non_renderer_parity.py --check`"
+      ]
+    },
+    {
+      "wave": 4,
+      "title": "Public Completeness and Long Tail",
+      "domains": [
+        "app_scene_commands",
+        "state_observation_environment",
+        "core_views_controls",
+        "collections_data_driven",
+        "navigation_presentation",
+        "layout_interaction_modifiers",
+        "drawing_shapes_animation",
+        "styles_materials_platform",
+        "swiftdata_compatibility",
+        "compatibility_macros"
+      ],
+      "goals": [
+        "Continue pushing toward the full public SwiftUI baseline, or explicitly defer Apple-only APIs so the audit never goes stale.",
+        "Refresh the manifest and generated report after each implementation slice so support levels remain decision-useful.",
+        "Keep parity work balanced across domains instead of optimizing only for the shortest migration path."
+      ],
+      "acceptance": [
+        "Every tracked domain has an up-to-date missing list and a clear support classification.",
+        "The generated Markdown report stays in sync with the manifest and checker output."
+      ],
+      "verification": [
+        "`python3 scripts/swiftui_non_renderer_parity.py --check --write-markdown docs/swiftui-non-renderer-parity.md`"
+      ]
+    }
+  ],
+  "commands": [
+    {
+      "label": "Validate the manifest and evidence",
+      "command": "python3 scripts/swiftui_non_renderer_parity.py --swiftui-sdk auto --check"
+    },
+    {
+      "label": "Refresh the generated Markdown report",
+      "command": "python3 scripts/swiftui_non_renderer_parity.py --swiftui-sdk auto --write-markdown docs/swiftui-non-renderer-parity.md"
+    },
+    {
+      "label": "Build the public compatibility harness",
+      "command": "swift build --target SwiftUICompatibilityHarness"
+    },
+    {
+      "label": "Run focused non-renderer tests",
+      "command": "swift test --filter OmniUICoreTests"
+    }
+  ]
+}

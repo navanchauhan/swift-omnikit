@@ -1,0 +1,464 @@
+# SwiftUI Non-Renderer Exact Symbol Diff
+
+_Generated from the local Swift toolchain by `scripts/swiftui_symbol_diff.py`._
+
+## Summary
+
+- Baseline: Raw exact-title diff between the local SwiftUI SDK symbol graph and the non-renderer OmniUI compatibility modules.
+- SwiftUI SDK titles: 3043
+- Local compatibility titles: 3611
+- Raw exact-title overlap: 3022 / 3043 (99.3%)
+- Focused exact-title overlap: 2994 / 3011 (99.4%)
+- Raw missing titles: 21
+- Raw local-only titles: 589
+
+## Extraction
+
+- SwiftUI SDK source: `xcrun swift-symbolgraph-extract`
+- Target triple: `arm64-apple-macosx26.0`
+- Build target for local surface: `SwiftUICompatibilityHarness`
+- Module search path: `/Users/navan.chauhan/Developer/navanchauhan/swift-omnikit/.build/arm64-apple-macosx/debug/Modules`
+
+## Local Modules
+
+- `OmniUICore` — 3515 exact exported titles, 2954 exact-title overlaps
+- `OmniSwiftUI` — 21 exact exported titles, 9 exact-title overlaps
+- `OmniSwiftData` — 7 exact exported titles, 0 exact-title overlaps
+- `OmniUI` — 1 exact exported titles, 1 exact-title overlaps
+- `OmniSwiftUISymbolExtras` — 128 exact exported titles, 108 exact-title overlaps
+
+## Focused Exact Matches
+
+- Showing the first 200 focused exact-title matches.
+- Full exhaustive lists live in `docs/swiftui-non-renderer-symbol-diff.json`.
+
+- `AccessibilityActionCategory`
+- `AccessibilityActionKind`
+- `AccessibilityAdjustmentDirection`
+- `AccessibilityAdjustmentDirection.decrement`
+- `AccessibilityAdjustmentDirection.increment`
+- `AccessibilityAttachmentModifier`
+- `AccessibilityAttachmentModifier.Body`
+- `AccessibilityChildBehavior`
+- `AccessibilityDirectTouchOptions`
+- `AccessibilityDirectTouchOptions.ArrayLiteralElement`
+- `AccessibilityDirectTouchOptions.Element`
+- `AccessibilityDirectTouchOptions.RawValue`
+- `AccessibilityFocusState`
+- `AccessibilityFocusState.Binding`
+- `AccessibilityLabeledPairRole`
+- `AccessibilityLabeledPairRole.content`
+- `AccessibilityLabeledPairRole.label`
+- `AccessibilityRotorContent`
+- `AccessibilityRotorContentBuilder`
+- `AccessibilityRotorEntry`
+- `AccessibilityRotorEntry.Body`
+- `AccessibilitySystemRotor`
+- `AccessibilityTechnologies`
+- `AccessibilityTechnologies.ArrayLiteralElement`
+- `AccessibilityTechnologies.Element`
+- `AccessibilityZoomGestureAction`
+- `AccessibilityZoomGestureAction.Direction`
+- `AccessibilityZoomGestureAction.Direction.zoomIn`
+- `AccessibilityZoomGestureAction.Direction.zoomOut`
+- `AccessoryBarActionButtonStyle`
+- `AccessoryBarActionButtonStyle.Body`
+- `AccessoryBarButtonStyle`
+- `AccessoryBarButtonStyle.Body`
+- `AccessoryCircularCapacityGaugeStyle`
+- `AccessoryCircularCapacityGaugeStyle.Body`
+- `AccessoryCircularGaugeStyle`
+- `AccessoryCircularGaugeStyle.Body`
+- `AccessoryLinearCapacityGaugeStyle`
+- `AccessoryLinearCapacityGaugeStyle.Body`
+- `AccessoryLinearGaugeStyle`
+- `AccessoryLinearGaugeStyle.Body`
+- `AdaptableTabBarPlacement`
+- `Alert`
+- `Alert.Button`
+- `AlertScene`
+- `AlertScene.Body`
+- `AlternatingRowBackgroundBehavior`
+- `AnimatableModifier`
+- `AnimationTimelineSchedule`
+- `AnimationTimelineSchedule.Entries`
+- `AnimationTimelineSchedule.Entries.Element`
+- `AnimationTimelineSchedule.Entries.Iterator`
+- `AnyCompositorContent`
+- `AnyCompositorContent.Body`
+- `AnyScrollTargetBehavior`
+- `AnyTabContent`
+- `AnyTabContent.Body`
+- `AnyTabContent.TabValue`
+- `App`
+- `AppStorage`
+- `AssistiveAccess`
+- `AssistiveAccess.Body`
+- `AsyncImage`
+- `AsyncImage.Body`
+- `AsyncImagePhase`
+- `AsyncImagePhase.empty`
+- `AsyncImagePhase.failure(_:)`
+- `AsyncImagePhase.success(_:)`
+- `AttributedTextFormatting.Transferable`
+- `AttributedTextFormatting.Transferable.Representation`
+- `AttributedTextSelection`
+- `AttributedTextSelection.Attributes`
+- `AttributedTextSelection.Attributes.Element`
+- `AttributedTextSelection.Attributes.Iterator`
+- `AttributedTextSelection.Indices`
+- `AutomaticControlGroupStyle`
+- `AutomaticControlGroupStyle.Body`
+- `AutomaticDisclosureGroupStyle`
+- `AutomaticDisclosureGroupStyle.Body`
+- `AutomaticFormStyle`
+- `AutomaticFormStyle.Body`
+- `AutomaticImmersionStyle`
+- `AutomaticLabeledContentStyle`
+- `AutomaticLabeledContentStyle.Body`
+- `AutomaticMenuBarExtraStyle`
+- `AutomaticNavigationSplitViewStyle`
+- `AutomaticNavigationSplitViewStyle.Body`
+- `AutomaticNavigationTransition`
+- `AutomaticPresentationSizing`
+- `AutomaticTableStyle`
+- `AutomaticTableStyle.Body`
+- `AutomaticTextEditorStyle`
+- `AutomaticTextEditorStyle.Body`
+- `AutomaticTextEditorStyle.Body.Body`
+- `BackgroundTask`
+- `BadgeProminence`
+- `BalancedNavigationSplitViewStyle`
+- `BalancedNavigationSplitViewStyle.Body`
+- `BorderedButtonMenuStyle`
+- `BorderedButtonMenuStyle.Body`
+- `BorderedButtonStyle`
+- `BorderedButtonStyle.Body`
+- `BorderedListStyle`
+- `BorderedProminentButtonStyle`
+- `BorderedProminentButtonStyle.Body`
+- `BorderedTableStyle`
+- `BorderedTableStyle.Body`
+- `BorderlessButtonMenuButtonStyle`
+- `BorderlessButtonMenuStyle`
+- `BorderlessButtonMenuStyle.Body`
+- `BorderlessButtonStyle`
+- `BorderlessButtonStyle.Body`
+- `BorderlessPullDownMenuButtonStyle`
+- `Button`
+- `Button.Body`
+- `ButtonBorderShape`
+- `ButtonBorderShape.AnimatableData`
+- `ButtonBorderShape.Body`
+- `ButtonBorderShape.InsetShape`
+- `ButtonMenuStyle`
+- `ButtonMenuStyle.Body`
+- `ButtonRepeatBehavior`
+- `ButtonRole`
+- `ButtonStyle`
+- `ButtonStyle.Configuration`
+- `ButtonStyleConfiguration`
+- `ButtonStyleConfiguration.Label`
+- `ButtonStyleConfiguration.Label.Body`
+- `ButtonToggleStyle`
+- `ButtonToggleStyle.Body`
+- `CheckboxToggleStyle`
+- `CheckboxToggleStyle.Body`
+- `CircularProgressViewStyle`
+- `CircularProgressViewStyle.Body`
+- `Color.Representation`
+- `ColorPicker`
+- `ColorPicker.Body`
+- `ColumnNavigationViewStyle`
+- `ColumnsFormStyle`
+- `ColumnsFormStyle.Body`
+- `CommandGroup`
+- `CommandGroup.Body`
+- `CommandGroupPlacement`
+- `CommandMenu`
+- `CommandMenu.Body`
+- `Commands`
+- `CommandsBuilder`
+- `CompactDatePickerStyle`
+- `CompactDatePickerStyle.Body`
+- `CompactMenuControlGroupStyle`
+- `CompactMenuControlGroupStyle.Body`
+- `CompositorContent`
+- `CompositorContentBuilder`
+- `CompositorContentBuilder.Content`
+- `CompositorContentBuilder.Content.Body`
+- `ContainerBackgroundPlacement`
+- `ContentMarginPlacement`
+- `ContentToolbarPlacement`
+- `ContentUnavailableView`
+- `ContentUnavailableView.Body`
+- `ContextMenu`
+- `ControlGroup`
+- `ControlGroup.Body`
+- `ControlGroupStyle`
+- `ControlGroupStyle.Configuration`
+- `ControlGroupStyleConfiguration`
+- `ControlGroupStyleConfiguration.Content`
+- `ControlGroupStyleConfiguration.Content.Body`
+- `ControlGroupStyleConfiguration.Label`
+- `ControlGroupStyleConfiguration.Label.Body`
+- `ControlWidget`
+- `ControlWidgetConfiguration`
+- `ControlWidgetConfigurationBuilder`
+- `ControlWidgetTemplate`
+- `ControlWidgetTemplateBuilder`
+- `CustomPresentationDetent`
+- `CustomPresentationDetent.Context`
+- `CustomizableToolbarContent`
+- `Data`
+- `DatePicker`
+- `DatePicker.Body`
+- `DatePicker.Components`
+- `DatePickerComponents`
+- `DatePickerComponents.ArrayLiteralElement`
+- `DatePickerComponents.Element`
+- `DatePickerComponents.RawValue`
+- `DatePickerStyle`
+- `DatePickerStyle.Configuration`
+- `DatePickerStyleConfiguration`
+- `DatePickerStyleConfiguration.Label`
+- `DatePickerStyleConfiguration.Label.Body`
+- `DefaultButtonLabel`
+- `DefaultButtonLabel.Body`
+- `DefaultButtonStyle`
+- `DefaultButtonStyle.Body`
+- `DefaultDatePickerStyle`
+- `DefaultDatePickerStyle.Body`
+- `DefaultDateProgressLabel`
+- `DefaultDateProgressLabel.Body`
+- `DefaultDocumentGroupLaunchActions`
+
+## Focused Missing Titles
+
+- Showing the first 17 focused exact-title misses.
+- Full exhaustive lists live in `docs/swiftui-non-renderer-symbol-diff.json`.
+
+- `AttributedTextSelection.Indices.insertionPoint(_:)`
+- `AttributedTextSelection.Indices.ranges(_:)`
+- `DragSession.Phase.ended(_:)`
+- `DropSession.Phase.ended(_:)`
+- `HoverPhase.active(_:)`
+- `PencilSqueezeGesturePhase.active(_:)`
+- `PencilSqueezeGesturePhase.ended(_:)`
+- `PopoverAttachmentAnchor.point(_:)`
+- `PopoverAttachmentAnchor.rect(_:)`
+- `SequenceGesture.Value.first(_:)`
+- `SequenceGesture.Value.second(_:_:)`
+- `Subview.ContainerSizingOptions.uniform(axis:)`
+- `TextSelection.Indices.multiSelection(_:)`
+- `TextSelection.Indices.selection(_:)`
+- `TouchBarItemPresence.default(_:)`
+- `TouchBarItemPresence.optional(_:)`
+- `TouchBarItemPresence.required(_:)`
+
+## Focused Local-only Titles
+
+- Showing the first 200 focused exact-title locals that do not exist in SwiftUI.
+- Full exhaustive lists live in `docs/swiftui-non-renderer-symbol-diff.json`.
+
+- `Alignment`
+- `Animation`
+- `AnyCommands`
+- `AnyScene`
+- `AnyScene.Body`
+- `AnyTransition`
+- `AnyView`
+- `AnyView.Body`
+- `AttributedTextFormatting`
+- `Axis`
+- `Axis.Set`
+- `Bindable`
+- `Binding`
+- `BrailleRaster`
+- `ButtonRole.cancel`
+- `ButtonRole.destructive`
+- `Canvas`
+- `Canvas.Body`
+- `Capsule`
+- `Capsule.Body`
+- `Circle`
+- `Circle.Body`
+- `Color`
+- `Color.Body`
+- `Color.RGBColorSpace`
+- `Color.RGBColorSpace.displayP3`
+- `Color.RGBColorSpace.sRGB`
+- `Color.RGBColorSpace.sRGBLinear`
+- `Color.RawValue`
+- `ColorScheme`
+- `ColorScheme.dark`
+- `ColorScheme.light`
+- `CommandGroupPlacement.appInfo`
+- `ContentTransition`
+- `ControlSize`
+- `ControlSize.large`
+- `ControlSize.mini`
+- `ControlSize.regular`
+- `ControlSize.small`
+- `DebugSnapshot`
+- `Edge`
+- `Edge.Set`
+- `Edge.bottom`
+- `Edge.leading`
+- `Edge.top`
+- `Edge.trailing`
+- `EditButton`
+- `EditButton.Body`
+- `EditMode`
+- `EditMode.active`
+- `EditMode.inactive`
+- `EditMode.transient`
+- `Ellipse`
+- `Ellipse.Body`
+- `EmptyScene`
+- `EmptyScene.Body`
+- `EmptyView`
+- `EmptyView.Body`
+- `Environment`
+- `EnvironmentKey`
+- `EnvironmentObject`
+- `EnvironmentValues`
+- `EventModifiers`
+- `FillStyle`
+- `Font`
+- `Font.Design`
+- `Font.Design.default`
+- `Font.Design.monospaced`
+- `Font.Weight`
+- `Font.Weight.black`
+- `Font.Weight.bold`
+- `Font.Weight.heavy`
+- `Font.Weight.light`
+- `Font.Weight.medium`
+- `Font.Weight.regular`
+- `Font.Weight.semibold`
+- `Font.Weight.thin`
+- `Font.Weight.ultraLight`
+- `ForEach`
+- `GeneratedSwiftUISignatureSink`
+- `GeometryProxy`
+- `GeometryReader`
+- `GeometryReader.Body`
+- `GlassEffect`
+- `GlassEffectContainer`
+- `GlassEffectContainer.Body`
+- `GlassEffectShape`
+- `Gradient`
+- `GraphicsContext`
+- `GraphicsContext.Shading`
+- `Group`
+- `HStack`
+- `HStack.Body`
+- `HorizontalAlignment`
+- `HorizontalAlignment.center`
+- `HorizontalAlignment.leading`
+- `HorizontalAlignment.trailing`
+- `Image`
+- `Image.Body`
+- `LazyVStack`
+- `LazyVStack.Body`
+- `LinearGradient`
+- `LinearGradient.Body`
+- `Material`
+- `Model()`
+- `ModelConfiguration`
+- `ModelContainer`
+- `ModelContext`
+- `ModifiedContent`
+- `NSUserActivity`
+- `NSWindow`
+- `Namespace`
+- `Namespace.ID`
+- `NavigationSplitViewVisibility.all`
+- `NavigationSplitViewVisibility.automatic`
+- `NavigationSplitViewVisibility.detailOnly`
+- `NavigationSplitViewVisibility.doubleColumn`
+- `Never`
+- `Never.Body`
+- `Observable()`
+- `ObservableObject`
+- `ObservedObject`
+- `OpenURLAction`
+- `OpenURLAction.Result`
+- `OpenURLAction.Result.discarded`
+- `OpenURLAction.Result.handled`
+- `OpenURLAction.Result.systemAction`
+- `Optional`
+- `Path`
+- `Path.Element`
+- `Path.Element.closeSubpath`
+- `Path.Element.curve(to:control1:control2:)`
+- `Path.Element.ellipse(_:)`
+- `Path.Element.line(to:)`
+- `Path.Element.move(to:)`
+- `Path.Element.quadCurve(to:control:)`
+- `Path.Element.rect(_:)`
+- `Preview(_:_:)`
+- `PrimaryFillButtonStyle`
+- `Query`
+- `RadialGradient`
+- `RadialGradient.Body`
+- `Rectangle`
+- `Rectangle.Body`
+- `RenderCommand`
+- `RenderCommand.cell(x:y:egc:fg:bg:)`
+- `RenderCommand.shape(rect:shape:)`
+- `RenderList`
+- `RenderOp`
+- `RenderOp.Kind`
+- `RenderOp.Kind.fillRect(rect:color:)`
+- `RenderOp.Kind.glyph(x:y:egc:fg:bg:)`
+- `RenderOp.Kind.popClip`
+- `RenderOp.Kind.pushClip(rect:)`
+- `RenderOp.Kind.shape(rect:shape:)`
+- `RenderOp.Kind.textRun(x:y:text:fg:bg:)`
+- `RenderSnapshot`
+- `RendererTheme`
+- `RoundedCornerStyle`
+- `RoundedCornerStyle.circular`
+- `RoundedCornerStyle.continuous`
+- `RoundedRectangle`
+- `RoundedRectangle.Body`
+- `Schema`
+- `SectionConfiguration`
+- `Shape`
+- `ShapeView`
+- `ShapeView.Body`
+- `SortOrder`
+- `SortOrder.forward`
+- `SortOrder.reverse`
+- `Spacer`
+- `Spacer.Body`
+- `State`
+- `StateObject`
+- `StrokeStyle`
+- `StyledCell`
+- `SubmitLabel.done`
+- `SubmitLabel.go`
+- `SubmitLabel.next`
+- `SubmitLabel.return`
+- `SubmitLabel.search`
+- `SubmitLabel.send`
+- `Subview`
+- `Text`
+- `Text.Body`
+- `TextAlignment`
+- `TextAlignment.center`
+- `TextAlignment.leading`
+- `TextAlignment.trailing`
+- `TextInputAutocapitalization`
+- `TextInputAutocapitalization.characters`
+- `TextInputAutocapitalization.never`
+- `TextInputAutocapitalization.sentences`
+- `TextInputAutocapitalization.words`
+- `TextSelection.disabled`
+- `TextSelection.enabled`
+- `TextStyle`
+- `ToolbarItemPlacement.automatic`
+- `ToolbarItemPlacement.bottomBar`
+

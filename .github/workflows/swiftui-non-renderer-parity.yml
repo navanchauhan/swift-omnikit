@@ -1,0 +1,62 @@
+name: SwiftUI Non-Renderer Parity
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/swiftui-non-renderer-parity.yml'
+      - 'Package.swift'
+      - 'README.md'
+      - 'Sources/OmniUICore/**'
+      - 'Sources/OmniUI/**'
+      - 'Sources/SwiftUI/**'
+      - 'Sources/SwiftUIMacros/**'
+      - 'Sources/SwiftData/**'
+      - 'Sources/SwiftDataMacros/**'
+      - 'Sources/SwiftUICompatibilityHarness/**'
+      - 'Tests/OmniUICoreTests/**'
+      - 'docs/swiftui-non-renderer-parity.json'
+      - 'docs/swiftui-non-renderer-parity.md'
+      - 'docs/swiftui-non-renderer-symbol-diff.json'
+      - 'docs/swiftui-non-renderer-symbol-diff.md'
+      - 'scripts/swiftui_non_renderer_parity.py'
+      - 'scripts/swiftui_symbol_diff.py'
+      - 'scripts/run_swiftui_parity_gates.sh'
+  pull_request:
+    paths:
+      - '.github/workflows/swiftui-non-renderer-parity.yml'
+      - 'Package.swift'
+      - 'README.md'
+      - 'Sources/OmniUICore/**'
+      - 'Sources/OmniUI/**'
+      - 'Sources/SwiftUI/**'
+      - 'Sources/SwiftUIMacros/**'
+      - 'Sources/SwiftData/**'
+      - 'Sources/SwiftDataMacros/**'
+      - 'Sources/SwiftUICompatibilityHarness/**'
+      - 'Tests/OmniUICoreTests/**'
+      - 'docs/swiftui-non-renderer-parity.json'
+      - 'docs/swiftui-non-renderer-parity.md'
+      - 'docs/swiftui-non-renderer-symbol-diff.json'
+      - 'docs/swiftui-non-renderer-symbol-diff.md'
+      - 'scripts/swiftui_non_renderer_parity.py'
+      - 'scripts/swiftui_symbol_diff.py'
+      - 'scripts/run_swiftui_parity_gates.sh'
+
+permissions:
+  contents: read
+
+jobs:
+  parity:
+    if: ${{ false }}
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Show toolchain
+        run: |
+          xcode-select -p
+          swift --version
+          xcrun --find swift-symbolgraph-extract
+      - name: Run non-renderer parity gates
+        run: ./scripts/run_swiftui_parity_gates.sh
