@@ -747,8 +747,8 @@ enum _DebugLayout {
                 case .gradient:
                     return maxSize
                 case .shape:
-                    let sw = (maxSize.width <= 200 && maxSize.height <= 100) ? maxSize.width : min(maxSize.width, 20)
-                    let sh = (maxSize.width <= 200 && maxSize.height <= 100) ? maxSize.height : min(maxSize.height, 5)
+                    let sw = min(maxSize.width, max(10, maxSize.width))
+                    let sh = min(maxSize.height, 4)
                     return _Size(width: sw, height: sh)
                 case .spacer:
                     return _Size(width: 0, height: 0)
@@ -831,6 +831,8 @@ enum _DebugLayout {
             func isFlexibleCandidate(_ node: _VNode) -> Bool {
                 switch node {
                 case .spacer:
+                    return true
+                case .shape:
                     return true
                 case .scrollView(_, _, _, let scrollAxis, _, _):
                     return scrollAxis == axis

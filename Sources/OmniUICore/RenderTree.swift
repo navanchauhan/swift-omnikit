@@ -514,6 +514,9 @@ enum _RenderLayout {
                 switch node {
                 case .spacer:
                     return true
+                case .shape:
+                    // Shapes are greedy (like SwiftUI) — they fill available space
+                    return true
                 case .scrollView(_, _, _, let scrollAxis, _, _):
                     return scrollAxis == axis
                 case .style(_, _, let child):
@@ -1116,8 +1119,10 @@ enum _RenderLayout {
             let s = _imageString(name)
             return _Size(width: min(s.count, maxSize.width), height: 1)
         case .shape:
-            let sw = (maxSize.width <= 200 && maxSize.height <= 100) ? maxSize.width : min(maxSize.width, 20)
-            let sh = (maxSize.width <= 200 && maxSize.height <= 100) ? maxSize.height : min(maxSize.height, 5)
+            // Shapes report a minimum intrinsic size of 10x4 so they get meaningful
+            // space in stack layouts. They fill the proposed region during draw.
+            let sw = min(maxSize.width, max(10, maxSize.width))
+            let sh = min(maxSize.height, 4)
             return _Size(width: sw, height: sh)
         case .spacer:
             return _Size(width: 0, height: 0)
