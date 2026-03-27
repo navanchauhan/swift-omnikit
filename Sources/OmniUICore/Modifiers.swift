@@ -580,6 +580,52 @@ public extension View {
     func previewDisplayName(_ name: String) -> some View {
         _PreviewDisplayNameModifier(content: AnyView(self), name: name)
     }
+
+    // MARK: - .blur() (TUI approximation → reduced opacity)
+    func blur(radius: CGFloat, opaque: Bool = false) -> some View {
+        _ = opaque
+        let mappedOpacity = max(0.3, 1.0 - radius * 0.1)
+        return _OpacityModifier(content: AnyView(self), opacity: mappedOpacity)
+    }
+
+    // MARK: - .textCase()
+    func textCase(_ textCase: Text.Case?) -> some View {
+        environment(\.textCase, textCase)
+    }
+
+    // MARK: - .truncationMode()
+    func truncationMode(_ mode: Text.TruncationMode) -> some View {
+        environment(\.truncationMode, mode)
+    }
+
+    // MARK: - .badge()
+    func badge(_ count: Int) -> some View {
+        _BadgeModifier(content: AnyView(self), badge: count > 0 ? "\(count)" : nil)
+    }
+
+    func badge(_ label: Text?) -> some View {
+        _BadgeModifier(content: AnyView(self), badge: label?.content)
+    }
+
+    func badge(_ label: String?) -> some View {
+        _BadgeModifier(content: AnyView(self), badge: label)
+    }
+
+    // MARK: - .task(id:)
+    func task<T: Equatable & Hashable>(id: T, priority: Any? = nil, _ action: @escaping () async -> Void) -> some View {
+        _ = priority
+        return _TaskIdBinder(content: AnyView(self), id: AnyHashable(id), action: action)
+    }
+
+    // MARK: - .interactiveDismissDisabled() (compile parity only)
+    func interactiveDismissDisabled(_ isDisabled: Bool = true) -> some View {
+        environment(\.interactiveDismissDisabled, isDisabled)
+    }
+
+    // MARK: - .focusSection()
+    func focusSection() -> some View {
+        _FocusSectionModifier(content: AnyView(self))
+    }
 }
 
 private struct _Hidden: View, _PrimitiveView {
@@ -1976,5 +2022,51 @@ private struct _TaskBinder: View, _PrimitiveView {
     func _makeNode(_ ctx: inout _BuildContext) -> _VNode {
         ctx.runtime._registerTask(path: ctx.path, action: action)
         return ctx.buildChild(content)
+    }
+}
+
+// MARK: - _BadgeModifier
+
+private struct _BadgeModifier: View, _PrimitiveView {
+    typealias Body = Never
+
+    let content: AnyView
+    let badge: String?
+
+    func _makeNode(_ ctx: inout _BuildContext) -> _VNode {
+        let childNode = ctx.buildChild(content)
+        guard let badge = badge, !badge.isEmpty else { return childNode }
+        let badgeNode: _VNode = .style(fg: .red, bg: nil, child: .text(" \(badge)"))
+        return .overlay(child: childNode, overlay: badgeNode)
+    }
+}
+
+// MARK: - _TaskIdBinder (task with id-based cancellation/restart)
+
+private struct _TaskIdBinder: View, _PrimitiveView {
+    typealias Body = Never
+
+    let content: AnyView
+    let id: AnyHashable
+    let action: () async -> Void
+
+    func _makeNode(_ ctx: inout _BuildContext) -> _VNode {
+        ctx.runtime._registerTaskWithId(path: ctx.path, id: id, action: action)
+        return ctx.buildChild(content)
+    }
+}
+
+// MARK: - _FocusSectionModifier
+
+private struct _FocusSectionModifier: View, _PrimitiveView {
+    typealias Body = Never
+
+    let content: AnyView
+
+    func _makeNode(_ ctx: inout _BuildContext) -> _VNode {
+        ctx.runtime._beginFocusSection(path: ctx.path)
+        let node = ctx.buildChild(content)
+        ctx.runtime._endFocusSection()
+        return node
     }
 }

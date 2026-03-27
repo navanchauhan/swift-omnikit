@@ -579,10 +579,7 @@ public enum DialogSeverity {
 }
 
 
-public enum DisclosureGroup {
-    public enum Body {
-    }
-}
+// DisclosureGroup is now a real struct in Primitives.swift
 
 
 public enum DisclosureGroupStyle {
@@ -1845,7 +1842,7 @@ public enum ScenePadding {
 }
 
 
-public enum ScenePhase {
+public enum ScenePhase: Sendable, Equatable {
     case active
     case background
     case inactive
@@ -2083,10 +2080,7 @@ public enum SidebarRowSize {
 }
 
 
-public enum Slider {
-    public enum Body {
-    }
-}
+// Slider is now a real struct in Primitives.swift
 
 
 public enum SliderTick {
@@ -2192,10 +2186,7 @@ public enum SquareBorderTextFieldStyle {
 }
 
 
-public enum Stepper {
-    public enum Body {
-    }
-}
+// Stepper is now a real struct in Primitives.swift
 
 
 public enum SubmitTriggers {

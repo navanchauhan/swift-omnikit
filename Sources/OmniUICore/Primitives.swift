@@ -6,9 +6,27 @@ import FoundationNetworking
 public struct Text: View, _PrimitiveView {
     public typealias Body = Never
     public let content: String
+    var _segments: [_TextSegment]?
+
+    public enum Case: Sendable {
+        case uppercase
+        case lowercase
+    }
+
+    public enum TruncationMode: Sendable {
+        case head
+        case tail
+        case middle
+    }
 
     public init(_ content: String) {
         self.content = content
+        self._segments = nil
+    }
+
+    init(_content: String, segments: [_TextSegment]) {
+        self.content = _content
+        self._segments = segments
     }
 
     public init(_ image: Image) {
@@ -18,8 +36,51 @@ public struct Text: View, _PrimitiveView {
     }
 
     func _makeNode(_ ctx: inout _BuildContext) -> _VNode {
-        _applyTextEnvironment(content: content, env: _currentEnvironmentValues(for: ctx))
+        let env = _currentEnvironmentValues(for: ctx)
+        if let segments = _segments {
+            // Concatenated text: join segment strings, apply textCase, render as single line
+            let joined = segments.map { seg -> String in
+                var s = seg.content
+                if let tc = env.textCase {
+                    switch tc {
+                    case .uppercase: s = s.uppercased()
+                    case .lowercase: s = s.lowercased()
+                    }
+                }
+                return s
+            }.joined()
+            return _applyTextEnvironment(content: joined, env: env)
+        }
+        var transformedContent = content
+        if let tc = env.textCase {
+            switch tc {
+            case .uppercase: transformedContent = content.uppercased()
+            case .lowercase: transformedContent = content.lowercased()
+            }
+        }
+        return _applyTextEnvironment(content: transformedContent, env: env)
     }
+}
+
+// Text segment for Text + Text concatenation (v0: HStack(spacing:0) approximation)
+public struct _TextSegment {
+    let content: String
+    let isBold: Bool
+    let isItalic: Bool
+
+    init(_ content: String, bold: Bool = false, italic: Bool = false) {
+        self.content = content
+        self.isBold = bold
+        self.isItalic = italic
+    }
+}
+
+public func + (lhs: Text, rhs: Text) -> Text {
+    let leftSegs = lhs._segments ?? [_TextSegment(lhs.content)]
+    let rightSegs = rhs._segments ?? [_TextSegment(rhs.content)]
+    let allSegs = leftSegs + rightSegs
+    let joined = allSegs.map(\.content).joined()
+    return Text(_content: joined, segments: allSegs)
 }
 
 public struct Image: View, _PrimitiveView {
@@ -2295,4 +2356,262 @@ private func _menuLabelText(from node: _VNode) -> String {
 
     walk(node)
     return parts.joined(separator: " ")
+}
+
+// MARK: - DisclosureGroup (Composition-only, no new _VNode case)
+
+public struct DisclosureGroup<Label: View, Content: View>: View, _PrimitiveView {
+    public typealias Body = Never
+
+    let label: Label
+    let content: Content
+    let isExpanded: Binding<Bool>?
+    let actionScopePath: [Int]
+
+    public init(@ViewBuilder content: @escaping () -> Content, @ViewBuilder label: () -> Label) {
+        self.label = label()
+        self.content = content()
+        self.isExpanded = nil
+        self.actionScopePath = _UIRuntime._currentPath ?? []
+    }
+
+    public init(isExpanded: Binding<Bool>, @ViewBuilder content: @escaping () -> Content, @ViewBuilder label: () -> Label) {
+        self.label = label()
+        self.content = content()
+        self.isExpanded = isExpanded
+        self.actionScopePath = _UIRuntime._currentPath ?? []
+    }
+
+    public init(_ title: String, @ViewBuilder content: @escaping () -> Content) where Label == Text {
+        self.label = Text(title)
+        self.content = content()
+        self.isExpanded = nil
+        self.actionScopePath = _UIRuntime._currentPath ?? []
+    }
+
+    public init(_ title: String, isExpanded: Binding<Bool>, @ViewBuilder content: @escaping () -> Content) where Label == Text {
+        self.label = Text(title)
+        self.content = content()
+        self.isExpanded = isExpanded
+        self.actionScopePath = _UIRuntime._currentPath ?? []
+    }
+
+    func _makeNode(_ ctx: inout _BuildContext) -> _VNode {
+        let runtime = ctx.runtime
+        let env = _currentEnvironmentValues(for: ctx)
+        let controlPath = ctx.path
+
+        // Use external binding or internal state via runtime state storage
+        let expanded: Bool
+        if let binding = isExpanded {
+            expanded = binding.wrappedValue
+        } else {
+            let seed = _StateSeed(fileID: "DisclosureGroup", line: UInt(controlPath.hashValue & 0x7FFF))
+            expanded = runtime._getState(seed: seed, path: controlPath, initial: { false })
+        }
+
+        let labelNode = ctx.buildChild(label)
+
+        guard env.isEnabled, _UIRuntime._hitTestingEnabled else {
+            let chevron = expanded ? "v" : ">"
+            let header = _VNode.style(fg: .secondary, bg: nil, child: .stack(axis: .horizontal, spacing: 1, children: [.text(chevron), labelNode]))
+            if expanded {
+                let contentNode = ctx.buildChild(content)
+                return .stack(axis: .vertical, spacing: 0, children: [header, .edgePadding(top: 0, leading: 2, bottom: 0, trailing: 0, child: contentNode)])
+            }
+            return header
+        }
+
+        let isFocused = runtime._isFocused(path: controlPath)
+        let id = runtime._registerAction({
+            runtime._setFocus(path: controlPath)
+            if let binding = self.isExpanded {
+                binding.wrappedValue.toggle()
+            } else {
+                let seed = _StateSeed(fileID: "DisclosureGroup", line: UInt(controlPath.hashValue & 0x7FFF))
+                runtime._setState(seed: seed, path: controlPath, value: !expanded)
+            }
+        }, path: actionScopePath)
+        runtime._registerFocusable(path: controlPath, activate: id)
+
+        let chevron = expanded ? "v" : ">"
+        let focusPrefix: _VNode = isFocused ? .text("> ") : .text("  ")
+        let header: _VNode = .tapTarget(id: id, child: .stack(axis: .horizontal, spacing: 0, children: [focusPrefix, .text(chevron), .text(" "), labelNode]))
+
+        if expanded {
+            let contentNode = ctx.buildChild(content)
+            return .stack(axis: .vertical, spacing: 0, children: [header, .edgePadding(top: 0, leading: 2, bottom: 0, trailing: 0, child: contentNode)])
+        }
+        return header
+    }
+}
+
+// MARK: - Stepper (Composition-only, no new _VNode case)
+
+public struct Stepper<Label: View>: View, _PrimitiveView {
+    public typealias Body = Never
+
+    let label: Label
+    let onIncrement: (() -> Void)?
+    let onDecrement: (() -> Void)?
+    let actionScopePath: [Int]
+
+    public init(@ViewBuilder label: () -> Label, onIncrement: (() -> Void)?, onDecrement: (() -> Void)?) {
+        self.label = label()
+        self.onIncrement = onIncrement
+        self.onDecrement = onDecrement
+        self.actionScopePath = _UIRuntime._currentPath ?? []
+    }
+
+    public init(_ title: String, onIncrement: (() -> Void)?, onDecrement: (() -> Void)?) where Label == Text {
+        self.label = Text(title)
+        self.onIncrement = onIncrement
+        self.onDecrement = onDecrement
+        self.actionScopePath = _UIRuntime._currentPath ?? []
+    }
+
+    public init<V: Strideable>(_ title: String, value: Binding<V>, in bounds: ClosedRange<V>, step: V.Stride = 1) where Label == Text, V.Stride: BinaryInteger {
+        self.label = Text(title)
+        self.actionScopePath = _UIRuntime._currentPath ?? []
+        self.onIncrement = {
+            let next = value.wrappedValue.advanced(by: step)
+            if next <= bounds.upperBound { value.wrappedValue = next }
+        }
+        self.onDecrement = {
+            let prev = value.wrappedValue.advanced(by: -step)
+            if prev >= bounds.lowerBound { value.wrappedValue = prev }
+        }
+    }
+
+    public init<V: Strideable>(_ title: String, value: Binding<V>, step: V.Stride = 1) where Label == Text, V.Stride: BinaryInteger {
+        self.label = Text(title)
+        self.actionScopePath = _UIRuntime._currentPath ?? []
+        self.onIncrement = { value.wrappedValue = value.wrappedValue.advanced(by: step) }
+        self.onDecrement = { value.wrappedValue = value.wrappedValue.advanced(by: -step) }
+    }
+
+    func _makeNode(_ ctx: inout _BuildContext) -> _VNode {
+        let runtime = ctx.runtime
+        let env = _currentEnvironmentValues(for: ctx)
+        let labelNode = ctx.buildChild(label)
+
+        guard env.isEnabled, _UIRuntime._hitTestingEnabled else {
+            return _applyControlPadding(
+                .style(fg: .secondary, bg: nil, child: .stack(axis: .horizontal, spacing: 1, children: [.text("[-]"), labelNode, .text("[+]")])),
+                env: env
+            )
+        }
+
+        let decPath = ctx.path + [0]
+        let incPath = ctx.path + [1]
+
+        let decFocused = runtime._isFocused(path: decPath)
+        let incFocused = runtime._isFocused(path: incPath)
+
+        let decID = runtime._registerAction({
+            runtime._setFocus(path: decPath)
+            self.onDecrement?()
+        }, path: actionScopePath)
+        runtime._registerFocusable(path: decPath, activate: decID)
+
+        let incID = runtime._registerAction({
+            runtime._setFocus(path: incPath)
+            self.onIncrement?()
+        }, path: actionScopePath)
+        runtime._registerFocusable(path: incPath, activate: incID)
+
+        let decButton: _VNode = .tapTarget(id: decID, child: .text(decFocused ? ">[-]" : " [-]"))
+        let incButton: _VNode = .tapTarget(id: incID, child: .text(incFocused ? ">[+]" : " [+]"))
+
+        let node: _VNode = .stack(axis: .horizontal, spacing: 1, children: [decButton, labelNode, incButton])
+        return _applyControlPadding(node, env: env)
+    }
+}
+
+// MARK: - Slider v1 (Composition-only, no new _VNode case)
+
+public struct Slider<Label: View, ValueLabel: View>: View, _PrimitiveView {
+    public typealias Body = Never
+
+    let value: Binding<Double>
+    let bounds: ClosedRange<Double>
+    let step: Double?
+    let label: Label
+    let minimumValueLabel: ValueLabel?
+    let maximumValueLabel: ValueLabel?
+    let actionScopePath: [Int]
+
+    public init(value: Binding<Double>, in bounds: ClosedRange<Double> = 0...1, step: Double? = nil, @ViewBuilder label: () -> Label) where ValueLabel == EmptyView {
+        self.value = value
+        self.bounds = bounds
+        self.step = step
+        self.label = label()
+        self.minimumValueLabel = nil
+        self.maximumValueLabel = nil
+        self.actionScopePath = _UIRuntime._currentPath ?? []
+    }
+
+    public init(value: Binding<Double>, in bounds: ClosedRange<Double> = 0...1, step: Double? = nil) where Label == EmptyView, ValueLabel == EmptyView {
+        self.value = value
+        self.bounds = bounds
+        self.step = step
+        self.label = EmptyView() as! Label
+        self.minimumValueLabel = nil
+        self.maximumValueLabel = nil
+        self.actionScopePath = _UIRuntime._currentPath ?? []
+    }
+
+    public init(value: Binding<Float>, in bounds: ClosedRange<Float> = 0...1, step: Float? = nil) where Label == EmptyView, ValueLabel == EmptyView {
+        let dbl = Binding<Double>(get: { Double(value.wrappedValue) }, set: { value.wrappedValue = Float($0) })
+        self.value = dbl
+        self.bounds = Double(bounds.lowerBound)...Double(bounds.upperBound)
+        self.step = step.map(Double.init)
+        self.label = EmptyView() as! Label
+        self.minimumValueLabel = nil
+        self.maximumValueLabel = nil
+        self.actionScopePath = _UIRuntime._currentPath ?? []
+    }
+
+    func _makeNode(_ ctx: inout _BuildContext) -> _VNode {
+        let runtime = ctx.runtime
+        let env = _currentEnvironmentValues(for: ctx)
+
+        let trackWidth = 10
+        let fraction = bounds.upperBound > bounds.lowerBound
+            ? (value.wrappedValue - bounds.lowerBound) / (bounds.upperBound - bounds.lowerBound)
+            : 0.0
+        let clampedFraction = max(0, min(1, fraction))
+        let filledCount = Int((clampedFraction * Double(trackWidth)).rounded())
+        let emptyCount = trackWidth - filledCount
+        let track = "[" + String(repeating: "=", count: filledCount) + "O" + String(repeating: "-", count: emptyCount) + "]"
+
+        guard env.isEnabled, _UIRuntime._hitTestingEnabled else {
+            return _applyControlPadding(.style(fg: .secondary, bg: nil, child: .text(track)), env: env)
+        }
+
+        let stepAmount = step ?? ((bounds.upperBound - bounds.lowerBound) / Double(trackWidth))
+        let decPath = ctx.path + [0]
+        let incPath = ctx.path + [1]
+
+        let decFocused = runtime._isFocused(path: decPath)
+        let incFocused = runtime._isFocused(path: incPath)
+
+        let decID = runtime._registerAction({
+            runtime._setFocus(path: decPath)
+            self.value.wrappedValue = max(self.bounds.lowerBound, self.value.wrappedValue - stepAmount)
+        }, path: actionScopePath)
+        runtime._registerFocusable(path: decPath, activate: decID)
+
+        let incID = runtime._registerAction({
+            runtime._setFocus(path: incPath)
+            self.value.wrappedValue = min(self.bounds.upperBound, self.value.wrappedValue + stepAmount)
+        }, path: actionScopePath)
+        runtime._registerFocusable(path: incPath, activate: incID)
+
+        let decButton: _VNode = .tapTarget(id: decID, child: .text(decFocused ? ">-" : " -"))
+        let incButton: _VNode = .tapTarget(id: incID, child: .text(incFocused ? ">+" : " +"))
+
+        let node: _VNode = .stack(axis: .horizontal, spacing: 1, children: [decButton, .text(track), incButton])
+        return _applyControlPadding(node, env: env)
+    }
 }

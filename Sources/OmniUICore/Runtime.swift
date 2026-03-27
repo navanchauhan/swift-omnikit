@@ -197,6 +197,14 @@ public final class _UIRuntime: @unchecked Sendable {
         )
     }
 
+    // ScenePhase support — called by renderer when terminal focus changes
+    public func _setScenePhase(_ phase: ScenePhase) {
+        let old = _baseEnvironment.scenePhase
+        guard old != phase else { return }
+        _baseEnvironment.scenePhase = phase
+        _markDirty()
+    }
+
     func _beginFocusCapture() -> Int {
         let id = nextFocusCaptureID
         nextFocusCaptureID += 1
@@ -1006,6 +1014,49 @@ public final class _UIRuntime: @unchecked Sendable {
             await runtime._runTask(key: key)
         }
         tasks[key] = _TaskEntry(env: env, path: path, action: action, task: t)
+    }
+
+    // Task registration with id-based cancellation/restart
+    private var taskLastIds: [String: AnyHashable] = [:]
+
+    func _registerTaskWithId(path: [Int], id: AnyHashable, action: @escaping () async -> Void) {
+        _noteBuildSideEffect()
+        let key = _pathKey(prefix: "task", path: path)
+        tasksSeenThisFrame.insert(key)
+
+        if let existing = tasks[key] {
+            // Check if id changed
+            if let lastId = taskLastIds[key], lastId == id {
+                return // Same id, no-op
+            }
+            // Id changed: cancel old task and restart
+            existing.task?.cancel()
+            tasks[key] = nil
+        }
+
+        taskLastIds[key] = id
+
+        let runtime = self
+        let env = _UIRuntime._currentEnvironment ?? _baseEnvironment
+
+        let t = Task { @MainActor in
+            await runtime._runTask(key: key)
+        }
+        tasks[key] = _TaskEntry(env: env, path: path, action: action, task: t)
+    }
+
+    // Focus section support
+    private var _focusSectionStack: [[Int]] = []
+    private var _focusSections: [([Int], ClosedRange<Int>)] = [] // (sectionPath, range in focusOrder)
+
+    func _beginFocusSection(path: [Int]) {
+        _noteBuildSideEffect()
+        _focusSectionStack.append(path)
+    }
+
+    func _endFocusSection() {
+        _noteBuildSideEffect()
+        _ = _focusSectionStack.popLast()
     }
 
     func _launchAsyncAction(path: [Int], action: @escaping () async -> Void) {

@@ -369,6 +369,22 @@ private enum _PreviewDisplayNameKey: EnvironmentKey {
     static let defaultValue: String? = nil
 }
 
+private enum _TextCaseKey: EnvironmentKey {
+    static let defaultValue: Text.Case? = nil
+}
+
+private enum _TruncationModeKey: EnvironmentKey {
+    static let defaultValue: Text.TruncationMode = .tail
+}
+
+private enum _InteractiveDismissDisabledKey: EnvironmentKey {
+    static let defaultValue: Bool = false
+}
+
+private enum _ScenePhaseKey: EnvironmentKey {
+    static let defaultValue: ScenePhase = .active
+}
+
 private enum _NavigationTitleKey: EnvironmentKey {
     static let defaultValue: String? = nil
 }
@@ -597,6 +613,26 @@ public extension EnvironmentValues {
     var previewDisplayName: String? {
         get { self[_PreviewDisplayNameKey.self] }
         set { self[_PreviewDisplayNameKey.self] = newValue }
+    }
+
+    var textCase: Text.Case? {
+        get { self[_TextCaseKey.self] }
+        set { self[_TextCaseKey.self] = newValue }
+    }
+
+    var truncationMode: Text.TruncationMode {
+        get { self[_TruncationModeKey.self] }
+        set { self[_TruncationModeKey.self] = newValue }
+    }
+
+    var interactiveDismissDisabled: Bool {
+        get { self[_InteractiveDismissDisabledKey.self] }
+        set { self[_InteractiveDismissDisabledKey.self] = newValue }
+    }
+
+    var scenePhase: ScenePhase {
+        get { self[_ScenePhaseKey.self] }
+        set { self[_ScenePhaseKey.self] = newValue }
     }
 }
 

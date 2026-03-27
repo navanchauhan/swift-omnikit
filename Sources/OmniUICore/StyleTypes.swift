@@ -155,6 +155,11 @@ public enum HorizontalAlignment: Sendable {
     case trailing
 }
 
+public enum HorizontalEdge: Sendable {
+    case leading
+    case trailing
+}
+
 public enum VerticalAlignment: Sendable {
     case top
     case center
