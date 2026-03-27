@@ -147,7 +147,7 @@
         {
           "path": "Sources/OmniUICore/ObservableObjects.swift",
           "patterns": [
-            "public protocol ObservableObject: AnyObject {}",
+            "public protocol ObservableObject: AnyObject {",
             "public struct EnvironmentObject<ObjectType: ObservableObject>",
             "public struct Bindable<ObjectType: AnyObject>"
           ],
@@ -187,7 +187,7 @@
           "path": "Sources/SwiftUICompatibilityHarness/main.swift",
           "patterns": [
             "@AppStorage(\"harnessFlag\")",
-            "@Observable",
+            "@SwiftUI.Observable",
             "@Bindable"
           ],
           "notes": "Harness exercises the public wrapper surface."
