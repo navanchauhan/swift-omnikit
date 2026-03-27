@@ -58,6 +58,11 @@ public final class _UIRuntime: @unchecked Sendable {
     private var exitCommand: (path: [Int], env: EnvironmentValues, action: () -> Void)? = nil
     private var keyboardShortcuts: [KeyboardShortcut: _ActionID] = [:]
 
+    // Preference system
+    private var _preferences: [ObjectIdentifier: Any] = [:]
+    private var _preferenceCallbacks: [(keyID: ObjectIdentifier, callback: (Any) -> Void)] = []
+    private var _previousPreferences: [ObjectIdentifier: Any] = [:]
+
     private struct _TaskEntry {
         var env: EnvironmentValues
         var path: [Int]
@@ -905,6 +910,59 @@ public final class _UIRuntime: @unchecked Sendable {
             textEditorCursors[path] = text.unicodeScalars.count
             _markDirty(path: path)
         }
+    }
+
+    struct _MultiLineEditorState {
+        var text: String
+        var cursor: Int
+    }
+
+    func _getTextEditor(path: [Int], initial: String) -> _MultiLineEditorState {
+        let cursor = textEditorCursors[path] ?? initial.unicodeScalars.count
+        return _MultiLineEditorState(text: initial, cursor: cursor)
+    }
+
+    func _updateTextEditor(path: [Int], text: String) {
+        // Sync external binding change to the cursor
+        let maxCursor = text.unicodeScalars.count
+        if let existing = textEditorCursors[path], existing > maxCursor {
+            textEditorCursors[path] = maxCursor
+        }
+    }
+
+    // MARK: Preference System
+
+    func _setPreferenceRaw(keyID: ObjectIdentifier, value: Any, reduce: (inout Any, () -> Any) -> Void) {
+        if let existing = _preferences[keyID] {
+            var parentValue = value
+            reduce(&parentValue, { existing })
+            _preferences[keyID] = parentValue
+        } else {
+            _preferences[keyID] = value
+        }
+    }
+
+    func _registerPreferenceCallback(keyID: ObjectIdentifier, callback: @escaping (Any) -> Void) {
+        _preferenceCallbacks.append((keyID: keyID, callback: callback))
+    }
+
+    func _firePreferenceCallbacks() {
+        for (keyID, callback) in _preferenceCallbacks {
+            if let value = _preferences[keyID] {
+                // Only fire if changed
+                let prevStr = String(describing: _previousPreferences[keyID] ?? "nil")
+                let curStr = String(describing: value)
+                if prevStr != curStr {
+                    callback(value)
+                }
+            }
+        }
+        _previousPreferences = _preferences
+    }
+
+    func _clearPreferences() {
+        _preferences.removeAll(keepingCapacity: true)
+        _preferenceCallbacks.removeAll(keepingCapacity: true)
     }
 
     public func isTextEditingFocused() -> Bool {

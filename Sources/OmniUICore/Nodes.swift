@@ -78,6 +78,73 @@ indirect enum _VNode {
     case tagged(value: AnyHashable, label: _VNode)
     case divider
     case gestureTarget(id: _ActionID, child: _VNode)
+    // Parity additions
+    case viewThatFits(axes: Axis.Set, children: [_VNode])
+    case fixedSize(horizontal: Bool, vertical: Bool, child: _VNode)
+    case layoutPriority(Double, child: _VNode)
+    case aspectRatio(CGFloat?, contentMode: _ContentMode, child: _VNode)
+    case alignmentGuide(alignment: _AlignmentID, offset: Int, child: _VNode)
+    case preferenceNode(kind: _PreferenceNodeKind, child: _VNode)
+    case styledText([_StyledTextSegment])
+    case swipeActions(edge: HorizontalEdge, revealed: Bool, actions: [_VNode], child: _VNode)
+    case rotationEffect(child: _VNode)
+}
+
+public let _unconstrainedSize = _Size(width: Int.max / 2, height: Int.max / 2)
+
+enum _MeasureMode {
+    case proposal
+    case intrinsic
+}
+
+public enum _ContentMode: Sendable {
+    case fit
+    case fill
+}
+
+public enum _AlignmentID: Hashable, Sendable {
+    case horizontal(HorizontalAlignment)
+    case vertical(VerticalAlignment)
+}
+
+enum _PreferenceNodeKind {
+    case set(keyID: ObjectIdentifier, value: Any, reduce: (inout Any, () -> Any) -> Void)
+    case onChange(keyID: ObjectIdentifier, callback: (Any) -> Void)
+}
+
+public struct _StyledTextSegment {
+    let content: String
+    let fg: Color?
+    let bold: Bool
+    let italic: Bool
+
+    init(_ content: String, fg: Color? = nil, bold: Bool = false, italic: Bool = false) {
+        self.content = content
+        self.fg = fg
+        self.bold = bold
+        self.italic = italic
+    }
+}
+
+public struct ViewDimensions {
+    public let width: CGFloat
+    public let height: CGFloat
+
+    public subscript(guide: HorizontalAlignment) -> CGFloat {
+        switch guide {
+        case .leading: return 0
+        case .center: return width / 2
+        case .trailing: return width
+        }
+    }
+
+    public subscript(guide: VerticalAlignment) -> CGFloat {
+        switch guide {
+        case .top: return 0
+        case .center: return height / 2
+        case .bottom: return height
+        }
+    }
 }
 
 public enum _ShapeKind: Hashable, Sendable {

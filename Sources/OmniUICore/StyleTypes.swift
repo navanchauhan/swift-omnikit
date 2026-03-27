@@ -213,6 +213,23 @@ public struct PresentationDetent: Hashable, Sendable {
     public static let large = PresentationDetent("large")
 }
 
+public enum ContentMode: Sendable {
+    case fit
+    case fill
+}
+
+public struct Angle: Hashable, Sendable {
+    public var radians: Double
+    public var degrees: Double { radians * 180.0 / .pi }
+
+    public init(radians: Double) { self.radians = radians }
+    public init(degrees: Double) { self.radians = degrees * .pi / 180.0 }
+
+    public static func radians(_ value: Double) -> Angle { Angle(radians: value) }
+    public static func degrees(_ value: Double) -> Angle { Angle(degrees: value) }
+    public static let zero = Angle(radians: 0)
+}
+
 public enum Axis: Sendable {
     public struct Set: OptionSet, Hashable, Sendable {
         public let rawValue: Int

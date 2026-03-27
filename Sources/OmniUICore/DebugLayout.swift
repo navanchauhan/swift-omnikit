@@ -123,6 +123,20 @@ enum _DebugLayout {
             return hasContentShapeRect(child)
         case .gestureTarget(_, let child):
             return hasContentShapeRect(child)
+        case .fixedSize(_, _, let child):
+            return hasContentShapeRect(child)
+        case .layoutPriority(_, let child):
+            return hasContentShapeRect(child)
+        case .alignmentGuide(_, _, let child):
+            return hasContentShapeRect(child)
+        case .preferenceNode(_, let child):
+            return hasContentShapeRect(child)
+        case .rotationEffect(let child):
+            return hasContentShapeRect(child)
+        case .aspectRatio(_, _, let child):
+            return hasContentShapeRect(child)
+        case .swipeActions(_, _, _, let child):
+            return hasContentShapeRect(child)
         case .group(let nodes):
             return nodes.contains(where: hasContentShapeRect)
         case .stack(_, _, let children):
@@ -822,6 +836,26 @@ enum _DebugLayout {
                     let inner = " " + headText + " "
                     let w = (isFocused ? 1 : 0) + 2 + min(inner.count, max(0, maxSize.width - (isFocused ? 3 : 2)))
                     return _Size(width: min(w, maxSize.width), height: 1)
+                case .styledText(let segments):
+                    let total = segments.reduce(0) { $0 + $1.content.count }
+                    return _Size(width: min(total, maxSize.width), height: 1)
+                case .viewThatFits(_, let children):
+                    if let first = children.first { return measure(first, maxSize) }
+                    return _Size(width: 0, height: 0)
+                case .fixedSize(_, _, let child):
+                    return measure(child, maxSize)
+                case .layoutPriority(_, let child):
+                    return measure(child, maxSize)
+                case .aspectRatio(_, _, let child):
+                    return measure(child, maxSize)
+                case .alignmentGuide(_, _, let child):
+                    return measure(child, maxSize)
+                case .preferenceNode(_, let child):
+                    return measure(child, maxSize)
+                case .swipeActions(_, _, _, let child):
+                    return measure(child, maxSize)
+                case .rotationEffect(let child):
+                    return measure(child, maxSize)
                 }
             }
 
@@ -863,6 +897,20 @@ enum _DebugLayout {
                 case .edgePadding(_, _, _, _, let child):
                     return isFlexibleCandidate(child)
                 case .gestureTarget(_, let child):
+                    return isFlexibleCandidate(child)
+                case .fixedSize(_, _, let child):
+                    return isFlexibleCandidate(child)
+                case .layoutPriority(_, let child):
+                    return isFlexibleCandidate(child)
+                case .alignmentGuide(_, _, let child):
+                    return isFlexibleCandidate(child)
+                case .preferenceNode(_, let child):
+                    return isFlexibleCandidate(child)
+                case .rotationEffect(let child):
+                    return isFlexibleCandidate(child)
+                case .aspectRatio(_, _, let child):
+                    return isFlexibleCandidate(child)
+                case .swipeActions(_, _, _, let child):
                     return isFlexibleCandidate(child)
                 case .group(let nodes):
                     return nodes.contains(where: isFlexibleCandidate)
@@ -1285,6 +1333,19 @@ enum _DebugLayout {
                         let inner = " " + headText + " "
                         let w = (isFocused ? 1 : 0) + 2 + min(inner.count, max(0, maxSize.width - (isFocused ? 3 : 2)))
                         return _Size(width: min(w, maxSize.width), height: 1)
+                    case .styledText(let segments):
+                        let total = segments.reduce(0) { $0 + $1.content.count }
+                        return _Size(width: min(total, maxSize.width), height: 1)
+                    case .viewThatFits(_, let children):
+                        if let first = children.first { return m(first, maxSize) }
+                        return _Size(width: 0, height: 0)
+                    case .fixedSize(_, _, let child): return m(child, maxSize)
+                    case .layoutPriority(_, let child): return m(child, maxSize)
+                    case .aspectRatio(_, _, let child): return m(child, maxSize)
+                    case .alignmentGuide(_, _, let child): return m(child, maxSize)
+                    case .preferenceNode(_, let child): return m(child, maxSize)
+                    case .swipeActions(_, _, _, let child): return m(child, maxSize)
+                    case .rotationEffect(let child): return m(child, maxSize)
                     }
                 }
                 return m(content, measureMax)
@@ -1488,6 +1549,73 @@ enum _DebugLayout {
             }))
 
             return _Size(width: headWidth, height: 1)
+
+        // Parity additions
+        case .styledText(let segments):
+            var x = origin.x
+            for seg in segments {
+                for ch in seg.content {
+                    if x >= origin.x + maxSize.width { break }
+                    put(String(ch), at: _Point(x: x, y: origin.y), canvas: &canvas, style: (fg: seg.fg ?? style.fg, bg: style.bg))
+                    x += 1
+                }
+            }
+            let total = segments.reduce(0) { $0 + $1.content.count }
+            return _Size(width: min(total, maxSize.width), height: 1)
+
+        case .viewThatFits(let axes, let children):
+            func m(_ node: _VNode, _ ms: _Size) -> _Size {
+                // Simple intrinsic measure for fit-testing
+                switch node {
+                case .text(let s): return _Size(width: s.count, height: 1)
+                case .styledText(let segs): return _Size(width: segs.reduce(0) { $0 + $1.content.count }, height: 1)
+                case .stack(let a, let sp, let ch):
+                    var w = 0; var h = 0
+                    for (i, c) in ch.enumerated() {
+                        let s = m(c, ms)
+                        if a == .horizontal { w += s.width; h = max(h, s.height); if i < ch.count - 1 { w += sp } }
+                        else { h += s.height; w = max(w, s.width); if i < ch.count - 1 { h += sp } }
+                    }
+                    return _Size(width: w, height: h)
+                default: return _Size(width: ms.width, height: 1)
+                }
+            }
+            for child in children {
+                let intrinsic = m(child, maxSize)
+                let fitsH = !axes.contains(.horizontal) || intrinsic.width <= maxSize.width
+                let fitsV = !axes.contains(.vertical) || intrinsic.height <= maxSize.height
+                if fitsH && fitsV {
+                    return draw(node: child, origin: origin, maxSize: maxSize, canvas: &canvas, hitRegions: &hitRegions, hoverRegions: &hoverRegions, scrollRegions: &scrollRegions, shapeRegions: &shapeRegions, renderShapeGlyphs: renderShapeGlyphs, overlays: &overlays, style: style)
+                }
+            }
+            if let last = children.last {
+                return draw(node: last, origin: origin, maxSize: maxSize, canvas: &canvas, hitRegions: &hitRegions, hoverRegions: &hoverRegions, scrollRegions: &scrollRegions, shapeRegions: &shapeRegions, renderShapeGlyphs: renderShapeGlyphs, overlays: &overlays, style: style)
+            }
+            return _Size(width: 0, height: 0)
+
+        case .fixedSize(_, _, let child):
+            return draw(node: child, origin: origin, maxSize: maxSize, canvas: &canvas, hitRegions: &hitRegions, hoverRegions: &hoverRegions, scrollRegions: &scrollRegions, shapeRegions: &shapeRegions, renderShapeGlyphs: renderShapeGlyphs, overlays: &overlays, style: style)
+
+        case .layoutPriority(_, let child):
+            return draw(node: child, origin: origin, maxSize: maxSize, canvas: &canvas, hitRegions: &hitRegions, hoverRegions: &hoverRegions, scrollRegions: &scrollRegions, shapeRegions: &shapeRegions, renderShapeGlyphs: renderShapeGlyphs, overlays: &overlays, style: style)
+
+        case .aspectRatio(_, _, let child):
+            return draw(node: child, origin: origin, maxSize: maxSize, canvas: &canvas, hitRegions: &hitRegions, hoverRegions: &hoverRegions, scrollRegions: &scrollRegions, shapeRegions: &shapeRegions, renderShapeGlyphs: renderShapeGlyphs, overlays: &overlays, style: style)
+
+        case .alignmentGuide(_, _, let child):
+            return draw(node: child, origin: origin, maxSize: maxSize, canvas: &canvas, hitRegions: &hitRegions, hoverRegions: &hoverRegions, scrollRegions: &scrollRegions, shapeRegions: &shapeRegions, renderShapeGlyphs: renderShapeGlyphs, overlays: &overlays, style: style)
+
+        case .preferenceNode(_, let child):
+            return draw(node: child, origin: origin, maxSize: maxSize, canvas: &canvas, hitRegions: &hitRegions, hoverRegions: &hoverRegions, scrollRegions: &scrollRegions, shapeRegions: &shapeRegions, renderShapeGlyphs: renderShapeGlyphs, overlays: &overlays, style: style)
+
+        case .swipeActions(_, let revealed, let actions, let child):
+            if revealed, let first = actions.first {
+                return draw(node: first, origin: origin, maxSize: maxSize, canvas: &canvas, hitRegions: &hitRegions, hoverRegions: &hoverRegions, scrollRegions: &scrollRegions, shapeRegions: &shapeRegions, renderShapeGlyphs: renderShapeGlyphs, overlays: &overlays, style: style)
+            }
+            return draw(node: child, origin: origin, maxSize: maxSize, canvas: &canvas, hitRegions: &hitRegions, hoverRegions: &hoverRegions, scrollRegions: &scrollRegions, shapeRegions: &shapeRegions, renderShapeGlyphs: renderShapeGlyphs, overlays: &overlays, style: style)
+
+        case .rotationEffect(let child):
+            return draw(node: child, origin: origin, maxSize: maxSize, canvas: &canvas, hitRegions: &hitRegions, hoverRegions: &hoverRegions, scrollRegions: &scrollRegions, shapeRegions: &shapeRegions, renderShapeGlyphs: renderShapeGlyphs, overlays: &overlays, style: style)
 
         }
     }

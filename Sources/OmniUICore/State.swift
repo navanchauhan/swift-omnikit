@@ -93,3 +93,12 @@ final class _StateLocation: @unchecked Sendable {
     var resolved: (runtime: _UIRuntime, path: [Int])? = nil
     init() {}
 }
+
+/// A SwiftUI-like PreferenceKey protocol for bottom-up data propagation.
+/// Note: Preference callbacks fire after the current render pass completes.
+/// State changes from callbacks take effect on the next render frame.
+public protocol PreferenceKey {
+    associatedtype Value
+    static var defaultValue: Value { get }
+    static func reduce(value: inout Value, nextValue: () -> Value)
+}

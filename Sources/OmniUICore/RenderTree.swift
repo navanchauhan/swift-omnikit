@@ -547,6 +547,20 @@ enum _RenderLayout {
                     return isFlexibleCandidate(child)
                 case .gestureTarget(_, let child):
                     return isFlexibleCandidate(child)
+                case .fixedSize(_, _, let child):
+                    return isFlexibleCandidate(child)
+                case .layoutPriority(_, let child):
+                    return isFlexibleCandidate(child)
+                case .alignmentGuide(_, _, let child):
+                    return isFlexibleCandidate(child)
+                case .preferenceNode(_, let child):
+                    return isFlexibleCandidate(child)
+                case .rotationEffect(let child):
+                    return isFlexibleCandidate(child)
+                case .aspectRatio(_, _, let child):
+                    return isFlexibleCandidate(child)
+                case .swipeActions(_, _, _, let child):
+                    return isFlexibleCandidate(child)
                 case .group(let nodes):
                     return nodes.contains(where: isFlexibleCandidate)
                 case .zstack(let nodes):
@@ -557,6 +571,40 @@ enum _RenderLayout {
                 default:
                     return false
                 }
+            }
+
+            // Extract layout priority from a node (recursive unwrapping)
+            func extractPriority(_ node: _VNode) -> Double {
+                switch node {
+                case .layoutPriority(let p, _): return p
+                case .edgePadding(_, _, _, _, let child): return extractPriority(child)
+                case .fixedSize(_, _, let child): return extractPriority(child)
+                case .style(_, _, let child): return extractPriority(child)
+                case .textStyled(_, let child): return extractPriority(child)
+                case .opacity(_, let child): return extractPriority(child)
+                case .offset(_, _, let child): return extractPriority(child)
+                case .background(let child, _): return extractPriority(child)
+                case .overlay(let child, _): return extractPriority(child)
+                case .identified(_, _, let child): return extractPriority(child)
+                case .tagged(_, let label): return extractPriority(label)
+                case .contentShapeRect(let child): return extractPriority(child)
+                case .clip(_, let child): return extractPriority(child)
+                case .shadow(let child, _, _, _, _): return extractPriority(child)
+                case .hover(_, let child): return extractPriority(child)
+                case .onDelete(_, _, let child): return extractPriority(child)
+                case .gestureTarget(_, let child): return extractPriority(child)
+                case .alignmentGuide(_, _, let child): return extractPriority(child)
+                case .preferenceNode(_, let child): return extractPriority(child)
+                case .rotationEffect(let child): return extractPriority(child)
+                case .aspectRatio(_, _, let child): return extractPriority(child)
+                case .swipeActions(_, _, _, let child): return extractPriority(child)
+                default: return 0.0
+                }
+            }
+
+            func isSpacer(_ node: _VNode) -> Bool {
+                if case .spacer = node { return true }
+                return false
             }
 
             var fixedPrimary = 0
@@ -591,18 +639,45 @@ enum _RenderLayout {
             // (Spacers). This prevents inner scrollViews with small content from
             // consuming equal shares of the viewport and starving later siblings.
             var flexAllocations = [Int](repeating: 0, count: children.count)
-            if flexibleCount > 0 {
+            let hasPriorities = children.contains { extractPriority($0) != 0 }
+            if flexibleCount > 0 && hasPriorities {
+                // Priority-aware band allocation
+                let flexIndices = (0..<children.count).filter { flexible[$0] }
+                let bands = Dictionary(grouping: flexIndices) { extractPriority(children[$0]) }
+                var remaining = leftover
+                for priority in bands.keys.sorted(by: >) {
+                    let bandIndices = bands[priority]!
+                    let nonSpacers = bandIndices.filter { !isSpacer(children[$0]) }
+                    if !nonSpacers.isEmpty {
+                        let share = remaining / nonSpacers.count
+                        for idx in nonSpacers {
+                            let intrinsic = measure(children[idx], maxSize, mode: .intrinsic)
+                            let primaryDim = (axis == .horizontal) ? intrinsic.width : intrinsic.height
+                            let alloc = min(primaryDim, share)
+                            flexAllocations[idx] = alloc
+                            remaining -= alloc
+                        }
+                    }
+                    let spacersInBand = bandIndices.filter { isSpacer(children[$0]) }
+                    if !spacersInBand.isEmpty {
+                        let spacerShare = remaining / spacersInBand.count
+                        for idx in spacersInBand {
+                            flexAllocations[idx] = spacerShare
+                            remaining -= spacerShare
+                        }
+                    }
+                }
+            } else if flexibleCount > 0 {
+                // Existing equal-share algorithm — UNCHANGED
                 let equalShare = leftover / flexibleCount
                 var surplus = leftover % flexibleCount
                 var greedyIndices: [Int] = []
                 for idx in 0..<children.count where flexible[idx] {
                     let measuredPrimary = (axis == .horizontal) ? measured[idx].width : measured[idx].height
                     if case .spacer = children[idx] {
-                        // Spacers are truly greedy — give them full share
                         flexAllocations[idx] = equalShare
                         greedyIndices.append(idx)
                     } else if measuredPrimary < equalShare {
-                        // Content is smaller than equal share — cap at measured size
                         flexAllocations[idx] = measuredPrimary
                         surplus += (equalShare - measuredPrimary)
                     } else {
@@ -610,7 +685,6 @@ enum _RenderLayout {
                         greedyIndices.append(idx)
                     }
                 }
-                // Redistribute surplus to greedy children
                 if !greedyIndices.isEmpty {
                     let extra = surplus / greedyIndices.count
                     let extraRem = surplus % greedyIndices.count
@@ -1005,6 +1079,98 @@ enum _RenderLayout {
             let line = String(repeating: "─", count: max(0, maxSize.width))
             emitText(line, at: origin)
             return _Size(width: maxSize.width, height: 1)
+
+        // Parity additions
+        case .styledText(let segments):
+            var x = origin.x
+            for seg in segments {
+                let prev = ctx.style
+                if let fg = seg.fg { ctx.style.fg = fg }
+                if seg.bold { ctx.style.textStyle = prev.textStyle.union(.bold) }
+                if seg.italic { ctx.style.textStyle = prev.textStyle.union(.italic) }
+                for ch in seg.content {
+                    if x >= origin.x + maxSize.width { break }
+                    emitGlyph(String(ch), at: _Point(x: x, y: origin.y))
+                    x += 1
+                }
+                ctx.style = prev
+            }
+            let total = segments.reduce(0) { $0 + $1.content.count }
+            return _Size(width: min(total, maxSize.width), height: 1)
+
+        case .viewThatFits(let axes, let children):
+            for child in children {
+                let intrinsic = measure(child, maxSize, mode: .intrinsic)
+                let fitsH = !axes.contains(.horizontal) || intrinsic.width <= maxSize.width
+                let fitsV = !axes.contains(.vertical) || intrinsic.height <= maxSize.height
+                if fitsH && fitsV {
+                    return draw(node: child, origin: origin, maxSize: maxSize, ctx: &ctx, ops: &ops, hitRegions: &hitRegions, hoverRegions: &hoverRegions, scrollRegions: &scrollRegions, scrollTargets: &scrollTargets, shapeRegions: &shapeRegions, cursorPosition: &cursorPosition, activeMenu: &activeMenu, activePicker: &activePicker, activeTextField: &activeTextField, scrollContext: scrollContext)
+                }
+            }
+            if let last = children.last {
+                return draw(node: last, origin: origin, maxSize: maxSize, ctx: &ctx, ops: &ops, hitRegions: &hitRegions, hoverRegions: &hoverRegions, scrollRegions: &scrollRegions, scrollTargets: &scrollTargets, shapeRegions: &shapeRegions, cursorPosition: &cursorPosition, activeMenu: &activeMenu, activePicker: &activePicker, activeTextField: &activeTextField, scrollContext: scrollContext)
+            }
+            return _Size(width: 0, height: 0)
+
+        case .fixedSize(let horizontal, let vertical, let child):
+            let intrinsic = measure(child, _unconstrainedSize, mode: .intrinsic)
+            let w = horizontal ? intrinsic.width : maxSize.width
+            let h = vertical ? intrinsic.height : maxSize.height
+            let clamped = _Size(width: min(w, maxSize.width), height: min(h, maxSize.height))
+            return draw(node: child, origin: origin, maxSize: clamped, ctx: &ctx, ops: &ops, hitRegions: &hitRegions, hoverRegions: &hoverRegions, scrollRegions: &scrollRegions, scrollTargets: &scrollTargets, shapeRegions: &shapeRegions, cursorPosition: &cursorPosition, activeMenu: &activeMenu, activePicker: &activePicker, activeTextField: &activeTextField, scrollContext: scrollContext)
+
+        case .layoutPriority(_, let child):
+            // Priority is consumed during stack layout; this wrapper is transparent.
+            return draw(node: child, origin: origin, maxSize: maxSize, ctx: &ctx, ops: &ops, hitRegions: &hitRegions, hoverRegions: &hoverRegions, scrollRegions: &scrollRegions, scrollTargets: &scrollTargets, shapeRegions: &shapeRegions, cursorPosition: &cursorPosition, activeMenu: &activeMenu, activePicker: &activePicker, activeTextField: &activeTextField, scrollContext: scrollContext)
+
+        case .aspectRatio(let ratio, let contentMode, let child):
+            if let ratio {
+                let cellAspect: CGFloat = 2.0
+                let sz: _Size
+                switch contentMode {
+                case .fit:
+                    let w = maxSize.width
+                    let h = max(1, Int(CGFloat(w) / ratio / cellAspect))
+                    if h <= maxSize.height {
+                        sz = _Size(width: w, height: h)
+                    } else {
+                        let hh = maxSize.height
+                        let ww = max(1, Int(CGFloat(hh) * ratio * cellAspect))
+                        sz = _Size(width: min(ww, maxSize.width), height: hh)
+                    }
+                case .fill:
+                    let w = maxSize.width
+                    let h = max(1, Int(CGFloat(w) / ratio / cellAspect))
+                    if h >= maxSize.height {
+                        sz = _Size(width: w, height: min(h, maxSize.height))
+                    } else {
+                        let hh = maxSize.height
+                        let ww = max(1, Int(CGFloat(hh) * ratio * cellAspect))
+                        sz = _Size(width: min(ww, maxSize.width), height: hh)
+                    }
+                }
+                return draw(node: child, origin: origin, maxSize: sz, ctx: &ctx, ops: &ops, hitRegions: &hitRegions, hoverRegions: &hoverRegions, scrollRegions: &scrollRegions, scrollTargets: &scrollTargets, shapeRegions: &shapeRegions, cursorPosition: &cursorPosition, activeMenu: &activeMenu, activePicker: &activePicker, activeTextField: &activeTextField, scrollContext: scrollContext)
+            }
+            return draw(node: child, origin: origin, maxSize: maxSize, ctx: &ctx, ops: &ops, hitRegions: &hitRegions, hoverRegions: &hoverRegions, scrollRegions: &scrollRegions, scrollTargets: &scrollTargets, shapeRegions: &shapeRegions, cursorPosition: &cursorPosition, activeMenu: &activeMenu, activePicker: &activePicker, activeTextField: &activeTextField, scrollContext: scrollContext)
+
+        case .alignmentGuide(_, _, let child):
+            // Alignment offset is consumed during stack cross-axis positioning.
+            return draw(node: child, origin: origin, maxSize: maxSize, ctx: &ctx, ops: &ops, hitRegions: &hitRegions, hoverRegions: &hoverRegions, scrollRegions: &scrollRegions, scrollTargets: &scrollTargets, shapeRegions: &shapeRegions, cursorPosition: &cursorPosition, activeMenu: &activeMenu, activePicker: &activePicker, activeTextField: &activeTextField, scrollContext: scrollContext)
+
+        case .preferenceNode(let kind, let child):
+            let result = draw(node: child, origin: origin, maxSize: maxSize, ctx: &ctx, ops: &ops, hitRegions: &hitRegions, hoverRegions: &hoverRegions, scrollRegions: &scrollRegions, scrollTargets: &scrollTargets, shapeRegions: &shapeRegions, cursorPosition: &cursorPosition, activeMenu: &activeMenu, activePicker: &activePicker, activeTextField: &activeTextField, scrollContext: scrollContext)
+            // Preference handling is done by the runtime after layout.
+            return result
+
+        case .swipeActions(_, let revealed, let actions, let child):
+            if revealed, let first = actions.first {
+                return draw(node: first, origin: origin, maxSize: maxSize, ctx: &ctx, ops: &ops, hitRegions: &hitRegions, hoverRegions: &hoverRegions, scrollRegions: &scrollRegions, scrollTargets: &scrollTargets, shapeRegions: &shapeRegions, cursorPosition: &cursorPosition, activeMenu: &activeMenu, activePicker: &activePicker, activeTextField: &activeTextField, scrollContext: scrollContext)
+            }
+            return draw(node: child, origin: origin, maxSize: maxSize, ctx: &ctx, ops: &ops, hitRegions: &hitRegions, hoverRegions: &hoverRegions, scrollRegions: &scrollRegions, scrollTargets: &scrollTargets, shapeRegions: &shapeRegions, cursorPosition: &cursorPosition, activeMenu: &activeMenu, activePicker: &activePicker, activeTextField: &activeTextField, scrollContext: scrollContext)
+
+        case .rotationEffect(let child):
+            // No-op in terminal — rotation is not possible in a character grid.
+            return draw(node: child, origin: origin, maxSize: maxSize, ctx: &ctx, ops: &ops, hitRegions: &hitRegions, hoverRegions: &hoverRegions, scrollRegions: &scrollRegions, scrollTargets: &scrollTargets, shapeRegions: &shapeRegions, cursorPosition: &cursorPosition, activeMenu: &activeMenu, activePicker: &activePicker, activeTextField: &activeTextField, scrollContext: scrollContext)
         }
     }
 
@@ -1038,11 +1204,23 @@ enum _RenderLayout {
             return hasContentShapeRect(child)
         case .shadow(let child, _, _, _, _):
             return hasContentShapeRect(child)
-        case .hover(_, let child):
-            return hasContentShapeRect(child)
         case .clip(_, let child):
             return hasContentShapeRect(child)
         case .gestureTarget(_, let child):
+            return hasContentShapeRect(child)
+        case .fixedSize(_, _, let child):
+            return hasContentShapeRect(child)
+        case .layoutPriority(_, let child):
+            return hasContentShapeRect(child)
+        case .alignmentGuide(_, _, let child):
+            return hasContentShapeRect(child)
+        case .preferenceNode(_, let child):
+            return hasContentShapeRect(child)
+        case .rotationEffect(let child):
+            return hasContentShapeRect(child)
+        case .aspectRatio(_, _, let child):
+            return hasContentShapeRect(child)
+        case .swipeActions(_, _, _, let child):
             return hasContentShapeRect(child)
         case .group(let nodes):
             return nodes.contains(where: hasContentShapeRect)
@@ -1055,46 +1233,55 @@ enum _RenderLayout {
         }
     }
 
-    private static func measure(_ node: _VNode, _ maxSize: _Size) -> _Size {
+    private static func measure(_ node: _VNode, _ maxSize: _Size, mode: _MeasureMode = .proposal) -> _Size {
         guard maxSize.width > 0, maxSize.height > 0 else { return _Size(width: 0, height: 0) }
         switch node {
         case .empty:
             return _Size(width: 0, height: 0)
         case .style(_, _, let child):
-            return measure(child, maxSize)
+            return measure(child, maxSize, mode: mode)
         case .textStyled(_, let child):
-            return measure(child, maxSize)
+            return measure(child, maxSize, mode: mode)
         case .contentShapeRect(let child):
-            return measure(child, maxSize)
+            return measure(child, maxSize, mode: mode)
         case .clip(_, let child):
-            return measure(child, maxSize)
+            return measure(child, maxSize, mode: mode)
         case .shadow(let child, _, _, _, _):
-            return measure(child, maxSize)
+            return measure(child, maxSize, mode: mode)
         case .hover(_, let child):
-            return measure(child, maxSize)
+            return measure(child, maxSize, mode: mode)
         case .background(let child, _):
-            return measure(child, maxSize)
+            return measure(child, maxSize, mode: mode)
         case .overlay(let child, _):
-            return measure(child, maxSize)
+            return measure(child, maxSize, mode: mode)
         case .identified(_, _, let child):
-            return measure(child, maxSize)
+            return measure(child, maxSize, mode: mode)
         case .onDelete(_, _, let child):
-            return measure(child, maxSize)
+            return measure(child, maxSize, mode: mode)
         case .tagged(_, let label):
-            return measure(label, maxSize)
+            return measure(label, maxSize, mode: mode)
         case .frame(_, _, let minWidth, let maxWidth, let minHeight, let maxHeight, let child):
-            let s = measure(child, maxSize)
+            if mode == .intrinsic {
+                let s = measure(child, maxSize, mode: .intrinsic)
+                let w = max(minWidth ?? 0, maxWidth == Int.max ? s.width : min(s.width, maxWidth ?? s.width))
+                let h = max(minHeight ?? 0, maxHeight == Int.max ? s.height : min(s.height, maxHeight ?? s.height))
+                return _Size(width: w, height: h)
+            }
+            let s = measure(child, maxSize, mode: mode)
             let w = max(minWidth ?? 0, min(maxSize.width, maxWidth == Int.max ? maxSize.width : min(s.width, maxWidth ?? s.width)))
             let h = max(minHeight ?? 0, min(maxSize.height, maxHeight == Int.max ? maxSize.height : min(s.height, maxHeight ?? s.height)))
             return _Size(width: w, height: h)
         case .edgePadding(let top, let leading, let bottom, let trailing, let child):
             let inner = _Size(width: max(0, maxSize.width - leading - trailing), height: max(0, maxSize.height - top - bottom))
-            let s = measure(child, inner)
+            let s = measure(child, inner, mode: mode)
+            if mode == .intrinsic {
+                return _Size(width: s.width + leading + trailing, height: s.height + top + bottom)
+            }
             return _Size(width: min(maxSize.width, s.width + leading + trailing), height: min(maxSize.height, s.height + top + bottom))
         case .group(let nodes):
             var u = _Size(width: 0, height: 0)
             for n in nodes {
-                let s = measure(n, maxSize)
+                let s = measure(n, maxSize, mode: mode)
                 u.width = max(u.width, s.width)
                 u.height = max(u.height, s.height)
             }
@@ -1102,7 +1289,7 @@ enum _RenderLayout {
         case .zstack(let children):
             var u = _Size(width: 0, height: 0)
             for n in children {
-                let s = measure(n, maxSize)
+                let s = measure(n, maxSize, mode: mode)
                 u.width = max(u.width, s.width)
                 u.height = max(u.height, s.height)
             }
@@ -1110,17 +1297,24 @@ enum _RenderLayout {
         case .gradient:
             return maxSize
         case .offset(_, _, let child):
-            return measure(child, maxSize)
+            return measure(child, maxSize, mode: mode)
         case .opacity(_, let child):
-            return measure(child, maxSize)
+            return measure(child, maxSize, mode: mode)
         case .text(let s):
-            return _Size(width: min(s.count, maxSize.width), height: 1)
+            return mode == .intrinsic
+                ? _Size(width: s.count, height: 1)
+                : _Size(width: min(s.count, maxSize.width), height: 1)
+        case .styledText(let segments):
+            let total = segments.reduce(0) { $0 + $1.content.count }
+            return mode == .intrinsic
+                ? _Size(width: total, height: 1)
+                : _Size(width: min(total, maxSize.width), height: 1)
         case .image(let name):
             let s = _imageString(name)
-            return _Size(width: min(s.count, maxSize.width), height: 1)
+            return mode == .intrinsic
+                ? _Size(width: s.count, height: 1)
+                : _Size(width: min(s.count, maxSize.width), height: 1)
         case .shape:
-            // Shapes report a minimum intrinsic size of 10x4 so they get meaningful
-            // space in stack layouts. They fill the proposed region during draw.
             let sw = min(maxSize.width, max(10, maxSize.width))
             let sh = min(maxSize.height, 4)
             return _Size(width: sw, height: sh)
@@ -1133,40 +1327,42 @@ enum _RenderLayout {
                 var h = 0
                 let count = children.count
                 for (i, c) in children.enumerated() {
-                    let s = measure(c, maxSize)
+                    let s = measure(c, maxSize, mode: mode)
                     w += s.width
                     h = max(h, s.height)
                     if i != count - 1 { w += spacing }
                 }
-                return _Size(width: min(w, maxSize.width), height: min(h, maxSize.height))
+                return mode == .intrinsic
+                    ? _Size(width: w, height: h)
+                    : _Size(width: min(w, maxSize.width), height: min(h, maxSize.height))
             case .vertical:
                 var w = 0
                 var h = 0
                 let count = children.count
                 for (i, c) in children.enumerated() {
-                    let s = measure(c, maxSize)
+                    let s = measure(c, maxSize, mode: mode)
                     h += s.height
                     w = max(w, s.width)
                     if i != count - 1 { h += spacing }
                 }
-                return _Size(width: min(w, maxSize.width), height: min(h, maxSize.height))
+                return mode == .intrinsic
+                    ? _Size(width: w, height: h)
+                    : _Size(width: min(w, maxSize.width), height: min(h, maxSize.height))
             }
         case .button(_, let isFocused, let label):
             let xPad = isFocused ? 1 : 0
             let labelMax = _Size(width: max(0, maxSize.width - (isFocused ? 5 : 4)), height: 1)
-            let l = measure(label, labelMax)
+            let l = measure(label, labelMax, mode: mode)
             return _Size(width: min(maxSize.width, xPad + 4 + l.width), height: 1)
         case .tapTarget(_, let child):
-            return measure(child, maxSize)
+            return measure(child, maxSize, mode: mode)
         case .gestureTarget(_, let child):
-            return measure(child, maxSize)
-        case .hover(_, let child):
-            return measure(child, maxSize)
+            return measure(child, maxSize, mode: mode)
         case .toggle(_, let isFocused, _, let label):
             let xPad = isFocused ? 1 : 0
             let boxCount = 4
             let labelMax = _Size(width: max(0, maxSize.width - boxCount - xPad), height: 1)
-            let l = measure(label, labelMax)
+            let l = measure(label, labelMax, mode: mode)
             return _Size(width: min(maxSize.width, xPad + boxCount + l.width), height: 1)
         case .textField(_, let placeholder, let text, _, _, let style):
             let display = text.isEmpty ? placeholder : text
@@ -1175,11 +1371,8 @@ enum _RenderLayout {
             let s = prefixCount + boxExtra + display.count
             return _Size(width: min(maxSize.width, s), height: 1)
         case .scrollView(_, _, _, let axis, _, let content):
-            // Measure content to report honest size instead of greedily consuming all
-            // available space. This prevents inner scroll views from each claiming ~2048
-            // rows in flex allocation, which starves later siblings of space.
             let contentMax = _Size(width: maxSize.width, height: 2048)
-            let cs = measure(content, contentMax)
+            let cs = measure(content, contentMax, mode: mode)
             let w = min(maxSize.width, cs.width)
             let h = (axis == .vertical) ? min(maxSize.height, cs.height) : min(maxSize.height, cs.height)
             return _Size(width: w, height: h)
@@ -1190,6 +1383,56 @@ enum _RenderLayout {
             return _Size(width: min(w, maxSize.width), height: 1)
         case .divider:
             return _Size(width: maxSize.width, height: 1)
+        // Parity additions
+        case .viewThatFits(_, let children):
+            if let first = children.first {
+                return measure(first, maxSize, mode: mode)
+            }
+            return _Size(width: 0, height: 0)
+        case .fixedSize(let horizontal, let vertical, let child):
+            let intrinsic = measure(child, _unconstrainedSize, mode: .intrinsic)
+            return _Size(
+                width: horizontal ? min(intrinsic.width, maxSize.width) : min(measure(child, maxSize, mode: mode).width, maxSize.width),
+                height: vertical ? min(intrinsic.height, maxSize.height) : min(measure(child, maxSize, mode: mode).height, maxSize.height)
+            )
+        case .layoutPriority(_, let child):
+            return measure(child, maxSize, mode: mode)
+        case .aspectRatio(let ratio, let contentMode, let child):
+            if let ratio {
+                let cellAspect: CGFloat = 2.0
+                switch contentMode {
+                case .fit:
+                    let w = maxSize.width
+                    let h = max(1, Int(CGFloat(w) / ratio / cellAspect))
+                    if h <= maxSize.height {
+                        return _Size(width: w, height: h)
+                    }
+                    let hh = maxSize.height
+                    let ww = max(1, Int(CGFloat(hh) * ratio * cellAspect))
+                    return _Size(width: min(ww, maxSize.width), height: hh)
+                case .fill:
+                    let w = maxSize.width
+                    let h = max(1, Int(CGFloat(w) / ratio / cellAspect))
+                    if h >= maxSize.height {
+                        return _Size(width: w, height: min(h, maxSize.height))
+                    }
+                    let hh = maxSize.height
+                    let ww = max(1, Int(CGFloat(hh) * ratio * cellAspect))
+                    return _Size(width: min(ww, maxSize.width), height: hh)
+                }
+            }
+            return measure(child, maxSize, mode: mode)
+        case .alignmentGuide(_, _, let child):
+            return measure(child, maxSize, mode: mode)
+        case .preferenceNode(_, let child):
+            return measure(child, maxSize, mode: mode)
+        case .swipeActions(_, let revealed, let actions, let child):
+            if revealed, let first = actions.first {
+                return measure(first, maxSize, mode: mode)
+            }
+            return measure(child, maxSize, mode: mode)
+        case .rotationEffect(let child):
+            return measure(child, maxSize, mode: mode)
         }
     }
 }

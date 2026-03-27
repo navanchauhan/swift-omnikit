@@ -667,6 +667,28 @@ struct _EnvironmentValueProvider<V>: View, _PrimitiveView {
     }
 }
 
+// MARK: - Parity additions
+
+private enum _CellAspectRatioKey: EnvironmentKey {
+    static let defaultValue: CGFloat? = nil
+}
+
+private enum _FocusPriorityKey: EnvironmentKey {
+    static let defaultValue: Int = 0
+}
+
+extension EnvironmentValues {
+    public var _cellAspectRatio: CGFloat? {
+        get { self[_CellAspectRatioKey.self] }
+        set { self[_CellAspectRatioKey.self] = newValue }
+    }
+
+    var _focusPriority: Int {
+        get { self[_FocusPriorityKey.self] }
+        set { self[_FocusPriorityKey.self] = newValue }
+    }
+}
+
 struct _EnvironmentObjectProvider<T: AnyObject>: View, _PrimitiveView {
     public typealias Body = Never
     let object: T

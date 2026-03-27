@@ -538,6 +538,50 @@ public extension View {
         padding(.all, length)
     }
 
+    // MARK: Parity modifiers
+
+    func fixedSize() -> some View {
+        _FixedSizeModifier(content: AnyView(self), horizontal: true, vertical: true)
+    }
+
+    func fixedSize(horizontal: Bool, vertical: Bool) -> some View {
+        _FixedSizeModifier(content: AnyView(self), horizontal: horizontal, vertical: vertical)
+    }
+
+    func layoutPriority(_ value: Double) -> some View {
+        _LayoutPriorityModifier(content: AnyView(self), priority: value)
+    }
+
+    func aspectRatio(_ ratio: CGFloat? = nil, contentMode: ContentMode) -> some View {
+        let mode: _ContentMode = contentMode == .fit ? .fit : .fill
+        return _AspectRatioModifier(content: AnyView(self), ratio: ratio, contentMode: mode)
+    }
+
+    func alignmentGuide(_ alignment: HorizontalAlignment, computeValue: @escaping (ViewDimensions) -> CGFloat) -> some View {
+        _AlignmentGuideModifier(content: AnyView(self), alignmentID: .horizontal(alignment), computeValue: computeValue)
+    }
+
+    func alignmentGuide(_ alignment: VerticalAlignment, computeValue: @escaping (ViewDimensions) -> CGFloat) -> some View {
+        _AlignmentGuideModifier(content: AnyView(self), alignmentID: .vertical(alignment), computeValue: computeValue)
+    }
+
+    func preference<K: PreferenceKey>(key: K.Type, value: K.Value) -> some View {
+        _PreferenceModifier<K>(content: AnyView(self), value: value)
+    }
+
+    func onPreferenceChange<K: PreferenceKey>(_ key: K.Type, perform action: @escaping (K.Value) -> Void) -> some View where K.Value: Equatable {
+        _OnPreferenceChangeModifier<K>(content: AnyView(self), action: action)
+    }
+
+    func swipeActions<T: View>(edge: HorizontalEdge = .trailing, allowsFullSwipe: Bool = true, @ViewBuilder content: () -> T) -> some View {
+        _SwipeActionsModifier(content: AnyView(self), edge: edge, actions: AnyView(content()))
+    }
+
+    /// No-op in terminal — rotation is not possible in a character grid.
+    func rotationEffect(_ angle: Angle, anchor: UnitPoint = .center) -> some View {
+        _RotationEffectModifier(content: AnyView(self))
+    }
+
     func onAppear(perform action: @escaping () -> Void) -> some View {
         _OnAppear(content: AnyView(self), action: action)
     }
@@ -2068,5 +2112,124 @@ private struct _FocusSectionModifier: View, _PrimitiveView {
         let node = ctx.buildChild(content)
         ctx.runtime._endFocusSection()
         return node
+    }
+}
+
+// MARK: - Parity Modifier Structs
+
+private struct _FixedSizeModifier: View, _PrimitiveView {
+    typealias Body = Never
+    let content: AnyView
+    let horizontal: Bool
+    let vertical: Bool
+
+    func _makeNode(_ ctx: inout _BuildContext) -> _VNode {
+        .fixedSize(horizontal: horizontal, vertical: vertical, child: ctx.buildChild(content))
+    }
+}
+
+private struct _LayoutPriorityModifier: View, _PrimitiveView {
+    typealias Body = Never
+    let content: AnyView
+    let priority: Double
+
+    func _makeNode(_ ctx: inout _BuildContext) -> _VNode {
+        .layoutPriority(priority, child: ctx.buildChild(content))
+    }
+}
+
+private struct _AspectRatioModifier: View, _PrimitiveView {
+    typealias Body = Never
+    let content: AnyView
+    let ratio: CGFloat?
+    let contentMode: _ContentMode
+
+    func _makeNode(_ ctx: inout _BuildContext) -> _VNode {
+        .aspectRatio(ratio, contentMode: contentMode, child: ctx.buildChild(content))
+    }
+}
+
+private struct _AlignmentGuideModifier: View, _PrimitiveView {
+    typealias Body = Never
+    let content: AnyView
+    let alignmentID: _AlignmentID
+    let computeValue: (ViewDimensions) -> CGFloat
+
+    func _makeNode(_ ctx: inout _BuildContext) -> _VNode {
+        let child = ctx.buildChild(content)
+        let rs = _UIRuntime._currentRenderSize ?? _Size(width: 0, height: 0)
+        let dims = ViewDimensions(width: CGFloat(rs.width), height: CGFloat(rs.height))
+        let customValue = computeValue(dims)
+        let defaultValue: CGFloat
+        switch alignmentID {
+        case .horizontal(let h): defaultValue = dims[h]
+        case .vertical(let v): defaultValue = dims[v]
+        }
+        let offset = Int(defaultValue - customValue)
+        return .alignmentGuide(alignment: alignmentID, offset: offset, child: child)
+    }
+}
+
+private struct _PreferenceModifier<K: PreferenceKey>: View, _PrimitiveView {
+    typealias Body = Never
+    let content: AnyView
+    let value: K.Value
+
+    func _makeNode(_ ctx: inout _BuildContext) -> _VNode {
+        let keyID = ObjectIdentifier(K.self)
+        let child = ctx.buildChild(content)
+        return .preferenceNode(kind: .set(
+            keyID: keyID,
+            value: value,
+            reduce: { existing, nextValue in
+                guard var typedExisting = existing as? K.Value else { return }
+                K.reduce(value: &typedExisting, nextValue: { nextValue() as! K.Value })
+                existing = typedExisting
+            }
+        ), child: child)
+    }
+}
+
+private struct _OnPreferenceChangeModifier<K: PreferenceKey>: View, _PrimitiveView where K.Value: Equatable {
+    typealias Body = Never
+    let content: AnyView
+    let action: (K.Value) -> Void
+
+    func _makeNode(_ ctx: inout _BuildContext) -> _VNode {
+        let keyID = ObjectIdentifier(K.self)
+        let child = ctx.buildChild(content)
+        ctx.runtime._registerPreferenceCallback(keyID: keyID) { value in
+            if let typed = value as? K.Value {
+                self.action(typed)
+            }
+        }
+        return .preferenceNode(kind: .onChange(keyID: keyID, callback: { value in
+            if let typed = value as? K.Value {
+                self.action(typed)
+            }
+        }), child: child)
+    }
+}
+
+private struct _SwipeActionsModifier: View, _PrimitiveView {
+    typealias Body = Never
+    let content: AnyView
+    let edge: HorizontalEdge
+    let actions: AnyView
+
+    func _makeNode(_ ctx: inout _BuildContext) -> _VNode {
+        let child = ctx.buildChild(content)
+        let actionNode = ctx.buildChild(actions)
+        return .swipeActions(edge: edge, revealed: false, actions: [actionNode], child: child)
+    }
+}
+
+/// No-op in terminal — rotation is not possible in a character grid.
+private struct _RotationEffectModifier: View, _PrimitiveView {
+    typealias Body = Never
+    let content: AnyView
+
+    func _makeNode(_ ctx: inout _BuildContext) -> _VNode {
+        .rotationEffect(child: ctx.buildChild(content))
     }
 }

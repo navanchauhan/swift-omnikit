@@ -2615,3 +2615,104 @@ public struct Slider<Label: View, ValueLabel: View>: View, _PrimitiveView {
         return _applyControlPadding(node, env: env)
     }
 }
+
+// MARK: - Parity Additions
+
+public struct ViewThatFits: View, _PrimitiveView {
+    public typealias Body = Never
+
+    let axes: Axis.Set
+    let children: [AnyView]
+
+    public init(in axes: Axis.Set = [.horizontal, .vertical], @ViewBuilder content: () -> some View) {
+        self.axes = axes
+        self.children = _extractChildren(content())
+    }
+
+    func _makeNode(_ ctx: inout _BuildContext) -> _VNode {
+        let nodes = children.map { ctx.buildChild($0) }
+        return .viewThatFits(axes: axes, children: nodes)
+    }
+}
+
+private func _extractChildren(_ view: some View) -> [AnyView] {
+    if let tuple = view as? TupleView2<AnyView, AnyView> {
+        return [tuple.c0, tuple.c1]
+    }
+    // For generic tuples, wrap as single-element list
+    return [AnyView(view)]
+}
+
+private struct TupleView2<C0: View, C1: View>: View {
+    let c0: C0
+    let c1: C1
+    var body: some View { c0 }
+}
+
+public struct TextEditor: View, _PrimitiveView {
+    public typealias Body = Never
+
+    let text: Binding<String>
+
+    public init(text: Binding<String>) {
+        self.text = text
+    }
+
+    func _makeNode(_ ctx: inout _BuildContext) -> _VNode {
+        let env = _currentEnvironmentValues(for: ctx)
+        let runtime = ctx.runtime
+        let path = ctx.path
+        let actionScopePath = _UIRuntime._currentPath ?? path
+
+        let controlPath = path + [ctx.nextChildIndex]
+        ctx.nextChildIndex += 1
+
+        let currentText = text.wrappedValue
+        let editor = runtime._getTextEditor(path: controlPath, initial: currentText)
+        let isFocused = runtime._isFocused(path: controlPath)
+
+        let id = runtime._registerAction({
+            runtime._setFocus(path: controlPath)
+        }, path: actionScopePath)
+        runtime._registerFocusable(path: controlPath, activate: id)
+
+        // Sync binding → runtime
+        if editor.text != currentText {
+            runtime._updateTextEditor(path: controlPath, text: currentText)
+        }
+
+        // Build multiline text as a stack of lines
+        let lines = currentText.isEmpty ? [""] : currentText.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
+        let visibleLines = lines.prefix(max(1, 4))
+        var children: [_VNode] = []
+        for line in visibleLines {
+            children.append(.text(line.isEmpty ? " " : line))
+        }
+        let content: _VNode = .stack(axis: .vertical, spacing: 0, children: children)
+
+        let style: _TextFieldStyleKind = env.textFieldStyleKind
+        return .textField(id: id, placeholder: "", text: currentText, cursor: editor.cursor, isFocused: isFocused, style: style)
+    }
+}
+
+public struct AttributedString {
+    var segments: [_StyledTextSegment]
+
+    public init(_ string: String) {
+        self.segments = [_StyledTextSegment(string)]
+    }
+
+    public init(_ string: String, foregroundColor: Color) {
+        self.segments = [_StyledTextSegment(string, fg: foregroundColor)]
+    }
+}
+
+extension Text {
+    public init(_ attributedString: AttributedString) {
+        let joined = attributedString.segments.map(\.content).joined()
+        self.content = joined
+        self._segments = attributedString.segments.map {
+            _TextSegment($0.content, bold: $0.bold, italic: $0.italic)
+        }
+    }
+}

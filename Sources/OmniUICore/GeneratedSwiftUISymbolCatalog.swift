@@ -2430,10 +2430,7 @@ public enum TextEditingCommands {
 }
 
 
-public enum TextEditor {
-    public enum Body {
-    }
-}
+// TextEditor is now a real view in Primitives.swift
 
 
 public enum TextEditorStyle {
@@ -2626,10 +2623,7 @@ public enum ViewAlignedScrollTargetBehavior {
 }
 
 
-public enum ViewThatFits {
-    public enum Body {
-    }
-}
+// ViewThatFits is now a real view in Primitives.swift
 
 
 public enum Widget {
