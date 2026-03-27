@@ -1565,11 +1565,16 @@ private func _renderSprixels(
         guard let visible = intersect(r, planeRect) else { continue }
         guard visible.size.width > 0, visible.size.height > 0 else { continue }
 
-        let subBegX = visible.origin.x - r.origin.x
-        let subBegY = visible.origin.y - r.origin.y
-        let subLenX = visible.size.width
-        let subLenY = visible.size.height
-        if subBegX < 0 || subBegY < 0 || subLenX <= 0 || subLenY <= 0 { continue }
+        let subBegXCells = visible.origin.x - r.origin.x
+        let subBegYCells = visible.origin.y - r.origin.y
+        let subLenXCells = visible.size.width
+        let subLenYCells = visible.size.height
+        if subBegXCells < 0 || subBegYCells < 0 || subLenXCells <= 0 || subLenYCells <= 0 { continue }
+        // Convert cell coordinates to pixel coordinates for ncvisual sub-region
+        let subBegX = subBegXCells * cellpix.cdimx
+        let subBegY = subBegYCells * cellpix.cdimy
+        let subLenX = subLenXCells * cellpix.cdimx
+        let subLenY = subLenYCells * cellpix.cdimy
 
         let pixelW = r.size.width * cellpix.cdimx
         let pixelH = r.size.height * cellpix.cdimy
