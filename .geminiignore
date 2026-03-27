@@ -1,0 +1,6 @@
+# Gemini CLI ignore file
+# Allow Tests/tui/output/ which is gitignored but needed for attractor validation
+# Only ignore truly large/binary directories
+.build/
+.ai/
+.claude/
