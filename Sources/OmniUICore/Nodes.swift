@@ -23,6 +23,10 @@ public struct _Rect: Hashable, Sendable {
         p.x < origin.x + size.width &&
         p.y < origin.y + size.height
     }
+
+    public var cgRect: CGRect {
+        CGRect(x: CGFloat(origin.x), y: CGFloat(origin.y), width: CGFloat(size.width), height: CGFloat(size.height))
+    }
 }
 
 struct _ActionID: Hashable {
@@ -87,7 +91,13 @@ indirect enum _VNode {
     case preferenceNode(kind: _PreferenceNodeKind, child: _VNode)
     case styledText([_StyledTextSegment])
     case swipeActions(edge: HorizontalEdge, revealed: Bool, actions: [_VNode], child: _VNode)
-    case rotationEffect(child: _VNode)
+    case rotationEffect(angle: Double, child: _VNode)
+    case truncatedText(String, mode: Text.TruncationMode)
+    case textCase(Text.Case, child: _VNode)
+    case blur(radius: CGFloat, child: _VNode)
+    case badge(text: String, child: _VNode)
+    case anchorPreference(keyID: ObjectIdentifier, transform: (_Rect) -> Any, reduce: (inout Any, () -> Any) -> Void, child: _VNode)
+    case geometryReaderProxy(buildSize: _Size, child: _VNode)
 }
 
 public let _unconstrainedSize = _Size(width: Int.max / 2, height: Int.max / 2)

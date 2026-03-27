@@ -37,9 +37,10 @@ public struct Text: View, _PrimitiveView {
 
     func _makeNode(_ ctx: inout _BuildContext) -> _VNode {
         let env = _currentEnvironmentValues(for: ctx)
+        let truncMode = env.truncationMode
         if let segments = _segments {
-            // Concatenated text: join segment strings, apply textCase, render as single line
-            let joined = segments.map { seg -> String in
+            // Concatenated text with per-segment styling (F14)
+            let transformed = segments.map { seg -> _StyledTextSegment in
                 var s = seg.content
                 if let tc = env.textCase {
                     switch tc {
@@ -47,9 +48,13 @@ public struct Text: View, _PrimitiveView {
                     case .lowercase: s = s.lowercased()
                     }
                 }
-                return s
-            }.joined()
-            return _applyTextEnvironment(content: joined, env: env)
+                return _StyledTextSegment(s, fg: seg.fg, bold: seg.isBold, italic: seg.isItalic)
+            }
+            let node: _VNode = .styledText(transformed)
+            if truncMode != .tail {
+                return .truncatedText(transformed.map(\.content).joined(), mode: truncMode)
+            }
+            return node
         }
         var transformedContent = content
         if let tc = env.textCase {
@@ -58,18 +63,24 @@ public struct Text: View, _PrimitiveView {
             case .lowercase: transformedContent = content.lowercased()
             }
         }
-        return _applyTextEnvironment(content: transformedContent, env: env)
+        let node = _applyTextEnvironment(content: transformedContent, env: env)
+        if truncMode != .tail {
+            return .truncatedText(transformedContent, mode: truncMode)
+        }
+        return node
     }
 }
 
-// Text segment for Text + Text concatenation (v0: HStack(spacing:0) approximation)
+// Text segment for Text + Text concatenation
 public struct _TextSegment {
     let content: String
+    let fg: Color?
     let isBold: Bool
     let isItalic: Bool
 
-    init(_ content: String, bold: Bool = false, italic: Bool = false) {
+    init(_ content: String, fg: Color? = nil, bold: Bool = false, italic: Bool = false) {
         self.content = content
+        self.fg = fg
         self.isBold = bold
         self.isItalic = italic
     }
@@ -181,6 +192,18 @@ public struct ScrollViewReader<Content: View>: View, _PrimitiveView {
 
 public struct GeometryProxy: Sendable {
     public let size: CGSize
+}
+
+public struct Anchor<Value> {
+    public let value: Value
+}
+
+public enum _AnchorSource {
+    case bounds
+}
+
+extension Anchor where Value == CGRect {
+    public static var bounds: _AnchorSource { .bounds }
 }
 
 public struct GeometryReader<Content: View>: View, _PrimitiveView {
@@ -2712,7 +2735,7 @@ extension Text {
         let joined = attributedString.segments.map(\.content).joined()
         self.content = joined
         self._segments = attributedString.segments.map {
-            _TextSegment($0.content, bold: $0.bold, italic: $0.italic)
+            _TextSegment($0.content, fg: $0.fg, bold: $0.bold, italic: $0.italic)
         }
     }
 }

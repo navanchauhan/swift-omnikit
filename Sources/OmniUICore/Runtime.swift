@@ -49,6 +49,7 @@ public final class _UIRuntime: @unchecked Sendable {
     private var textEditors: [[Int]: _TextEditor] = [:]
     private var textEditorCursors: [[Int]: Int] = [:]
     private var focusOrder: [[Int]] = []
+    private var focusPriorities: [[Int]: Int] = [:]
     private var focusActivation: [[Int]: _ActionID] = [:]
     private var focusBoolBindings: [[Int]: (Bool) -> Void] = [:]
     private var submitHandlers: [[Int]: (path: [Int], env: EnvironmentValues, action: () -> Void)] = [:]
@@ -491,6 +492,7 @@ public final class _UIRuntime: @unchecked Sendable {
         actions.removeAll(keepingCapacity: true)
         textEditors.removeAll(keepingCapacity: true)
         focusOrder.removeAll(keepingCapacity: true)
+        focusPriorities.removeAll(keepingCapacity: true)
         focusActivation.removeAll(keepingCapacity: true)
         focusBoolBindings.removeAll(keepingCapacity: true)
         submitHandlers.removeAll(keepingCapacity: true)
@@ -544,6 +546,17 @@ public final class _UIRuntime: @unchecked Sendable {
     }
 
     private func _finalizePostBuildState() {
+        // Sort focus order by priority (stable, with registration-order tiebreaker)
+        if !focusPriorities.isEmpty {
+            let indexed = focusOrder.enumerated().map { ($0.offset, $0.element) }
+            let sorted = indexed.sorted { a, b in
+                let pa = focusPriorities[a.1] ?? 0
+                let pb = focusPriorities[b.1] ?? 0
+                return pa != pb ? pa > pb : a.0 < b.0
+            }
+            focusOrder = sorted.map(\.1)
+        }
+
         // If a picker/menu was expanded in a view that no longer exists, clear the stale state.
         if let expanded = expandedPickerPath {
             let stillExists = focusOrder.contains(where: { _isPrefix(expanded, of: $0) })
@@ -818,6 +831,11 @@ public final class _UIRuntime: @unchecked Sendable {
         _noteBuildSideEffect()
         focusOrder.append(path)
         focusActivation[path] = activate
+        let env = _UIRuntime._currentEnvironment ?? _baseEnvironment
+        let priority = env._focusPriority
+        if priority != 0 {
+            focusPriorities[path] = priority
+        }
         if let captureID = _UIRuntime._currentFocusCaptureID, focusCaptureResults[captureID] == nil {
             focusCaptureResults[captureID] = path
         }
@@ -1212,6 +1230,7 @@ public final class _UIRuntime: @unchecked Sendable {
             renderShapeGlyphs: renderShapeGlyphs
         )
         runtime._updateScrollTargets(laidOut.scrollTargets)
+        runtime._firePreferenceCallbacks()
         runtime._finishFrameBuild(size: size)
         let focusedRect: _Rect? = {
             guard let raw = focusedActionRawID() else { return nil }
@@ -1332,6 +1351,7 @@ extension _UIRuntime {
 
         let laidOut = _RenderLayout.layout(node: node, size: size)
         runtime._updateScrollTargets(laidOut.scrollTargets)
+        runtime._firePreferenceCallbacks()
         runtime._finishFrameBuild(size: size)
         let focusedRect: _Rect? = {
             guard let raw = focusedActionRawID() else { return nil }

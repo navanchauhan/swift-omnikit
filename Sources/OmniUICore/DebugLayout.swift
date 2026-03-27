@@ -131,12 +131,17 @@ enum _DebugLayout {
             return hasContentShapeRect(child)
         case .preferenceNode(_, let child):
             return hasContentShapeRect(child)
-        case .rotationEffect(let child):
+        case .rotationEffect(_, let child):
             return hasContentShapeRect(child)
         case .aspectRatio(_, _, let child):
             return hasContentShapeRect(child)
         case .swipeActions(_, _, _, let child):
             return hasContentShapeRect(child)
+        case .textCase(_, let child): return hasContentShapeRect(child)
+        case .blur(_, let child): return hasContentShapeRect(child)
+        case .badge(_, let child): return hasContentShapeRect(child)
+        case .anchorPreference(_, _, _, let child): return hasContentShapeRect(child)
+        case .geometryReaderProxy(_, let child): return hasContentShapeRect(child)
         case .group(let nodes):
             return nodes.contains(where: hasContentShapeRect)
         case .stack(_, _, let children):
@@ -854,8 +859,19 @@ enum _DebugLayout {
                     return measure(child, maxSize)
                 case .swipeActions(_, _, _, let child):
                     return measure(child, maxSize)
-                case .rotationEffect(let child):
+                case .rotationEffect(_, let child):
                     return measure(child, maxSize)
+                case .truncatedText(let text, _):
+                    let total = text.count
+                    return _Size(width: min(total, maxSize.width), height: 1)
+                case .textCase(_, let child): return measure(child, maxSize)
+                case .blur(_, let child): return measure(child, maxSize)
+                case .badge(let badgeText, let child):
+                    let childSize = measure(child, maxSize)
+                    return _Size(width: max(childSize.width + badgeText.count + 1, maxSize.width), height: max(1, childSize.height))
+                case .anchorPreference(_, _, _, let child): return measure(child, maxSize)
+                case .geometryReaderProxy(let buildSize, _):
+                    return _Size(width: min(buildSize.width, maxSize.width), height: min(buildSize.height, maxSize.height))
                 }
             }
 
@@ -906,12 +922,17 @@ enum _DebugLayout {
                     return isFlexibleCandidate(child)
                 case .preferenceNode(_, let child):
                     return isFlexibleCandidate(child)
-                case .rotationEffect(let child):
+                case .rotationEffect(_, let child):
                     return isFlexibleCandidate(child)
                 case .aspectRatio(_, _, let child):
                     return isFlexibleCandidate(child)
                 case .swipeActions(_, _, _, let child):
                     return isFlexibleCandidate(child)
+                case .textCase(_, let child): return isFlexibleCandidate(child)
+                case .blur(_, let child): return isFlexibleCandidate(child)
+                case .badge(_, let child): return isFlexibleCandidate(child)
+                case .anchorPreference(_, _, _, let child): return isFlexibleCandidate(child)
+                case .geometryReaderProxy(_, let child): return isFlexibleCandidate(child)
                 case .group(let nodes):
                     return nodes.contains(where: isFlexibleCandidate)
                 case .zstack(let nodes):
@@ -1345,7 +1366,13 @@ enum _DebugLayout {
                     case .alignmentGuide(_, _, let child): return m(child, maxSize)
                     case .preferenceNode(_, let child): return m(child, maxSize)
                     case .swipeActions(_, _, _, let child): return m(child, maxSize)
-                    case .rotationEffect(let child): return m(child, maxSize)
+                    case .rotationEffect(_, let child): return m(child, maxSize)
+                    case .truncatedText(let text, _): return _Size(width: text.count, height: 1)
+                    case .textCase(_, let child): return m(child, maxSize)
+                    case .blur(_, let child): return m(child, maxSize)
+                    case .badge(_, let child): return m(child, maxSize)
+                    case .anchorPreference(_, _, _, let child): return m(child, maxSize)
+                    case .geometryReaderProxy(let bs, _): return _Size(width: min(bs.width, maxSize.width), height: min(bs.height, maxSize.height))
                     }
                 }
                 return m(content, measureMax)
@@ -1614,7 +1641,87 @@ enum _DebugLayout {
             }
             return draw(node: child, origin: origin, maxSize: maxSize, canvas: &canvas, hitRegions: &hitRegions, hoverRegions: &hoverRegions, scrollRegions: &scrollRegions, shapeRegions: &shapeRegions, renderShapeGlyphs: renderShapeGlyphs, overlays: &overlays, style: style)
 
-        case .rotationEffect(let child):
+        case .rotationEffect(_, let child):
+            return draw(node: child, origin: origin, maxSize: maxSize, canvas: &canvas, hitRegions: &hitRegions, hoverRegions: &hoverRegions, scrollRegions: &scrollRegions, shapeRegions: &shapeRegions, renderShapeGlyphs: renderShapeGlyphs, overlays: &overlays, style: style)
+
+        case .truncatedText(let text, let mode):
+            let available = maxSize.width
+            if text.count <= available {
+                for (i, ch) in text.enumerated() {
+                    let pt = _Point(x: origin.x + i, y: origin.y)
+                    if pt.x < origin.x + maxSize.width {
+                        put(String(ch), at: pt, canvas: &canvas, style: style)
+                    }
+                }
+                return _Size(width: text.count, height: 1)
+            }
+            let ellipsis: Character = "\u{2026}"
+            let truncated: String
+            switch mode {
+            case .head:
+                truncated = String(ellipsis) + String(text.suffix(available - 1))
+            case .middle:
+                let half = (available - 1) / 2
+                let remainder = available - 1 - half
+                truncated = String(text.prefix(half)) + String(ellipsis) + String(text.suffix(remainder))
+            case .tail:
+                truncated = String(text.prefix(available - 1)) + String(ellipsis)
+            }
+            for (i, ch) in truncated.enumerated() {
+                let pt = _Point(x: origin.x + i, y: origin.y)
+                if pt.x < origin.x + maxSize.width {
+                    put(String(ch), at: pt, canvas: &canvas, style: style)
+                }
+            }
+            return _Size(width: min(truncated.count, available), height: 1)
+
+        case .textCase(let tc, let child):
+            // Save canvas state, draw child, then transform text in-place
+            let childSize = draw(node: child, origin: origin, maxSize: maxSize, canvas: &canvas, hitRegions: &hitRegions, hoverRegions: &hoverRegions, scrollRegions: &scrollRegions, shapeRegions: &shapeRegions, renderShapeGlyphs: renderShapeGlyphs, overlays: &overlays, style: style)
+            // Transform drawn characters in the affected region
+            for y in origin.y ..< (origin.y + childSize.height) {
+                guard y < canvas.count else { break }
+                for x in origin.x ..< (origin.x + childSize.width) {
+                    guard x < canvas[y].count else { break }
+                    let ch = canvas[y][x].ch
+                    canvas[y][x].ch = tc == .uppercase ? ch.uppercased() : ch.lowercased()
+                }
+            }
+            return childSize
+
+        case .blur(let radius, let child):
+            let childSize = draw(node: child, origin: origin, maxSize: maxSize, canvas: &canvas, hitRegions: &hitRegions, hoverRegions: &hoverRegions, scrollRegions: &scrollRegions, shapeRegions: &shapeRegions, renderShapeGlyphs: renderShapeGlyphs, overlays: &overlays, style: style)
+            if radius > 2 {
+                let shade = "\u{2591}"
+                for y in origin.y ..< (origin.y + childSize.height) {
+                    guard y < canvas.count else { break }
+                    for x in origin.x ..< (origin.x + childSize.width) {
+                        guard x < canvas[y].count else { break }
+                        if canvas[y][x].ch != " " {
+                            canvas[y][x].ch = shade
+                        }
+                    }
+                }
+            }
+            return childSize
+
+        case .badge(let badgeText, let child):
+            let childSize = draw(node: child, origin: origin, maxSize: maxSize, canvas: &canvas, hitRegions: &hitRegions, hoverRegions: &hoverRegions, scrollRegions: &scrollRegions, shapeRegions: &shapeRegions, renderShapeGlyphs: renderShapeGlyphs, overlays: &overlays, style: style)
+            let badgeStr = " \(badgeText)"
+            let badgeX = origin.x + maxSize.width - badgeStr.count
+            if badgeX > origin.x + childSize.width {
+                let badgeStyle = (fg: Color.red as Color?, bg: style.bg)
+                for (i, ch) in badgeStr.enumerated() {
+                    let pt = _Point(x: badgeX + i, y: origin.y)
+                    put(String(ch), at: pt, canvas: &canvas, style: badgeStyle)
+                }
+            }
+            return _Size(width: maxSize.width, height: max(1, childSize.height))
+
+        case .anchorPreference(_, _, _, let child):
+            return draw(node: child, origin: origin, maxSize: maxSize, canvas: &canvas, hitRegions: &hitRegions, hoverRegions: &hoverRegions, scrollRegions: &scrollRegions, shapeRegions: &shapeRegions, renderShapeGlyphs: renderShapeGlyphs, overlays: &overlays, style: style)
+
+        case .geometryReaderProxy(_, let child):
             return draw(node: child, origin: origin, maxSize: maxSize, canvas: &canvas, hitRegions: &hitRegions, hoverRegions: &hoverRegions, scrollRegions: &scrollRegions, shapeRegions: &shapeRegions, renderShapeGlyphs: renderShapeGlyphs, overlays: &overlays, style: style)
 
         }

@@ -573,13 +573,16 @@ public extension View {
         _OnPreferenceChangeModifier<K>(content: AnyView(self), action: action)
     }
 
+    func anchorPreference<K: PreferenceKey>(key: K.Type, value: _AnchorSource, transform: @escaping (Anchor<CGRect>) -> K.Value) -> some View {
+        _AnchorPreferenceModifier<K>(content: AnyView(self), transform: transform)
+    }
+
     func swipeActions<T: View>(edge: HorizontalEdge = .trailing, allowsFullSwipe: Bool = true, @ViewBuilder content: () -> T) -> some View {
         _SwipeActionsModifier(content: AnyView(self), edge: edge, actions: AnyView(content()))
     }
 
-    /// No-op in terminal — rotation is not possible in a character grid.
     func rotationEffect(_ angle: Angle, anchor: UnitPoint = .center) -> some View {
-        _RotationEffectModifier(content: AnyView(self))
+        _RotationEffectModifier(content: AnyView(self), angle: angle)
     }
 
     func onAppear(perform action: @escaping () -> Void) -> some View {
@@ -625,16 +628,18 @@ public extension View {
         _PreviewDisplayNameModifier(content: AnyView(self), name: name)
     }
 
-    // MARK: - .blur() (TUI approximation → reduced opacity)
+    // MARK: - .blur() (TUI approximation: heavy blur → shade chars, light blur → dim opacity)
     func blur(radius: CGFloat, opaque: Bool = false) -> some View {
         _ = opaque
-        let mappedOpacity = max(0.3, 1.0 - radius * 0.1)
-        return _OpacityModifier(content: AnyView(self), opacity: mappedOpacity)
+        return _BlurModifier(content: AnyView(self), radius: radius)
     }
 
     // MARK: - .textCase()
     func textCase(_ textCase: Text.Case?) -> some View {
-        environment(\.textCase, textCase)
+        if let tc = textCase {
+            return AnyView(_TextCaseModifier(content: AnyView(self), textCase: tc))
+        }
+        return AnyView(environment(\.textCase, textCase))
     }
 
     // MARK: - .truncationMode()
@@ -702,7 +707,8 @@ private struct _Sheet: View, _PrimitiveView {
     func _makeNode(_ ctx: inout _BuildContext) -> _VNode {
         let env = _UIRuntime._currentEnvironment ?? ctx.runtime._baseEnvironment
         if isPresented.wrappedValue {
-            let dismiss = {
+            let dismissDisabled = env.interactiveDismissDisabled
+            let dismiss: () -> Void = dismissDisabled ? {} : {
                 if isPresented.wrappedValue {
                     isPresented.wrappedValue = false
                     onDismiss?()
@@ -712,7 +718,7 @@ private struct _Sheet: View, _PrimitiveView {
                 ZStack {
                     // Dim background.
                     Color.gray.opacity(0.35)
-                    _presentationChrome(title: "Sheet", dismiss: dismiss, env: _UIRuntime._currentEnvironment ?? ctx.runtime._baseEnvironment) {
+                    _presentationChrome(title: "Sheet", dismiss: dismiss, env: env) {
                         sheet
                     }
                 }
@@ -1237,6 +1243,14 @@ private struct _Frame: View, _PrimitiveView {
             if v.isInfinite { return Int.max }
             return max(0, Int(v.rounded()))
         }
+        // Update _currentRenderSize for children (F20: GeometryReader container size)
+        let currentRS = _UIRuntime._currentRenderSize ?? _Size(width: 0, height: 0)
+        let resolvedW = toInt(width) ?? toInt(maxWidth) ?? currentRS.width
+        let resolvedH = toInt(height) ?? toInt(maxHeight) ?? currentRS.height
+        let childRenderSize = _Size(width: resolvedW, height: resolvedH)
+        let child = _UIRuntime.$_currentRenderSize.withValue(childRenderSize) {
+            ctx.buildChild(content)
+        }
         return .frame(
             width: toInt(width),
             height: toInt(height),
@@ -1244,7 +1258,7 @@ private struct _Frame: View, _PrimitiveView {
             maxWidth: toInt(maxWidth),
             minHeight: toInt(minHeight),
             maxHeight: toInt(maxHeight),
-            child: ctx.buildChild(content)
+            child: child
         )
     }
 }
@@ -2080,8 +2094,7 @@ private struct _BadgeModifier: View, _PrimitiveView {
     func _makeNode(_ ctx: inout _BuildContext) -> _VNode {
         let childNode = ctx.buildChild(content)
         guard let badge = badge, !badge.isEmpty else { return childNode }
-        let badgeNode: _VNode = .style(fg: .red, bg: nil, child: .text(" \(badge)"))
-        return .overlay(child: childNode, overlay: badgeNode)
+        return .badge(text: badge, child: childNode)
     }
 }
 
@@ -2224,12 +2237,61 @@ private struct _SwipeActionsModifier: View, _PrimitiveView {
     }
 }
 
-/// No-op in terminal — rotation is not possible in a character grid.
+private struct _AnchorPreferenceModifier<K: PreferenceKey>: View, _PrimitiveView {
+    typealias Body = Never
+    let content: AnyView
+    let transform: (Anchor<CGRect>) -> K.Value
+
+    func _makeNode(_ ctx: inout _BuildContext) -> _VNode {
+        let keyID = ObjectIdentifier(K.self)
+        let child = ctx.buildChild(content)
+        return .anchorPreference(
+            keyID: keyID,
+            transform: { rect in
+                let anchor = Anchor<CGRect>(value: rect.cgRect)
+                return self.transform(anchor)
+            },
+            reduce: { existing, nextValue in
+                guard var typedExisting = existing as? K.Value else { return }
+                K.reduce(value: &typedExisting, nextValue: { nextValue() as! K.Value })
+                existing = typedExisting
+            },
+            child: child
+        )
+    }
+}
+
+private struct _BlurModifier: View, _PrimitiveView {
+    typealias Body = Never
+    let content: AnyView
+    let radius: CGFloat
+
+    func _makeNode(_ ctx: inout _BuildContext) -> _VNode {
+        .blur(radius: radius, child: ctx.buildChild(content))
+    }
+}
+
+private struct _TextCaseModifier: View, _PrimitiveView {
+    typealias Body = Never
+    let content: AnyView
+    let textCase: Text.Case
+
+    func _makeNode(_ ctx: inout _BuildContext) -> _VNode {
+        let child = _UIRuntime.$_currentEnvironment.withValue(
+            { var e = _UIRuntime._currentEnvironment ?? ctx.runtime._baseEnvironment; e.textCase = textCase; return e }()
+        ) {
+            ctx.buildChild(content)
+        }
+        return .textCase(textCase, child: child)
+    }
+}
+
 private struct _RotationEffectModifier: View, _PrimitiveView {
     typealias Body = Never
     let content: AnyView
+    let angle: Angle
 
     func _makeNode(_ ctx: inout _BuildContext) -> _VNode {
-        .rotationEffect(child: ctx.buildChild(content))
+        .rotationEffect(angle: angle.degrees, child: ctx.buildChild(content))
     }
 }

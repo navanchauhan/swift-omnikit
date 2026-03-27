@@ -555,11 +555,21 @@ enum _RenderLayout {
                     return isFlexibleCandidate(child)
                 case .preferenceNode(_, let child):
                     return isFlexibleCandidate(child)
-                case .rotationEffect(let child):
+                case .rotationEffect(_, let child):
                     return isFlexibleCandidate(child)
                 case .aspectRatio(_, _, let child):
                     return isFlexibleCandidate(child)
                 case .swipeActions(_, _, _, let child):
+                    return isFlexibleCandidate(child)
+                case .textCase(_, let child):
+                    return isFlexibleCandidate(child)
+                case .blur(_, let child):
+                    return isFlexibleCandidate(child)
+                case .badge(_, let child):
+                    return isFlexibleCandidate(child)
+                case .anchorPreference(_, _, _, let child):
+                    return isFlexibleCandidate(child)
+                case .geometryReaderProxy(_, let child):
                     return isFlexibleCandidate(child)
                 case .group(let nodes):
                     return nodes.contains(where: isFlexibleCandidate)
@@ -595,9 +605,14 @@ enum _RenderLayout {
                 case .gestureTarget(_, let child): return extractPriority(child)
                 case .alignmentGuide(_, _, let child): return extractPriority(child)
                 case .preferenceNode(_, let child): return extractPriority(child)
-                case .rotationEffect(let child): return extractPriority(child)
+                case .rotationEffect(_, let child): return extractPriority(child)
                 case .aspectRatio(_, _, let child): return extractPriority(child)
                 case .swipeActions(_, _, _, let child): return extractPriority(child)
+                case .textCase(_, let child): return extractPriority(child)
+                case .blur(_, let child): return extractPriority(child)
+                case .badge(_, let child): return extractPriority(child)
+                case .anchorPreference(_, _, _, let child): return extractPriority(child)
+                case .geometryReaderProxy(_, let child): return extractPriority(child)
                 default: return 0.0
                 }
             }
@@ -1168,8 +1183,163 @@ enum _RenderLayout {
             }
             return draw(node: child, origin: origin, maxSize: maxSize, ctx: &ctx, ops: &ops, hitRegions: &hitRegions, hoverRegions: &hoverRegions, scrollRegions: &scrollRegions, scrollTargets: &scrollTargets, shapeRegions: &shapeRegions, cursorPosition: &cursorPosition, activeMenu: &activeMenu, activePicker: &activePicker, activeTextField: &activeTextField, scrollContext: scrollContext)
 
-        case .rotationEffect(let child):
-            // No-op in terminal — rotation is not possible in a character grid.
+        case .rotationEffect(let angle, let child):
+            // Cardinal angles: 0/360 passthrough, 90/270 transpose, 180 reverse. Non-cardinal: passthrough.
+            let normalizedAngle = ((Int(angle.rounded()) % 360) + 360) % 360
+            if normalizedAngle == 0 || normalizedAngle == 360 {
+                return draw(node: child, origin: origin, maxSize: maxSize, ctx: &ctx, ops: &ops, hitRegions: &hitRegions, hoverRegions: &hoverRegions, scrollRegions: &scrollRegions, scrollTargets: &scrollTargets, shapeRegions: &shapeRegions, cursorPosition: &cursorPosition, activeMenu: &activeMenu, activePicker: &activePicker, activeTextField: &activeTextField, scrollContext: scrollContext)
+            } else if normalizedAngle == 180 {
+                var childOps: [RenderOp] = []
+                let childSize = draw(node: child, origin: origin, maxSize: maxSize, ctx: &ctx, ops: &childOps, hitRegions: &hitRegions, hoverRegions: &hoverRegions, scrollRegions: &scrollRegions, scrollTargets: &scrollTargets, shapeRegions: &shapeRegions, cursorPosition: &cursorPosition, activeMenu: &activeMenu, activePicker: &activePicker, activeTextField: &activeTextField, scrollContext: scrollContext)
+                for op in childOps {
+                    switch op.kind {
+                    case .glyph(let x, let y, let egc, let fg, let bg):
+                        let nx = origin.x + (origin.x + childSize.width - 1 - (x - origin.x))
+                        let ny = origin.y + (origin.y + childSize.height - 1 - (y - origin.y))
+                        ops.append(RenderOp(zIndex: op.zIndex, kind: .glyph(x: nx, y: ny, egc: egc, fg: fg, bg: bg), textStyle: op.textStyle))
+                    case .textRun(let x, let y, let text, let fg, let bg):
+                        let reversed = String(text.reversed())
+                        let nx = origin.x + (origin.x + childSize.width - text.count - (x - origin.x))
+                        let ny = origin.y + (origin.y + childSize.height - 1 - (y - origin.y))
+                        ops.append(RenderOp(zIndex: op.zIndex, kind: .textRun(x: nx, y: ny, text: reversed, fg: fg, bg: bg), textStyle: op.textStyle))
+                    default:
+                        ops.append(op)
+                    }
+                }
+                return childSize
+            } else if normalizedAngle == 90 || normalizedAngle == 270 {
+                let transposedMax = _Size(width: maxSize.height, height: maxSize.width)
+                var childOps: [RenderOp] = []
+                let childSize = draw(node: child, origin: _Point(x: 0, y: 0), maxSize: transposedMax, ctx: &ctx, ops: &childOps, hitRegions: &hitRegions, hoverRegions: &hoverRegions, scrollRegions: &scrollRegions, scrollTargets: &scrollTargets, shapeRegions: &shapeRegions, cursorPosition: &cursorPosition, activeMenu: &activeMenu, activePicker: &activePicker, activeTextField: &activeTextField, scrollContext: scrollContext)
+                for op in childOps {
+                    switch op.kind {
+                    case .glyph(let x, let y, let egc, let fg, let bg):
+                        let nx: Int
+                        let ny: Int
+                        if normalizedAngle == 90 {
+                            nx = origin.x + (childSize.height - 1 - y)
+                            ny = origin.y + x
+                        } else {
+                            nx = origin.x + y
+                            ny = origin.y + (childSize.width - 1 - x)
+                        }
+                        if nx >= origin.x && nx < origin.x + maxSize.width && ny >= origin.y && ny < origin.y + maxSize.height {
+                            ops.append(RenderOp(zIndex: op.zIndex, kind: .glyph(x: nx, y: ny, egc: egc, fg: fg, bg: bg), textStyle: op.textStyle))
+                        }
+                    case .textRun(let x, let y, let text, let fg, let bg):
+                        for (i, ch) in text.enumerated() {
+                            let cx = x + i
+                            let nx: Int
+                            let ny: Int
+                            if normalizedAngle == 90 {
+                                nx = origin.x + (childSize.height - 1 - y)
+                                ny = origin.y + cx
+                            } else {
+                                nx = origin.x + y
+                                ny = origin.y + (childSize.width - 1 - cx)
+                            }
+                            if nx >= origin.x && nx < origin.x + maxSize.width && ny >= origin.y && ny < origin.y + maxSize.height {
+                                ops.append(RenderOp(zIndex: op.zIndex, kind: .glyph(x: nx, y: ny, egc: String(ch), fg: fg, bg: bg), textStyle: op.textStyle))
+                            }
+                        }
+                    default:
+                        ops.append(op)
+                    }
+                }
+                return _Size(width: min(childSize.height, maxSize.width), height: min(childSize.width, maxSize.height))
+            } else {
+                // Non-cardinal angle: passthrough (no visual transformation)
+                return draw(node: child, origin: origin, maxSize: maxSize, ctx: &ctx, ops: &ops, hitRegions: &hitRegions, hoverRegions: &hoverRegions, scrollRegions: &scrollRegions, scrollTargets: &scrollTargets, shapeRegions: &shapeRegions, cursorPosition: &cursorPosition, activeMenu: &activeMenu, activePicker: &activePicker, activeTextField: &activeTextField, scrollContext: scrollContext)
+            }
+
+        case .truncatedText(let text, let mode):
+            let available = maxSize.width
+            if text.count <= available {
+                emitText(text, at: origin)
+                return _Size(width: text.count, height: 1)
+            }
+            let ellipsis: Character = "\u{2026}"
+            let truncated: String
+            switch mode {
+            case .head:
+                truncated = String(ellipsis) + String(text.suffix(available - 1))
+            case .middle:
+                let half = (available - 1) / 2
+                let remainder = available - 1 - half
+                truncated = String(text.prefix(half)) + String(ellipsis) + String(text.suffix(remainder))
+            case .tail:
+                truncated = String(text.prefix(available - 1)) + String(ellipsis)
+            }
+            emitText(truncated, at: origin)
+            return _Size(width: min(truncated.count, available), height: 1)
+
+        case .textCase(let tc, let child):
+            var childOps: [RenderOp] = []
+            let childSize = draw(node: child, origin: origin, maxSize: maxSize, ctx: &ctx, ops: &childOps, hitRegions: &hitRegions, hoverRegions: &hoverRegions, scrollRegions: &scrollRegions, scrollTargets: &scrollTargets, shapeRegions: &shapeRegions, cursorPosition: &cursorPosition, activeMenu: &activeMenu, activePicker: &activePicker, activeTextField: &activeTextField, scrollContext: scrollContext)
+            for op in childOps {
+                switch op.kind {
+                case .glyph(let x, let y, let egc, let fg, let bg):
+                    let transformed = tc == .uppercase ? egc.uppercased() : egc.lowercased()
+                    ops.append(RenderOp(zIndex: op.zIndex, kind: .glyph(x: x, y: y, egc: transformed, fg: fg, bg: bg), textStyle: op.textStyle))
+                case .textRun(let x, let y, let text, let fg, let bg):
+                    let transformed = tc == .uppercase ? text.uppercased() : text.lowercased()
+                    ops.append(RenderOp(zIndex: op.zIndex, kind: .textRun(x: x, y: y, text: transformed, fg: fg, bg: bg), textStyle: op.textStyle))
+                default:
+                    ops.append(op)
+                }
+            }
+            return childSize
+
+        case .blur(let radius, let child):
+            if radius > 2 {
+                var childOps: [RenderOp] = []
+                let childSize = draw(node: child, origin: origin, maxSize: maxSize, ctx: &ctx, ops: &childOps, hitRegions: &hitRegions, hoverRegions: &hoverRegions, scrollRegions: &scrollRegions, scrollTargets: &scrollTargets, shapeRegions: &shapeRegions, cursorPosition: &cursorPosition, activeMenu: &activeMenu, activePicker: &activePicker, activeTextField: &activeTextField, scrollContext: scrollContext)
+                let shade = "\u{2591}"
+                for op in childOps {
+                    switch op.kind {
+                    case .glyph(let x, let y, _, let fg, let bg):
+                        ops.append(RenderOp(zIndex: op.zIndex, kind: .glyph(x: x, y: y, egc: shade, fg: fg, bg: bg), textStyle: op.textStyle))
+                    case .textRun(let x, let y, let text, let fg, let bg):
+                        let replaced = String(repeating: shade, count: text.count)
+                        ops.append(RenderOp(zIndex: op.zIndex, kind: .textRun(x: x, y: y, text: replaced, fg: fg, bg: bg), textStyle: op.textStyle))
+                    default:
+                        ops.append(op)
+                    }
+                }
+                return childSize
+            } else {
+                let mappedOpacity = max(0.3, 1.0 - Double(radius) * 0.2)
+                let savedOpacity = ctx.style.opacity
+                ctx.style.opacity = savedOpacity * mappedOpacity
+                let childSize = draw(node: child, origin: origin, maxSize: maxSize, ctx: &ctx, ops: &ops, hitRegions: &hitRegions, hoverRegions: &hoverRegions, scrollRegions: &scrollRegions, scrollTargets: &scrollTargets, shapeRegions: &shapeRegions, cursorPosition: &cursorPosition, activeMenu: &activeMenu, activePicker: &activePicker, activeTextField: &activeTextField, scrollContext: scrollContext)
+                ctx.style.opacity = savedOpacity
+                return childSize
+            }
+
+        case .badge(let badgeText, let child):
+            let childSize = draw(node: child, origin: origin, maxSize: maxSize, ctx: &ctx, ops: &ops, hitRegions: &hitRegions, hoverRegions: &hoverRegions, scrollRegions: &scrollRegions, scrollTargets: &scrollTargets, shapeRegions: &shapeRegions, cursorPosition: &cursorPosition, activeMenu: &activeMenu, activePicker: &activePicker, activeTextField: &activeTextField, scrollContext: scrollContext)
+            let badgeStr = " \(badgeText)"
+            let badgeX = origin.x + maxSize.width - badgeStr.count
+            if badgeX > origin.x + childSize.width {
+                let prevFg = ctx.style.fg
+                ctx.style.fg = .red
+                for (i, ch) in badgeStr.enumerated() {
+                    emitGlyph(String(ch), at: _Point(x: badgeX + i, y: origin.y))
+                }
+                ctx.style.fg = prevFg
+            }
+            return _Size(width: maxSize.width, height: max(1, childSize.height))
+
+        case .anchorPreference(let keyID, let transform, let reduce, let child):
+            let childSize = draw(node: child, origin: origin, maxSize: maxSize, ctx: &ctx, ops: &ops, hitRegions: &hitRegions, hoverRegions: &hoverRegions, scrollRegions: &scrollRegions, scrollTargets: &scrollTargets, shapeRegions: &shapeRegions, cursorPosition: &cursorPosition, activeMenu: &activeMenu, activePicker: &activePicker, activeTextField: &activeTextField, scrollContext: scrollContext)
+            let rect = _Rect(origin: origin, size: childSize)
+            let value = transform(rect)
+            if let runtime = _UIRuntime._current {
+                runtime._setPreferenceRaw(keyID: keyID, value: value, reduce: reduce)
+            }
+            return childSize
+
+        case .geometryReaderProxy(_, let child):
             return draw(node: child, origin: origin, maxSize: maxSize, ctx: &ctx, ops: &ops, hitRegions: &hitRegions, hoverRegions: &hoverRegions, scrollRegions: &scrollRegions, scrollTargets: &scrollTargets, shapeRegions: &shapeRegions, cursorPosition: &cursorPosition, activeMenu: &activeMenu, activePicker: &activePicker, activeTextField: &activeTextField, scrollContext: scrollContext)
         }
     }
@@ -1216,11 +1386,21 @@ enum _RenderLayout {
             return hasContentShapeRect(child)
         case .preferenceNode(_, let child):
             return hasContentShapeRect(child)
-        case .rotationEffect(let child):
+        case .rotationEffect(_, let child):
             return hasContentShapeRect(child)
         case .aspectRatio(_, _, let child):
             return hasContentShapeRect(child)
         case .swipeActions(_, _, _, let child):
+            return hasContentShapeRect(child)
+        case .textCase(_, let child):
+            return hasContentShapeRect(child)
+        case .blur(_, let child):
+            return hasContentShapeRect(child)
+        case .badge(_, let child):
+            return hasContentShapeRect(child)
+        case .anchorPreference(_, _, _, let child):
+            return hasContentShapeRect(child)
+        case .geometryReaderProxy(_, let child):
             return hasContentShapeRect(child)
         case .group(let nodes):
             return nodes.contains(where: hasContentShapeRect)
@@ -1431,8 +1611,30 @@ enum _RenderLayout {
                 return measure(first, maxSize, mode: mode)
             }
             return measure(child, maxSize, mode: mode)
-        case .rotationEffect(let child):
+        case .rotationEffect(let angle, let child):
+            let normalizedAngle = ((Int(angle.rounded()) % 360) + 360) % 360
+            if normalizedAngle == 90 || normalizedAngle == 270 {
+                let transposedMax = _Size(width: maxSize.height, height: maxSize.width)
+                let childSize = measure(child, transposedMax, mode: mode)
+                return _Size(width: min(childSize.height, maxSize.width), height: min(childSize.width, maxSize.height))
+            }
             return measure(child, maxSize, mode: mode)
+        case .truncatedText(let text, _):
+            return mode == .intrinsic
+                ? _Size(width: text.count, height: 1)
+                : _Size(width: min(text.count, maxSize.width), height: 1)
+        case .textCase(_, let child):
+            return measure(child, maxSize, mode: mode)
+        case .blur(_, let child):
+            return measure(child, maxSize, mode: mode)
+        case .badge(let badgeText, let child):
+            let childSize = measure(child, maxSize, mode: mode)
+            let badgeWidth = badgeText.count + 1
+            return _Size(width: max(childSize.width + badgeWidth, maxSize.width), height: max(1, childSize.height))
+        case .anchorPreference(_, _, _, let child):
+            return measure(child, maxSize, mode: mode)
+        case .geometryReaderProxy(let buildSize, _):
+            return _Size(width: min(buildSize.width, maxSize.width), height: min(buildSize.height, maxSize.height))
         }
     }
 }
