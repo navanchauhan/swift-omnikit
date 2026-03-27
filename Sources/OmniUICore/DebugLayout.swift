@@ -571,13 +571,17 @@ enum _DebugLayout {
             return _Size(width: maxSize.width, height: 1)
 
         case .shape(let shape):
-            // Render shapes using border glyphs plus a fill token.
-            // The notcurses renderer maps the fill token to a real background fill, so the
-            // interior becomes solid without printing noisy characters.
-            //
-            // Target size: 11x8 (clipped by maxSize).
-            let w = min(maxSize.width, 11)
-            let h = min(maxSize.height, 8)
+            // Shapes fill their proposed region. Only fall back to small intrinsic
+            // size if the proposal is absurdly large (unconstrained).
+            let w: Int
+            let h: Int
+            if maxSize.width <= 200 && maxSize.height <= 100 {
+                w = maxSize.width
+                h = maxSize.height
+            } else {
+                w = min(maxSize.width, 20)
+                h = min(maxSize.height, 5)
+            }
             guard w > 0, h > 0 else { return _Size(width: 0, height: 0) }
 
             func putLine(_ y: Int, _ s: String) {
@@ -743,7 +747,9 @@ enum _DebugLayout {
                 case .gradient:
                     return maxSize
                 case .shape:
-                    return _Size(width: min(maxSize.width, 11), height: min(maxSize.height, 8))
+                    let sw = (maxSize.width <= 200 && maxSize.height <= 100) ? maxSize.width : min(maxSize.width, 20)
+                    let sh = (maxSize.width <= 200 && maxSize.height <= 100) ? maxSize.height : min(maxSize.height, 5)
+                    return _Size(width: sw, height: sh)
                 case .spacer:
                     return _Size(width: 0, height: 0)
                 // `padding` is modeled as `.edgePadding` now.

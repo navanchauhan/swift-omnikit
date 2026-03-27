@@ -484,9 +484,20 @@ enum _RenderLayout {
             if resolvedShape.fillColor == nil, resolvedShape.strokeColor == nil {
                 resolvedShape.fillColor = ctx.style.fg
             }
-            // Intrinsic placeholder size unless constrained by a frame.
-            let w = min(maxSize.width, 11)
-            let h = min(maxSize.height, 8)
+            // Use the proposed size from the layout system. Shapes fill their
+            // proposed region (like SwiftUI). Only fall back to a small intrinsic
+            // size if the proposal is absurdly large (unconstrained).
+            let w: Int
+            let h: Int
+            if maxSize.width <= 200 && maxSize.height <= 100 {
+                // Constrained by parent (frame, HStack flex, etc.) — fill it
+                w = maxSize.width
+                h = maxSize.height
+            } else {
+                // Unconstrained — use modest intrinsic size
+                w = min(maxSize.width, 20)
+                h = min(maxSize.height, 5)
+            }
             let r = _Rect(origin: origin, size: _Size(width: w, height: h))
             ops.append(RenderOp(zIndex: ctx.z, kind: .shape(rect: r, shape: resolvedShape)))
             shapeRegions.append((r, resolvedShape))
@@ -1105,7 +1116,9 @@ enum _RenderLayout {
             let s = _imageString(name)
             return _Size(width: min(s.count, maxSize.width), height: 1)
         case .shape:
-            return _Size(width: min(maxSize.width, 11), height: min(maxSize.height, 8))
+            let sw = (maxSize.width <= 200 && maxSize.height <= 100) ? maxSize.width : min(maxSize.width, 20)
+            let sh = (maxSize.width <= 200 && maxSize.height <= 100) ? maxSize.height : min(maxSize.height, 5)
+            return _Size(width: sw, height: sh)
         case .spacer:
             return _Size(width: 0, height: 0)
         case .stack(let axis, let spacing, let children):
