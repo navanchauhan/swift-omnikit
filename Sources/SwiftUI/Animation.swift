@@ -69,9 +69,8 @@ public func withAnimation<T>(_ animation: Animation? = nil, _ body: () -> T) -> 
 
 public extension View {
     func animation<V: Equatable>(_ animation: Animation?, value: V) -> some View {
-        _ = animation
-        _ = value
-        return _Passthrough(self)
+        let anim = animation.map { _AnyAnimation(curve: $0.curve, duration: $0.duration) }
+        return _AnimationModifier(content: AnyView(self), animation: anim, value: value)
     }
 
     func animation(_ animation: Animation?) -> some View {
@@ -81,19 +80,18 @@ public extension View {
 
     func phaseAnimator<Phases: Collection, Content: View>(
         _ phases: Phases,
-        @ViewBuilder content: (Self, Phases.Element) -> Content
-    ) -> some View {
-        guard let phase = phases.first else { return AnyView(self) }
-        return AnyView(content(self, phase))
+        @ViewBuilder content: @escaping (Self, Phases.Element) -> Content
+    ) -> some View where Phases.Element: Equatable {
+        _PhaseAnimatorPrimitive(phases: Array(phases).map { $0 as Any }, content: { phase in AnyView(content(self, phase as! Phases.Element)) }, intervalSeconds: 0.35)
     }
 
     func phaseAnimator<Phases: Collection, Content: View>(
         _ phases: Phases,
-        @ViewBuilder content: (Self, Phases.Element) -> Content,
-        animation: (Phases.Element) -> Animation
-    ) -> some View {
-        guard let phase = phases.first else { return AnyView(self) }
-        _ = animation(phase)
-        return AnyView(content(self, phase))
+        @ViewBuilder content: @escaping (Self, Phases.Element) -> Content,
+        animation: @escaping (Phases.Element) -> Animation
+    ) -> some View where Phases.Element: Equatable {
+        let anim = phases.first.map { animation($0) }
+        let duration = anim?.duration ?? 0.35
+        return _PhaseAnimatorPrimitive(phases: Array(phases).map { $0 as Any }, content: { phase in AnyView(content(self, phase as! Phases.Element)) }, intervalSeconds: duration)
     }
 }

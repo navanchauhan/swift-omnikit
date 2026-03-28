@@ -178,6 +178,10 @@ let package = Package(
             name: "OmniAgentDeployCLI",
             targets: ["OmniAgentDeployCLI"]
         ),
+        .executable(
+            name: "iGopherTUI",
+            targets: ["iGopherTUI"]
+        ),
     ],
     dependencies: [
         // Cross-platform networking + streaming.
@@ -247,6 +251,16 @@ let package = Package(
                 // Keep source compatibility with `import SwiftUI` / `import SwiftData`.
                 .unsafeFlags(["-module-alias", "SwiftUI=OmniSwiftUI"]),
                 .unsafeFlags(["-module-alias", "SwiftData=OmniSwiftData"]),
+            ]
+        ),
+        .executableTarget(
+            name: "iGopherTUI",
+            dependencies: ["OmniSwiftUI", "OmniSwiftData", "OmniUI", "OmniUINotcursesRenderer"],
+            path: "Sources/iGopherTUI",
+            swiftSettings: commonSwiftSettings + [
+                .unsafeFlags(["-module-alias", "SwiftUI=OmniSwiftUI"]),
+                .unsafeFlags(["-module-alias", "SwiftData=OmniSwiftData"]),
+                .unsafeFlags(["-Xfrontend", "-solver-expression-time-threshold=300"]),
             ]
         ),
         .target(

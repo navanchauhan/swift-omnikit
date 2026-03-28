@@ -12,6 +12,11 @@ public enum ToolbarItemPlacement: Hashable, Sendable {
 
 public enum ToolbarPlacement: Hashable, Sendable {
     case sidebarToggle
+    case automatic
+    case bottomBar
+    case navigationBar
+    case tabBar
+    case windowToolbar
 }
 
 struct _ToolbarItemTag: Hashable {
@@ -69,7 +74,7 @@ func _collectToolbarItems(from node: _VNode) -> _ToolbarLayoutItems {
             walk(child)
         case .edgePadding(_, _, _, _, let child):
             walk(child)
-        case .contentShapeRect(let child):
+        case .contentShapeRect(_, let child):
             walk(child)
         case .clip(_, let child):
             walk(child)

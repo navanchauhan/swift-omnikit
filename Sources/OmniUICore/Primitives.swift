@@ -324,7 +324,7 @@ public struct Gauge<Label: View, CurrentValueLabel: View>: View, _PrimitiveView 
 
     func _makeNode(_ ctx: inout _BuildContext) -> _VNode {
         let env = _currentEnvironmentValues(for: ctx)
-        _ = env.gaugeStyleKind
+        let styleKind = env.gaugeStyleKind
         let denom = bounds.upperBound - bounds.lowerBound
         let pct = denom == 0 ? 0 : Swift.max(0, Swift.min(1, (value - bounds.lowerBound) / denom))
         let renderedLabel = _menuLabelText(from: ctx.buildChild(label))
@@ -332,13 +332,29 @@ public struct Gauge<Label: View, CurrentValueLabel: View>: View, _PrimitiveView 
         let percentText = Int((pct * 100).rounded()).formatted(.number)
         let summary = renderedCurrentValue.isEmpty ? "\(percentText)%" : renderedCurrentValue
         let title = renderedLabel.isEmpty ? "Gauge" : renderedLabel
-        return ctx.buildChild(
-            VStack(alignment: .leading, spacing: 1) {
-                Text(title)
-                ProgressView(value: pct, total: 1)
-                Text(summary).foregroundStyle(.secondary)
-            }
-        )
+
+        switch styleKind {
+        case .accessoryCircular:
+            // Compact circular: value only
+            return ctx.buildChild(Text("(\(summary))"))
+        case .accessoryLinear:
+            // Compact linear: progress bar only, no label
+            return ctx.buildChild(
+                VStack(alignment: .leading, spacing: 0) {
+                    ProgressView(value: pct, total: 1)
+                    Text(summary).foregroundStyle(.secondary)
+                }
+            )
+        default:
+            // .automatic, .default, .linearCapacity
+            return ctx.buildChild(
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(title)
+                    ProgressView(value: pct, total: 1)
+                    Text(summary).foregroundStyle(.secondary)
+                }
+            )
+        }
     }
 }
 
@@ -481,26 +497,47 @@ public struct TimelineView<Content: View>: View, _PrimitiveView {
     }
 
     let content: (Context) -> Content
+    let tickInterval: UInt64 // nanoseconds
+    let cadence: Context.Cadence
 
     public init(content: @escaping (Context) -> Content) {
         self.content = content
+        self.tickInterval = 1_000_000_000
+        self.cadence = .seconds
     }
 
     public init(_ schedule: Any = (), content: @escaping (Context) -> Content) {
-        _ = schedule
         self.content = content
+        // Determine tick interval from schedule type
+        let typeName = String(describing: type(of: schedule))
+        if typeName.contains("AnimationTimeline") {
+            self.tickInterval = 16_000_000 // ~60fps
+            self.cadence = .live
+        } else {
+            // Try extracting timeInterval via Mirror for unknown schedule types
+            let mirror = Mirror(reflecting: schedule)
+            if let interval = mirror.children.first(where: { $0.label == "timeInterval" })?.value as? Double, interval > 0 {
+                self.tickInterval = UInt64(interval * 1_000_000_000)
+                self.cadence = interval < 1.0 ? .live : (interval < 60.0 ? .seconds : .minutes)
+            } else {
+                self.tickInterval = 1_000_000_000
+                self.cadence = .seconds
+            }
+        }
     }
 
     func _makeNode(_ ctx: inout _BuildContext) -> _VNode {
         let path = ctx.path
+        let interval = tickInterval
         ctx.runtime._registerTask(path: path) {
-            while true {
-                try? await Task.sleep(nanoseconds: 1_000_000_000)
+            while !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: interval)
+                guard !Task.isCancelled else { break }
                 now = Date()
             }
         }
         let renderDate = Swift.max(now, Date())
-        return ctx.buildChild(content(Context(date: renderDate, cadence: .live)))
+        return ctx.buildChild(content(Context(date: renderDate, cadence: cadence)))
     }
 }
 
@@ -790,7 +827,6 @@ public struct LazyVGrid<Content: View>: View, _PrimitiveView {
     }
 
     func _makeNode(_ ctx: inout _BuildContext) -> _VNode {
-        _ = alignment
         let items = _flatten(ctx.buildChild(content))
         guard !items.isEmpty else { return .empty }
 
@@ -808,7 +844,22 @@ public struct LazyVGrid<Content: View>: View, _PrimitiveView {
         var index = 0
         while index < items.count {
             let end = Swift.min(index + columnsCount, items.count)
-            let row = Array(items[index..<end])
+            var row = Array(items[index..<end])
+            // Pad incomplete rows based on alignment
+            let missing = columnsCount - row.count
+            if missing > 0 {
+                let spacers = Array(repeating: _VNode.spacer, count: missing)
+                switch alignment {
+                case .trailing:
+                    row = spacers + row
+                case .center:
+                    let left = missing / 2
+                    let right = missing - left
+                    row = Array(repeating: _VNode.spacer, count: left) + row + Array(repeating: _VNode.spacer, count: right)
+                default: // .leading
+                    row = row + spacers
+                }
+            }
             rows.append(.stack(axis: .horizontal, spacing: gap, children: row))
             index = end
         }
@@ -2179,7 +2230,7 @@ private func _collectTaggedPickerOptions<T: Hashable>(node: _VNode, valueType: T
             return labelText(child)
         case .style(_, _, let child):
             return labelText(child)
-        case .contentShapeRect(let child):
+        case .contentShapeRect(_, let child):
             return labelText(child)
         case .clip(_, let child):
             return labelText(child)
@@ -2213,7 +2264,7 @@ private func _collectTaggedPickerOptions<T: Hashable>(node: _VNode, valueType: T
                 values.append(tv)
                 labels.append(labelText(label) ?? String(describing: tv))
             }
-        case .contentShapeRect(let child):
+        case .contentShapeRect(_, let child):
             walk(child)
         case .clip(_, let child):
             walk(child)
@@ -2429,7 +2480,7 @@ private func _menuLabelText(from node: _VNode) -> String {
             walk(child)
         case .hover(_, let child):
             walk(child)
-        case .contentShapeRect(let child):
+        case .contentShapeRect(_, let child):
             walk(child)
         case .clip(_, let child):
             walk(child)
@@ -2724,31 +2775,19 @@ public struct ViewThatFits: View, _PrimitiveView {
     public typealias Body = Never
 
     let axes: Axis.Set
-    let children: [AnyView]
+    let content: AnyView
 
     public init(in axes: Axis.Set = [.horizontal, .vertical], @ViewBuilder content: () -> some View) {
         self.axes = axes
-        self.children = _extractChildren(content())
+        self.content = AnyView(content())
     }
 
     func _makeNode(_ ctx: inout _BuildContext) -> _VNode {
-        let nodes = children.map { ctx.buildChild($0) }
-        return .viewThatFits(axes: axes, children: nodes)
+        let builtContent = ctx.buildChild(content)
+        let children = _flatten(builtContent)
+        guard !children.isEmpty else { return .empty }
+        return .viewThatFits(axes: axes, children: children)
     }
-}
-
-private func _extractChildren(_ view: some View) -> [AnyView] {
-    if let tuple = view as? TupleView2<AnyView, AnyView> {
-        return [tuple.c0, tuple.c1]
-    }
-    // For generic tuples, wrap as single-element list
-    return [AnyView(view)]
-}
-
-private struct TupleView2<C0: View, C1: View>: View {
-    let c0: C0
-    let c1: C1
-    var body: some View { c0 }
 }
 
 public struct TextEditor: View, _PrimitiveView {

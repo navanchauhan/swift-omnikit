@@ -77,9 +77,16 @@ public extension View {
         return _Clip(content: AnyView(self), kind: kind)
     }
     func contentShape<S: Shape>(_ shape: S, eoFill: Bool = false) -> some View {
-        _ = shape
         _ = eoFill
-        return _ContentShapeRect(content: AnyView(self))
+        let kind: _ShapeKind = {
+            if shape is Rectangle { return .rectangle }
+            if shape is RoundedRectangle { return .roundedRectangle(cornerRadius: 0) }
+            if shape is Capsule { return .capsule }
+            if shape is Circle { return .circle }
+            if shape is Ellipse { return .ellipse }
+            return .rectangle
+        }()
+        return _ContentShapeRect(content: AnyView(self), kind: kind)
     }
     func mask<M: View>(_ mask: M) -> some View {
         _MaskModifier(content: AnyView(self), mask: AnyView(mask))
@@ -244,7 +251,14 @@ public extension View {
         return environment(\.datePickerStyleKind, kind)
     }
     func gaugeStyle<S: GaugeStyle>(_ style: S) -> some View {
-        let kind: _GaugeStyleKind = style is DefaultGaugeStyle ? .default : .automatic
+        let kind: _GaugeStyleKind = {
+            if style is DefaultGaugeStyle { return .default }
+            let name = String(describing: type(of: style))
+            if name.contains("LinearCapacity") { return .linearCapacity }
+            if name.contains("AccessoryLinear") { return .accessoryLinear }
+            if name.contains("AccessoryCircular") { return .accessoryCircular }
+            return .automatic
+        }()
         return environment(\.gaugeStyleKind, kind)
     }
     func toggleStyle<S: ToggleStyle>(_ style: S) -> some View {
@@ -306,8 +320,8 @@ public extension View {
         }
         return AnyView(self)
     }
-    func toolbarBackground(_ any: Any = (), for: Any = ()) -> some View {
-        _ = `for`
+    func toolbarBackground(_ any: Any = (), for bars: ToolbarPlacement...) -> some View {
+        _ = bars // stored for compile parity; toolbar-region targeting requires ToolbarItemPlacement redesign
         let current = (_UIRuntime._currentEnvironment ?? EnvironmentValues()).toolbarBackgroundStyle
         var next = current
         if let visibility = any as? Visibility {
@@ -364,12 +378,10 @@ public extension View {
     }
     func popover<Content: View>(isPresented: Binding<Bool>, attachmentAnchor: Any = (), arrowEdge: Edge = .top, @ViewBuilder content: () -> Content) -> some View {
         _ = attachmentAnchor
-        _ = arrowEdge
-        return _PresentationOverlay(content: AnyView(self), isPresented: isPresented, onDismiss: nil, title: "Popover", showsScrim: false, presented: AnyView(content()))
+        return _PresentationOverlay(content: AnyView(self), isPresented: isPresented, onDismiss: nil, title: "Popover", showsScrim: false, presented: AnyView(content()), arrowEdge: arrowEdge)
     }
     func popover<Item: Identifiable, Content: View>(item: Binding<Item?>, attachmentAnchor: Any = (), arrowEdge: Edge = .top, @ViewBuilder content: @escaping (Item) -> Content) -> some View {
         _ = attachmentAnchor
-        _ = arrowEdge
         return _ItemPresentationOverlay(content: AnyView(self), item: item, onDismiss: nil, title: "Popover", showsScrim: false, presented: { AnyView(content($0)) })
     }
     func confirmationDialog<Actions: View>(_ title: String, isPresented: Binding<Bool>, titleVisibility: Visibility = .automatic, @ViewBuilder actions: () -> Actions) -> some View {
@@ -437,9 +449,8 @@ public extension View {
         _OnChangeWithInitial(content: AnyView(self), value: value, initial: initial, action: action)
     }
 
-    func task(priority: Any? = nil, _ action: @escaping () async -> Void) -> some View {
-        _ = priority
-        return _TaskBinder(content: AnyView(self), action: action)
+    func task(priority: TaskPriority? = nil, _ action: @escaping () async -> Void) -> some View {
+        _TaskBinder(content: AnyView(self), priority: priority, action: action)
     }
 
     func onSubmit(_ action: @escaping () -> Void) -> some View {
@@ -620,10 +631,18 @@ public extension View {
 
     func scaleEffect(_ scale: CGFloat, anchor: UnitPoint = .center) -> some View {
         _ = anchor
-        if scale > 1 {
+        // Tiered terminal approximation of scale
+        if scale < 0.5 {
+            return AnyView(opacity(0))
+        } else if scale < 1.0 {
+            return AnyView(foregroundStyle(.secondary))
+        } else if scale <= 1.0 {
+            return AnyView(self)
+        } else if scale <= 1.5 {
             return AnyView(bold())
+        } else {
+            return AnyView(bold().textCase(.uppercase))
         }
-        return AnyView(self)
     }
 
     func scaleEffect(x: CGFloat = 1, y: CGFloat = 1, anchor: UnitPoint = .center) -> some View {
@@ -668,9 +687,8 @@ public extension View {
     }
 
     // MARK: - .task(id:)
-    func task<T: Equatable & Hashable>(id: T, priority: Any? = nil, _ action: @escaping () async -> Void) -> some View {
-        _ = priority
-        return _TaskIdBinder(content: AnyView(self), id: AnyHashable(id), action: action)
+    func task<T: Equatable & Hashable>(id: T, priority: TaskPriority? = nil, _ action: @escaping () async -> Void) -> some View {
+        _TaskIdBinder(content: AnyView(self), id: AnyHashable(id), priority: priority, action: action)
     }
 
     // MARK: - .interactiveDismissDisabled() (compile parity only)
@@ -776,6 +794,7 @@ private struct _PresentationOverlay: View, _PrimitiveView {
     let title: String
     let showsScrim: Bool
     let presented: AnyView
+    var arrowEdge: Edge? = nil
 
     func _makeNode(_ ctx: inout _BuildContext) -> _VNode {
         let env = _UIRuntime._currentEnvironment ?? ctx.runtime._baseEnvironment
@@ -786,14 +805,35 @@ private struct _PresentationOverlay: View, _PrimitiveView {
                     onDismiss?()
                 }
             }
+            let chrome = _presentationChrome(title: title, dismiss: dismiss, env: env) {
+                presented
+            }
+            // Position overlay based on arrowEdge (arrow points AT the anchor)
+            let aligned: AnyView
+            if let edge = arrowEdge {
+                switch edge {
+                case .top:
+                    // Arrow on top → popover below anchor
+                    aligned = AnyView(VStack(spacing: 0) { Spacer(); chrome })
+                case .bottom:
+                    // Arrow on bottom → popover above anchor
+                    aligned = AnyView(VStack(spacing: 0) { chrome; Spacer() })
+                case .leading:
+                    // Arrow on leading → popover right of anchor
+                    aligned = AnyView(HStack(spacing: 0) { Spacer(); chrome })
+                case .trailing:
+                    // Arrow on trailing → popover left of anchor
+                    aligned = AnyView(HStack(spacing: 0) { chrome; Spacer() })
+                }
+            } else {
+                aligned = AnyView(chrome)
+            }
             ctx.runtime._registerOverlay(view: AnyView(
                 ZStack {
                     if showsScrim {
                         Color.gray.opacity(0.35)
                     }
-                    _presentationChrome(title: title, dismiss: dismiss, env: env) {
-                        presented
-                    }
+                    aligned
                 }
             ), dismiss: dismiss)
         }
@@ -1449,9 +1489,10 @@ private struct _Clip: View, _PrimitiveView {
 private struct _ContentShapeRect: View, _PrimitiveView {
     typealias Body = Never
     let content: AnyView
+    let kind: _ShapeKind
 
     func _makeNode(_ ctx: inout _BuildContext) -> _VNode {
-        .contentShapeRect(child: ctx.buildChild(content))
+        .contentShapeRect(kind: kind, child: ctx.buildChild(content))
     }
 }
 
@@ -1771,7 +1812,6 @@ private struct _GlassEffectModifier: View, _PrimitiveView {
     let shape: GlassEffectShape?
 
     func _makeNode(_ ctx: inout _BuildContext) -> _VNode {
-        _ = style
         let child = ctx.buildChild(content)
         let clipped: _VNode = {
             guard let shape else { return child }
@@ -1786,7 +1826,11 @@ private struct _GlassEffectModifier: View, _PrimitiveView {
             }
             return .clip(kind: .rectangle, child: child)
         }()
-        return .background(child: .shadow(child: clipped, color: .white.opacity(0.08), radius: 1, x: 0, y: 0), background: ctx.buildChild(Color.gray.opacity(0.16)))
+        // Vary background opacity by glass style
+        let isInteractive = style.rawValue.contains("interactive")
+        let bgOpacity = isInteractive ? 0.24 : 0.16
+        let shadowOpacity = isInteractive ? 0.12 : 0.08
+        return .background(child: .shadow(child: clipped, color: .white.opacity(shadowOpacity), radius: 1, x: 0, y: 0), background: ctx.buildChild(Color.gray.opacity(bgOpacity)))
     }
 }
 
@@ -1798,7 +1842,7 @@ private struct _NavigationTransitionModifier: View, _PrimitiveView {
 
     func _makeNode(_ ctx: inout _BuildContext) -> _VNode {
         _ = transition
-        return .style(fg: (_UIRuntime._currentEnvironment ?? ctx.runtime._baseEnvironment).tint ?? .accentColor, bg: nil, child: ctx.buildChild(content))
+        return ctx.buildChild(content)
     }
 }
 
@@ -1810,7 +1854,7 @@ private struct _ContentTransitionModifier: View, _PrimitiveView {
 
     func _makeNode(_ ctx: inout _BuildContext) -> _VNode {
         _ = transition
-        return .textStyled(style: .italic, child: ctx.buildChild(content))
+        return ctx.buildChild(content)
     }
 }
 
@@ -2068,6 +2112,89 @@ private func _formatFileSize(_ bytes: UInt64) -> String {
     return "\(bytes / (1024 * 1024)) MB"
 }
 
+// MARK: - _AnimationModifier (wires .animation(_:value:) to runtime)
+
+public struct _AnimationModifier<Value: Equatable>: View, _PrimitiveView {
+    public typealias Body = Never
+
+    let content: AnyView
+    let animation: _AnyAnimation?
+    let value: Value
+
+    public init(content: AnyView, animation: _AnyAnimation?, value: Value) {
+        self.content = content
+        self.animation = animation
+        self.value = value
+    }
+
+    func _makeNode(_ ctx: inout _BuildContext) -> _VNode {
+        if let anim = animation {
+            let seed = _StateSeed(fileID: "_AnimationModifier", line: UInt(ctx.path.hashValue & 0x7FFF))
+            let prevBox: _AnimPrevBox<Value> = ctx.runtime._getState(seed: seed, path: ctx.path, initial: { _AnimPrevBox<Value>(value: nil) })
+            let prev = prevBox.value
+            ctx.runtime._setState(seed: seed, path: ctx.path, value: _AnimPrevBox<Value>(value: value))
+            if let prev, prev != value {
+                ctx.runtime._registerAnimation(curve: anim.curve, duration: anim.duration)
+            }
+        }
+        return ctx.buildChild(content)
+    }
+}
+
+private struct _AnimPrevBox<V> {
+    let value: V?
+}
+
+// MARK: - _PhaseAnimatorPrimitive (cycles through phases with runtime-managed state)
+
+public struct _PhaseAnimatorPrimitive: View, _PrimitiveView {
+    public typealias Body = Never
+
+    let phases: [Any]
+    let content: (Any) -> AnyView
+    let intervalSeconds: Double
+
+    public init(phases: [Any], content: @escaping (Any) -> AnyView, intervalSeconds: Double) {
+        self.phases = phases
+        self.content = content
+        self.intervalSeconds = intervalSeconds
+    }
+
+    func _makeNode(_ ctx: inout _BuildContext) -> _VNode {
+        guard !phases.isEmpty else { return .empty }
+
+        let seed = _StateSeed(fileID: "_PhaseAnimator", line: UInt(ctx.path.hashValue & 0x7FFF))
+        let currentIndex: Int = ctx.runtime._getState(seed: seed, path: ctx.path, initial: { 0 })
+        let phase = phases[currentIndex % phases.count]
+
+        let phaseCount = phases.count
+        let interval = intervalSeconds
+        let path = ctx.path
+        ctx.runtime._registerTask(path: path) { [weak runtime = ctx.runtime] in
+            guard let runtime else { return }
+            while !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: UInt64(interval * 1_000_000_000))
+                guard !Task.isCancelled else { break }
+                let idx: Int = runtime._getState(seed: seed, path: path, initial: { 0 })
+                let nextIdx = (idx + 1) % phaseCount
+                runtime._setState(seed: seed, path: path, value: nextIdx)
+            }
+        }
+
+        return ctx.buildChild(content(phase))
+    }
+}
+
+/// Type-erased animation info passed from SwiftUI module to OmniUICore.
+public struct _AnyAnimation: Hashable, Sendable {
+    public let curve: AnimationCurve
+    public let duration: Double
+    public init(curve: AnimationCurve, duration: Double) {
+        self.curve = curve
+        self.duration = duration
+    }
+}
+
 public struct _Passthrough: View, _PrimitiveView {
     public typealias Body = Never
 
@@ -2174,10 +2301,11 @@ private struct _TaskBinder: View, _PrimitiveView {
     typealias Body = Never
 
     let content: AnyView
+    let priority: TaskPriority?
     let action: () async -> Void
 
     func _makeNode(_ ctx: inout _BuildContext) -> _VNode {
-        ctx.runtime._registerTask(path: ctx.path, action: action)
+        ctx.runtime._registerTask(path: ctx.path, priority: priority, action: action)
         return ctx.buildChild(content)
     }
 }
@@ -2204,10 +2332,11 @@ private struct _TaskIdBinder: View, _PrimitiveView {
 
     let content: AnyView
     let id: AnyHashable
+    let priority: TaskPriority?
     let action: () async -> Void
 
     func _makeNode(_ ctx: inout _BuildContext) -> _VNode {
-        ctx.runtime._registerTaskWithId(path: ctx.path, id: id, action: action)
+        ctx.runtime._registerTaskWithId(path: ctx.path, id: id, priority: priority, action: action)
         return ctx.buildChild(content)
     }
 }

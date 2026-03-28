@@ -285,7 +285,7 @@ enum _RenderLayout {
             return draw(node: child, origin: origin, maxSize: maxSize, ctx: &ctx, ops: &ops, hitRegions: &hitRegions, hoverRegions: &hoverRegions, scrollRegions: &scrollRegions, scrollTargets: &scrollTargets, shapeRegions: &shapeRegions, cursorPosition: &cursorPosition, activeMenu: &activeMenu, activePicker: &activePicker, activeTextField: &activeTextField,
                 scrollContext: scrollContext)
 
-        case .contentShapeRect(let child):
+        case .contentShapeRect(_, let child):
             // Rendering is unaffected; this node only influences hit-testing.
             return draw(node: child, origin: origin, maxSize: maxSize, ctx: &ctx, ops: &ops, hitRegions: &hitRegions, hoverRegions: &hoverRegions, scrollRegions: &scrollRegions, scrollTargets: &scrollTargets, shapeRegions: &shapeRegions, cursorPosition: &cursorPosition, activeMenu: &activeMenu, activePicker: &activePicker, activeTextField: &activeTextField,
                 scrollContext: scrollContext)
@@ -541,7 +541,7 @@ enum _RenderLayout {
                     return isFlexibleCandidate(child)
                 case .opacity(_, let child):
                     return isFlexibleCandidate(child)
-                case .contentShapeRect(let child):
+                case .contentShapeRect(_, let child):
                     return isFlexibleCandidate(child)
                 case .clip(_, let child):
                     return isFlexibleCandidate(child)
@@ -613,7 +613,7 @@ enum _RenderLayout {
                 case .overlay(let child, _): return extractPriority(child)
                 case .identified(_, _, let child): return extractPriority(child)
                 case .tagged(_, let label): return extractPriority(label)
-                case .contentShapeRect(let child): return extractPriority(child)
+                case .contentShapeRect(_, let child): return extractPriority(child)
                 case .clip(_, let child): return extractPriority(child)
                 case .shadow(let child, _, _, _, _): return extractPriority(child)
                 case .hover(_, let child): return extractPriority(child)
@@ -1459,7 +1459,7 @@ enum _RenderLayout {
             return measure(child, maxSize, mode: mode)
         case .textStyled(_, let child):
             return measure(child, maxSize, mode: mode)
-        case .contentShapeRect(let child):
+        case .contentShapeRect(_, let child):
             return measure(child, maxSize, mode: mode)
         case .clip(_, let child):
             return measure(child, maxSize, mode: mode)

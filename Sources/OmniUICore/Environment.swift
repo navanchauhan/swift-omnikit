@@ -161,6 +161,9 @@ public enum _DatePickerStyleKind: Hashable, Sendable {
 public enum _GaugeStyleKind: Hashable, Sendable {
     case automatic
     case `default`
+    case linearCapacity
+    case accessoryLinear
+    case accessoryCircular
 }
 
 public enum _ToggleStyleKind: Hashable, Sendable {

@@ -308,7 +308,7 @@ enum _DebugLayout {
             hoverRegions.append((rect, id))
             return s
 
-        case .contentShapeRect(let child):
+        case .contentShapeRect(_, let child):
             // Rendering is unaffected; this node only influences hit-testing.
             return draw(
                 node: child,
@@ -725,7 +725,7 @@ enum _DebugLayout {
 	                    return measure(child, maxSize)
 	                case .opacity(_, let child):
 	                    return measure(child, maxSize)
-	                case .contentShapeRect(let child):
+	                case .contentShapeRect(_, let child):
 	                    return measure(child, maxSize)
 	                case .clip(_, let child):
 	                    return measure(child, maxSize)
@@ -894,7 +894,7 @@ enum _DebugLayout {
                     return isFlexibleCandidate(child)
                 case .opacity(_, let child):
                     return isFlexibleCandidate(child)
-                case .contentShapeRect(let child):
+                case .contentShapeRect(_, let child):
                     return isFlexibleCandidate(child)
                 case .clip(_, let child):
                     return isFlexibleCandidate(child)
@@ -1245,7 +1245,7 @@ enum _DebugLayout {
 	                        return m(child, maxSize)
 	                    case .opacity(_, let child):
 	                        return m(child, maxSize)
-	                    case .contentShapeRect(let child):
+	                    case .contentShapeRect(_, let child):
 	                        return m(child, maxSize)
 	                    case .clip(_, let child):
 	                        return m(child, maxSize)

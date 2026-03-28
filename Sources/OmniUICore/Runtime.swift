@@ -1086,7 +1086,7 @@ public final class _UIRuntime: @unchecked Sendable {
         }
     }
 
-    func _registerTask(path: [Int], action: @escaping () async -> Void) {
+    func _registerTask(path: [Int], priority: TaskPriority? = nil, action: @escaping () async -> Void) {
         _noteBuildSideEffect()
         let key = _pathKey(prefix: "task", path: path)
         tasksSeenThisFrame.insert(key)
@@ -1096,7 +1096,8 @@ public final class _UIRuntime: @unchecked Sendable {
         let runtime = self
         let env = _UIRuntime._currentEnvironment ?? _baseEnvironment
 
-        let t = Task { @MainActor in
+        let p = priority ?? .userInitiated
+        let t = Task(priority: p) { @MainActor in
             await runtime._runTask(key: key)
         }
         tasks[key] = _TaskEntry(env: env, path: path, action: action, task: t)
@@ -1105,7 +1106,7 @@ public final class _UIRuntime: @unchecked Sendable {
     // Task registration with id-based cancellation/restart
     private var taskLastIds: [String: AnyHashable] = [:]
 
-    func _registerTaskWithId(path: [Int], id: AnyHashable, action: @escaping () async -> Void) {
+    func _registerTaskWithId(path: [Int], id: AnyHashable, priority: TaskPriority? = nil, action: @escaping () async -> Void) {
         _noteBuildSideEffect()
         let key = _pathKey(prefix: "task", path: path)
         tasksSeenThisFrame.insert(key)
@@ -1125,7 +1126,8 @@ public final class _UIRuntime: @unchecked Sendable {
         let runtime = self
         let env = _UIRuntime._currentEnvironment ?? _baseEnvironment
 
-        let t = Task { @MainActor in
+        let p = priority ?? .userInitiated
+        let t = Task(priority: p) { @MainActor in
             await runtime._runTask(key: key)
         }
         tasks[key] = _TaskEntry(env: env, path: path, action: action, task: t)
