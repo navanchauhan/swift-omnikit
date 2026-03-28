@@ -1,0 +1,10 @@
+.build
+.ai
+.claude
+.git
+Tests/tui/output
+references
+docs
+sampleDOTs
+tmp_images
+tmp_validation_screenshots
