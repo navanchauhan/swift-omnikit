@@ -743,9 +743,11 @@ public struct List<Content: View>: View, _PrimitiveView {
         }
 
         var contentNode: _VNode = .stack(axis: .vertical, spacing: 0, children: renderedRows)
-        if env.scrollContentBackgroundVisibility != .hidden {
-            let backgroundColor: Color = env.listStyleKind == .sidebar ? Color.gray.opacity(0.12) : Color.gray.opacity(0.06)
-            contentNode = .style(fg: nil, bg: backgroundColor, child: contentNode)
+        if env.scrollContentBackgroundVisibility != .hidden, env.listStyleKind == .sidebar {
+            // Only apply a visible background for sidebar-style lists; default/plain/inset
+            // lists should have no background — matching iOS behavior where list rows
+            // inherit the system background and have no visible fill.
+            contentNode = .style(fg: nil, bg: Color.gray.opacity(0.12), child: contentNode)
         }
 
         return .scrollView(
@@ -1146,18 +1148,23 @@ public struct NavigationSplitView<Sidebar: View, Detail: View>: View, _Primitive
     }
 
     func _makeNode(_ ctx: inout _BuildContext) -> _VNode {
+        let renderSize = _UIRuntime._currentRenderSize ?? _Size(width: 80, height: 0)
         let resolved = _resolvedVisibility(
             requested: columnVisibility.wrappedValue,
-            size: _UIRuntime._currentRenderSize ?? _Size(width: 80, height: 0)
+            size: renderSize
         )
 
         switch resolved {
         case .detailOnly:
             return ctx.buildChild(detail)
         case .all, .doubleColumn, .automatic:
+            // Cap sidebar at ~28% of terminal width (min 15, max 40 cols)
+            let sidebarWidth = max(15, min(40, renderSize.width * 28 / 100))
             return ctx.buildChild(
-                HStack(spacing: 1) {
+                HStack(spacing: 0) {
                     sidebar
+                        .frame(width: CGFloat(sidebarWidth))
+                    Text("│")  // visible separator
                     detail
                 }
             )
@@ -1170,9 +1177,9 @@ public struct NavigationSplitView<Sidebar: View, Detail: View>: View, _Primitive
     ) -> NavigationSplitViewVisibility {
         guard requested == .automatic else { return requested }
 
-        // Mirror platform behavior: in compact widths, collapse to detail-only;
-        // in regular widths, keep both columns visible.
-        return size.width >= 72 ? .doubleColumn : .detailOnly
+        // Mirror platform behavior: on narrow terminals (< 120 cols), default
+        // to detail-only (sidebar hidden). Show sidebar only on wider terminals.
+        return size.width >= 120 ? .doubleColumn : .detailOnly
     }
 }
 

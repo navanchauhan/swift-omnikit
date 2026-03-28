@@ -1121,32 +1121,50 @@ private struct _AlertFromType: View, _PrimitiveView {
 }
 
 private func _presentationChrome<Content: View>(title: String, dismiss: @escaping () -> Void, env: EnvironmentValues, @ViewBuilder content: () -> Content) -> some View {
-    VStack(spacing: 1) {
-        if env.presentationDragIndicatorVisibility != .hidden {
-            Text("──")
-                .foregroundStyle(.secondary)
-        }
-        HStack(spacing: 1) {
+    VStack(spacing: 0) {
+        // Top border: ┌──────── title ── Close ─┐
+        HStack(spacing: 0) {
+            Text("┌─")
             if !title.isEmpty {
-                Text(title)
+                Text(" \(title) ")
             }
+            Text("─")
             Spacer()
             Button("Close") { dismiss() }
+            Text(" ─┐")
         }
-        content()
+        // Body with left/right borders
+        HStack(spacing: 0) {
+            Text("│")
+            VStack(spacing: 1) {
+                content()
+            }
+            .padding(1)
+            Text("│")
+        }
+        // Bottom border: └────────────────────────┘
+        HStack(spacing: 0) {
+            Text("└")
+            // Use a divider-like fill; the frame will stretch it
+            Text("─")
+            Spacer()
+            Text("┘")
+        }
     }
-    .padding(1)
+    .padding(2)
     .background(_presentationBackgroundColor(env: env))
 }
 
 private func _presentationBackgroundColor(env: EnvironmentValues) -> Color {
+    // Sheet background should be visually distinct from the scrim behind it.
+    // Use a darker shade so the sheet "pops" over the dimmed content.
     if env.presentationDetents.contains(.large) {
-        return Color.gray.opacity(0.18)
+        return Color.gray.opacity(0.30)
     }
     if env.presentationDetents.contains(.medium) {
-        return Color.gray.opacity(0.12)
+        return Color.gray.opacity(0.25)
     }
-    return Color.gray.opacity(0.10)
+    return Color.gray.opacity(0.22)
 }
 
 private struct _TapGesture: View, _PrimitiveView {

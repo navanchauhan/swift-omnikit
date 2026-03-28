@@ -100,6 +100,17 @@ public enum SFSymbolMap: Sendable {
         "speaker.wave.2.fill": "🔊",
         "photo": "▧",
 
+        // Navigation / browsing symbols
+        "globe": "🌐",
+        "phone": "📞",
+        "phone.fill": "📞",
+        "text.bubble": "💬",
+        "text.bubble.fill": "💬",
+        "music.note": "♪",
+        "music.note.list": "♪",
+        "magnifyingglass.circle": "🔍",
+        "magnifyingglass.circle.fill": "🔍",
+
         // iGopher / additional symbols
         "bookmark": "🔖",
         "bookmark.fill": "🔖",
