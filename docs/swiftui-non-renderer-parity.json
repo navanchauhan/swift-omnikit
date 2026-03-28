@@ -142,7 +142,7 @@
             "public struct DismissAction",
             "public struct OpenURLAction"
           ],
-          "notes": "Environment values include a focused subset of common SwiftUI keys."
+          "notes": "Environment values include a focused subset of common SwiftUI keys, plus `_customButtonStyle` for type-erased custom ButtonStyle propagation and `deliverURL` for programmatic URL delivery."
         },
         {
           "path": "Sources/OmniUICore/ObservableObjects.swift",
@@ -218,8 +218,7 @@
         "`SwiftUICompatibilityHarness` exercises `Toggle`, `TextField`, `Menu`, `GroupBox`, `LabeledContent`, `ContentUnavailableView`, `ShareLink`, and `ColorPicker`, while `OmniUICoreTests` now cover the newly added core parity views."
       ],
       "compile_only_examples": [
-        "`ColorPicker` is explicitly described as a minimal stub for SwiftUI compatibility.",
-        "`quickLookPreview(_:)` is a passthrough compatibility modifier rather than a full Quick Look integration."
+        "`quickLookPreview(_:)` now shows file metadata and text previews but remains a terminal approximation rather than a full Quick Look integration."
       ],
       "missing_examples": [
         "`DatePickerStyle.Configuration`",
@@ -238,7 +237,7 @@
             "public struct Picker<SelectionValue: Hashable>: View, _PrimitiveView",
             "public struct Menu<Content: View, Label: View>: View, _PrimitiveView",
             "public struct GroupBox<Label: View, Content: View>: View, _PrimitiveView",
-            "public struct ContentUnavailableView<Description: View>: View, _PrimitiveView",
+            "public struct ContentUnavailableView<Label: View, Description: View, Actions: View>: View, _PrimitiveView",
             "public struct DatePicker<Label: View>: View, _PrimitiveView",
             "public struct Gauge<Label: View, CurrentValueLabel: View>: View, _PrimitiveView",
             "public struct AsyncImage<Content: View>: View, _PrimitiveView",
@@ -249,11 +248,13 @@
         {
           "path": "Sources/OmniUICore/ColorPicker.swift",
           "patterns": [
-            "// Terminal-friendly ColorPicker approximation for SwiftUI compatibility.",
+            "// Terminal-friendly ColorPicker with HSL slider rendering for SwiftUI compatibility.",
             "public struct ColorPicker: View, _PrimitiveView",
-            "selection.wrappedValue = ColorPicker._nextColor(after: selection.wrappedValue)"
+            "_colorToHSL",
+            "_hslToColor",
+            "_renderBar"
           ],
-          "notes": "ColorPicker now exposes a concrete terminal approximation that cycles a palette through a focusable control."
+          "notes": "ColorPicker now renders interactive HSL slider bars with hex preview swatch, replacing the simple palette-cycle approach."
         },
         {
           "path": "Sources/SwiftUICompatibilityHarness/main.swift",
@@ -353,7 +354,7 @@
       ],
       "compile_only_examples": [
         "`NavigationLink` outside a `NavigationStack` degrades to an inert button to preserve call-site compatibility.",
-        "Presentation modifiers such as detents and drag indicators exist but remain passthrough wrappers."
+        "Presentation detents (.medium, .large) now size the sheet overlay proportionally to the terminal height. Drag indicators remain passthrough wrappers."
       ],
       "missing_examples": [
         "`PopoverAttachmentAnchor.point(_:)`",
@@ -469,7 +470,7 @@
             "func help(_ text: String) -> some View",
             "func onExitCommand(perform action: @escaping () -> Void)",
             "func onAppear(perform action: @escaping () -> Void)",
-            "func safeAreaInset<Content: View>(edge: Edge, @ViewBuilder content: () -> Content)",
+            "func safeAreaInset<Content: View>(edge: Edge, alignment: Alignment = .center, spacing: CGFloat? = nil, @ViewBuilder content: () -> Content)",
             "multi-tap not modeled"
           ],
           "notes": "This file now separates concrete terminal-backed modifiers from the remaining passthrough-only platform shims."
@@ -485,7 +486,7 @@
             "disabled_button_blocks_interaction",
             "onExitCommand_registers_runtime_handler"
           ],
-          "notes": "Focused tests now cover representative lifecycle, search, refresh, disabled-state, and exit-command behavior."
+          "notes": "Focused tests now cover representative lifecycle, search, refresh, disabled-state, exit-command behavior, and 23 iGopher-parity feature tests (HSL ColorPicker, custom ButtonStyle, shadow rendering, presentationDetents, safeAreaInset spacing, deliverURL, gradient dithering, Canvas path fill, etc.)."
         }
       ],
       "missing_patterns": [],

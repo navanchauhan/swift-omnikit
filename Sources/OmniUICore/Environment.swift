@@ -667,6 +667,26 @@ struct _EnvironmentValueProvider<V>: View, _PrimitiveView {
     }
 }
 
+// MARK: - Custom ButtonStyle
+
+public struct _AnyButtonStyle: @unchecked Sendable {
+    let _makeBody: (ButtonStyleConfiguration) -> AnyView
+    public init<S: ButtonStyle>(_ style: S) {
+        _makeBody = { config in AnyView(style.makeBody(configuration: config)) }
+    }
+}
+
+private enum _CustomButtonStyleKey: EnvironmentKey {
+    static let defaultValue: _AnyButtonStyle? = nil
+}
+
+extension EnvironmentValues {
+    public var _customButtonStyle: _AnyButtonStyle? {
+        get { self[_CustomButtonStyleKey.self] }
+        set { self[_CustomButtonStyleKey.self] = newValue }
+    }
+}
+
 // MARK: - Parity additions
 
 private enum _CellAspectRatioKey: EnvironmentKey {

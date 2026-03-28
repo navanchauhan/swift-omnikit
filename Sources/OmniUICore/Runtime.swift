@@ -1,3 +1,5 @@
+import Foundation
+
 public final class _UIRuntime: @unchecked Sendable {
     /// Build-time ambient runtime. Set by `_BuildContext.withRuntime`.
     @TaskLocal public static var _current: _UIRuntime?
@@ -208,6 +210,14 @@ public final class _UIRuntime: @unchecked Sendable {
         let old = _baseEnvironment.scenePhase
         guard old != phase else { return }
         _baseEnvironment.scenePhase = phase
+        _markDirty()
+    }
+
+    /// Deliver a URL to the top-level `onOpenURL` handler registered in the environment.
+    public func deliverURL(_ url: URL) {
+        let env = _UIRuntime._currentEnvironment ?? _baseEnvironment
+        let result = env.openURL(url)
+        _ = result
         _markDirty()
     }
 

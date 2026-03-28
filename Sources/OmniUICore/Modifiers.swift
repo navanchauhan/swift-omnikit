@@ -204,9 +204,16 @@ public extension View {
         case is BorderedButtonStyle:
             kind = .bordered
         default:
-            kind = .automatic
+            // Custom ButtonStyle: store type-erased style in environment
+            return AnyView(
+                environment(\._customButtonStyle, _AnyButtonStyle(style))
+                    .environment(\.buttonStyleKind, .automatic)
+            )
         }
-        return environment(\.buttonStyleKind, kind)
+        return AnyView(
+            environment(\._customButtonStyle, nil)
+                .environment(\.buttonStyleKind, kind)
+        )
     }
     func textFieldStyle<S: TextFieldStyle>(_ style: S) -> some View {
         let kind: _TextFieldStyleKind
@@ -593,8 +600,8 @@ public extension View {
         _OnDisappear(content: AnyView(self), action: action)
     }
 
-    func safeAreaInset<Content: View>(edge: Edge, @ViewBuilder content: () -> Content) -> some View {
-        _SafeAreaInset(base: AnyView(self), edge: edge, inset: AnyView(content()))
+    func safeAreaInset<Content: View>(edge: Edge, alignment: Alignment = .center, spacing: CGFloat? = nil, @ViewBuilder content: () -> Content) -> some View {
+        _SafeAreaInset(base: AnyView(self), edge: edge, alignment: alignment, spacing: Int(spacing ?? 0), inset: AnyView(content()))
     }
 
     func presentationDetents(_ detents: Set<PresentationDetent>) -> some View {
@@ -714,13 +721,45 @@ private struct _Sheet: View, _PrimitiveView {
                     onDismiss?()
                 }
             }
-            ctx.runtime._registerOverlay(view: AnyView(
-                ZStack {
-                    // Dim background.
-                    Color.gray.opacity(0.35)
+            let detents = env.presentationDetents
+            let renderSize = _UIRuntime._currentRenderSize ?? _Size(width: 80, height: 24)
+            let sheetView: AnyView
+            if detents.contains(.medium) && !detents.contains(.large) {
+                // Medium detent: sheet occupies ~half terminal height, anchored to bottom
+                let maxH = max(4, renderSize.height / 2)
+                sheetView = AnyView(
+                    VStack(spacing: 0) {
+                        Spacer()
+                        _presentationChrome(title: "Sheet", dismiss: dismiss, env: env) {
+                            sheet
+                        }
+                        .frame(maxHeight: CGFloat(maxH))
+                    }
+                )
+            } else if detents.contains(.large) && !detents.contains(.medium) {
+                // Large detent: sheet occupies most of terminal height
+                let maxH = max(4, renderSize.height - 2)
+                sheetView = AnyView(
+                    VStack(spacing: 0) {
+                        Spacer()
+                        _presentationChrome(title: "Sheet", dismiss: dismiss, env: env) {
+                            sheet
+                        }
+                        .frame(maxHeight: CGFloat(maxH))
+                    }
+                )
+            } else {
+                // Default / multiple detents: fill
+                sheetView = AnyView(
                     _presentationChrome(title: "Sheet", dismiss: dismiss, env: env) {
                         sheet
                     }
+                )
+            }
+            ctx.runtime._registerOverlay(view: AnyView(
+                ZStack {
+                    Color.gray.opacity(0.35)
+                    sheetView
                 }
             ), dismiss: dismiss)
         }
@@ -1111,18 +1150,22 @@ private struct _SafeAreaInset: View, _PrimitiveView {
 
     let base: AnyView
     let edge: Edge
+    let alignment: Alignment
+    let spacing: Int
     let inset: AnyView
 
     func _makeNode(_ ctx: inout _BuildContext) -> _VNode {
+        // alignment is stored for API completeness but not yet visually effective
+        // (layout primitives ignore alignment parameter)
         switch edge {
         case .top:
-            return ctx.buildChild(VStack(spacing: 0) { inset; base })
+            return ctx.buildChild(VStack(spacing: spacing) { inset; base })
         case .bottom:
-            return ctx.buildChild(VStack(spacing: 0) { base; inset })
+            return ctx.buildChild(VStack(spacing: spacing) { base; inset })
         case .leading:
-            return ctx.buildChild(HStack(spacing: 0) { inset; base })
+            return ctx.buildChild(HStack(spacing: spacing) { inset; base })
         case .trailing:
-            return ctx.buildChild(HStack(spacing: 0) { base; inset })
+            return ctx.buildChild(HStack(spacing: spacing) { base; inset })
         }
     }
 }
@@ -1950,13 +1993,51 @@ private struct _QuickLookPreviewModifier: View, _PrimitiveView {
                     url.wrappedValue = nil
                 }
             }
+
+            // Extract file metadata
+            let filename = currentURL.lastPathComponent
+            let icon = _quickLookIcon(for: currentURL.pathExtension)
+            var metadataLines: [String] = ["\(icon) \(filename)"]
+
+            // Try to get file size
+            if currentURL.isFileURL {
+                let fm = FileManager.default
+                if let attrs = try? fm.attributesOfItem(atPath: currentURL.path),
+                   let size = attrs[.size] as? UInt64 {
+                    metadataLines.append("Size: \(_formatFileSize(size))")
+                }
+            }
+
+            // For text files, read first 10 lines (bounded to 4KB)
+            let textExtensions: Set<String> = ["txt", "md", "swift", "json", "yaml", "yml", "xml", "html", "css", "js", "ts", "py", "rb", "go", "rs", "c", "h", "cpp", "java"]
+            var previewLines: [String] = []
+            if textExtensions.contains(currentURL.pathExtension.lowercased()), currentURL.isFileURL {
+                // Bounded synchronous read: 4KB max
+                if let fh = FileHandle(forReadingAtPath: currentURL.path) {
+                    let data = fh.readData(ofLength: 4096)
+                    fh.closeFile()
+                    if let text = String(data: data, encoding: .utf8) {
+                        previewLines = Array(text.components(separatedBy: .newlines).prefix(10))
+                    }
+                }
+            }
+
             ctx.runtime._registerOverlay(view: AnyView(
                 ZStack {
                     Color.gray.opacity(0.25)
                     VStack(spacing: 1) {
                         Text("Quick Look")
                             .bold()
-                        Text(currentURL.absoluteString)
+                        ForEach(Array(metadataLines.enumerated()), id: \.offset) { _, line in
+                            Text(line)
+                        }
+                        if !previewLines.isEmpty {
+                            Text("───")
+                                .foregroundStyle(.secondary)
+                            ForEach(Array(previewLines.enumerated()), id: \.offset) { _, line in
+                                Text(line)
+                            }
+                        }
                         Button("Close") {
                             dismiss()
                         }
@@ -1967,6 +2048,24 @@ private struct _QuickLookPreviewModifier: View, _PrimitiveView {
         }
         return ctx.buildChild(content)
     }
+}
+
+private func _quickLookIcon(for ext: String) -> String {
+    switch ext.lowercased() {
+    case "txt", "md", "rtf": return "📄"
+    case "swift", "py", "js", "ts", "go", "rs", "c", "cpp", "h", "java", "rb": return "📝"
+    case "json", "yaml", "yml", "xml", "html", "css": return "📋"
+    case "png", "jpg", "jpeg", "gif", "bmp", "tiff", "svg": return "🖼"
+    case "pdf": return "📕"
+    case "zip", "tar", "gz", "bz2": return "📦"
+    default: return "📎"
+    }
+}
+
+private func _formatFileSize(_ bytes: UInt64) -> String {
+    if bytes < 1024 { return "\(bytes) B" }
+    if bytes < 1024 * 1024 { return "\(bytes / 1024) KB" }
+    return "\(bytes / (1024 * 1024)) MB"
 }
 
 public struct _Passthrough: View, _PrimitiveView {

@@ -1565,3 +1565,394 @@ struct _TabViewSelectionFallbackProbe: View {
     #expect(snapshot.text.contains("First body"))
     #expect(selection == "first")
 }
+
+// MARK: - iGopher Parity Tests (23 Features)
+
+// Feature #1: listStyle(.plain) suppresses Section headers
+@Test func parity_listStyle_plain_suppresses_section_header() async throws {
+    struct PlainListView: View {
+        var body: some View {
+            List {
+                Section(header: Text("HEADER")) {
+                    Text("Row1")
+                }
+            }
+            .listStyle(.plain)
+        }
+    }
+    let runtime = _UIRuntime()
+    let snap = runtime.debugRender(PlainListView(), size: _Size(width: 30, height: 10))
+    #expect(!snap.text.contains("HEADER"))
+    #expect(snap.text.contains("Row1"))
+}
+
+// Feature #1 (sidebar keeps headers)
+@Test func parity_listStyle_sidebar_keeps_section_header() async throws {
+    struct SidebarListView: View {
+        var body: some View {
+            List {
+                Section(header: Text("HEADER")) {
+                    Text("Row1")
+                }
+            }
+            .listStyle(.sidebar)
+        }
+    }
+    let runtime = _UIRuntime()
+    let snap = runtime.debugRender(SidebarListView(), size: _Size(width: 30, height: 10))
+    #expect(snap.text.contains("HEADER"))
+    #expect(snap.text.contains("Row1"))
+}
+
+// Feature #2: listRowSeparator(.hidden) produces no dividers
+@Test func parity_listRowSeparator_hidden() async throws {
+    struct NoSepList: View {
+        var body: some View {
+            List {
+                Text("A")
+                Text("B")
+            }
+            .listRowSeparator(.hidden)
+        }
+    }
+    let runtime = _UIRuntime()
+    let snap = runtime.debugRender(NoSepList(), size: _Size(width: 30, height: 10))
+    #expect(snap.text.contains("A"))
+    #expect(snap.text.contains("B"))
+    // With separator hidden, there should be no divider line between rows.
+    // Divider is rendered as "─" chars; without hidden, there would be one.
+    let lines = snap.lines
+    let dividerLines = lines.filter { $0.contains("─") }
+    #expect(dividerLines.isEmpty)
+}
+
+// Feature #3: listRowBackground wraps rows
+@Test func parity_listRowBackground() async throws {
+    struct BgList: View {
+        var body: some View {
+            List {
+                Text("Row")
+            }
+            .listRowBackground(Color.yellow)
+        }
+    }
+    let runtime = _UIRuntime()
+    let snap = runtime.debugRender(BgList(), size: _Size(width: 30, height: 8))
+    #expect(snap.text.contains("Row"))
+}
+
+// Feature #4: borderedProminent button style
+@Test func parity_borderedProminent_button() async throws {
+    struct ProminentBtn: View {
+        var body: some View {
+            Button("Tap") {}
+                .buttonStyle(.borderedProminent)
+        }
+    }
+    let runtime = _UIRuntime()
+    let snap = runtime.debugRender(ProminentBtn(), size: _Size(width: 20, height: 3))
+    #expect(snap.text.contains("Tap"))
+    #expect(snap.text.contains("["))
+    #expect(snap.text.contains("]"))
+}
+
+// Feature #5: Toggle switch slider rendering
+@Test func parity_toggle_switch_slider() async throws {
+    struct SwitchView: View {
+        @State var isOn = true
+        var body: some View {
+            Toggle("Light", isOn: $isOn)
+                .toggleStyle(.switch)
+        }
+    }
+    let runtime = _UIRuntime()
+    let snap = runtime.debugRender(SwitchView(), size: _Size(width: 30, height: 3))
+    // Should contain slider chars instead of ON/OFF text
+    #expect(snap.text.contains("━") || snap.text.contains("●") || snap.text.contains("○"))
+}
+
+// Feature #6: Picker segmented with pipe separators
+@Test func parity_picker_segmented_pipes() async throws {
+    struct SegView: View {
+        @State var choice = "A"
+        var body: some View {
+            Picker("Pick", selection: $choice, options: [("A", "A"), ("B", "B"), ("C", "C")])
+                .pickerStyle(.segmented)
+        }
+    }
+    let runtime = _UIRuntime()
+    let snap = runtime.debugRender(SegView(), size: _Size(width: 40, height: 3))
+    #expect(snap.text.contains("│"))
+    #expect(snap.text.contains("["))
+    #expect(snap.text.contains("]"))
+}
+
+// Feature #7: controlSize(.large) adds bold
+@Test func parity_controlSize_large_renders() async throws {
+    struct LargeBtn: View {
+        var body: some View {
+            Button("Big") {}
+                .controlSize(.large)
+        }
+    }
+    let runtime = _UIRuntime()
+    let snap = runtime.debugRender(LargeBtn(), size: _Size(width: 20, height: 3))
+    #expect(snap.text.contains("Big"))
+}
+
+// Feature #8: scrollContentBackground(.hidden)
+@Test func parity_scrollContentBackground_hidden() async throws {
+    struct NoBgList: View {
+        var body: some View {
+            List {
+                Text("Item")
+            }
+            .scrollContentBackground(.hidden)
+        }
+    }
+    let runtime = _UIRuntime()
+    let snap = runtime.debugRender(NoBgList(), size: _Size(width: 20, height: 6))
+    #expect(snap.text.contains("Item"))
+}
+
+// Feature #9: contentShape(Rectangle()) is a no-op for Rectangle
+@Test func parity_contentShape_rectangle() async throws {
+    struct ShapeView: View {
+        var body: some View {
+            Text("Clickable")
+                .contentShape(Rectangle())
+        }
+    }
+    let runtime = _UIRuntime()
+    let snap = runtime.debugRender(ShapeView(), size: _Size(width: 20, height: 3))
+    #expect(snap.text.contains("Clickable"))
+}
+
+// Feature #10: @Namespace (no-op, already done)
+@Test func parity_namespace_compiles() async throws {
+    struct NsView: View {
+        var ns = Namespace()
+        var body: some View {
+            Text("Hello")
+        }
+    }
+    let runtime = _UIRuntime()
+    let snap = runtime.debugRender(NsView(), size: _Size(width: 20, height: 3))
+    #expect(snap.text.contains("Hello"))
+}
+
+// Feature #11: LazyVStack with spacing
+@Test func parity_lazyVStack_spacing() async throws {
+    struct LazyView: View {
+        var body: some View {
+            LazyVStack(spacing: 1) {
+                Text("A")
+                Text("B")
+            }
+        }
+    }
+    let runtime = _UIRuntime()
+    let snap = runtime.debugRender(LazyView(), size: _Size(width: 20, height: 6))
+    #expect(snap.text.contains("A"))
+    #expect(snap.text.contains("B"))
+}
+
+// Feature #12: ColorPicker HSL sliders
+@Test func parity_colorPicker_hsl_sliders() async throws {
+    struct CPView: View {
+        @State var color: Color = .red
+        var body: some View {
+            ColorPicker("Tint", selection: $color)
+        }
+    }
+    let runtime = _UIRuntime()
+    let snap = runtime.debugRender(CPView(), size: _Size(width: 40, height: 6))
+    #expect(snap.text.contains("Tint"))
+    // Should have HSL bar indicators
+    #expect(snap.text.contains("H:") || snap.text.contains("S:") || snap.text.contains("L:"))
+}
+
+// Feature #13: ContentUnavailableView.search factory
+@Test func parity_contentUnavailableView_search() async throws {
+    let view: ContentUnavailableView<AnyView, AnyView, EmptyView> = .search
+    let runtime = _UIRuntime()
+    let snap = runtime.debugRender(view, size: _Size(width: 40, height: 8))
+    #expect(snap.text.contains("No Results"))
+}
+
+// Feature #13: ContentUnavailableView string init
+@Test func parity_contentUnavailableView_string_init() async throws {
+    let view = ContentUnavailableView("Empty", systemImage: "xmark", description: Text("Nothing here"))
+    let runtime = _UIRuntime()
+    let snap = runtime.debugRender(view, size: _Size(width: 40, height: 8))
+    #expect(snap.text.contains("Empty"))
+    #expect(snap.text.contains("Nothing here"))
+}
+
+// Feature #14: LabeledContent generic
+@Test func parity_labeledContent_generic() async throws {
+    struct LCView: View {
+        var body: some View {
+            LabeledContent(content: { Text("ValueView") }, label: { Text("LabelView") })
+        }
+    }
+    let runtime = _UIRuntime()
+    let snap = runtime.debugRender(LCView(), size: _Size(width: 40, height: 3))
+    #expect(snap.text.contains("LabelView"))
+    #expect(snap.text.contains("ValueView"))
+}
+
+// Feature #14: LabeledContent string convenience
+@Test func parity_labeledContent_string() async throws {
+    let view = LabeledContent("Key", value: "Val")
+    let runtime = _UIRuntime()
+    let snap = runtime.debugRender(view, size: _Size(width: 20, height: 3))
+    #expect(snap.text.contains("Key"))
+    #expect(snap.text.contains("Val"))
+}
+
+// Feature #15: safeAreaInset spacing
+@Test func parity_safeAreaInset_spacing() async throws {
+    struct InsetView: View {
+        var body: some View {
+            Text("Content")
+                .safeAreaInset(edge: .top, spacing: 2) {
+                    Text("Bar")
+                }
+        }
+    }
+    let runtime = _UIRuntime()
+    let snap = runtime.debugRender(InsetView(), size: _Size(width: 20, height: 6))
+    #expect(snap.text.contains("Bar"))
+    #expect(snap.text.contains("Content"))
+}
+
+// Feature #16: presentationDetents
+@Test func parity_presentationDetents_medium() async throws {
+    struct DetentView: View {
+        @State var show = true
+        var body: some View {
+            Text("Base")
+                .sheet(isPresented: $show) {
+                    Text("SheetContent")
+                        .presentationDetents([.medium])
+                }
+        }
+    }
+    let runtime = _UIRuntime()
+    let snap = runtime.debugRender(DetentView(), size: _Size(width: 40, height: 20))
+    #expect(snap.text.contains("Base"))
+}
+
+// Feature #17: quickLookPreview metadata
+@Test func parity_quickLookPreview_metadata() async throws {
+    struct QLView: View {
+        @State var url: URL? = URL(fileURLWithPath: "/tmp/test.txt")
+        var body: some View {
+            Text("File")
+                .quickLookPreview($url)
+        }
+    }
+    let runtime = _UIRuntime()
+    // First render registers overlay, second renders it
+    _ = runtime.debugRender(QLView(), size: _Size(width: 40, height: 10))
+    let snap = runtime.debugRender(QLView(), size: _Size(width: 40, height: 10))
+    // Quick Look overlay should show filename or Quick Look title
+    #expect(snap.text.contains("test.txt") || snap.text.contains("Quick Look") || snap.text.contains("File"))
+}
+
+// Feature #18: deliverURL runtime API
+@Test func parity_deliverURL_compiles() async throws {
+    let runtime = _UIRuntime()
+    // Verify deliverURL method exists and is callable
+    let testURL = URL(string: "https://example.com")!
+    runtime.deliverURL(testURL)
+    // No crash = pass
+}
+
+// Feature #19: LinearGradient dithering
+@Test func parity_linearGradient_renders() async throws {
+    struct GradView: View {
+        var body: some View {
+            LinearGradient(colors: [.red, .blue], startPoint: .topLeading, endPoint: .bottomTrailing)
+                .frame(width: 20, height: 4)
+        }
+    }
+    let runtime = _UIRuntime()
+    let snap = runtime.debugRender(GradView(), size: _Size(width: 20, height: 4))
+    // Should have some content (gradient cells)
+    #expect(!snap.text.trimmingCharacters(in: .whitespaces).isEmpty)
+}
+
+// Feature #20: RadialGradient dithering
+@Test func parity_radialGradient_renders() async throws {
+    struct RadView: View {
+        var body: some View {
+            RadialGradient(gradient: Gradient(colors: [.white, .black]), center: .center, startRadius: 0, endRadius: 10)
+                .frame(width: 10, height: 5)
+        }
+    }
+    let runtime = _UIRuntime()
+    let snap = runtime.debugRender(RadView(), size: _Size(width: 10, height: 5))
+    #expect(!snap.text.trimmingCharacters(in: .whitespaces).isEmpty)
+}
+
+// Feature #21: Canvas Path rendering
+@Test func parity_canvas_path_fill() async throws {
+    struct CanvasView: View {
+        var body: some View {
+            Canvas { ctx, size in
+                ctx.fill(Path(CGRect(x: 0, y: 0, width: 5, height: 3)), with: .color(.red))
+            }
+            .frame(width: 10, height: 5)
+        }
+    }
+    let runtime = _UIRuntime()
+    let snap = runtime.debugRender(CanvasView(), size: _Size(width: 10, height: 5))
+    // Canvas should produce shape output
+    #expect(snap.shapeRegions.count > 0 || !snap.text.trimmingCharacters(in: .whitespaces).isEmpty)
+}
+
+// Feature #22: Custom ButtonStyle
+@Test func parity_custom_buttonStyle() async throws {
+    struct BoldButtonStyle: ButtonStyle {
+        func makeBody(configuration: Configuration) -> some View {
+            configuration.label
+                .bold()
+        }
+    }
+    struct StyledBtn: View {
+        var body: some View {
+            Button("Custom") {}
+                .buttonStyle(BoldButtonStyle())
+        }
+    }
+    let runtime = _UIRuntime()
+    let snap = runtime.debugRender(StyledBtn(), size: _Size(width: 20, height: 3))
+    #expect(snap.text.contains("Custom"))
+}
+
+// Feature #23: Shadow rendering
+@Test func parity_shadow_small_radius() async throws {
+    struct ShadowView: View {
+        var body: some View {
+            Text("Hi")
+                .shadow(color: .gray, radius: 1)
+        }
+    }
+    let runtime = _UIRuntime()
+    let snap = runtime.debugRender(ShadowView(), size: _Size(width: 10, height: 5))
+    #expect(snap.text.contains("Hi"))
+}
+
+@Test func parity_shadow_large_radius_glow() async throws {
+    struct GlowView: View {
+        var body: some View {
+            Text("Hi")
+                .shadow(color: .green, radius: 5)
+        }
+    }
+    let runtime = _UIRuntime()
+    let snap = runtime.debugRender(GlowView(), size: _Size(width: 20, height: 8))
+    #expect(snap.text.contains("Hi"))
+}

@@ -302,73 +302,89 @@ enum _RenderLayout {
             return sz
 
         case .shadow(let child, let color, let radius, let x, let y):
-            // Simple, terminal-friendly shadow/glow: draw the glyphs behind the child at a few offsets.
+            // Dual-mode shadow/glow rendering:
+            // - Small radius (<=2): dim 1-cell border using ░ chars — UI drop shadow
+            // - Large radius (>2): glyph duplication with dimming — CRT glow/bloom effect
             guard color.alpha > 0, (radius > 0 || x != 0 || y != 0) else {
                 return draw(node: child, origin: origin, maxSize: maxSize, ctx: &ctx, ops: &ops, hitRegions: &hitRegions, hoverRegions: &hoverRegions, scrollRegions: &scrollRegions, scrollTargets: &scrollTargets, shapeRegions: &shapeRegions, cursorPosition: &cursorPosition, activeMenu: &activeMenu, activePicker: &activePicker, activeTextField: &activeTextField,
                 scrollContext: scrollContext)
             }
 
             let shadowZ = ctx.z - 1
-            let r = min(3, max(0, radius))
-            var offsets: [(dx: Int, dy: Int)] = []
-            offsets.reserveCapacity((2 * r + 1) * (2 * r + 1))
-            if r > 0 {
-                for dy in -r...r {
-                    for dx in -r...r {
-                        if dx == 0 && dy == 0 { continue }
-                        if abs(dx) + abs(dy) > r { continue }
-                        offsets.append((dx: x + dx, dy: y + dy))
+
+            if radius <= 2 {
+                // Border mode: draw a dim 1-cell border around the child's bounding box
+                let childSize = Self.measure(child, maxSize)
+                let dimColor = color.opacity(max(0.2, color.alpha * 0.5))
+                let borderChar: String = "░"
+                // Top and bottom border
+                for col in (origin.x + x - 1)...(origin.x + x + childSize.width) {
+                    ops.append(RenderOp(zIndex: shadowZ, kind: .glyph(x: col, y: origin.y + y - 1, egc: borderChar, fg: dimColor, bg: nil)))
+                    ops.append(RenderOp(zIndex: shadowZ, kind: .glyph(x: col, y: origin.y + y + childSize.height, egc: borderChar, fg: dimColor, bg: nil)))
+                }
+                // Left and right border
+                for row in (origin.y + y)..<(origin.y + y + childSize.height) {
+                    ops.append(RenderOp(zIndex: shadowZ, kind: .glyph(x: origin.x + x - 1, y: row, egc: borderChar, fg: dimColor, bg: nil)))
+                    ops.append(RenderOp(zIndex: shadowZ, kind: .glyph(x: origin.x + x + childSize.width, y: row, egc: borderChar, fg: dimColor, bg: nil)))
+                }
+            } else {
+                // Halo mode: glyph duplication at offsets with aggressive dimming for bloom effect
+                let r = min(5, max(0, radius))
+                let dimColor = color.opacity(max(0.15, color.alpha * 0.3))
+                var offsets: [(dx: Int, dy: Int)] = []
+                offsets.reserveCapacity((2 * r + 1) * (2 * r + 1))
+                for dy2 in -r...r {
+                    for dx2 in -r...r {
+                        if dx2 == 0 && dy2 == 0 { continue }
+                        if abs(dx2) + abs(dy2) > r { continue }
+                        offsets.append((dx: x + dx2, dy: y + dy2))
                     }
                 }
-            } else if x != 0 || y != 0 {
-                offsets.append((dx: x, dy: y))
-            }
 
-            if !offsets.isEmpty {
-                // Render shadow glyphs without hit regions / scroll regions etc.
-                var shadowOps: [RenderOp] = []
-                shadowOps.reserveCapacity(64)
-                var dummyHits: [(_Rect, _ActionID)] = []
-                var dummyHovers: [(_Rect, _HoverID)] = []
-                var dummyScrolls: [_ScrollRegion] = []
-                var dummyScrollTargets: [_ScrollTarget] = []
-                var dummyShapes: [(_Rect, _ShapeNode)] = []
-                var dummyCursor: _Point? = nil
-                var dummyMenu: _MenuInfo? = nil
-                var dummyPicker: _PickerInfo? = nil
-                var dummyTextField: _TextFieldInfo? = nil
+                if !offsets.isEmpty {
+                    var shadowOps: [RenderOp] = []
+                    shadowOps.reserveCapacity(64)
+                    var dummyHits: [(_Rect, _ActionID)] = []
+                    var dummyHovers: [(_Rect, _HoverID)] = []
+                    var dummyScrolls: [_ScrollRegion] = []
+                    var dummyScrollTargets: [_ScrollTarget] = []
+                    var dummyShapes: [(_Rect, _ShapeNode)] = []
+                    var dummyCursor: _Point? = nil
+                    var dummyMenu: _MenuInfo? = nil
+                    var dummyPicker: _PickerInfo? = nil
+                    var dummyTextField: _TextFieldInfo? = nil
 
-                for o in offsets {
-                    var shadowCtx = ctx
-                    shadowCtx.z = shadowZ
-                    _ = draw(
-                        node: child,
-                        origin: _Point(x: origin.x + o.dx, y: origin.y + o.dy),
-                        maxSize: maxSize,
-                        ctx: &shadowCtx,
-                        ops: &shadowOps,
-                        hitRegions: &dummyHits,
-                        hoverRegions: &dummyHovers,
-                        scrollRegions: &dummyScrolls,
-                        scrollTargets: &dummyScrollTargets,
-                        shapeRegions: &dummyShapes,
-                        cursorPosition: &dummyCursor,
-                        activeMenu: &dummyMenu,
-                        activePicker: &dummyPicker,
-                        activeTextField: &dummyTextField,
-                        scrollContext: scrollContext
-                    )
-                }
+                    for o in offsets {
+                        var shadowCtx = ctx
+                        shadowCtx.z = shadowZ
+                        _ = draw(
+                            node: child,
+                            origin: _Point(x: origin.x + o.dx, y: origin.y + o.dy),
+                            maxSize: maxSize,
+                            ctx: &shadowCtx,
+                            ops: &shadowOps,
+                            hitRegions: &dummyHits,
+                            hoverRegions: &dummyHovers,
+                            scrollRegions: &dummyScrolls,
+                            scrollTargets: &dummyScrollTargets,
+                            shapeRegions: &dummyShapes,
+                            cursorPosition: &dummyCursor,
+                            activeMenu: &dummyMenu,
+                            activePicker: &dummyPicker,
+                            activeTextField: &dummyTextField,
+                            scrollContext: scrollContext
+                        )
+                    }
 
-                // Keep only glyph/text ops and override their colors so shadows don't clobber BG fills.
-                for op in shadowOps {
-                    switch op.kind {
-                    case .glyph(let x, let y, let egc, _, _):
-                        ops.append(RenderOp(zIndex: shadowZ, kind: .glyph(x: x, y: y, egc: egc, fg: color, bg: nil), textStyle: op.textStyle))
-                    case .textRun(let x, let y, let text, _, _):
-                        ops.append(RenderOp(zIndex: shadowZ, kind: .textRun(x: x, y: y, text: text, fg: color, bg: nil), textStyle: op.textStyle))
-                    default:
-                        break
+                    for op in shadowOps {
+                        switch op.kind {
+                        case .glyph(let gx, let gy, let egc, _, _):
+                            ops.append(RenderOp(zIndex: shadowZ, kind: .glyph(x: gx, y: gy, egc: egc, fg: dimColor, bg: nil), textStyle: op.textStyle))
+                        case .textRun(let tx, let ty, let text, _, _):
+                            ops.append(RenderOp(zIndex: shadowZ, kind: .textRun(x: tx, y: ty, text: text, fg: dimColor, bg: nil), textStyle: op.textStyle))
+                        default:
+                            break
+                        }
                     }
                 }
             }
@@ -796,12 +812,33 @@ enum _RenderLayout {
             let wantsFullHitRect = hasContentShapeRect(label)
             let x0 = isFocused ? origin.x + 1 : origin.x
             if isFocused { emitGlyph(">", at: origin) }
-            emitGlyph("[", at: _Point(x: x0, y: origin.y))
+            // For borderedProminent: detect bg color from label's style node and apply to brackets
+            let bracketBg: Color? = {
+                if case .style(_, let bg, _) = label { return bg }
+                return nil
+            }()
+            if let bg = bracketBg {
+                let prevBg = ctx.style.bg
+                ctx.style.bg = bg
+                emitGlyph("[", at: _Point(x: x0, y: origin.y))
+                emitGlyph(" ", at: _Point(x: x0 + 1, y: origin.y))
+                ctx.style.bg = prevBg
+            } else {
+                emitGlyph("[", at: _Point(x: x0, y: origin.y))
+            }
             let labelOrigin = _Point(x: x0 + 2, y: origin.y)
             let labelMax = _Size(width: max(0, maxSize.width - (isFocused ? 5 : 4)), height: 1)
             let labelSize = draw(node: label, origin: labelOrigin, maxSize: labelMax, ctx: &ctx, ops: &ops, hitRegions: &hitRegions, hoverRegions: &hoverRegions, scrollRegions: &scrollRegions, scrollTargets: &scrollTargets, shapeRegions: &shapeRegions, cursorPosition: &cursorPosition, activeMenu: &activeMenu, activePicker: &activePicker, activeTextField: &activeTextField,
                 scrollContext: scrollContext)
-            emitGlyph("]", at: _Point(x: x0 + 1 + labelSize.width + 2, y: origin.y))
+            if let bg = bracketBg {
+                let prevBg = ctx.style.bg
+                ctx.style.bg = bg
+                emitGlyph(" ", at: _Point(x: x0 + 1 + labelSize.width + 1, y: origin.y))
+                emitGlyph("]", at: _Point(x: x0 + 1 + labelSize.width + 2, y: origin.y))
+                ctx.style.bg = prevBg
+            } else {
+                emitGlyph("]", at: _Point(x: x0 + 1 + labelSize.width + 2, y: origin.y))
+            }
             let buttonWidth = min(maxSize.width, (isFocused ? 1 : 0) + 4 + labelSize.width)
             let hitWidth = wantsFullHitRect ? maxSize.width : buttonWidth
             let rect = _Rect(origin: origin, size: _Size(width: min(maxSize.width, hitWidth), height: 1))
@@ -1656,6 +1693,14 @@ private func _interpolateColor(_ colors: [Color], t: CGFloat) -> Color? {
     return Color(red: r / 255.0, green: g / 255.0, blue: b / 255.0)
 }
 
+private func _ditheredGlyph(ratio: CGFloat) -> Character {
+    let clamped = min(max(0, ratio), 1)
+    if clamped < 0.25 { return "░" }
+    if clamped < 0.50 { return "▒" }
+    if clamped < 0.75 { return "▓" }
+    return "█"
+}
+
 private func _emitGradientOps(_ gradient: _GradientNode, rect: _Rect, zIndex: Int, ops: inout [RenderOp]) {
     guard rect.size.width > 0, rect.size.height > 0 else { return }
     switch gradient.kind {
@@ -1663,19 +1708,58 @@ private func _emitGradientOps(_ gradient: _GradientNode, rect: _Rect, zIndex: In
         let dx = abs(endPoint.x - startPoint.x)
         let dy = abs(endPoint.y - startPoint.y)
         if dx >= dy {
+            // Horizontal gradient with dithering
             let width = max(1, rect.size.width)
             for column in 0..<width {
                 let t = CGFloat(column) / CGFloat(max(1, width - 1))
                 if let color = _interpolateColor(gradient.colors, t: t) {
-                    ops.append(RenderOp(zIndex: zIndex, kind: .fillRect(rect: _Rect(origin: _Point(x: rect.origin.x + column, y: rect.origin.y), size: _Size(width: 1, height: rect.size.height)), color: color)))
+                    // Dithering: at color-stop boundaries, emit dither chars
+                    let scaled = min(max(0, t), 1) * CGFloat(max(0, gradient.colors.count - 1))
+                    let fraction = scaled - floor(scaled)
+                    if fraction > 0.05 && fraction < 0.95, gradient.colors.count > 1 {
+                        // At a boundary between two colors — emit dithered glyph
+                        let ch = _ditheredGlyph(ratio: fraction)
+                        let lowerIdx = Int(floor(scaled))
+                        let upperIdx = min(gradient.colors.count - 1, lowerIdx + 1)
+                        for row in 0..<rect.size.height {
+                            ops.append(RenderOp(zIndex: zIndex, kind: .glyph(
+                                x: rect.origin.x + column,
+                                y: rect.origin.y + row,
+                                egc: String(ch),
+                                fg: gradient.colors[upperIdx],
+                                bg: gradient.colors[lowerIdx]
+                            )))
+                        }
+                    } else {
+                        ops.append(RenderOp(zIndex: zIndex, kind: .fillRect(rect: _Rect(origin: _Point(x: rect.origin.x + column, y: rect.origin.y), size: _Size(width: 1, height: rect.size.height)), color: color)))
+                    }
                 }
             }
         } else {
+            // Vertical gradient with dithering
             let height = max(1, rect.size.height)
             for row in 0..<height {
                 let t = CGFloat(row) / CGFloat(max(1, height - 1))
                 if let color = _interpolateColor(gradient.colors, t: t) {
-                    ops.append(RenderOp(zIndex: zIndex, kind: .fillRect(rect: _Rect(origin: _Point(x: rect.origin.x, y: rect.origin.y + row), size: _Size(width: rect.size.width, height: 1)), color: color)))
+                    let scaled = min(max(0, t), 1) * CGFloat(max(0, gradient.colors.count - 1))
+                    let fraction = scaled - floor(scaled)
+                    if fraction > 0.05 && fraction < 0.95, gradient.colors.count > 1 {
+                        let lowerIdx = Int(floor(scaled))
+                        let upperIdx = min(gradient.colors.count - 1, lowerIdx + 1)
+                        // For vertical gradients, use half-block chars for smooth transitions
+                        let ch: Character = fraction < 0.5 ? "▄" : "▀"
+                        for column in 0..<rect.size.width {
+                            ops.append(RenderOp(zIndex: zIndex, kind: .glyph(
+                                x: rect.origin.x + column,
+                                y: rect.origin.y + row,
+                                egc: String(ch),
+                                fg: gradient.colors[upperIdx],
+                                bg: gradient.colors[lowerIdx]
+                            )))
+                        }
+                    } else {
+                        ops.append(RenderOp(zIndex: zIndex, kind: .fillRect(rect: _Rect(origin: _Point(x: rect.origin.x, y: rect.origin.y + row), size: _Size(width: rect.size.width, height: 1)), color: color)))
+                    }
                 }
             }
         }
@@ -1690,7 +1774,21 @@ private func _emitGradientOps(_ gradient: _GradientNode, rect: _Rect, zIndex: In
                 let y = CGFloat(rect.origin.y + row)
                 let distance = hypot(x - centerX, y - centerY)
                 let t = (distance - start) / (end - start)
-                if let color = _interpolateColor(gradient.colors, t: t) {
+                let clamped = min(max(0, t), 1)
+                let scaled = clamped * CGFloat(max(0, gradient.colors.count - 1))
+                let fraction = scaled - floor(scaled)
+                if fraction > 0.05 && fraction < 0.95, gradient.colors.count > 1 {
+                    let lowerIdx = Int(floor(scaled))
+                    let upperIdx = min(gradient.colors.count - 1, lowerIdx + 1)
+                    let ch = _ditheredGlyph(ratio: fraction)
+                    ops.append(RenderOp(zIndex: zIndex, kind: .glyph(
+                        x: rect.origin.x + column,
+                        y: rect.origin.y + row,
+                        egc: String(ch),
+                        fg: gradient.colors[upperIdx],
+                        bg: gradient.colors[lowerIdx]
+                    )))
+                } else if let color = _interpolateColor(gradient.colors, t: t) {
                     ops.append(RenderOp(zIndex: zIndex, kind: .fillRect(rect: _Rect(origin: _Point(x: rect.origin.x + column, y: rect.origin.y + row), size: _Size(width: 1, height: 1)), color: color)))
                 }
             }

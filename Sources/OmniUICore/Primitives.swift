@@ -1338,49 +1338,82 @@ public struct GroupBox<Label: View, Content: View>: View, _PrimitiveView {
     }
 }
 
-public struct LabeledContent: View, _PrimitiveView {
+public struct LabeledContent<Label: View, Content: View>: View, _PrimitiveView {
     public typealias Body = Never
 
-    let label: String
-    let value: String
+    let label: Label
+    let content: Content
 
-    public init(_ label: String, value: String) {
-        self.label = label
-        self.value = value
+    public init(@ViewBuilder content: () -> Content, @ViewBuilder label: () -> Label) {
+        self.label = label()
+        self.content = content()
+    }
+
+    public init(_ title: String, value: String) where Label == Text, Content == Text {
+        self.label = Text(title)
+        self.content = Text(value)
     }
 
     func _makeNode(_ ctx: inout _BuildContext) -> _VNode {
         ctx.buildChild(
             HStack(spacing: 1) {
-                Text(label)
+                label
                 Spacer()
-                Text(value)
+                content
             }
         )
     }
 }
 
-public struct ContentUnavailableView<Description: View>: View, _PrimitiveView {
+public struct ContentUnavailableView<Label: View, Description: View, Actions: View>: View, _PrimitiveView {
     public typealias Body = Never
 
-    let title: String
-    let systemImage: String
+    let label: Label
     let description: Description
+    let actions: Actions
 
-    public init(_ title: String, systemImage: String, description: Description) {
-        self.title = title
-        self.systemImage = systemImage
-        self.description = description
+    public init(@ViewBuilder label: () -> Label, @ViewBuilder description: () -> Description, @ViewBuilder actions: () -> Actions) {
+        self.label = label()
+        self.description = description()
+        self.actions = actions()
     }
 
     func _makeNode(_ ctx: inout _BuildContext) -> _VNode {
         ctx.buildChild(
             VStack(spacing: 1) {
-                Image(systemName: systemImage)
-                Text(title)
+                label
                 description
+                actions
             }
             .padding(1)
+        )
+    }
+}
+
+extension ContentUnavailableView where Label == AnyView, Description == AnyView, Actions == EmptyView {
+    public init(_ title: String, systemImage: String, description: Text) {
+        self.label = AnyView(VStack(spacing: 0) {
+            Image(systemName: systemImage)
+            Text(title)
+        })
+        self.description = AnyView(description)
+        self.actions = EmptyView()
+    }
+
+    public init(_ title: String, systemImage: String) {
+        self.label = AnyView(VStack(spacing: 0) {
+            Image(systemName: systemImage)
+            Text(title)
+        })
+        self.description = AnyView(EmptyView())
+        self.actions = EmptyView()
+    }
+
+    public static var search: ContentUnavailableView {
+        ContentUnavailableView(
+            "No Results",
+            systemImage: "magnifyingglass",
+            description: Text("Check the spelling or try a new search.")
         )
     }
 }
@@ -1423,7 +1456,16 @@ public struct Section<Parent: View, Content: View, Footer: View>: View, _Primiti
     }
 
     func _makeNode(_ ctx: inout _BuildContext) -> _VNode {
-        ctx.buildChild(
+        let env = _currentEnvironmentValues(for: ctx)
+        if env.listStyleKind == .plain {
+            // Plain list style: skip header/footer, emit content only
+            return ctx.buildChild(
+                VStack(spacing: 0) {
+                    content
+                }
+            )
+        }
+        return ctx.buildChild(
             VStack(spacing: 0) {
                 header
                 content
@@ -1482,21 +1524,31 @@ public struct VStack<Content: View>: View, _PrimitiveView {
     }
 }
 
+public struct PinnedScrollableViews: OptionSet, Sendable {
+    public let rawValue: UInt8
+    public init(rawValue: UInt8) { self.rawValue = rawValue }
+    public static let sectionHeaders = PinnedScrollableViews(rawValue: 1 << 0)
+    public static let sectionFooters = PinnedScrollableViews(rawValue: 1 << 1)
+}
+
 public struct LazyVStack<Content: View>: View, _PrimitiveView {
     public typealias Body = Never
 
     let alignment: HorizontalAlignment
     let spacing: CGFloat?
+    let pinnedViews: PinnedScrollableViews
     let content: Content
 
-    public init(alignment: HorizontalAlignment = .center, spacing: CGFloat? = nil, @ViewBuilder content: () -> Content) {
+    public init(alignment: HorizontalAlignment = .center, spacing: CGFloat? = nil, pinnedViews: PinnedScrollableViews = [], @ViewBuilder content: () -> Content) {
         self.alignment = alignment
         self.spacing = spacing
+        self.pinnedViews = pinnedViews
         self.content = content()
     }
 
     func _makeNode(_ ctx: inout _BuildContext) -> _VNode {
-        // We don't currently implement laziness/virtualization; render as a regular VStack.
+        // Correctness parity: eager rendering as VStack.
+        // TODO: Virtualization for large content
         ctx.buildChild(VStack(alignment: alignment, spacing: spacing) { content })
     }
 }
@@ -1607,6 +1659,17 @@ public struct Button<Label: View>: View, _PrimitiveView {
         runtime._registerFocusable(path: controlPath, activate: id)
 
         let node: _VNode = {
+            // Custom ButtonStyle: type-erased body rendering
+            if let customStyle = env._customButtonStyle {
+                let config = ButtonStyleConfiguration(
+                    label: AnyView(_VNodeView(node: labelNode)),
+                    isPressed: false
+                )
+                let bodyView = customStyle._makeBody(config)
+                let bodyNode = ctx.buildChild(bodyView)
+                return .button(id: id, isFocused: isFocused, label: bodyNode)
+            }
+
             switch env.buttonStyleKind {
             case .plain:
                 let plainLabel: _VNode = isFocused
@@ -1623,6 +1686,13 @@ public struct Button<Label: View>: View, _PrimitiveView {
         }()
         return _applyControlPadding(node, env: env)
     }
+}
+
+/// Internal view that wraps a pre-built _VNode for use in custom ButtonStyle bodies.
+struct _VNodeView: View, _PrimitiveView {
+    typealias Body = Never
+    let node: _VNode
+    func _makeNode(_ ctx: inout _BuildContext) -> _VNode { node }
 }
 
 public struct Label<Title: View, Icon: View>: View, _PrimitiveView {
@@ -1692,8 +1762,8 @@ public struct Toggle<Label: View>: View, _PrimitiveView {
             if env.toggleStyleKind == .switch {
                 let stateNode = _VNode.style(
                     fg: isOn.wrappedValue ? .white : .secondary,
-                    bg: isOn.wrappedValue ? (env.tint ?? .accentColor) : nil,
-                    child: .text(isOn.wrappedValue ? " ON " : " OFF ")
+                    bg: isOn.wrappedValue ? (env.tint ?? .accentColor) : Color.gray.opacity(0.3),
+                    child: .text(isOn.wrappedValue ? "[━━●]" : "[○━━]")
                 )
                 let body = _VNode.stack(axis: .horizontal, spacing: 1, children: [labelNode, stateNode])
                 if isFocused {
@@ -1933,8 +2003,12 @@ public struct Picker<SelectionValue: Hashable>: View, _PrimitiveView {
 
         if env.pickerStyleKind == .segmented {
             var segmentNodes: [_VNode] = []
-            segmentNodes.reserveCapacity(safeValues.count)
+            segmentNodes.reserveCapacity(safeValues.count * 2 + 2)
+            segmentNodes.append(.text("["))
             for (idx, value) in safeValues.enumerated() {
+                if idx > 0 {
+                    segmentNodes.append(.text("│"))
+                }
                 let optionPath = controlPath + [1 + idx]
                 let optionID = runtime._registerAction({
                     runtime._setFocus(path: optionPath)
@@ -1943,12 +2017,13 @@ public struct Picker<SelectionValue: Hashable>: View, _PrimitiveView {
                 runtime._registerFocusable(path: optionPath, activate: optionID)
                 let optionLabel = (idx < safeLabels.count) ? safeLabels[idx] : String(describing: value)
                 let labelNode: _VNode = value == selection.wrappedValue
-                    ? .style(fg: Color.white, bg: env.tint ?? .accentColor, child: .text(optionLabel))
-                    : .text(optionLabel)
+                    ? .style(fg: Color.white, bg: env.tint ?? .accentColor, child: .text(" \(optionLabel) "))
+                    : .text(" \(optionLabel) ")
                 segmentNodes.append(.button(id: optionID, isFocused: runtime._isFocused(path: optionPath), label: labelNode))
             }
+            segmentNodes.append(.text("]"))
             return _applyControlPadding(
-                .stack(axis: .horizontal, spacing: 1, children: segmentNodes),
+                .stack(axis: .horizontal, spacing: 0, children: segmentNodes),
                 env: env
             )
         }
@@ -2263,8 +2338,12 @@ private func _controlPaddingAmount(for size: ControlSize) -> Int {
 
 private func _applyControlPadding(_ node: _VNode, env: EnvironmentValues) -> _VNode {
     let pad = _controlPaddingAmount(for: env.controlSize)
-    guard pad > 0 else { return node }
-    return .edgePadding(top: 0, leading: pad, bottom: 0, trailing: pad, child: node)
+    var result = node
+    if env.controlSize == .large {
+        result = .textStyled(style: .bold, child: result)
+    }
+    guard pad > 0 else { return result }
+    return .edgePadding(top: 0, leading: pad, bottom: 0, trailing: pad, child: result)
 }
 
 private func _disabledButtonNode(label: _VNode) -> _VNode {
