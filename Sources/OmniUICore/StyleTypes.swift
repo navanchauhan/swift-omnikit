@@ -81,9 +81,9 @@ extension Color: View, _PrimitiveView {
     public typealias Body = Never
 
     func _makeNode(_ ctx: inout _BuildContext) -> _VNode {
-        // A Color acts like a background fill in SwiftUI. We model this as a background-style node
-        // that fills the available layout rect in `_DebugLayout`.
-        .style(fg: nil, bg: self, child: .empty)
+        // A Color used as a View fills the entire proposed region with a solid fill,
+        // just like SwiftUI's `Color.red` filling its container.
+        .gradient(_GradientNode(kind: .linear(startPoint: UnitPoint(x: 0.5, y: 0), endPoint: UnitPoint(x: 0.5, y: 1)), colors: [self]))
     }
 }
 
