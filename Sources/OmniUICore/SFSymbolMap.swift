@@ -99,5 +99,23 @@ public enum SFSymbolMap: Sendable {
         "speaker.wave.2": "🔊",
         "speaker.wave.2.fill": "🔊",
         "photo": "▧",
+
+        // iGopher / additional symbols
+        "bookmark": "🔖",
+        "bookmark.fill": "🔖",
+        "book": "📖",
+        "link": "🔗",
+        "doc.plaintext": "📄",
+        "doc.zipper": "📦",
+        "film": "🎬",
+        "questionmark.app.dashed": "?",
+        "display": "🖥",
+        "tv": "📺",
+        "hand.raised": "✋",
+        "hand.raised.fill": "✋",
+        "square.and.arrow.up": "↗",
+        "ellipsis.circle": "…",
+        "ellipsis.circle.fill": "…",
+        "calendar": "📅",
     ]
 }

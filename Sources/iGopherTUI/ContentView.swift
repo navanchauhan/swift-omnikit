@@ -27,7 +27,7 @@ struct ContentView: View {
     @State public var hosts: [GopherNode] = []
     @State private var selectedNode: GopherNode?
 
-    @State private var columnVisibility = NavigationSplitViewVisibility.automatic
+    @State private var columnVisibility = NavigationSplitViewVisibility.all
 
     @AppStorage("crtMode") var crtMode: Bool = false
     @AppStorage("crtScanlines") var crtScanlines: Bool = true

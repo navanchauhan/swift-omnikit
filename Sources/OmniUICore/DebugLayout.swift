@@ -72,22 +72,15 @@ enum _DebugLayout {
     }
 
     private static func imageString(_ name: String) -> String {
-        // Tiny mapping to keep demos readable in terminals.
-        // Unknown symbols are rendered as a generic glyph (instead of `<name>`).
+        // Terminal-optimized overrides (prefer these over SFSymbolMap defaults)
         switch name {
         case "sparkles": return "✨"
         case "chevron.down": return "▾"
         case "chevron.up": return "▴"
-        case "checkmark": return "✓"
-        case "xmark": return "✕"
-        case "plus": return "+"
-        case "minus": return "−"
-        case "arrow.up": return "↑"
-        case "arrow.down": return "↓"
-        case "arrow.left": return "←"
-        case "arrow.right": return "→"
+        case "magnifyingglass": return "⌕"
+        case "photo": return "▧"
         default:
-            return "■"
+            return SFSymbolMap.unicode(for: name) ?? "■"
         }
     }
 

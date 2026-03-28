@@ -52,6 +52,31 @@ final class GopherClient: Sendable {
     ) async throws -> [gopherItem] {
         return []
     }
+
+    /// Returns sample gopher menu items for showcase/demo purposes.
+    static func sampleMenu(host: String = "gopher.navan.dev", port: Int = 70) -> [gopherItem] {
+        func item(_ type: GopherItemType, _ msg: String, selector: String = "", host h: String? = nil) -> gopherItem {
+            var i = gopherItem(rawLine: msg)
+            i.parsedItemType = type
+            i.message = msg
+            i.host = h ?? host
+            i.port = port
+            i.selector = selector
+            return i
+        }
+        return [
+            item(.info, "Welcome to \(host)"),
+            item(.info, "========================================"),
+            item(.directory, "About This Server", selector: "/about"),
+            item(.directory, "Phlog (Gopher Blog)", selector: "/phlog"),
+            item(.text, "README", selector: "/readme.txt"),
+            item(.search, "Search Gopherspace", selector: "/search"),
+            item(.info, ""),
+            item(.info, "External Links:"),
+            item(.directory, "Floodgap Gopher", selector: "/", host: "gopher.floodgap.com"),
+            item(.text, "Gopher Protocol FAQ", selector: "/faq.txt"),
+        ]
+    }
 }
 
 // MARK: - Helper from GopherHelpers

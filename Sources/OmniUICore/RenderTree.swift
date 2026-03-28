@@ -1807,21 +1807,14 @@ private func _sanitizeCell(_ s: String) -> String {
 }
 
 private func _imageString(_ name: String) -> String {
+    // Terminal-optimized overrides (prefer these over SFSymbolMap defaults)
     switch name {
     case "sparkles": return "✨"
     case "chevron.down": return "▾"
     case "chevron.up": return "▴"
-    case "checkmark": return "✓"
-    case "xmark": return "✕"
-    case "plus": return "+"
-    case "minus": return "−"
     case "magnifyingglass": return "⌕"
     case "photo": return "▧"
-    case "arrow.up": return "↑"
-    case "arrow.down": return "↓"
-    case "arrow.left": return "←"
-    case "arrow.right": return "→"
     default:
-        return "■"
+        return SFSymbolMap.unicode(for: name) ?? "■"
     }
 }

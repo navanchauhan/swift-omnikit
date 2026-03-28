@@ -24,15 +24,22 @@ struct SidebarView: View {
 
     var body: some View {
         VStack {
-            List(hosts, children: \.children) { node in
-                Text(node.message ?? node.host)
-                    .foregroundStyle(textColor)
-                    .onTapGesture {
-                        onSelect(node)
-                    }
+            if hosts.isEmpty {
+                Text("No hosts visited yet.\nPress Home or Go to explore.")
+                    .foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else {
+                List(hosts, children: \.children) { node in
+                    Text(node.message ?? node.host)
+                        .foregroundStyle(textColor)
+                        .onTapGesture {
+                            onSelect(node)
+                        }
+                }
+                .scrollContentBackground(crtMode ? .hidden : .automatic)
             }
-            .scrollContentBackground(crtMode ? .hidden : .automatic)
         }
+        .frame(minWidth: 20)
         .navigationTitle("Your Gophertree")
     }
 }
