@@ -394,8 +394,13 @@ public final class PipelineEngine: Sendable {
             }
 
             // Select next edge
-            if outcome.status == .fail {
-                // Failure routing
+            // BUG FIX: When executeWithRetry exhausts all retries, it returns the raw
+            // .retry outcome. This must be routed through the failure path so that edges
+            // with condition="outcome=retry" (e.g. retry->Plan loops) are evaluated by
+            // resolveFailureEdge. Previously, .retry fell into the normal edge selection
+            // path which picked an unconditional/fallback edge (e.g. FinalDemo) instead.
+            if outcome.status == .fail || outcome.status == .retry {
+                // Failure routing (also handles exhausted retries)
                 let failEdge = try resolveFailureEdge(node: node, outcome: outcome, state: state)
                 if let edge = failEdge {
                     state.lastEdge = edge

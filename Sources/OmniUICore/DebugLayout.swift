@@ -1389,13 +1389,16 @@ enum _DebugLayout {
             hitRegions.append((rect, id))
 
             let maxOffsetY: Int
+            let maxOffsetX: Int
             switch axis {
             case .vertical:
                 maxOffsetY = max(0, contentSize.height - viewportHeight)
+                maxOffsetX = 0
             case .horizontal:
                 maxOffsetY = 0
+                maxOffsetX = max(0, contentSize.width - viewportSize.width)
             }
-            scrollRegions.append(_ScrollRegion(rect: rect, path: path, maxOffsetY: maxOffsetY))
+            scrollRegions.append(_ScrollRegion(rect: rect, path: path, maxOffsetY: maxOffsetY, maxOffsetX: maxOffsetX, axis: axis))
 
             // Basic focus marker: draw a leading ">" on the first line if focused.
             if isFocused {
@@ -1403,15 +1406,22 @@ enum _DebugLayout {
             }
 
             let yOff: Int
+            let xOff: Int
             switch axis {
-            case .vertical: yOff = min(max(0, offset), maxOffsetY)
-            case .horizontal: yOff = 0
+            case .vertical:
+                yOff = min(max(0, offset), maxOffsetY)
+                xOff = 0
+            case .horizontal:
+                yOff = 0
+                xOff = min(max(0, offset), maxOffsetX)
             }
 
             // Clip content to the scroll view's rect by drawing into an offscreen buffer first.
+            let bufferWidth = max(viewportSize.width, viewportSize.width + xOff)
+            let bufferHeight = max(viewportSize.height, viewportSize.height + yOff)
             var sub = Array(
-                repeating: Array(repeating: _CanvasCell(ch: " ", fg: nil, bg: nil), count: viewportSize.width),
-                count: viewportSize.height
+                repeating: Array(repeating: _CanvasCell(ch: " ", fg: nil, bg: nil), count: bufferWidth),
+                count: bufferHeight
             )
             var subHits: [(_Rect, _ActionID)] = []
             var subHovers: [(_Rect, _HoverID)] = []
@@ -1420,8 +1430,8 @@ enum _DebugLayout {
             var subShapes: [(_Rect, _ShapeNode)] = []
             _ = draw(
                 node: content,
-                origin: _Point(x: 0, y: -yOff),
-                maxSize: _Size(width: viewportSize.width, height: viewportSize.height + yOff),
+                origin: _Point(x: -xOff, y: -yOff),
+                maxSize: _Size(width: max(viewportSize.width + xOff, contentSize.width), height: max(viewportSize.height + yOff, contentSize.height)),
                 canvas: &sub,
                 hitRegions: &subHits,
                 hoverRegions: &subHovers,

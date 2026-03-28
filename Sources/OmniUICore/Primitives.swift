@@ -148,7 +148,10 @@ public struct ScrollView<Content: View>: View, _PrimitiveView {
         let id = runtime._registerAction({}, path: actionScopePath)
 
         let axis: _Axis = axes.contains(.horizontal) && !axes.contains(.vertical) ? .horizontal : .vertical
-        let offset = runtime._getScrollOffset(path: controlPath)
+        // Use the appropriate offset for the scroll axis
+        let offset = axis == .horizontal
+            ? runtime._getScrollOffsetX(path: controlPath)
+            : runtime._getScrollOffset(path: controlPath)
 
         return .scrollView(
             id: id,
@@ -1598,9 +1601,49 @@ public struct LazyVStack<Content: View>: View, _PrimitiveView {
     }
 
     func _makeNode(_ ctx: inout _BuildContext) -> _VNode {
-        // Correctness parity: eager rendering as VStack.
-        // TODO: Virtualization for large content
-        ctx.buildChild(VStack(alignment: alignment, spacing: spacing) { content })
+        let sp = Int(spacing ?? 0)
+        let child = ctx.buildChild(content)
+        let allChildren = _flatten(child)
+
+        // Basic virtualization: if the child count is small, render everything.
+        let virtualizationThreshold = 50
+        guard allChildren.count > virtualizationThreshold else {
+            return .stack(axis: .vertical, spacing: sp, children: allChildren)
+        }
+
+        // Estimate visible range from the enclosing ScrollView's offset.
+        // Each child row is assumed to have height ~1 (typical for TUI text rows).
+        // We use a generous buffer (2x viewport estimate) to avoid popping.
+        let runtime = ctx.runtime
+        // Walk up from current path to find the nearest scroll offset.
+        var parentPath = ctx.path
+        var scrollOffset = 0
+        while !parentPath.isEmpty {
+            parentPath.removeLast()
+            let off = runtime._getScrollOffset(path: parentPath)
+            if off > 0 {
+                scrollOffset = off
+                break
+            }
+        }
+
+        // Estimate viewport as 80 rows (typical terminal), with 40-row buffer on each side.
+        let estimatedViewport = 80
+        let buffer = 40
+        let visibleStart = max(0, scrollOffset - buffer)
+        let visibleEnd = min(allChildren.count, scrollOffset + estimatedViewport + buffer)
+
+        var virtualized = [_VNode]()
+        virtualized.reserveCapacity(allChildren.count)
+        for i in 0..<allChildren.count {
+            if i >= visibleStart && i < visibleEnd {
+                virtualized.append(allChildren[i])
+            } else {
+                // Placeholder: an empty frame with height 1 preserves layout positions.
+                virtualized.append(.frame(width: nil, height: 1, minWidth: nil, maxWidth: nil, minHeight: 1, maxHeight: 1, child: .empty))
+            }
+        }
+        return .stack(axis: .vertical, spacing: sp, children: virtualized)
     }
 }
 

@@ -601,6 +601,10 @@ public final class _UIRuntime: @unchecked Sendable {
         scrollOffsets[_pathKey(prefix: "scroll", path: path)] ?? 0
     }
 
+    func _getScrollOffsetX(path: [Int]) -> Int {
+        scrollOffsets[_pathKey(prefix: "scrollX", path: path)] ?? 0
+    }
+
     func _setScrollOffset(path: [Int], offset: Int) {
         let key = _pathKey(prefix: "scroll", path: path)
         let clamped = max(0, offset)
@@ -614,6 +618,18 @@ public final class _UIRuntime: @unchecked Sendable {
         let key = _pathKey(prefix: "scroll", path: path)
         let current = scrollOffsets[key] ?? 0
         let next = min(max(0, current + deltaY), max(0, maxOffset))
+        if next == current { return false }
+        scrollOffsets[key] = next
+        _markDirty(path: path)
+        return true
+    }
+
+    /// Scroll horizontally.
+    @discardableResult
+    func _scrollX(path: [Int], deltaX: Int, maxOffset: Int) -> Bool {
+        let key = _pathKey(prefix: "scrollX", path: path)
+        let current = scrollOffsets[key] ?? 0
+        let next = min(max(0, current + deltaX), max(0, maxOffset))
         if next == current { return false }
         scrollOffsets[key] = next
         _markDirty(path: path)
@@ -1467,6 +1483,16 @@ public struct _ScrollRegion: Sendable {
     public let rect: _Rect
     public let path: [Int]
     public let maxOffsetY: Int
+    public let maxOffsetX: Int
+    let axis: _Axis
+
+    init(rect: _Rect, path: [Int], maxOffsetY: Int, maxOffsetX: Int = 0, axis: _Axis = .vertical) {
+        self.rect = rect
+        self.path = path
+        self.maxOffsetY = maxOffsetY
+        self.maxOffsetX = maxOffsetX
+        self.axis = axis
+    }
 }
 
 struct _ScrollTarget {
@@ -1526,8 +1552,15 @@ public struct DebugSnapshot: Sendable {
     public func scroll(x: Int, y: Int, deltaY: Int) {
         let p = _Point(x: x, y: y)
         for r in scrollRegions.reversed() where r.rect.contains(p) {
-            if runtime._scroll(path: r.path, deltaY: deltaY, maxOffset: r.maxOffsetY) {
-                return
+            if r.axis == .horizontal {
+                // For horizontal scroll regions, apply deltaY as deltaX
+                if runtime._scrollX(path: r.path, deltaX: deltaY, maxOffset: r.maxOffsetX) {
+                    return
+                }
+            } else {
+                if runtime._scroll(path: r.path, deltaY: deltaY, maxOffset: r.maxOffsetY) {
+                    return
+                }
             }
         }
     }

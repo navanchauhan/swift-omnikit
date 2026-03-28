@@ -470,18 +470,34 @@ struct BrowserView: View {
             }
         }
 
-        self.url = "\(res.host):\(res.port)\(res.selector)"
-
-        self.currentHost = res.host
-        self.currentPort = res.port
-        self.currentSelector = res.selector
-
         let myHost = res.host
         let myPort = res.port
         let mySelector = res.selector
 
+        // Guard against empty host which would cause a meaningless request
+        guard !myHost.isEmpty else { return }
+
+        self.url = "\(myHost):\(myPort)\(mySelector)"
+
+        self.currentHost = myHost
+        self.currentPort = myPort
+        self.currentSelector = mySelector
+
         // Stub: return sample gopher menu for showcase.
         let resp = GopherClient.sampleMenu(host: myHost, port: myPort)
+
+        // If the stub returns empty data, show a "No data" placeholder instead of crashing
+        guard !resp.isEmpty else {
+            self.gopherItems = [
+                {
+                    var item = gopherItem(rawLine: "No data received from \(myHost)")
+                    item.parsedItemType = .info
+                    return item
+                }()
+            ]
+            scrollToTop.toggle()
+            return
+        }
 
         var newNode = GopherNode(
             host: myHost, port: myPort, selector: mySelector, item: nil,

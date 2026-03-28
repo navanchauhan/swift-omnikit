@@ -45,8 +45,14 @@ public struct RenderSnapshot: Sendable {
     public func scroll(x: Int, y: Int, deltaY: Int) {
         let p = _Point(x: x, y: y)
         for r in scrollRegions.reversed() where r.rect.contains(p) {
-            if runtime._scroll(path: r.path, deltaY: deltaY, maxOffset: r.maxOffsetY) {
-                return
+            if r.axis == .horizontal {
+                if runtime._scrollX(path: r.path, deltaX: deltaY, maxOffset: r.maxOffsetX) {
+                    return
+                }
+            } else {
+                if runtime._scroll(path: r.path, deltaY: deltaY, maxOffset: r.maxOffsetY) {
+                    return
+                }
             }
         }
     }
@@ -931,27 +937,35 @@ enum _RenderLayout {
             return _Size(width: renderedWidth, height: 1)
 
         case .scrollView(let id, let path, let isFocused, let axis, let offset, let content):
-            // Measure content height in a bounded way (same approach as DebugLayout).
-            let measureMax = _Size(width: maxSize.width, height: 2048)
+            // Measure content in a bounded way (same approach as DebugLayout).
+            let measureMax: _Size
+            if axis == .horizontal {
+                measureMax = _Size(width: 4096, height: maxSize.height)
+            } else {
+                measureMax = _Size(width: maxSize.width, height: 2048)
+            }
             let contentSize = measure(content, measureMax)
 
             // Scroll views should fill the space their parent allocates.
-            let viewportHeight: Int = (axis == .vertical) ? maxSize.height : min(maxSize.height, 1)
-            let viewportSize = _Size(width: maxSize.width, height: viewportHeight)
+            let viewportHeight: Int = (axis == .vertical) ? maxSize.height : min(maxSize.height, contentSize.height)
+            let viewportWidth: Int = maxSize.width
+            let viewportSize = _Size(width: viewportWidth, height: viewportHeight)
 
             let rect = _Rect(origin: origin, size: viewportSize)
             hitRegions.append((rect, id))
 
             let maxOffsetY: Int = (axis == .vertical) ? max(0, contentSize.height - viewportHeight) : 0
-            scrollRegions.append(_ScrollRegion(rect: rect, path: path, maxOffsetY: maxOffsetY))
+            let maxOffsetX: Int = (axis == .horizontal) ? max(0, contentSize.width - viewportWidth) : 0
+            scrollRegions.append(_ScrollRegion(rect: rect, path: path, maxOffsetY: maxOffsetY, maxOffsetX: maxOffsetX, axis: axis))
 
             if isFocused { emitGlyph(">", at: origin) }
 
             let yOff = (axis == .vertical) ? min(max(0, offset), maxOffsetY) : 0
+            let xOff = (axis == .horizontal) ? min(max(0, offset), maxOffsetX) : 0
 
             // Clip and translate (renderer-enforced via ops).
             ops.append(RenderOp(zIndex: ctx.z, kind: .pushClip(rect: rect)))
-            let childOrigin = _Point(x: origin.x, y: origin.y - yOff)
+            let childOrigin = _Point(x: origin.x - xOff, y: origin.y - yOff)
             var nextScrollContext = scrollContext
             nextScrollContext.append(
                 _ScrollContext(
@@ -965,7 +979,7 @@ enum _RenderLayout {
                 node: content,
                 origin: childOrigin,
                 // Traverse full content so off-screen `.id(...)` targets are registered for ScrollViewReader.
-                maxSize: _Size(width: viewportSize.width, height: max(viewportSize.height + yOff, contentSize.height)),
+                maxSize: _Size(width: max(viewportSize.width + xOff, contentSize.width), height: max(viewportSize.height + yOff, contentSize.height)),
                 ctx: &ctx,
                 ops: &ops,
                 hitRegions: &hitRegions,
