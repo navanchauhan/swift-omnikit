@@ -274,8 +274,13 @@ struct BrowserView: View {
                     }
                 } else {
                     Spacer()
-                    Text("Welcome to iGopher Browser")
-                        .frame(maxWidth: .infinity)
+                    VStack(spacing: 4) {
+                        Text("Welcome to iGopher Browser")
+                        Text("Press Home to start exploring")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    .frame(maxWidth: .infinity)
                     Spacer()
                 }
                 // Unified TUI toolbar
@@ -331,47 +336,58 @@ struct BrowserView: View {
     // MARK: - TUI Toolbar
 
     private var tuiToolbarView: some View {
-        HStack(spacing: 8) {
-            Button(action: onHome) {
-                Label("Home", systemImage: "house")
+        VStack(spacing: 0) {
+            // Row 1: URL bar + Go
+            HStack(spacing: 4) {
+                TextField("Enter a URL", text: $url)
+                    .focused($isURLFocused)
+                    .textFieldStyle(.roundedBorder)
+                    .frame(maxWidth: .infinity)
+
+                Button("Go", action: onGo)
+                    .buttonStyle(.bordered)
+                    .keyboardShortcut(.defaultAction)
             }
-            .keyboardShortcut("r", modifiers: [.command])
+            .padding(.horizontal, 4)
+            .padding(.vertical, 2)
 
-            Button(action: goBack) {
-                Label("Back", systemImage: "chevron.left")
+            // Row 2: Navigation + Actions (icon-only, tight spacing)
+            HStack(spacing: 4) {
+                Button(action: onHome) {
+                    Label("Home", systemImage: "house")
+                }.labelStyle(.iconOnly)
+                 .keyboardShortcut("r", modifiers: [.command])
+
+                Button(action: goBack) {
+                    Label("Back", systemImage: "chevron.left")
+                }.labelStyle(.iconOnly)
+                 .keyboardShortcut("[", modifiers: [.command])
+                 .disabled(backwardStack.count < 2)
+
+                Button(action: goForward) {
+                    Label("Forward", systemImage: "chevron.right")
+                }.labelStyle(.iconOnly)
+                 .keyboardShortcut("]", modifiers: [.command])
+                 .disabled(forwardStack.isEmpty)
+
+                Spacer()
+
+                Button(action: { showAddBookmark = true }) {
+                    Label("Add Bookmark", systemImage: "bookmark.fill")
+                }.labelStyle(.iconOnly)
+                 .disabled(currentHost.isEmpty)
+
+                Button(action: { showBookmarks = true }) {
+                    Label("Bookmarks", systemImage: "book")
+                }.labelStyle(.iconOnly)
+
+                Button(action: { showPreferences = true }) {
+                    Label("Settings", systemImage: "gear")
+                }.labelStyle(.iconOnly)
             }
-            .keyboardShortcut("[", modifiers: [.command])
-            .disabled(backwardStack.count < 2)
-
-            Button(action: goForward) {
-                Label("Forward", systemImage: "chevron.right")
-            }
-            .keyboardShortcut("]", modifiers: [.command])
-            .disabled(forwardStack.isEmpty)
-
-            TextField("Enter a URL", text: $url)
-                .focused($isURLFocused)
-                .textFieldStyle(.roundedBorder)
-
-            Button(action: { showAddBookmark = true }) {
-                Label("Add Bookmark", systemImage: "bookmark.fill")
-            }
-            .disabled(currentHost.isEmpty)
-
-            Button(action: { showBookmarks = true }) {
-                Label("Bookmarks", systemImage: "book")
-            }
-
-            Button(action: { showPreferences = true }) {
-                Label("Settings", systemImage: "gear")
-            }
-
-            Button("Go", action: onGo)
-                .buttonStyle(.liquidGlass)
-                .keyboardShortcut(.defaultAction)
+            .padding(.horizontal, 4)
+            .padding(.vertical, 2)
         }
-        .padding(.horizontal, 8)
-        .padding(.vertical, 4)
     }
 
     // MARK: - Actions
@@ -417,7 +433,6 @@ struct BrowserView: View {
     private func completeFirstRunExperience() {
         guard !hasFinishedFirstRunTips else { return }
         hasFinishedFirstRunTips = true
-        lastSeenWhatsNewVersion = WhatsNewConfig.currentVersion
     }
 
     private func performGopherRequest(

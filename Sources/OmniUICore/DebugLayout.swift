@@ -877,6 +877,11 @@ enum _DebugLayout {
                     return true
                 case .shape:
                     return true
+                case .textField:
+                    return true
+                case .frame(_, _, _, let maxWidth, _, _, let child):
+                    if maxWidth == Int.max { return true }
+                    return isFlexibleCandidate(child)
                 case .scrollView(_, _, _, let scrollAxis, _, _):
                     return scrollAxis == axis
                 case .style(_, _, let child):
