@@ -8,13 +8,117 @@
 //  Uses a single unified toolbar.
 
 import SwiftData
+@preconcurrency import GopherHelpers
 import SwiftUI
 
 func openURL(url: URL) {
     // No-op in TUI mode
 }
 
-struct BrowserView: View {
+private func convertToHostNodes(_ responseItems: [gopherItem]) -> [GopherNode] {
+    responseItems.compactMap { item in
+        guard item.parsedItemType != .info else { return nil }
+        return GopherNode(
+            host: item.host,
+            port: item.port,
+            selector: item.selector,
+            message: item.message,
+            item: item,
+            children: nil
+        )
+    }
+}
+
+private struct PendingGopherRequest: Equatable, Sendable {
+    let id = UUID()
+    let host: String
+    let port: Int
+    let selector: String
+    let clearForward: Bool
+}
+
+private enum _GopherItemKind: Sendable {
+    case info
+    case directory
+    case search
+    case text
+    case doc
+    case image
+    case gif
+    case movie
+    case sound
+    case bitmap
+    case binary
+    case unknown
+
+    init(_ item: gopherItem) {
+        switch item.parsedItemType {
+        case .info: self = .info
+        case .directory: self = .directory
+        case .search: self = .search
+        case .text: self = .text
+        case .doc: self = .doc
+        case .image: self = .image
+        case .gif: self = .gif
+        case .movie: self = .movie
+        case .sound: self = .sound
+        case .bitmap: self = .bitmap
+        case .binary: self = .binary
+        default: self = .unknown
+        }
+    }
+
+    var rawItemType: gopherItemType {
+        switch self {
+        case .info: .info
+        case .directory: .directory
+        case .search: .search
+        case .text: .text
+        case .doc: .doc
+        case .image: .image
+        case .gif: .gif
+        case .movie: .movie
+        case .sound: .sound
+        case .bitmap: .bitmap
+        case .binary: .binary
+        case .unknown: .html
+        }
+    }
+}
+
+private struct _GopherResponseEntry: Sendable {
+    let host: String
+    let port: Int
+    let selector: String
+    let message: String
+    let kind: _GopherItemKind
+
+    init(_ item: gopherItem) {
+        host = item.host
+        port = item.port
+        selector = item.selector
+        message = item.message
+        kind = _GopherItemKind(item)
+    }
+
+    func makeItem() -> gopherItem {
+        var item = gopherItem(rawLine: message)
+        item.host = host
+        item.port = port
+        item.selector = selector
+        item.message = message
+        item.parsedItemType = kind.rawItemType
+        return item
+    }
+}
+
+private enum _PendingGopherRequestOutcome: Sendable {
+    case success([_GopherResponseEntry])
+    case failure(String)
+    case cancelled
+}
+
+struct BrowserView: View, @unchecked Sendable {
     @Environment(\.modelContext) private var modelContext
 
     @AppStorage("homeURL") var homeURL: URL = URL(string: "gopher://gopher.navan.dev:70/")!
@@ -74,13 +178,15 @@ struct BrowserView: View {
     @State private var findText: String = ""
     @State private var currentFindIndex: Int = 0
     @FocusState private var isFindFocused: Bool
+    @State private var requestTask: Task<Void, Never>?
+    @State private var hasBootstrappedHome = false
 
     private let homeTooltipMessage = "Tap Home to visit your first Gopherhole."
 
     private var findMatches: [Int] {
         guard !findText.isEmpty else { return [] }
         return gopherItems.enumerated().compactMap { idx, item in
-            item.message.localizedCaseInsensitiveContains(findText) ? idx : nil
+            item.message.localizedStandardContains(findText) ? idx : nil
         }
     }
 
@@ -93,12 +199,11 @@ struct BrowserView: View {
                             ForEach(Array(gopherItems.enumerated()), id: \.offset) { idx, item in
                                 Group {
                                     if item.parsedItemType == .info {
-                                        Text(item.message)
+                                        Text(item.message.isEmpty ? " " : item.message)
                                             .font(.system(size: 12, design: .monospaced))
                                             .foregroundStyle(effectiveTextColor)
-                                            .frame(height: 20)
+                                            .frame(maxWidth: .infinity, alignment: .leading)
                                             .listRowSeparator(.hidden)
-                                            .padding(.vertical, -8)
                                             .id(idx)
                                     } else if item.parsedItemType == .directory {
                                         Button(action: {
@@ -107,7 +212,7 @@ struct BrowserView: View {
                                                 selector: item.selector)
                                         }) {
                                             HStack {
-                                                Text(Image(systemName: "folder"))
+                                                Image(systemName: "folder")
                                                 Text(item.message)
                                                 Spacer()
                                             }
@@ -121,7 +226,7 @@ struct BrowserView: View {
                                             self.showSearchInput = true
                                         }) {
                                             HStack {
-                                                Text(Image(systemName: "magnifyingglass"))
+                                                Image(systemName: "magnifyingglass")
                                                 Text(item.message)
                                                 Spacer()
                                             }
@@ -132,7 +237,7 @@ struct BrowserView: View {
                                     } else if item.parsedItemType == .text {
                                         NavigationLink(destination: FileView(item: item)) {
                                             HStack {
-                                                Text(Image(systemName: "doc.plaintext"))
+                                                Image(systemName: "doc.plaintext")
                                                 Text(item.message)
                                                 Spacer()
                                             }
@@ -163,7 +268,7 @@ struct BrowserView: View {
                                     {
                                         NavigationLink(destination: FileView(item: item)) {
                                             HStack {
-                                                Text(Image(systemName: itemToImageType(item)))
+                                                Image(systemName: itemToImageType(item))
                                                 Text(item.message)
                                                 Spacer()
                                             }
@@ -178,7 +283,7 @@ struct BrowserView: View {
                                                 selector: item.selector)
                                         }) {
                                             HStack {
-                                                Text(Image(systemName: "questionmark.app.dashed"))
+                                                Image(systemName: "questionmark.app.dashed")
                                                 Text(item.message)
                                                 Spacer()
                                             }
@@ -191,9 +296,10 @@ struct BrowserView: View {
                                 .listRowBackground(rowBackgroundColor(for: idx))
                             }
                         }
+                        .listStyle(.plain)
+                        .listRowSeparator(.hidden)
                         .scrollContentBackground(crtMode ? .hidden : .automatic)
                         .background(crtMode ? Color.clear : Color.clear)
-                        .cornerRadius(10)
                         .onChange(of: scrollToTop) { _, _ in
                             proxy.scrollTo(0, anchor: .top)
                         }
@@ -274,9 +380,9 @@ struct BrowserView: View {
                     }
                 } else {
                     Spacer()
-                    VStack(spacing: 4) {
-                        Text("Welcome to iGopher Browser")
-                        Text("Press Home to start exploring")
+                    VStack(spacing: 1) {
+                        Text("Connecting to \(homeURL.host ?? "your home gopherhole")")
+                        Text(homeURL.absoluteString)
                             .font(.caption)
                             .foregroundStyle(.secondary)
                     }
@@ -316,11 +422,16 @@ struct BrowserView: View {
         }
         .accentColor(accentColour)
         .onAppear {
+            bootstrapHomeIfNeeded()
             if !hasFinishedFirstRunTips && !showHomeTooltip {
                 withAnimation(.spring()) {
                     showHomeTooltip = true
                 }
             }
+        }
+        .onDisappear {
+            requestTask?.cancel()
+            requestTask = nil
         }
         .background {
             Button("") {
@@ -344,7 +455,9 @@ struct BrowserView: View {
                     .textFieldStyle(.roundedBorder)
                     .frame(maxWidth: .infinity)
 
-                Button("Go", action: onGo)
+                Button("Go") {
+                    onGo()
+                }
                     .buttonStyle(.bordered)
                     .keyboardShortcut(.defaultAction)
             }
@@ -353,18 +466,18 @@ struct BrowserView: View {
 
             // Row 2: Navigation + Actions (icon-only, tight spacing)
             HStack(spacing: 4) {
-                Button(action: onHome) {
+                Button(action: { onHome() }) {
                     Label("Home", systemImage: "house")
                 }.labelStyle(.iconOnly)
                  .keyboardShortcut("r", modifiers: [.command])
 
-                Button(action: goBack) {
+                Button(action: { goBack() }) {
                     Label("Back", systemImage: "chevron.left")
                 }.labelStyle(.iconOnly)
                  .keyboardShortcut("[", modifiers: [.command])
                  .disabled(backwardStack.count < 2)
 
-                Button(action: goForward) {
+                Button(action: { goForward() }) {
                     Label("Forward", systemImage: "chevron.right")
                 }.labelStyle(.iconOnly)
                  .keyboardShortcut("]", modifiers: [.command])
@@ -435,6 +548,17 @@ struct BrowserView: View {
         hasFinishedFirstRunTips = true
     }
 
+    private func bootstrapHomeIfNeeded() {
+        guard !hasBootstrappedHome else { return }
+        guard gopherItems.isEmpty else { return }
+        hasBootstrappedHome = true
+        let host = homeURL.host ?? "gopher.navan.dev"
+        let port = homeURL.port ?? 70
+        let selector = homeURL.path.isEmpty ? "/" : homeURL.path
+        url = homeURL.absoluteString
+        performGopherRequest(host: host, port: port, selector: selector)
+    }
+
     private func performGopherRequest(
         host: String = "", port: Int = -1, selector: String = "", clearForward: Bool = true
     ) {
@@ -483,57 +607,112 @@ struct BrowserView: View {
         self.currentPort = myPort
         self.currentSelector = mySelector
 
-        // Stub: return sample gopher menu for showcase.
-        let resp = GopherClient.sampleMenu(host: myHost, port: myPort)
-
-        // If the stub returns empty data, show a "No data" placeholder instead of crashing
-        guard !resp.isEmpty else {
-            self.gopherItems = [
-                {
-                    var item = gopherItem(rawLine: "No data received from \(myHost)")
-                    item.parsedItemType = .info
-                    return item
-                }()
-            ]
-            scrollToTop.toggle()
-            return
-        }
-
-        var newNode = GopherNode(
-            host: myHost, port: myPort, selector: mySelector, item: nil,
-            children: convertToHostNodes(resp))
-
-        backwardStack.append(newNode)
-        if clearForward {
-            forwardStack.removeAll()
-        }
-
-        if let index = self.hosts.firstIndex(where: {
-            $0.host == myHost && $0.port == myPort
-        }) {
-            hosts[index].children = hosts[index].children?.map { child in
-                if child.selector == newNode.selector {
-                    newNode.message = child.message
-                    return newNode
-                } else {
-                    return child
-                }
-            }
-        } else {
-            newNode.selector = "/"
-            hosts.append(newNode)
-        }
-
-        self.gopherItems = resp
-        scrollToTop.toggle()
-
-        let historyItem = HistoryItem(
-            title: "\(myHost)\(mySelector)",
+        let request = PendingGopherRequest(
             host: myHost,
             port: myPort,
-            selector: mySelector
+            selector: mySelector,
+            clearForward: clearForward
         )
-        modelContext.insert(historyItem)
+        let applyOutcome: @Sendable @MainActor (_PendingGopherRequestOutcome) -> Void = { outcome in
+            applyPendingRequestOutcome(outcome, for: request)
+        }
+        requestTask?.cancel()
+        requestTask = Task {
+            let outcome = await BrowserView.loadPendingRequestOutcome(request)
+            await applyOutcome(outcome)
+        }
+    }
+
+    @MainActor
+    private func applyPendingRequestOutcome(
+        _ outcome: _PendingGopherRequestOutcome,
+        for request: PendingGopherRequest
+    ) {
+        switch outcome {
+        case .cancelled:
+            return
+        case .failure(let message):
+            var item = gopherItem(rawLine: "Error \(message)")
+            item.message = "Error \(message)"
+            item.parsedItemType = .info
+            item.host = request.host
+            item.port = request.port
+            item.selector = request.selector
+            guard url == "\(request.host):\(request.port)\(request.selector)" else { return }
+            gopherItems = [item]
+            scrollToTop.toggle()
+        case .success(let entries):
+            let resolvedItems = entries.map { $0.makeItem() }
+            var newNode = GopherNode(
+                host: request.host,
+                port: request.port,
+                selector: request.selector,
+                item: nil,
+                children: convertToHostNodes(resolvedItems)
+            )
+
+            backwardStack.append(newNode)
+            if request.clearForward {
+                forwardStack.removeAll()
+            }
+
+            if let index = hosts.firstIndex(where: {
+                $0.host == request.host && $0.port == request.port
+            }) {
+                hosts[index].children = hosts[index].children?.map { child in
+                    if child.selector == newNode.selector {
+                        newNode.message = child.message
+                        return newNode
+                    }
+                    return child
+                }
+            } else {
+                newNode.selector = "/"
+                hosts.append(newNode)
+            }
+
+            guard url == "\(request.host):\(request.port)\(request.selector)" else { return }
+            gopherItems = resolvedItems
+            scrollToTop.toggle()
+
+            let historyItem = HistoryItem(
+                title: "\(request.host)\(request.selector)",
+                host: request.host,
+                port: request.port,
+                selector: request.selector
+            )
+            modelContext.insert(historyItem)
+        }
+    }
+
+    private static func loadPendingRequestOutcome(
+        _ request: PendingGopherRequest
+    ) async -> _PendingGopherRequestOutcome {
+        do {
+            try Task.checkCancellation()
+            let response = try await GopherRequestService.shared.sendRequest(
+                to: request.host,
+                port: request.port,
+                message: "\(request.selector)\r\n"
+            )
+            try Task.checkCancellation()
+
+            if response.isEmpty {
+                var item = gopherItem(rawLine: "No data received from \(request.host)")
+                item.parsedItemType = .info
+                item.message = "No data received from \(request.host)"
+                item.host = request.host
+                item.port = request.port
+                item.selector = request.selector
+                return .success([_GopherResponseEntry(item)])
+            }
+
+            return .success(response.map(_GopherResponseEntry.init))
+        } catch is CancellationError {
+            return .cancelled
+        } catch {
+            return .failure(error.localizedDescription)
+        }
     }
 
     private func rowBackgroundColor(for idx: Int) -> Color? {
@@ -554,19 +733,6 @@ struct BrowserView: View {
         return crtMode ? CRTTheme.screenBackground : nil
     }
 
-    private func convertToHostNodes(_ responseItems: [gopherItem]) -> [GopherNode] {
-        var returnItems: [GopherNode] = []
-        responseItems.forEach { item in
-            if item.parsedItemType != .info {
-                returnItems.append(
-                    GopherNode(
-                        host: item.host, port: item.port, selector: item.selector,
-                        message: item.message,
-                        item: item, children: nil))
-            }
-        }
-        return returnItems
-    }
 }
 
 // MARK: - Home Tooltip

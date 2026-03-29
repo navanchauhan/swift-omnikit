@@ -30,9 +30,10 @@ public struct Text: View, _PrimitiveView {
     }
 
     public init(_ image: Image) {
-        // SwiftUI supports `Text(Image(...))` for inline symbols. Our renderer is text-based,
-        // so approximate with the image's symbol name.
-        self.content = image.name
+        // SwiftUI supports `Text(Image(...))` for inline symbols. Use the same terminal
+        // symbol mapping as standalone `Image(systemName:)` rendering so inline icons
+        // don't leak raw SF Symbol names like "folder" or "doc.plaintext".
+        self.content = _terminalSymbolString(image.name)
     }
 
     func _makeNode(_ ctx: inout _BuildContext) -> _VNode {
@@ -1659,13 +1660,13 @@ public struct HStack<Content: View>: View, _PrimitiveView {
     public let spacing: Int
     public let content: Content
 
-    public init(spacing: Int = 0, @ViewBuilder content: () -> Content) {
+    public init(spacing: Int = 1, @ViewBuilder content: () -> Content) {
         self.spacing = spacing
         self.content = content()
     }
 
     public init(alignment: VerticalAlignment = .center, spacing: CGFloat? = nil, @ViewBuilder content: () -> Content) {
-        let s = Int(spacing ?? 0)
+        let s = Int(spacing ?? 1)
         self.spacing = s
         self.content = content()
     }
@@ -2333,6 +2334,8 @@ private func _collectTaggedPickerOptions<T: Hashable>(node: _VNode, valueType: T
         case .overlay(let child, let ov):
             walk(child)
             walk(ov)
+        case .modalOverlay(_, _, _, let child):
+            walk(child)
         case .textStyled(_, let child):
             walk(child)
         case .style(_, _, let child):
@@ -2539,6 +2542,8 @@ private func _menuLabelText(from node: _VNode) -> String {
         case .background(let child, _):
             walk(child)
         case .overlay(let child, _):
+            walk(child)
+        case .modalOverlay(_, _, _, let child):
             walk(child)
         case .frame(_, _, _, _, _, _, let child):
             walk(child)

@@ -76,6 +76,28 @@ public func _resolveColorToRGB(_ c: Color?) -> _RGB? {
     }
 }
 
+// MARK: - Terminal symbol mapping
+
+public func _terminalSymbolString(_ name: String) -> String {
+    switch name {
+    case "sparkles": return "✦"
+    case "folder", "folder.fill": return "▸"
+    case "doc", "doc.text", "doc.plaintext": return "≣"
+    case "bookmark", "bookmark.fill": return "◆"
+    case "book", "book.closed", "books.vertical", "books.vertical.fill": return "▤"
+    case "film": return "▦"
+    case "speaker.wave.2": return "♪"
+    case "link": return "↗"
+    case "questionmark.app.dashed": return "?"
+    case "chevron.down": return "▾"
+    case "chevron.up": return "▴"
+    case "magnifyingglass": return "⌕"
+    case "photo": return "▧"
+    default:
+        return SFSymbolMap.unicode(for: name) ?? "■"
+    }
+}
+
 // MARK: - Border glyph detection
 
 public func _isBorderGlyphShared(_ c: Character) -> Bool {

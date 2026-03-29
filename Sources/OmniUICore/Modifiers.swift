@@ -741,48 +741,88 @@ private struct _Sheet: View, _PrimitiveView {
             }
             let detents = env.presentationDetents
             let renderSize = _UIRuntime._currentRenderSize ?? _Size(width: 80, height: 24)
-            let sheetView: AnyView
-            if detents.contains(.medium) && !detents.contains(.large) {
-                // Medium detent: sheet occupies ~half terminal height, anchored to bottom
-                let maxH = max(4, renderSize.height / 2)
-                sheetView = AnyView(
-                    VStack(spacing: 0) {
-                        Spacer()
-                        _presentationChrome(title: "Sheet", dismiss: dismiss, env: env) {
-                            sheet
-                        }
-                        .frame(maxHeight: CGFloat(maxH))
-                    }
-                )
-            } else if detents.contains(.large) && !detents.contains(.medium) {
-                // Large detent: sheet occupies most of terminal height
-                let maxH = max(4, renderSize.height - 2)
-                sheetView = AnyView(
-                    VStack(spacing: 0) {
-                        Spacer()
-                        _presentationChrome(title: "Sheet", dismiss: dismiss, env: env) {
-                            sheet
-                        }
-                        .frame(maxHeight: CGFloat(maxH))
-                    }
-                )
-            } else {
-                // Default / multiple detents: fill
-                sheetView = AnyView(
-                    _presentationChrome(title: "Sheet", dismiss: dismiss, env: env) {
-                        sheet
-                    }
-                )
-            }
-            ctx.runtime._registerOverlay(view: AnyView(
-                ZStack {
-                    Color.gray.opacity(0.35)
-                    sheetView
+            let dialogWidth = max(
+                36,
+                min(detents.isEmpty ? 56 : 72, max(36, renderSize.width - 8))
+            )
+            let dialogMaxHeight: Int = {
+                if detents.contains(.large) {
+                    return max(12, renderSize.height - 4)
                 }
-            ), dismiss: dismiss)
+                if detents.contains(.medium) {
+                    return max(10, renderSize.height / 2)
+                }
+                return max(8, renderSize.height - 6)
+            }()
+            ctx.runtime._registerOverlay(
+                view: AnyView(
+                    _ModalOverlayCard(
+                        scrim: Color.black.opacity(0.45),
+                        maxWidth: dialogWidth,
+                        maxHeight: dialogMaxHeight
+                    ) {
+                        _presentationChrome(title: "", dismiss: dismiss, env: env) {
+                            sheet
+                        }
+                    }
+                ),
+                dismiss: dismiss
+            )
         }
         return ctx.buildChild(content)
     }
+}
+
+private struct _ModalOverlayCard<Content: View>: View, _PrimitiveView {
+    typealias Body = Never
+
+    let scrim: Color?
+    let maxWidth: Int
+    let maxHeight: Int?
+    let content: Content
+
+    init(
+        scrim: Color?,
+        maxWidth: Int,
+        maxHeight: Int? = nil,
+        @ViewBuilder content: () -> Content
+    ) {
+        self.scrim = scrim
+        self.maxWidth = maxWidth
+        self.maxHeight = maxHeight
+        self.content = content()
+    }
+
+    func _makeNode(_ ctx: inout _BuildContext) -> _VNode {
+        .modalOverlay(
+            scrim: scrim,
+            maxWidth: maxWidth,
+            maxHeight: maxHeight,
+            child: ctx.buildChild(content)
+        )
+    }
+}
+
+private func _presentationOverlaySizing(
+    env: EnvironmentValues,
+    renderSize: _Size,
+    preferredWidth: Int? = nil
+) -> (maxWidth: Int, maxHeight: Int) {
+    let detents = env.presentationDetents
+    let width = max(
+        36,
+        min(preferredWidth ?? (detents.isEmpty ? 56 : 72), max(36, renderSize.width - 8))
+    )
+    let height: Int = {
+        if detents.contains(.large) {
+            return max(12, renderSize.height - 4)
+        }
+        if detents.contains(.medium) {
+            return max(10, renderSize.height / 2)
+        }
+        return max(8, renderSize.height - 6)
+    }()
+    return (maxWidth: width, maxHeight: height)
 }
 
 
@@ -805,37 +845,51 @@ private struct _PresentationOverlay: View, _PrimitiveView {
                     onDismiss?()
                 }
             }
-            let chrome = _presentationChrome(title: title, dismiss: dismiss, env: env) {
-                presented
-            }
-            // Position overlay based on arrowEdge (arrow points AT the anchor)
-            let aligned: AnyView
-            if let edge = arrowEdge {
-                switch edge {
-                case .top:
-                    // Arrow on top → popover below anchor
-                    aligned = AnyView(VStack(spacing: 0) { Spacer(); chrome })
-                case .bottom:
-                    // Arrow on bottom → popover above anchor
-                    aligned = AnyView(VStack(spacing: 0) { chrome; Spacer() })
-                case .leading:
-                    // Arrow on leading → popover right of anchor
-                    aligned = AnyView(HStack(spacing: 0) { Spacer(); chrome })
-                case .trailing:
-                    // Arrow on trailing → popover left of anchor
-                    aligned = AnyView(HStack(spacing: 0) { chrome; Spacer() })
-                }
+            if showsScrim, arrowEdge == nil {
+                let renderSize = _UIRuntime._currentRenderSize ?? _Size(width: 80, height: 24)
+                let sizing = _presentationOverlaySizing(env: env, renderSize: renderSize)
+                ctx.runtime._registerOverlay(
+                    view: AnyView(
+                        _ModalOverlayCard(
+                            scrim: Color.black.opacity(0.45),
+                            maxWidth: sizing.maxWidth,
+                            maxHeight: sizing.maxHeight
+                        ) {
+                            _presentationChrome(title: title, dismiss: dismiss, env: env) {
+                                presented
+                            }
+                        }
+                    ),
+                    dismiss: dismiss
+                )
             } else {
-                aligned = AnyView(chrome)
-            }
-            ctx.runtime._registerOverlay(view: AnyView(
-                ZStack {
-                    if showsScrim {
-                        Color.gray.opacity(0.35)
-                    }
-                    aligned
+                let chrome = _presentationChrome(title: title, dismiss: dismiss, env: env) {
+                    presented
                 }
-            ), dismiss: dismiss)
+                let aligned: AnyView
+                if let edge = arrowEdge {
+                    switch edge {
+                    case .top:
+                        aligned = AnyView(VStack(spacing: 0) { Spacer(); chrome })
+                    case .bottom:
+                        aligned = AnyView(VStack(spacing: 0) { chrome; Spacer() })
+                    case .leading:
+                        aligned = AnyView(HStack(spacing: 0) { Spacer(); chrome })
+                    case .trailing:
+                        aligned = AnyView(HStack(spacing: 0) { chrome; Spacer() })
+                    }
+                } else {
+                    aligned = AnyView(chrome)
+                }
+                ctx.runtime._registerOverlay(view: AnyView(
+                    ZStack {
+                        if showsScrim {
+                            Color.gray.opacity(0.35)
+                        }
+                        aligned
+                    }
+                ), dismiss: dismiss)
+            }
         }
         return ctx.buildChild(content)
     }
@@ -859,16 +913,36 @@ private struct _ItemPresentationOverlay<Item: Identifiable>: View, _PrimitiveVie
                     onDismiss?()
                 }
             }
-            ctx.runtime._registerOverlay(view: AnyView(
-                ZStack {
-                    if showsScrim {
-                        Color.gray.opacity(0.35)
+            if showsScrim {
+                let renderSize = _UIRuntime._currentRenderSize ?? _Size(width: 80, height: 24)
+                let sizing = _presentationOverlaySizing(env: env, renderSize: renderSize)
+                let displayTitle = title == "Sheet" ? "" : title
+                ctx.runtime._registerOverlay(
+                    view: AnyView(
+                        _ModalOverlayCard(
+                            scrim: Color.black.opacity(0.45),
+                            maxWidth: sizing.maxWidth,
+                            maxHeight: sizing.maxHeight
+                        ) {
+                            _presentationChrome(title: displayTitle, dismiss: dismiss, env: env) {
+                                presented(current)
+                            }
+                        }
+                    ),
+                    dismiss: dismiss
+                )
+            } else {
+                ctx.runtime._registerOverlay(view: AnyView(
+                    ZStack {
+                        if showsScrim {
+                            Color.gray.opacity(0.35)
+                        }
+                        _presentationChrome(title: title, dismiss: dismiss, env: env) {
+                            presented(current)
+                        }
                     }
-                    _presentationChrome(title: title, dismiss: dismiss, env: env) {
-                        presented(current)
-                    }
-                }
-            ), dismiss: dismiss)
+                ), dismiss: dismiss)
+            }
         }
         return ctx.buildChild(content)
     }
@@ -903,27 +977,40 @@ private struct _ConfirmationDialog: View, _PrimitiveView {
             }
             let shouldShowTitle = titleVisibility != .hidden && !title.isEmpty
             let messageView = message ?? AnyView(EmptyView())
-            ctx.runtime._registerOverlay(view: AnyView(
-                ZStack {
-                    Color.gray.opacity(0.35)
-                    _presentationChrome(title: shouldShowTitle ? title : "", dismiss: dismiss, env: env) {
-                        VStack(spacing: 1) {
-                            messageView
-                            if captured.isEmpty {
-                                Button("OK") { dismiss() }
-                            } else {
-                                ForEach(0..<captured.count, id: \.self) { idx in
-                                    let entry = captured[idx]
-                                    Button(entry.label) {
-                                        dismiss()
-                                        runtime._invokeCapturedMenuItem(entry)
+            let renderSize = _UIRuntime._currentRenderSize ?? _Size(width: 80, height: 24)
+            let sizing = _presentationOverlaySizing(env: env, renderSize: renderSize, preferredWidth: 48)
+            let messageRows = message == nil ? 0 : 2
+            let actionRows = captured.isEmpty ? 1 : max(1, captured.count * 2 - 1)
+            let chromeRows = 4
+            let desiredHeight = chromeRows + messageRows + actionRows
+            let maxHeight = min(max(8, desiredHeight), max(8, renderSize.height - 1))
+            ctx.runtime._registerOverlay(
+                view: AnyView(
+                    _ModalOverlayCard(
+                        scrim: Color.black.opacity(0.45),
+                        maxWidth: sizing.maxWidth,
+                        maxHeight: maxHeight
+                    ) {
+                        _presentationChrome(title: shouldShowTitle ? title : "", dismiss: dismiss, env: env) {
+                            VStack(spacing: 1) {
+                                messageView
+                                if captured.isEmpty {
+                                    Button("OK") { dismiss() }
+                                } else {
+                                    ForEach(0..<captured.count, id: \.self) { idx in
+                                        let entry = captured[idx]
+                                        Button(entry.label) {
+                                            dismiss()
+                                            runtime._invokeCapturedMenuItem(entry)
+                                        }
                                     }
                                 }
                             }
                         }
                     }
-                }
-            ), dismiss: dismiss)
+                ),
+                dismiss: dismiss
+            )
         }
         return ctx.buildChild(content)
     }
@@ -1121,50 +1208,36 @@ private struct _AlertFromType: View, _PrimitiveView {
 }
 
 private func _presentationChrome<Content: View>(title: String, dismiss: @escaping () -> Void, env: EnvironmentValues, @ViewBuilder content: () -> Content) -> some View {
-    VStack(spacing: 0) {
-        // Top border: ┌──────── title ── Close ─┐
-        HStack(spacing: 0) {
-            Text("┌─")
+    VStack(alignment: .leading, spacing: 0) {
+        HStack(spacing: 1) {
             if !title.isEmpty {
-                Text(" \(title) ")
+                Text(title)
+                    .bold()
             }
-            Text("─")
             Spacer()
             Button("Close") { dismiss() }
-            Text(" ─┐")
         }
-        // Body with left/right borders
-        HStack(spacing: 0) {
-            Text("│")
-            VStack(spacing: 1) {
+        Divider()
+        ScrollView {
+            VStack(alignment: .leading, spacing: 1) {
                 content()
             }
-            .padding(1)
-            Text("│")
-        }
-        // Bottom border: └────────────────────────┘
-        HStack(spacing: 0) {
-            Text("└")
-            // Use a divider-like fill; the frame will stretch it
-            Text("─")
-            Spacer()
-            Text("┘")
+            .frame(maxWidth: .infinity, alignment: .leading)
         }
     }
-    .padding(2)
+    .padding(1)
     .background(_presentationBackgroundColor(env: env))
 }
 
 private func _presentationBackgroundColor(env: EnvironmentValues) -> Color {
-    // Sheet background should be visually distinct from the scrim behind it.
-    // Use a darker shade so the sheet "pops" over the dimmed content.
+    // Use a distinct panel background so modals stand out over the scrim.
     if env.presentationDetents.contains(.large) {
-        return Color.gray.opacity(0.30)
+        return Color(red: 0.16, green: 0.18, blue: 0.23)
     }
     if env.presentationDetents.contains(.medium) {
-        return Color.gray.opacity(0.25)
+        return Color(red: 0.15, green: 0.17, blue: 0.21)
     }
-    return Color.gray.opacity(0.22)
+    return Color(red: 0.13, green: 0.15, blue: 0.19)
 }
 
 private struct _TapGesture: View, _PrimitiveView {

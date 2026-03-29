@@ -26,6 +26,13 @@ enum _DebugLayout {
         var shapeRegions: [(_Rect, _ShapeNode)]
     }
 
+    private struct _DebugScrollContext {
+        let path: [Int]
+        let contentOriginY: Int
+        let viewportHeight: Int
+        let maxOffsetY: Int
+    }
+
     static func layout(node: _VNode, in rect: _Rect, renderShapeGlyphs: Bool = true) -> Result {
         var canvas = Array(
             repeating: Array(repeating: _CanvasCell(ch: " ", fg: nil, bg: nil), count: rect.size.width),
@@ -58,7 +65,8 @@ enum _DebugLayout {
         let lines = canvas.map { $0.map(\.ch).joined() }
         let cells = canvas.flatMap { $0.map(\.ch) }
         let styledCells = canvas.flatMap { row in row.map { StyledCell(egc: $0.ch, fg: $0.fg, bg: $0.bg) } }
-        let scrollTargets = _RenderLayout.layout(node: node, size: rect.size).scrollTargets
+        var scrollTargets: [_ScrollTarget] = []
+        _ = collectScrollTargets(node: node, origin: rect.origin, maxSize: rect.size, targets: &scrollTargets)
         return Result(
             lines: lines,
             cells: cells,
@@ -72,16 +80,7 @@ enum _DebugLayout {
     }
 
     private static func imageString(_ name: String) -> String {
-        // Terminal-optimized overrides (prefer these over SFSymbolMap defaults)
-        switch name {
-        case "sparkles": return "✨"
-        case "chevron.down": return "▾"
-        case "chevron.up": return "▴"
-        case "magnifyingglass": return "⌕"
-        case "photo": return "▧"
-        default:
-            return SFSymbolMap.unicode(for: name) ?? "■"
-        }
+        _terminalSymbolString(name)
     }
 
     private static func hasContentShapeRect(_ node: _VNode) -> Bool {
@@ -98,6 +97,8 @@ enum _DebugLayout {
             return hasContentShapeRect(child) || hasContentShapeRect(bg)
         case .overlay(let child, let ov):
             return hasContentShapeRect(child) || hasContentShapeRect(ov)
+        case .modalOverlay(_, _, _, let child):
+            return hasContentShapeRect(child)
         case .frame(_, _, _, _, _, _, let child):
             return hasContentShapeRect(child)
         case .edgePadding(_, _, _, _, let child):
@@ -143,6 +144,506 @@ enum _DebugLayout {
             return children.contains(where: hasContentShapeRect)
         default:
             return false
+        }
+    }
+
+    private static func measureNode(_ node: _VNode, _ maxSize: _Size) -> _Size {
+        guard maxSize.width > 0, maxSize.height > 0 else { return _Size(width: 0, height: 0) }
+        switch node {
+        case .empty:
+            return _Size(width: 0, height: 0)
+        case .textStyled(_, let child),
+             .style(_, _, let child),
+             .offset(_, _, let child),
+             .opacity(_, let child),
+             .contentShapeRect(_, let child),
+             .clip(_, let child),
+             .shadow(let child, _, _, _, _),
+             .background(let child, _),
+             .overlay(let child, _),
+             .elevated(_, let child),
+             .identified(_, _, let child),
+             .onDelete(_, _, let child),
+             .gestureTarget(_, let child),
+             .hover(_, let child),
+             .fixedSize(_, _, let child),
+             .layoutPriority(_, let child),
+             .alignmentGuide(_, _, let child),
+             .preferenceNode(_, let child),
+             .rotationEffect(_, let child),
+             .aspectRatio(_, _, let child),
+             .swipeActions(_, _, _, let child),
+             .textCase(_, let child),
+             .blur(_, let child),
+             .badge(_, let child),
+             .anchorPreference(_, _, _, let child),
+             .geometryReaderProxy(_, let child):
+            return measureNode(child, maxSize)
+        case .modalOverlay:
+            return maxSize
+        case .tagged(_, let label):
+            return measureNode(label, maxSize)
+        case .frame(_, _, let minWidth, let maxWidth, let minHeight, let maxHeight, let child):
+            let childSize = measureNode(child, maxSize)
+            let width = max(minWidth ?? 0, min(maxSize.width, maxWidth == Int.max ? maxSize.width : min(childSize.width, maxWidth ?? childSize.width)))
+            let height = max(minHeight ?? 0, min(maxSize.height, maxHeight == Int.max ? maxSize.height : min(childSize.height, maxHeight ?? childSize.height)))
+            return _Size(width: width, height: height)
+        case .edgePadding(let top, let leading, let bottom, let trailing, let child):
+            let inner = _Size(width: max(0, maxSize.width - leading - trailing), height: max(0, maxSize.height - top - bottom))
+            let childSize = measureNode(child, inner)
+            return _Size(
+                width: min(maxSize.width, childSize.width + leading + trailing),
+                height: min(maxSize.height, childSize.height + top + bottom)
+            )
+        case .group(let nodes), .zstack(let nodes):
+            var size = _Size(width: 0, height: 0)
+            for child in nodes {
+                let childSize = measureNode(child, maxSize)
+                size.width = max(size.width, childSize.width)
+                size.height = max(size.height, childSize.height)
+            }
+            return size
+        case .stack(let axis, let spacing, let children):
+            switch axis {
+            case .horizontal:
+                var width = 0
+                var height = 0
+                for (index, child) in children.enumerated() {
+                    let childSize = measureNode(child, maxSize)
+                    width += childSize.width
+                    height = max(height, childSize.height)
+                    if index != children.count - 1 { width += spacing }
+                }
+                return _Size(width: min(width, maxSize.width), height: min(height, maxSize.height))
+            case .vertical:
+                var width = 0
+                var height = 0
+                for (index, child) in children.enumerated() {
+                    let childSize = measureNode(child, maxSize)
+                    width = max(width, childSize.width)
+                    height += childSize.height
+                    if index != children.count - 1 { height += spacing }
+                }
+                return _Size(width: min(width, maxSize.width), height: min(height, maxSize.height))
+            }
+        case .text(let text):
+            return _Size(width: min(text.count, maxSize.width), height: 1)
+        case .styledText(let segments):
+            let width = segments.reduce(0) { $0 + $1.content.count }
+            return _Size(width: min(width, maxSize.width), height: 1)
+        case .image(let name):
+            return _Size(width: min(imageString(name).count, maxSize.width), height: 1)
+        case .gradient:
+            return maxSize
+        case .shape:
+            return _Size(width: min(maxSize.width, max(10, maxSize.width)), height: min(maxSize.height, 4))
+        case .spacer:
+            return _Size(width: 0, height: 0)
+        case .button(_, let isFocused, let label):
+            let labelSize = measureNode(label, _Size(width: max(0, maxSize.width - (isFocused ? 5 : 4)), height: 1))
+            return _Size(width: min(maxSize.width, (isFocused ? 1 : 0) + 4 + labelSize.width), height: 1)
+        case .tapTarget(_, let child):
+            return measureNode(child, maxSize)
+        case .toggle(_, let isFocused, _, let label):
+            let labelSize = measureNode(label, _Size(width: max(0, maxSize.width - (isFocused ? 5 : 4)), height: 1))
+            return _Size(width: min(maxSize.width, (isFocused ? 1 : 0) + 4 + labelSize.width), height: 1)
+        case .textField(_, let placeholder, let text, _, _, let style):
+            let display = text.isEmpty ? placeholder : text
+            let width = 2 + (style == .plain ? 0 : 2) + display.count
+            return _Size(width: min(maxSize.width, width), height: 1)
+        case .scrollView(_, _, _, _, _, let content):
+            let contentSize = measureNode(content, _Size(width: maxSize.width, height: 2048))
+            return _Size(width: min(maxSize.width, contentSize.width), height: min(maxSize.height, contentSize.height))
+        case .menu(_, let isFocused, _, let title, let value, _):
+            let headText = title.isEmpty ? "\(value) v" : "\(title): \(value) v"
+            let inner = " " + headText + " "
+            let width = (isFocused ? 1 : 0) + 2 + min(inner.count, max(0, maxSize.width - (isFocused ? 3 : 2)))
+            return _Size(width: min(width, maxSize.width), height: 1)
+        case .divider:
+            return _Size(width: maxSize.width, height: 1)
+        case .viewThatFits(_, let children):
+            return children.first.map { measureNode($0, maxSize) } ?? _Size(width: 0, height: 0)
+        case .truncatedText(let text, _):
+            return _Size(width: min(text.count, maxSize.width), height: 1)
+        }
+    }
+
+    private static func collectScrollTargets(
+        node: _VNode,
+        origin: _Point,
+        maxSize: _Size,
+        scrollContext: [_DebugScrollContext] = [],
+        targets: inout [_ScrollTarget]
+    ) -> _Size {
+        guard maxSize.width > 0, maxSize.height > 0 else { return _Size(width: 0, height: 0) }
+
+        func isFlexibleCandidate(_ node: _VNode, axis: _Axis) -> Bool {
+            switch node {
+            case .spacer:
+                return true
+            case .shape:
+                return true
+            case .textField:
+                return true
+            case .frame(_, _, _, let maxWidth, _, _, let child):
+                if maxWidth == Int.max { return true }
+                return isFlexibleCandidate(child, axis: axis)
+            case .scrollView(_, _, _, let scrollAxis, _, _):
+                return scrollAxis == axis
+            case .style(_, _, let child),
+                 .textStyled(_, let child),
+                 .offset(_, _, let child),
+                 .opacity(_, let child),
+                 .contentShapeRect(_, let child),
+                 .clip(_, let child),
+                 .shadow(let child, _, _, _, _),
+                 .hover(_, let child),
+                 .elevated(_, let child),
+                 .identified(_, _, let child),
+                 .onDelete(_, _, let child),
+                 .gestureTarget(_, let child),
+                 .fixedSize(_, _, let child),
+                 .layoutPriority(_, let child),
+                 .alignmentGuide(_, _, let child),
+                 .preferenceNode(_, let child),
+                 .rotationEffect(_, let child),
+                 .aspectRatio(_, _, let child),
+                 .swipeActions(_, _, _, let child),
+                 .textCase(_, let child),
+                 .blur(_, let child),
+                 .badge(_, let child),
+                 .anchorPreference(_, _, _, let child),
+                 .geometryReaderProxy(_, let child):
+                return isFlexibleCandidate(child, axis: axis)
+            case .background(let child, let background):
+                return isFlexibleCandidate(child, axis: axis) || isFlexibleCandidate(background, axis: axis)
+            case .overlay(let child, let overlay):
+                return isFlexibleCandidate(child, axis: axis) || isFlexibleCandidate(overlay, axis: axis)
+            case .modalOverlay(_, _, _, let child):
+                return isFlexibleCandidate(child, axis: axis)
+            case .tagged(_, let label):
+                return isFlexibleCandidate(label, axis: axis)
+            case .edgePadding(_, _, _, _, let child):
+                return isFlexibleCandidate(child, axis: axis)
+            case .group(let nodes), .zstack(let nodes):
+                return nodes.contains { isFlexibleCandidate($0, axis: axis) }
+            case .stack(let childAxis, _, let nodes):
+                guard childAxis == axis else { return false }
+                return nodes.contains { isFlexibleCandidate($0, axis: axis) }
+            default:
+                return false
+            }
+        }
+
+        switch node {
+        case .empty:
+            return _Size(width: 0, height: 0)
+        case .style(_, _, let child),
+             .textStyled(_, let child),
+             .offset(_, _, let child),
+             .opacity(_, let child),
+             .contentShapeRect(_, let child),
+             .clip(_, let child),
+             .shadow(let child, _, _, _, _),
+             .hover(_, let child),
+             .elevated(_, let child),
+             .onDelete(_, _, let child),
+             .gestureTarget(_, let child),
+             .fixedSize(_, _, let child),
+             .layoutPriority(_, let child),
+             .alignmentGuide(_, _, let child),
+             .preferenceNode(_, let child),
+             .rotationEffect(_, let child),
+             .aspectRatio(_, _, let child),
+             .swipeActions(_, _, _, let child),
+             .textCase(_, let child),
+             .blur(_, let child),
+             .badge(_, let child),
+             .anchorPreference(_, _, _, let child),
+             .geometryReaderProxy(_, let child):
+            return collectScrollTargets(
+                node: child,
+                origin: origin,
+                maxSize: maxSize,
+                scrollContext: scrollContext,
+                targets: &targets
+            )
+        case .background(let child, let background):
+            _ = collectScrollTargets(
+                node: background,
+                origin: origin,
+                maxSize: maxSize,
+                scrollContext: scrollContext,
+                targets: &targets
+            )
+            return collectScrollTargets(
+                node: child,
+                origin: origin,
+                maxSize: maxSize,
+                scrollContext: scrollContext,
+                targets: &targets
+            )
+        case .overlay(let child, let overlay):
+            let base = collectScrollTargets(
+                node: child,
+                origin: origin,
+                maxSize: maxSize,
+                scrollContext: scrollContext,
+                targets: &targets
+            )
+            _ = collectScrollTargets(
+                node: overlay,
+                origin: origin,
+                maxSize: base,
+                scrollContext: scrollContext,
+                targets: &targets
+            )
+            return base
+        case .modalOverlay(_, let maxWidth, let maxHeight, let child):
+            let panelWidth = min(maxSize.width, max(1, maxWidth))
+            let panelMaxHeight = min(maxSize.height, max(1, maxHeight ?? maxSize.height))
+            let panelProposal = _Size(width: panelWidth, height: panelMaxHeight)
+            let measured = measureNode(child, panelProposal)
+            let panelSize = _Size(width: panelWidth, height: max(1, min(panelProposal.height, measured.height)))
+            let panelOrigin = _Point(
+                x: origin.x + max(0, (maxSize.width - panelSize.width) / 2),
+                y: origin.y + max(0, (maxSize.height - panelSize.height) / 2)
+            )
+            _ = collectScrollTargets(
+                node: child,
+                origin: panelOrigin,
+                maxSize: panelSize,
+                scrollContext: scrollContext,
+                targets: &targets
+            )
+            return maxSize
+        case .identified(let id, let readerScopePath, let child):
+            let size = collectScrollTargets(
+                node: child,
+                origin: origin,
+                maxSize: maxSize,
+                scrollContext: scrollContext,
+                targets: &targets
+            )
+            if let owner = scrollContext.last {
+                let targetMinY = max(0, origin.y - owner.contentOriginY)
+                targets.append(
+                    _ScrollTarget(
+                        id: id,
+                        readerScopePath: readerScopePath,
+                        scrollPath: owner.path,
+                        minY: targetMinY,
+                        height: max(1, size.height),
+                        viewportHeight: owner.viewportHeight,
+                        maxOffsetY: owner.maxOffsetY
+                    )
+                )
+            }
+            return size
+        case .tagged(_, let label):
+            return collectScrollTargets(
+                node: label,
+                origin: origin,
+                maxSize: maxSize,
+                scrollContext: scrollContext,
+                targets: &targets
+            )
+        case .frame(_, _, let minWidth, let maxWidth, let minHeight, let maxHeight, let child):
+            let targetW: Int = {
+                if let maxWidth, maxWidth == Int.max { return maxSize.width }
+                return maxSize.width
+            }()
+            let targetH: Int = {
+                if let maxHeight, maxHeight == Int.max { return maxSize.height }
+                return maxSize.height
+            }()
+            let innerMax = _Size(width: targetW, height: targetH)
+            let childSize = collectScrollTargets(
+                node: child,
+                origin: origin,
+                maxSize: innerMax,
+                scrollContext: scrollContext,
+                targets: &targets
+            )
+            let width = max(minWidth ?? 0, min(maxSize.width, maxWidth == Int.max ? maxSize.width : min(childSize.width, maxWidth ?? childSize.width)))
+            let height = max(minHeight ?? 0, min(maxSize.height, maxHeight == Int.max ? maxSize.height : min(childSize.height, maxHeight ?? childSize.height)))
+            return _Size(width: width, height: height)
+        case .edgePadding(let top, let leading, let bottom, let trailing, let child):
+            let inner = _Rect(
+                origin: _Point(x: origin.x + leading, y: origin.y + top),
+                size: _Size(
+                    width: max(0, maxSize.width - leading - trailing),
+                    height: max(0, maxSize.height - top - bottom)
+                )
+            )
+            let size = collectScrollTargets(
+                node: child,
+                origin: inner.origin,
+                maxSize: inner.size,
+                scrollContext: scrollContext,
+                targets: &targets
+            )
+            return _Size(
+                width: min(maxSize.width, size.width + leading + trailing),
+                height: min(maxSize.height, size.height + top + bottom)
+            )
+        case .group(let nodes), .zstack(let nodes):
+            var used = _Size(width: 0, height: 0)
+            for child in nodes {
+                let size = collectScrollTargets(
+                    node: child,
+                    origin: origin,
+                    maxSize: maxSize,
+                    scrollContext: scrollContext,
+                    targets: &targets
+                )
+                used.width = max(used.width, size.width)
+                used.height = max(used.height, size.height)
+            }
+            return used
+        case .stack(let axis, let spacing, let children):
+            var cursor = origin
+            var used = _Size(width: 0, height: 0)
+            let availablePrimary = axis == .horizontal ? maxSize.width : maxSize.height
+
+            var fixedPrimary = 0
+            var measured: [_Size] = []
+            var flexible: [Bool] = []
+            measured.reserveCapacity(children.count)
+            flexible.reserveCapacity(children.count)
+
+            for child in children {
+                let size = measureNode(child, maxSize)
+                measured.append(size)
+                let primary = axis == .horizontal ? size.width : size.height
+                let childIsFlexible = isFlexibleCandidate(child, axis: axis)
+                    || (children.count > 1 && primary >= availablePrimary)
+                flexible.append(childIsFlexible)
+                if !childIsFlexible {
+                    fixedPrimary += primary
+                }
+            }
+
+            let spacingTotal = max(0, (children.count - 1) * spacing)
+            let leftover = max(0, availablePrimary - fixedPrimary - spacingTotal)
+            let flexibleCount = flexible.reduce(0) { $0 + ($1 ? 1 : 0) }
+            var flexAllocations = [Int](repeating: 0, count: children.count)
+            if flexibleCount > 0 {
+                let equalShare = leftover / flexibleCount
+                var surplus = leftover % flexibleCount
+                var greedyIndices: [Int] = []
+                for idx in 0..<children.count where flexible[idx] {
+                    let measuredPrimary = axis == .horizontal ? measured[idx].width : measured[idx].height
+                    if case .spacer = children[idx] {
+                        flexAllocations[idx] = equalShare
+                        greedyIndices.append(idx)
+                    } else if measuredPrimary < equalShare {
+                        flexAllocations[idx] = measuredPrimary
+                        surplus += (equalShare - measuredPrimary)
+                    } else {
+                        flexAllocations[idx] = equalShare
+                        greedyIndices.append(idx)
+                    }
+                }
+                if !greedyIndices.isEmpty {
+                    let extra = surplus / greedyIndices.count
+                    let extraRem = surplus % greedyIndices.count
+                    for (index, greedyIndex) in greedyIndices.enumerated() {
+                        flexAllocations[greedyIndex] += extra + (index < extraRem ? 1 : 0)
+                    }
+                }
+            }
+
+            for (idx, child) in children.enumerated() {
+                let remaining = axis == .vertical
+                    ? _Size(width: maxSize.width, height: maxSize.height - (cursor.y - origin.y))
+                    : _Size(width: maxSize.width - (cursor.x - origin.x), height: maxSize.height)
+                guard remaining.width > 0, remaining.height > 0 else { break }
+
+                let size: _Size
+                if flexible[idx] {
+                    let allocated = flexAllocations[idx]
+                    let proposed = axis == .horizontal
+                        ? _Size(width: min(remaining.width, allocated), height: remaining.height)
+                        : _Size(width: remaining.width, height: min(remaining.height, allocated))
+                    if case .spacer = child {
+                        size = axis == .horizontal
+                            ? _Size(width: proposed.width, height: 0)
+                            : _Size(width: 0, height: proposed.height)
+                    } else {
+                        size = collectScrollTargets(
+                            node: child,
+                            origin: cursor,
+                            maxSize: proposed,
+                            scrollContext: scrollContext,
+                            targets: &targets
+                        )
+                    }
+                } else {
+                    let measuredChild = measureNode(child, remaining)
+                    let constrained = axis == .vertical
+                        ? _Size(width: remaining.width, height: min(remaining.height, measuredChild.height))
+                        : _Size(width: min(remaining.width, measuredChild.width), height: remaining.height)
+                    size = collectScrollTargets(
+                        node: child,
+                        origin: cursor,
+                        maxSize: constrained,
+                        scrollContext: scrollContext,
+                        targets: &targets
+                    )
+                }
+
+                switch axis {
+                case .vertical:
+                    cursor.y += size.height
+                    if idx != children.count - 1 { cursor.y += spacing }
+                    used.width = max(used.width, size.width)
+                    used.height = cursor.y - origin.y
+                case .horizontal:
+                    cursor.x += size.width
+                    if idx != children.count - 1 { cursor.x += spacing }
+                    used.width = cursor.x - origin.x
+                    used.height = max(used.height, size.height)
+                }
+            }
+
+            used.width = min(used.width, maxSize.width)
+            used.height = min(used.height, maxSize.height)
+            return used
+        case .scrollView(_, let path, _, let axis, let offset, let content):
+            let measureMax: _Size = axis == .horizontal
+                ? _Size(width: 4096, height: maxSize.height)
+                : _Size(width: maxSize.width, height: 2048)
+            let contentSize = measureNode(content, measureMax)
+            let viewportHeight = axis == .vertical ? maxSize.height : min(maxSize.height, contentSize.height)
+            let viewportWidth = maxSize.width
+            let maxOffsetY = axis == .vertical ? max(0, contentSize.height - viewportHeight) : 0
+            let maxOffsetX = axis == .horizontal ? max(0, contentSize.width - viewportWidth) : 0
+            let yOff = axis == .vertical ? min(max(0, offset), maxOffsetY) : 0
+            let xOff = axis == .horizontal ? min(max(0, offset), maxOffsetX) : 0
+            let childOrigin = _Point(x: origin.x - xOff, y: origin.y - yOff)
+            var nextScrollContext = scrollContext
+            nextScrollContext.append(
+                _DebugScrollContext(
+                    path: path,
+                    contentOriginY: childOrigin.y,
+                    viewportHeight: viewportHeight,
+                    maxOffsetY: maxOffsetY
+                )
+            )
+            _ = collectScrollTargets(
+                node: content,
+                origin: childOrigin,
+                maxSize: _Size(
+                    width: max(viewportWidth + xOff, contentSize.width),
+                    height: max(viewportHeight + yOff, contentSize.height)
+                ),
+                scrollContext: nextScrollContext,
+                targets: &targets
+            )
+            return _Size(width: viewportWidth, height: viewportHeight)
+        default:
+            return measureNode(node, maxSize)
         }
     }
 
@@ -405,6 +906,59 @@ enum _DebugLayout {
                 style: style
             )
             return base
+
+        case .elevated(_, let child):
+            return draw(
+                node: child,
+                origin: origin,
+                maxSize: maxSize,
+                canvas: &canvas,
+                hitRegions: &hitRegions,
+                hoverRegions: &hoverRegions,
+                scrollRegions: &scrollRegions,
+                shapeRegions: &shapeRegions,
+                renderShapeGlyphs: renderShapeGlyphs,
+                overlays: &overlays,
+                style: style
+            )
+
+        case .modalOverlay(let scrim, let maxWidth, let maxHeight, let child):
+            if let scrim {
+                let x0 = max(0, origin.x)
+                let y0 = max(0, origin.y)
+                let x1 = min(canvas.first?.count ?? 0, origin.x + maxSize.width)
+                let y1 = min(canvas.count, origin.y + maxSize.height)
+                if x1 > x0, y1 > y0 {
+                    for y in y0..<y1 {
+                        for x in x0..<x1 {
+                            canvas[y][x].bg = scrim
+                        }
+                    }
+                }
+            }
+            let panelWidth = min(maxSize.width, max(1, maxWidth))
+            let panelMaxHeight = min(maxSize.height, max(1, maxHeight ?? maxSize.height))
+            let panelProposal = _Size(width: panelWidth, height: panelMaxHeight)
+            let measured = measureNode(child, panelProposal)
+            let panelSize = _Size(width: panelWidth, height: max(1, min(panelProposal.height, measured.height)))
+            let panelOrigin = _Point(
+                x: origin.x + max(0, (maxSize.width - panelSize.width) / 2),
+                y: origin.y + max(0, (maxSize.height - panelSize.height) / 2)
+            )
+            _ = draw(
+                node: child,
+                origin: panelOrigin,
+                maxSize: panelSize,
+                canvas: &canvas,
+                hitRegions: &hitRegions,
+                hoverRegions: &hoverRegions,
+                scrollRegions: &scrollRegions,
+                shapeRegions: &shapeRegions,
+                renderShapeGlyphs: renderShapeGlyphs,
+                overlays: &overlays,
+                style: style
+            )
+            return maxSize
 
         case .identified(_, _, let child):
             return draw(
@@ -728,6 +1282,10 @@ enum _DebugLayout {
 	                    return measure(child, maxSize)
 	                case .overlay(let child, _):
 	                    return measure(child, maxSize)
+	                case .elevated(_, let child):
+	                    return measure(child, maxSize)
+	                case .modalOverlay:
+	                    return maxSize
 	                case .identified(_, _, let child):
 	                    return measure(child, maxSize)
 	                case .onDelete(_, _, let child):
@@ -901,6 +1459,10 @@ enum _DebugLayout {
                 case .background(let child, _):
                     return isFlexibleCandidate(child)
                 case .overlay(let child, _):
+                    return isFlexibleCandidate(child)
+                case .elevated(_, let child):
+                    return isFlexibleCandidate(child)
+                case .modalOverlay(_, _, _, let child):
                     return isFlexibleCandidate(child)
                 case .identified(_, _, let child):
                     return isFlexibleCandidate(child)
@@ -1253,6 +1815,10 @@ enum _DebugLayout {
 	                        return m(child, maxSize)
 	                    case .overlay(let child, _):
 	                        return m(child, maxSize)
+	                    case .elevated(_, let child):
+	                        return m(child, maxSize)
+	                    case .modalOverlay:
+	                        return maxSize
 	                    case .identified(_, _, let child):
 	                        return m(child, maxSize)
 	                    case .onDelete(_, _, let child):

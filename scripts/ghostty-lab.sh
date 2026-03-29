@@ -9,6 +9,18 @@ compose() {
     GHOSTTY_LAB_HOST_WORKSPACE="$PROJECT_ROOT" docker compose -f "$PROJECT_ROOT/docker-compose.yml" "$@"
 }
 
+launch_in_terminal() {
+    local command_text="$1"
+    exec_lab ghostty-lab-control focus
+    # Stop any currently running foreground TUI before typing a new command.
+    exec_lab ghostty-lab-control key ctrl+c || true
+    sleep 0.2
+    exec_lab ghostty-lab-control key ctrl+l || true
+    sleep 0.1
+    exec_lab ghostty-lab-control type "$command_text"
+    exec_lab ghostty-lab-control key Return
+}
+
 container_id() {
     compose ps -q "$SERVICE_NAME"
 }
@@ -48,6 +60,7 @@ Commands:
   shell                   Open a shell inside the lab container
   wait-ready [seconds]    Wait until Ghostty is ready for control
   run-kitchensink         Build/run KitchenSink in Ghostty via sibling Docker runtime
+  run-igopher             Run iGopherTUI in Ghostty via sibling Docker runtime
   type <text>             Type text into Ghostty
   key <key...>            Send xdotool key presses
   click <x> <y> [button]  Click inside the Ghostty window
@@ -104,9 +117,10 @@ case "$command_name" in
         exec_lab ghostty-lab-control wait-ready "${1:-30}"
         ;;
     run-kitchensink)
-        exec_lab ghostty-lab-control focus
-        exec_lab ghostty-lab-control type "clear && bash scripts/ghostty-kitchensink-run.sh"
-        exec_lab ghostty-lab-control key Return
+        launch_in_terminal "bash scripts/ghostty-kitchensink-run.sh"
+        ;;
+    run-igopher)
+        launch_in_terminal "bash scripts/ghostty-igopher-run.sh"
         ;;
     type)
         exec_lab ghostty-lab-control type "$*"

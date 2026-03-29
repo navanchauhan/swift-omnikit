@@ -29,6 +29,15 @@ private struct _NCShapePlaneEntry {
     var sig: Int
 }
 
+private struct _ActiveNCReader {
+    var widget: OpaquePointer
+    var sourceRect: _Rect
+    var visibleRect: _Rect
+    var fieldID: Int
+    var syncedText: String
+    var syncedCursorOffset: Int
+}
+
 #if os(Linux) || os(macOS)
 private func _writeToStderr(_ message: String) {
     // Avoid `stderr` (a C global `var`) under Swift 6 strict concurrency.
@@ -121,8 +130,10 @@ extension NotcursesApp {
         var overlayRect: _Rect? = nil
         var activeNCMenu: (widget: OpaquePointer, rect: _Rect, itemIDs: [Int])? = nil
         var activeNCSelector: (widget: OpaquePointer, rect: _Rect, itemIDs: [Int])? = nil
-        var activeNCReader: (widget: OpaquePointer, sourceRect: _Rect, visibleRect: _Rect, fieldID: Int)? = nil
+        var activeNCReader: _ActiveNCReader? = nil
         var cursorCurrentlyEnabled = false
+        let targetFrameDuration = Duration.milliseconds(16)
+        var lastRenderInstant: ContinuousClock.Instant? = nil
 
         func destroyActiveNCMenu() {
             guard let menu = activeNCMenu else { return }
@@ -229,8 +240,15 @@ extension NotcursesApp {
 
             let renderSize = _Size(width: width, height: height)
             if runtime.needsRender(size: renderSize) || lastSnapshot == nil {
+                if let lastRenderInstant {
+                    let elapsed = lastRenderInstant.duration(to: clock.now)
+                    if elapsed < targetFrameDuration {
+                        try await Task.sleep(for: targetFrameDuration - elapsed)
+                    }
+                }
                 let snapshot = runtime.render(root(), size: renderSize)
                 lastSnapshot = snapshot
+                lastRenderInstant = clock.now
 
             let baseFG = _NCRGB(r: 0xD8, g: 0xDB, b: 0xE2)
             let baseBG = _NCRGB(r: 0x0B, g: 0x10, b: 0x20)
@@ -892,11 +910,13 @@ extension NotcursesApp {
                             }
                             let flags = omni_ncreader_option_horscroll() | omni_ncreader_option_cursor() | omni_ncreader_option_nocmdkeys()
                             if let widget = omni_ncreader_create(readerPlane, flags) {
-                                activeNCReader = (
+                                activeNCReader = _ActiveNCReader(
                                     widget: widget,
                                     sourceRect: tfInfo.boundingRect,
                                     visibleRect: visibleRect,
-                                    fieldID: tfInfo.actionID
+                                    fieldID: tfInfo.actionID,
+                                    syncedText: "",
+                                    syncedCursorOffset: -1
                                 )
                                 widgetStateChanged = true
                             } else {
@@ -906,13 +926,14 @@ extension NotcursesApp {
                     }
                 }
 
-                if let reader = activeNCReader?.widget {
-                    _ = omni_ncreader_clear(reader)
+                if var reader = activeNCReader,
+                   reader.syncedText != tfInfo.text || reader.syncedCursorOffset != tfInfo.cursorOffset {
+                    _ = omni_ncreader_clear(reader.widget)
                     for scalar in tfInfo.text.unicodeScalars {
                         var feedNi = ncinput()
                         feedNi.id = scalar.value
                         feedNi.evtype = NCTYPE_PRESS
-                        _ = omni_ncreader_offer_input(reader, &feedNi)
+                        _ = omni_ncreader_offer_input(reader.widget, &feedNi)
                     }
                     let scalarCount = tfInfo.text.unicodeScalars.count
                     let cursorOffset = min(max(0, tfInfo.cursorOffset), scalarCount)
@@ -922,9 +943,12 @@ extension NotcursesApp {
                             var moveNi = ncinput()
                             moveNi.id = left
                             moveNi.evtype = NCTYPE_PRESS
-                            _ = omni_ncreader_offer_input(reader, &moveNi)
+                            _ = omni_ncreader_offer_input(reader.widget, &moveNi)
                         }
                     }
+                    reader.syncedText = tfInfo.text
+                    reader.syncedCursorOffset = cursorOffset
+                    activeNCReader = reader
                 }
             } else if activeNCReader != nil {
                 destroyActiveNCReader()
@@ -1074,6 +1098,9 @@ extension NotcursesApp {
             if id == esc {
                 if runtime.hasExpandedPicker() {
                     runtime.collapseExpandedPicker()
+                    continue
+                }
+                if runtime.dismissTopOverlay() {
                     continue
                 }
                 if runtime.invokeKeyboardShortcut(.escape, modifiers: mods) {

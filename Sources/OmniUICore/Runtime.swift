@@ -1,6 +1,8 @@
 import Foundation
 
 public final class _UIRuntime: @unchecked Sendable {
+    private static let _overlayPathSentinel = Int.min
+
     /// Build-time ambient runtime. Set by `_BuildContext.withRuntime`.
     @TaskLocal public static var _current: _UIRuntime?
 
@@ -82,6 +84,8 @@ public final class _UIRuntime: @unchecked Sendable {
     private var scrollTargets: [_ScrollTarget] = []
     private var pendingScrollRequests: [_PendingScrollRequest] = []
     private var globalEditMode: EditMode = .inactive
+    private var lastHitRegions: [(_Rect, _ActionID)] = []
+    private var lastScrollRegions: [_ScrollRegion] = []
 
     private struct _NavEntry {
         var view: AnyView
@@ -541,17 +545,17 @@ public final class _UIRuntime: @unchecked Sendable {
         guard !overlays.isEmpty else { return node }
         var merged = node
         var local = _BuildContext(runtime: self, path: [Int.min], nextChildIndex: 0)
-        let overlayNodes: [_VNode] = overlays.map { entry in
+        for entry in overlays {
             let current = _UIRuntime._currentEnvironment ?? _baseEnvironment
             var next = current
             next.dismiss = DismissAction(entry.dismiss)
             let mode = PresentationMode(dismiss: entry.dismiss)
             next.presentationMode = Binding(get: { mode }, set: { _ in })
-            return _UIRuntime.$_currentEnvironment.withValue(next) {
+            let overlayNode = _UIRuntime.$_currentEnvironment.withValue(next) {
                 local.buildChild(entry.view)
             }
+            merged = .zstack(children: [merged, .elevated(zOffset: 1000, child: overlayNode)])
         }
-        merged = .zstack(children: [merged] + overlayNodes)
         return merged
     }
 
@@ -572,6 +576,13 @@ public final class _UIRuntime: @unchecked Sendable {
             let stillExists = focusOrder.contains(where: { _isPrefix(expanded, of: $0) })
             if !stillExists {
                 expandedPickerPath = nil
+            }
+        }
+
+        let overlayFocusOrder = _overlayFocusablePaths()
+        if !overlayFocusOrder.isEmpty {
+            if focusedPath == nil || !overlayFocusOrder.contains(where: { $0 == focusedPath }) {
+                _setFocus(path: overlayFocusOrder[0])
             }
         }
 
@@ -603,6 +614,14 @@ public final class _UIRuntime: @unchecked Sendable {
 
     func _getScrollOffsetX(path: [Int]) -> Int {
         scrollOffsets[_pathKey(prefix: "scrollX", path: path)] ?? 0
+    }
+
+    func _setScrollOffsetX(path: [Int], offset: Int) {
+        let key = _pathKey(prefix: "scrollX", path: path)
+        let clamped = max(0, offset)
+        if scrollOffsets[key] == clamped { return }
+        scrollOffsets[key] = clamped
+        _markDirty(path: path)
     }
 
     func _setScrollOffset(path: [Int], offset: Int) {
@@ -702,6 +721,58 @@ public final class _UIRuntime: @unchecked Sendable {
             }
         }
         pendingScrollRequests = remaining
+    }
+
+    func _updateLastInteractionRegions(
+        hitRegions: [(_Rect, _ActionID)],
+        scrollRegions: [_ScrollRegion]
+    ) {
+        lastHitRegions = hitRegions
+        lastScrollRegions = scrollRegions
+    }
+
+    private func _ensureFocusedControlVisible(path: [Int]) {
+        guard let focusedID = focusActivation[path] else { return }
+        guard let focusedRect = lastHitRegions.last(where: { $0.1 == focusedID })?.0 else { return }
+        guard let region = lastScrollRegions
+            .filter({ _isPrefix($0.path, of: path) })
+            .max(by: { $0.path.count < $1.path.count })
+        else { return }
+
+        switch region.axis {
+        case .horizontal:
+            let current = _getScrollOffsetX(path: region.path)
+            let viewportMin = region.rect.origin.x
+            let viewportMax = region.rect.origin.x + region.rect.size.width
+            let rectMin = focusedRect.origin.x
+            let rectMax = focusedRect.origin.x + focusedRect.size.width
+            var desired = current
+            if rectMin < viewportMin {
+                desired += rectMin - viewportMin
+            } else if rectMax > viewportMax {
+                desired += rectMax - viewportMax
+            }
+            desired = min(max(0, desired), max(0, region.maxOffsetX))
+            if desired != current {
+                _setScrollOffsetX(path: region.path, offset: desired)
+            }
+        case .vertical:
+            let current = _getScrollOffset(path: region.path)
+            let viewportMin = region.rect.origin.y
+            let viewportMax = region.rect.origin.y + region.rect.size.height
+            let rectMin = focusedRect.origin.y
+            let rectMax = focusedRect.origin.y + focusedRect.size.height
+            var desired = current
+            if rectMin < viewportMin {
+                desired += rectMin - viewportMin
+            } else if rectMax > viewportMax {
+                desired += rectMax - viewportMax
+            }
+            desired = min(max(0, desired), max(0, region.maxOffsetY))
+            if desired != current {
+                _setScrollOffset(path: region.path, offset: desired)
+            }
+        }
     }
 
     func _navKey(stackPath: [Int]) -> String {
@@ -836,6 +907,9 @@ public final class _UIRuntime: @unchecked Sendable {
             }
         } else if expandedPickerPath != nil, path == nil {
             expandedPickerPath = nil
+        }
+        if old != path, let path, !_isBuildingFrame {
+            _ensureFocusedControlVisible(path: path)
         }
         if old != path, !_isBuildingFrame {
             if let old { _markDirty(path: old) }
@@ -1015,25 +1089,27 @@ public final class _UIRuntime: @unchecked Sendable {
     }
 
     public func focusNext() {
-        guard !focusOrder.isEmpty else { return }
+        let candidates = _activeFocusCycle()
+        guard !candidates.isEmpty else { return }
         expandedPickerPath = nil
         let next: [Int]
-        if let f = focusedPath, let idx = focusOrder.firstIndex(of: f) {
-            next = focusOrder[(idx + 1) % focusOrder.count]
+        if let f = focusedPath, let idx = candidates.firstIndex(of: f) {
+            next = candidates[(idx + 1) % candidates.count]
         } else {
-            next = focusOrder[0]
+            next = candidates[0]
         }
         _setFocus(path: next)
     }
 
     public func focusPrev() {
-        guard !focusOrder.isEmpty else { return }
+        let candidates = _activeFocusCycle()
+        guard !candidates.isEmpty else { return }
         expandedPickerPath = nil
         let next: [Int]
-        if let f = focusedPath, let idx = focusOrder.firstIndex(of: f) {
-            next = focusOrder[(idx - 1 + focusOrder.count) % focusOrder.count]
+        if let f = focusedPath, let idx = candidates.firstIndex(of: f) {
+            next = candidates[(idx - 1 + candidates.count) % candidates.count]
         } else {
-            next = focusOrder[0]
+            next = candidates[0]
         }
         _setFocus(path: next)
     }
@@ -1046,6 +1122,21 @@ public final class _UIRuntime: @unchecked Sendable {
     public func focusedActionRawID() -> Int? {
         guard let f = focusedPath, let id = focusActivation[f] else { return nil }
         return id.raw
+    }
+
+    public func dismissTopOverlay() -> Bool {
+        guard let overlay = overlays.last else { return false }
+        overlay.dismiss()
+        return true
+    }
+
+    private func _overlayFocusablePaths() -> [[Int]] {
+        focusOrder.filter { !$0.isEmpty && $0[0] == Self._overlayPathSentinel }
+    }
+
+    private func _activeFocusCycle() -> [[Int]] {
+        let overlayFocusOrder = _overlayFocusablePaths()
+        return overlayFocusOrder.isEmpty ? focusOrder : overlayFocusOrder
     }
 
     func _registerKeyboardShortcut(_ shortcut: KeyboardShortcut, forFocusablePath path: [Int]) {
@@ -1258,6 +1349,10 @@ public final class _UIRuntime: @unchecked Sendable {
             renderShapeGlyphs: renderShapeGlyphs
         )
         runtime._updateScrollTargets(laidOut.scrollTargets)
+        runtime._updateLastInteractionRegions(
+            hitRegions: laidOut.hitRegions,
+            scrollRegions: laidOut.scrollRegions
+        )
         runtime._firePreferenceCallbacks()
         runtime._finishFrameBuild(size: size)
         let focusedRect: _Rect? = {
@@ -1379,6 +1474,10 @@ extension _UIRuntime {
 
         let laidOut = _RenderLayout.layout(node: node, size: size)
         runtime._updateScrollTargets(laidOut.scrollTargets)
+        runtime._updateLastInteractionRegions(
+            hitRegions: laidOut.hitRegions,
+            scrollRegions: laidOut.scrollRegions
+        )
         runtime._firePreferenceCallbacks()
         runtime._finishFrameBuild(size: size)
         let focusedRect: _Rect? = {
@@ -1519,6 +1618,14 @@ public struct DebugSnapshot: Sendable {
     let runtime: _UIRuntime
 
     public var text: String { lines.joined(separator: "\n") }
+
+    public func containsHitRegion(at point: _Point) -> Bool {
+        hitRegions.contains(where: { $0.0.contains(point) })
+    }
+
+    public func containsHitRegion(x: Int, y: Int) -> Bool {
+        containsHitRegion(at: _Point(x: x, y: y))
+    }
 
     // MARK: Display List
     public var renderList: RenderList {

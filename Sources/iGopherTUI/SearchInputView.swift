@@ -9,38 +9,60 @@
 import SwiftUI
 
 struct SearchInputView: View {
-
     var host: String
     var port: Int
     var selector: String
     @Binding var searchText: String
     var onSearch: (String) -> Void
 
-    @Environment(\.presentationMode) var presentationMode
+    @Environment(\.dismiss) private var dismiss
+    @FocusState private var isQueryFocused: Bool
+
+    private var trimmedQuery: String {
+        searchText.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
 
     var body: some View {
-        VStack {
-            Text("Enter your query")
+        VStack(alignment: .leading, spacing: 1) {
+            Text("Search Gopherspace")
+                .bold()
+            Text("\(host):\(port)\(selector)")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+
             TextField("Search", text: $searchText)
                 .textFieldStyle(RoundedBorderTextFieldStyle())
-                .padding()
+                .focused($isQueryFocused)
                 .onSubmit {
-                    onSearch(searchText)
+                    let query = trimmedQuery
+                    guard !query.isEmpty else { return }
+                    onSearch(query)
                 }
+
             HStack {
                 Button("Cancel") {
-                    presentationMode.wrappedValue.dismiss()
+                    dismiss()
                 }
                 .keyboardShortcut(.cancelAction)
-                .padding()
+
+                Spacer()
 
                 Button("Search") {
-                    onSearch(searchText)
+                    let query = trimmedQuery
+                    guard !query.isEmpty else { return }
+                    onSearch(query)
                 }
                 .keyboardShortcut(.return, modifiers: [])
-                .padding()
+                .disabled(trimmedQuery.isEmpty)
             }
         }
         .padding()
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .onAppear {
+            isQueryFocused = true
+        }
+        .onExitCommand {
+            dismiss()
+        }
     }
 }

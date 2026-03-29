@@ -66,6 +66,8 @@ func _collectToolbarItems(from node: _VNode) -> _ToolbarLayoutItems {
         case .overlay(let child, let overlay):
             walk(child)
             walk(overlay)
+        case .modalOverlay(_, _, _, let child):
+            walk(child)
         case .frame(_, _, _, _, _, _, let child):
             walk(child)
         case .offset(_, _, let child):

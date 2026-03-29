@@ -6,6 +6,7 @@
 //
 //  Adapted for TUI: uses NavigationSplitView (macOS path).
 
+@preconcurrency import GopherHelpers
 import SwiftUI
 
 struct GopherNode: Identifiable, Equatable {
@@ -27,7 +28,7 @@ struct ContentView: View {
     @State public var hosts: [GopherNode] = []
     @State private var selectedNode: GopherNode?
 
-    @State private var columnVisibility = NavigationSplitViewVisibility.all
+    @State private var columnVisibility = NavigationSplitViewVisibility.detailOnly
 
     @AppStorage("crtMode") var crtMode: Bool = false
     @AppStorage("crtScanlines") var crtScanlines: Bool = true

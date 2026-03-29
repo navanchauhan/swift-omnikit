@@ -565,7 +565,71 @@ struct _TargetedInvalidationProbeView: View {
 
 private func _findButton(_ snap: DebugSnapshot, title: String, occurrence: Int = 0) -> (x: Int, y: Int)? {
     var seen = 0
-    let needle = Array("[ \(title) ]")
+    let titleChars = Array(title)
+    for (y, line) in snap.lines.enumerated() {
+        let hay = Array(line)
+        guard hay.count >= titleChars.count else { continue }
+        for x0 in 0...(hay.count - titleChars.count) {
+            var matchesTitle = true
+            for i in 0..<titleChars.count where hay[x0 + i] != titleChars[i] {
+                matchesTitle = false
+                break
+            }
+            guard matchesTitle else { continue }
+
+            let leftLimit = max(0, x0 - 3)
+            let rightLimit = min(hay.count - 1, x0 + titleChars.count + 3)
+            let hasLeftBracket = hay[leftLimit...x0].contains("[")
+            let hasRightBracket = hay[(x0 + titleChars.count - 1)...rightLimit].contains("]")
+            guard hasLeftBracket, hasRightBracket else { continue }
+
+            if seen == occurrence {
+                return (x: x0 + max(0, titleChars.count / 2), y: y)
+            }
+            seen += 1
+            break
+        }
+    }
+
+    // Fallback for overlays or custom button styles that render interactive text without
+    // the standard "[ Title ]" chrome. Prefer coordinates that are inside a live hit region
+    // so test clicks still target a real control rather than a plain text match.
+    for (y, line) in snap.lines.enumerated() {
+        let hay = Array(line)
+        guard hay.count >= titleChars.count else { continue }
+        for x0 in 0...(hay.count - titleChars.count) {
+            var matchesTitle = true
+            for i in 0..<titleChars.count where hay[x0 + i] != titleChars[i] {
+                matchesTitle = false
+                break
+            }
+            guard matchesTitle else { continue }
+
+            let candidates = [
+                _Point(x: x0, y: y),
+                _Point(x: x0 + max(0, titleChars.count / 2), y: y),
+                _Point(x: x0 + max(0, titleChars.count - 1), y: y),
+            ]
+            guard candidates.contains(where: { point in
+                snap.containsHitRegion(at: point)
+            }) else {
+                continue
+            }
+
+            if seen == occurrence {
+                return (x: x0 + max(0, titleChars.count / 2), y: y)
+            }
+            seen += 1
+            break
+        }
+    }
+
+    return nil
+}
+
+private func _findText(_ snap: DebugSnapshot, text: String, occurrence: Int = 0) -> (x: Int, y: Int)? {
+    var seen = 0
+    let needle = Array(text)
     for (y, line) in snap.lines.enumerated() {
         let hay = Array(line)
         guard hay.count >= needle.count else { continue }
@@ -577,7 +641,7 @@ private func _findButton(_ snap: DebugSnapshot, title: String, occurrence: Int =
             }
             if ok {
                 if seen == occurrence {
-                    return (x: x0 + 2, y: y)
+                    return (x: x0, y: y)
                 }
                 seen += 1
                 break
@@ -649,6 +713,78 @@ struct _ScrollReaderProbeView: View {
         let s2 = runtime.debugRender(_ScrollReaderProbeView(), size: size)
         #expect(s2.text.contains("Row 35"))
     }
+}
+
+@Test func text_image_uses_terminal_symbol_mapping() async throws {
+    let runtime = _UIRuntime()
+    let snapshot = runtime.debugRender(
+        HStack(spacing: 1) {
+            Text(Image(systemName: "folder"))
+            Text("Docs")
+            Text(Image(systemName: "doc.plaintext"))
+            Text("Readme")
+        },
+        size: _Size(width: 30, height: 2)
+    )
+
+    #expect(snapshot.text.contains("▸ Docs"))
+    #expect(snapshot.text.contains("≣ Readme"))
+    #expect(!snapshot.text.contains("folder"))
+    #expect(!snapshot.text.contains("doc.plaintext"))
+}
+
+@Test func icon_only_labels_use_terminal_safe_glyphs() async throws {
+    let runtime = _UIRuntime()
+    let snapshot = runtime.debugRender(
+        HStack(spacing: 1) {
+            Button(action: {}) {
+                Label("Add Bookmark", systemImage: "bookmark.fill")
+            }
+            .labelStyle(.iconOnly)
+
+            Button(action: {}) {
+                Label("Bookmarks", systemImage: "book")
+            }
+            .labelStyle(.iconOnly)
+        },
+        size: _Size(width: 20, height: 3)
+    )
+
+    #expect(snapshot.text.contains("◆"))
+    #expect(snapshot.text.contains("▤"))
+    #expect(!snapshot.text.contains("bookmark.fill"))
+    #expect(!snapshot.text.contains("book"))
+}
+
+private struct _FocusFollowScrollProbeView: View {
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 0) {
+                ForEach(0..<20, id: \.self) { index in
+                    Button("Item \(index)") {}
+                }
+            }
+        }
+        .frame(height: 5)
+    }
+}
+
+@Test func focus_navigation_keeps_focused_item_visible_inside_scroll_view() async throws {
+    let runtime = _UIRuntime()
+    let size = _Size(width: 24, height: 6)
+
+    _ = runtime.debugRender(_FocusFollowScrollProbeView(), size: size)
+    for _ in 0..<10 {
+        runtime.focusNext()
+        _ = runtime.debugRender(_FocusFollowScrollProbeView(), size: size)
+    }
+
+    let snapshot = runtime.debugRender(_FocusFollowScrollProbeView(), size: size)
+    let focusedRect = try #require(snapshot.focusedRect)
+    #expect(focusedRect.origin.y >= 0)
+    #expect(focusedRect.origin.y < size.height)
+    #expect(snapshot.text.contains("Item 10"))
+    #expect(!snapshot.text.contains("Item 0"))
 }
 
 struct _TreeProbeNode: Identifiable {
@@ -869,32 +1005,57 @@ struct _SheetItemProbeView: View {
     }
 }
 
-@Test func sheet_item_presents_and_dismisses() async throws {
-    let runtime = _UIRuntime()
-    let size = _Size(width: 40, height: 10)
+struct _SheetOverlayInteractionProbeView: View {
+    @State private var isPresented: Bool = false
+    @State private var tapped: String = "-"
 
-    let s0 = runtime.debugRender(_SheetItemProbeView(), size: size)
-    #expect(s0.text.contains("item: -1"))
-
-    guard let show = _findButton(s0, title: "Show") else {
-        #expect(Bool(false), "Could not find Show button")
-        return
+    var body: some View {
+        VStack(spacing: 1) {
+            Text("tapped: \(tapped)")
+            Button("Base") { tapped = "base" }
+            Button("Show") { isPresented = true }
+        }
+        .sheet(isPresented: $isPresented) {
+            VStack(spacing: 1) {
+                Text("Overlay Body")
+                Button("Inner") {
+                    tapped = "inner"
+                    isPresented = false
+                }
+            }
+        }
     }
-    s0.click(x: show.x, y: show.y)
+}
 
-    let s1 = runtime.debugRender(_SheetItemProbeView(), size: size)
-    #expect(s1.text.contains("Item 1"))
-    #expect(s1.text.contains("item: 1"))
+struct _SheetSearchInteractionProbeView: View {
+    @State private var isPresented: Bool = false
+    @State private var query: String = ""
+    @State private var submitted: String = "-"
 
-    guard let close = _findButton(s1, title: "Close") else {
-        #expect(Bool(false), "Could not find Close button")
-        return
+    var body: some View {
+        VStack(spacing: 1) {
+            Text("submitted: \(submitted)")
+            Button("Show") { isPresented = true }
+        }
+        .sheet(isPresented: $isPresented) {
+            VStack(alignment: .leading, spacing: 1) {
+                Text("Search Gopherspace")
+                TextField("Query", text: $query)
+                HStack {
+                    Button("Cancel") {
+                        query = ""
+                        isPresented = false
+                    }
+                    Spacer()
+                    Button("Search") {
+                        submitted = query
+                        isPresented = false
+                    }
+                    .disabled(query.isEmpty)
+                }
+            }
+        }
     }
-    s1.click(x: close.x, y: close.y)
-
-    let s2 = runtime.debugRender(_SheetItemProbeView(), size: size)
-    #expect(!s2.text.contains("Item 1"))
-    #expect(s2.text.contains("item: -1"))
 }
 
 struct _PopoverProbeView: View {
@@ -909,34 +1070,6 @@ struct _PopoverProbeView: View {
             Text("Popover Body")
         }
     }
-}
-
-@Test func popover_isPresented_shows_and_dismisses() async throws {
-    let runtime = _UIRuntime()
-    let size = _Size(width: 40, height: 10)
-
-    let s0 = runtime.debugRender(_PopoverProbeView(), size: size)
-    #expect(s0.text.contains("popover: closed"))
-
-    guard let show = _findButton(s0, title: "Show") else {
-        #expect(Bool(false), "Could not find Show button")
-        return
-    }
-    s0.click(x: show.x, y: show.y)
-
-    let s1 = runtime.debugRender(_PopoverProbeView(), size: size)
-    #expect(s1.text.contains("Popover Body"))
-    #expect(s1.text.contains("popover: open"))
-
-    guard let close = _findButton(s1, title: "Close") else {
-        #expect(Bool(false), "Could not find Close button")
-        return
-    }
-    s1.click(x: close.x, y: close.y)
-
-    let s2 = runtime.debugRender(_PopoverProbeView(), size: size)
-    #expect(!s2.text.contains("Popover Body"))
-    #expect(s2.text.contains("popover: closed"))
 }
 
 struct _ConfirmationDialogProbeView: View {
@@ -958,34 +1091,6 @@ struct _ConfirmationDialogProbeView: View {
     }
 }
 
-@Test func confirmationDialog_captures_buttons_and_runs_selected_action() async throws {
-    let runtime = _UIRuntime()
-    let size = _Size(width: 40, height: 12)
-
-    let s0 = runtime.debugRender(_ConfirmationDialogProbeView(), size: size)
-    #expect(s0.text.contains("picked: -"))
-
-    guard let show = _findButton(s0, title: "Show") else {
-        #expect(Bool(false), "Could not find Show button")
-        return
-    }
-    s0.click(x: show.x, y: show.y)
-
-    let s1 = runtime.debugRender(_ConfirmationDialogProbeView(), size: size)
-    #expect(s1.text.contains("Confirm"))
-    #expect(s1.text.contains("Choose"))
-
-    guard let two = _findButton(s1, title: "Two") else {
-        #expect(Bool(false), "Could not find Two button")
-        return
-    }
-    s1.click(x: two.x, y: two.y)
-
-    let s2 = runtime.debugRender(_ConfirmationDialogProbeView(), size: size)
-    #expect(s2.text.contains("picked: Two"))
-    #expect(!s2.text.contains("Choose"))
-}
-
 private struct _PopoverItemProbeItem: Identifiable {
     let id: Int
 }
@@ -1004,32 +1109,171 @@ struct _PopoverItemProbeView: View {
     }
 }
 
-@Test func popover_item_presents_and_dismisses() async throws {
-    let runtime = _UIRuntime()
-    let size = _Size(width: 40, height: 10)
+@Suite("Presentation Overlays", .serialized)
+struct PresentationOverlayTests {
+    @Test func sheet_item_presents_and_dismisses() async throws {
+        let runtime = _UIRuntime()
+        let size = _Size(width: 40, height: 10)
 
-    let s0 = runtime.debugRender(_PopoverItemProbeView(), size: size)
-    #expect(s0.text.contains("popover item: -1"))
+        let s0 = runtime.debugRender(_SheetItemProbeView(), size: size)
+        #expect(s0.text.contains("item: -1"))
 
-    guard let show = _findButton(s0, title: "Show") else {
-        #expect(Bool(false), "Could not find Show button")
-        return
+        guard let show = _findButton(s0, title: "Show") else {
+            #expect(Bool(false), "Could not find Show button")
+            return
+        }
+        s0.click(x: show.x, y: show.y)
+
+        let s1 = runtime.debugRender(_SheetItemProbeView(), size: size)
+        #expect(s1.text.contains("Item 1"))
+        #expect(s1.text.contains("item: 1"))
+
+        guard let close = _findButton(s1, title: "Close") else {
+            #expect(Bool(false), "Could not find Close button")
+            return
+        }
+        s1.click(x: close.x, y: close.y)
+
+        let s2 = runtime.debugRender(_SheetItemProbeView(), size: size)
+        #expect(!s2.text.contains("Item 1"))
+        #expect(s2.text.contains("item: -1"))
     }
-    s0.click(x: show.x, y: show.y)
 
-    let s1 = runtime.debugRender(_PopoverItemProbeView(), size: size)
-    #expect(s1.text.contains("Popover Item 7"))
-    #expect(s1.text.contains("popover item: 7"))
+    @Test func sheet_renders_overlay_body_and_inner_controls() async throws {
+        let runtime = _UIRuntime()
+        let size = _Size(width: 40, height: 12)
 
-    guard let close = _findButton(s1, title: "Close") else {
-        #expect(Bool(false), "Could not find Close button")
-        return
+        let initial = runtime.debugRender(_SheetOverlayInteractionProbeView(), size: size)
+        guard let show = _findButton(initial, title: "Show") else {
+            #expect(Bool(false), "Could not find Show button")
+            return
+        }
+        initial.click(x: show.x, y: show.y)
+
+        let sheet = runtime.debugRender(_SheetOverlayInteractionProbeView(), size: size)
+        #expect(sheet.text.contains("Overlay Body"))
+        #expect(_findButton(sheet, title: "Inner") != nil)
+        #expect(_findButton(sheet, title: "Close") != nil)
     }
-    s1.click(x: close.x, y: close.y)
 
-    let s2 = runtime.debugRender(_PopoverItemProbeView(), size: size)
-    #expect(!s2.text.contains("Popover Item 7"))
-    #expect(s2.text.contains("popover item: -1"))
+    @Test func sheet_textField_and_action_buttons_are_interactive() async throws {
+        let runtime = _UIRuntime()
+        let size = _Size(width: 50, height: 16)
+
+        let initial = runtime.debugRender(_SheetSearchInteractionProbeView(), size: size)
+        guard let show = _findButton(initial, title: "Show") else {
+            #expect(Bool(false), "Could not find Show button")
+            return
+        }
+        initial.click(x: show.x, y: show.y)
+
+        let sheet = runtime.debugRender(_SheetSearchInteractionProbeView(), size: size)
+        #expect(sheet.text.contains("Search Gopherspace"))
+
+        guard let field = _findText(sheet, text: "Query") else {
+            #expect(Bool(false), "Could not find Query text field")
+            return
+        }
+        sheet.click(x: field.x + 1, y: field.y)
+        sheet.type("navan")
+
+        let typed = runtime.debugRender(_SheetSearchInteractionProbeView(), size: size)
+        #expect(typed.text.contains("navan"))
+
+        guard let search = _findButton(typed, title: "Search") else {
+            #expect(Bool(false), "Could not find Search button")
+            return
+        }
+        typed.click(x: search.x, y: search.y)
+
+        let final = runtime.debugRender(_SheetSearchInteractionProbeView(), size: size)
+        #expect(final.text.contains("submitted: navan"))
+        #expect(!final.text.contains("Search Gopherspace"))
+    }
+
+    @Test func popover_isPresented_shows_and_dismisses() async throws {
+        let runtime = _UIRuntime()
+        let size = _Size(width: 40, height: 10)
+
+        let s0 = runtime.debugRender(_PopoverProbeView(), size: size)
+        #expect(s0.text.contains("popover: closed"))
+
+        guard let show = _findButton(s0, title: "Show") else {
+            #expect(Bool(false), "Could not find Show button")
+            return
+        }
+        s0.click(x: show.x, y: show.y)
+
+        let s1 = runtime.debugRender(_PopoverProbeView(), size: size)
+        #expect(s1.text.contains("Popover Body"))
+        #expect(s1.text.contains("popover: open"))
+
+        guard let close = _findButton(s1, title: "Close") else {
+            #expect(Bool(false), "Could not find Close button")
+            return
+        }
+        s1.click(x: close.x, y: close.y)
+
+        let s2 = runtime.debugRender(_PopoverProbeView(), size: size)
+        #expect(!s2.text.contains("Popover Body"))
+        #expect(s2.text.contains("popover: closed"))
+    }
+
+    @Test func confirmationDialog_captures_buttons_and_runs_selected_action() async throws {
+        let runtime = _UIRuntime()
+        let size = _Size(width: 40, height: 12)
+
+        let s0 = runtime.debugRender(_ConfirmationDialogProbeView(), size: size)
+        #expect(s0.text.contains("picked: -"))
+
+        guard let show = _findButton(s0, title: "Show") else {
+            #expect(Bool(false), "Could not find Show button")
+            return
+        }
+        s0.click(x: show.x, y: show.y)
+
+        let s1 = runtime.debugRender(_ConfirmationDialogProbeView(), size: size)
+        #expect(s1.text.contains("Confirm"))
+        #expect(s1.text.contains("Choose"))
+
+        guard let two = _findButton(s1, title: "Two") else {
+            #expect(Bool(false), "Could not find Two button")
+            return
+        }
+        s1.click(x: two.x, y: two.y)
+
+        let s2 = runtime.debugRender(_ConfirmationDialogProbeView(), size: size)
+        #expect(s2.text.contains("picked: Two"))
+        #expect(!s2.text.contains("Choose"))
+    }
+
+    @Test func popover_item_presents_and_dismisses() async throws {
+        let runtime = _UIRuntime()
+        let size = _Size(width: 40, height: 10)
+
+        let s0 = runtime.debugRender(_PopoverItemProbeView(), size: size)
+        #expect(s0.text.contains("popover item: -1"))
+
+        guard let show = _findButton(s0, title: "Show") else {
+            #expect(Bool(false), "Could not find Show button")
+            return
+        }
+        s0.click(x: show.x, y: show.y)
+
+        let s1 = runtime.debugRender(_PopoverItemProbeView(), size: size)
+        #expect(s1.text.contains("Popover Item 7"))
+        #expect(s1.text.contains("popover item: 7"))
+
+        guard let close = _findButton(s1, title: "Close") else {
+            #expect(Bool(false), "Could not find Close button")
+            return
+        }
+        s1.click(x: close.x, y: close.y)
+
+        let s2 = runtime.debugRender(_PopoverItemProbeView(), size: size)
+        #expect(!s2.text.contains("Popover Item 7"))
+        #expect(s2.text.contains("popover item: -1"))
+    }
 }
 
 struct _NavigationDestinationBoolProbeView: View {
@@ -1955,4 +2199,103 @@ struct _TabViewSelectionFallbackProbe: View {
     let runtime = _UIRuntime()
     let snap = runtime.debugRender(GlowView(), size: _Size(width: 20, height: 8))
     #expect(snap.text.contains("Hi"))
+}
+
+private struct _FocusedURLFieldProbe: View {
+    @State private var url = "gopher://gopher.navan.dev:70/"
+    @FocusState private var isFocused: Bool
+
+    var body: some View {
+        VStack {
+            TextField("URL", text: $url)
+                .focused($isFocused)
+            Text("Ready")
+        }
+        .onAppear {
+            isFocused = true
+        }
+    }
+}
+
+private struct _OnAppearStateProbe: View {
+    @State private var shown = false
+
+    var body: some View {
+        VStack {
+            if shown {
+                Text("Shown")
+                    .transition(.move(edge: .top).combined(with: .opacity))
+            } else {
+                Text("Hidden")
+            }
+        }
+        .onAppear {
+            guard !shown else { return }
+            shown = true
+        }
+    }
+}
+
+private struct _BrowserChromeHotLoopProbe: View {
+    @State private var url = "gopher://gopher.navan.dev:70/"
+    @State private var showTooltip = false
+    @FocusState private var isFocused: Bool
+
+    var body: some View {
+        VStack(spacing: 0) {
+            Text("Welcome")
+            Text("Info line")
+            TextField("Enter a URL", text: $url)
+                .focused($isFocused)
+            HStack {
+                Button {
+                } label: {
+                    Label("Home", systemImage: "house")
+                }
+                .labelStyle(.iconOnly)
+
+                Spacer()
+
+                Button("Go") {
+                }
+            }
+        }
+        .onAppear {
+            isFocused = true
+            guard !showTooltip else { return }
+            showTooltip = true
+        }
+    }
+}
+
+@Test func focused_text_field_settles_after_initial_focus() async throws {
+    let runtime = _UIRuntime()
+    let size = _Size(width: 50, height: 6)
+
+    _ = runtime.debugRender(_FocusedURLFieldProbe(), size: size)
+    _ = runtime.debugRender(_FocusedURLFieldProbe(), size: size)
+
+    #expect(!runtime.needsRender(size: size))
+}
+
+@Test func on_appear_state_change_settles_after_mount() async throws {
+    let runtime = _UIRuntime()
+    let size = _Size(width: 30, height: 6)
+
+    for _ in 0..<4 {
+        _ = runtime.debugRender(_OnAppearStateProbe(), size: size)
+    }
+
+    #expect(!runtime.needsRender(size: size))
+}
+
+@Test func browser_like_chrome_eventually_goes_idle() async throws {
+    let runtime = _UIRuntime()
+    let size = _Size(width: 60, height: 10)
+
+    for _ in 0..<32 {
+        _ = runtime.debugRender(_BrowserChromeHotLoopProbe(), size: size)
+    }
+
+    #expect(!runtime.needsRender(size: size))
 }

@@ -431,6 +431,52 @@ enum _RenderLayout {
             ctx.z = prevZ
             return sz
 
+        case .elevated(let zOffset, let child):
+            let prevZ = ctx.z
+            ctx.z = prevZ + zOffset
+            let size = draw(node: child, origin: origin, maxSize: maxSize, ctx: &ctx, ops: &ops, hitRegions: &hitRegions, hoverRegions: &hoverRegions, scrollRegions: &scrollRegions, scrollTargets: &scrollTargets, shapeRegions: &shapeRegions, cursorPosition: &cursorPosition, activeMenu: &activeMenu, activePicker: &activePicker, activeTextField: &activeTextField,
+                scrollContext: scrollContext)
+            ctx.z = prevZ
+            return size
+
+        case .modalOverlay(let scrim, let maxWidth, let maxHeight, let child):
+            if let scrim {
+                emitFillRect(_Rect(origin: origin, size: maxSize), scrim)
+            }
+            let panelWidth = min(maxSize.width, max(1, maxWidth))
+            let panelMaxHeight = min(maxSize.height, max(1, maxHeight ?? maxSize.height))
+            let panelProposal = _Size(width: panelWidth, height: panelMaxHeight)
+            let measured = measure(child, panelProposal, mode: .intrinsic)
+            let panelSize = _Size(
+                width: panelWidth,
+                height: max(1, min(panelProposal.height, measured.height))
+            )
+            let panelOrigin = _Point(
+                x: origin.x + max(0, (maxSize.width - panelSize.width) / 2),
+                y: origin.y + max(0, (maxSize.height - panelSize.height) / 2)
+            )
+            let prevZ = ctx.z
+            ctx.z = prevZ + 1
+            _ = draw(
+                node: child,
+                origin: panelOrigin,
+                maxSize: panelSize,
+                ctx: &ctx,
+                ops: &ops,
+                hitRegions: &hitRegions,
+                hoverRegions: &hoverRegions,
+                scrollRegions: &scrollRegions,
+                scrollTargets: &scrollTargets,
+                shapeRegions: &shapeRegions,
+                cursorPosition: &cursorPosition,
+                activeMenu: &activeMenu,
+                activePicker: &activePicker,
+                activeTextField: &activeTextField,
+                scrollContext: scrollContext
+            )
+            ctx.z = prevZ
+            return maxSize
+
         case .frame(let width, let height, let minWidth, let maxWidth, let minHeight, let maxHeight, let child):
             func clamp(_ v: Int?, _ minV: Int?, _ maxV: Int?) -> Int? {
                 guard let v else { return nil }
@@ -564,6 +610,10 @@ enum _RenderLayout {
                     return isFlexibleCandidate(child)
                 case .overlay(let child, _):
                     return isFlexibleCandidate(child)
+                case .elevated(_, let child):
+                    return isFlexibleCandidate(child)
+                case .modalOverlay(_, _, _, let child):
+                    return isFlexibleCandidate(child)
                 case .identified(_, _, let child):
                     return isFlexibleCandidate(child)
                 case .onDelete(_, _, let child):
@@ -622,6 +672,8 @@ enum _RenderLayout {
                 case .offset(_, _, let child): return extractPriority(child)
                 case .background(let child, _): return extractPriority(child)
                 case .overlay(let child, _): return extractPriority(child)
+                case .elevated(_, let child): return extractPriority(child)
+                case .modalOverlay(_, _, _, let child): return extractPriority(child)
                 case .identified(_, _, let child): return extractPriority(child)
                 case .tagged(_, let label): return extractPriority(label)
                 case .contentShapeRect(_, let child): return extractPriority(child)
@@ -1416,6 +1468,10 @@ enum _RenderLayout {
             return hasContentShapeRect(child) || hasContentShapeRect(bg)
         case .overlay(let child, let ov):
             return hasContentShapeRect(child) || hasContentShapeRect(ov)
+        case .elevated(_, let child):
+            return hasContentShapeRect(child)
+        case .modalOverlay(_, _, _, let child):
+            return hasContentShapeRect(child)
         case .frame(_, _, _, _, _, _, let child):
             return hasContentShapeRect(child)
         case .edgePadding(_, _, _, _, let child):
@@ -1490,6 +1546,10 @@ enum _RenderLayout {
             return measure(child, maxSize, mode: mode)
         case .overlay(let child, _):
             return measure(child, maxSize, mode: mode)
+        case .elevated(_, let child):
+            return measure(child, maxSize, mode: mode)
+        case .modalOverlay:
+            return maxSize
         case .identified(_, _, let child):
             return measure(child, maxSize, mode: mode)
         case .onDelete(_, _, let child):
@@ -1826,14 +1886,5 @@ private func _sanitizeCell(_ s: String) -> String {
 }
 
 private func _imageString(_ name: String) -> String {
-    // Terminal-optimized overrides (prefer these over SFSymbolMap defaults)
-    switch name {
-    case "sparkles": return "✨"
-    case "chevron.down": return "▾"
-    case "chevron.up": return "▴"
-    case "magnifyingglass": return "⌕"
-    case "photo": return "▧"
-    default:
-        return SFSymbolMap.unicode(for: name) ?? "■"
-    }
+    _terminalSymbolString(name)
 }

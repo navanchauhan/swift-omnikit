@@ -7,6 +7,7 @@
 //  Adapted for TUI: removed QuickLook, NSSavePanel, ShareLink, TelemetryDeck.
 
 import Foundation
+@preconcurrency import GopherHelpers
 import SwiftUI
 
 func determineFileType(data: Data) -> String? {
@@ -38,11 +39,11 @@ func determineFileType(data: Data) -> String? {
 
 struct FileView: View {
     var item: gopherItem
-    let client = GopherClient()
     @State private var fileContent: [String] = []
     @State private var fileURL: URL?
     @State private var downloadedData: Data?
     @State private var showRawUnknown: Bool = false
+    @State private var statusMessage = "Loading..."
 
     // CRT Mode
     @AppStorage("crtMode") var crtMode: Bool = false
@@ -50,6 +51,10 @@ struct FileView: View {
 
     private var textColor: Color {
         crtMode ? (CRTPhosphorColor(rawValue: crtPhosphorColorRaw) ?? .green).color : .primary
+    }
+
+    private var requestID: String {
+        "\(item.host):\(item.port)\(item.selector)"
     }
 
     var body: some View {
@@ -73,7 +78,7 @@ struct FileView: View {
             }
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding()
-            .task { readFile(item) }
+            .task(id: requestID) { await readFile(item) }
             .listStyle(PlainListStyle())
         } else if [.doc, .image, .gif, .movie, .sound, .bitmap].contains(item.parsedItemType) {
             if fileURL != nil {
@@ -83,8 +88,8 @@ struct FileView: View {
                         .foregroundStyle(.secondary)
                 }
             } else {
-                Text("Loading Document...")
-                    .onAppear { readFile(item) }
+                Text(statusMessage)
+                    .task(id: requestID) { await readFile(item) }
             }
         } else {
             if fileURL != nil {
@@ -108,17 +113,61 @@ struct FileView: View {
                 }
                 .padding()
             } else {
-                Text("Loading...")
-                    .onAppear { readFile(item) }
+                Text(statusMessage)
+                    .task(id: requestID) { await readFile(item) }
             }
         }
     }
 
-    private func readFile(_ item: gopherItem) {
-        // Stub: just set content directly (no real networking)
-        self.fileContent = ["[Stub] File content would appear here."]
-        self.fileURL = URL(string: "file:///tmp/stub")
-        self.downloadedData = Data()
+    @MainActor
+    private func readFile(_ item: gopherItem) async {
+        statusMessage = item.parsedItemType == .text ? "Loading text..." : "Loading document..."
+        fileContent = []
+        fileURL = nil
+        downloadedData = nil
+
+        do {
+            let fileData = try await GopherRequestService.shared.fetchData(
+                to: item.host,
+                port: item.port,
+                message: "\(item.selector)\r\n"
+            )
+
+            let tempDirectory = FileManager.default.temporaryDirectory
+            guard fileData.isEmpty == false else {
+                fileContent = ["No file data was returned by the server."]
+                statusMessage = "No file data returned."
+                return
+            }
+
+            downloadedData = fileData
+
+            if item.parsedItemType == .text,
+                let string =
+                    String(data: fileData, encoding: .utf8)
+                    ?? String(data: fileData, encoding: .isoLatin1)
+            {
+                let lines = string.components(separatedBy: .newlines)
+                let chunkSize = 100
+                fileContent = stride(from: 0, to: lines.count, by: chunkSize).map { start in
+                    lines[start..<min(start + chunkSize, lines.count)].joined(separator: "\n")
+                }
+                let textURL = tempDirectory.appending(path: "\(UUID().uuidString).txt")
+                try fileData.write(to: textURL)
+                fileURL = textURL
+                statusMessage = "Loaded."
+                return
+            }
+
+            let fileType = determineFileType(data: fileData) ?? "unknown"
+            let outputURL = tempDirectory.appending(path: "\(UUID().uuidString).\(fileType)")
+            try fileData.write(to: outputURL)
+            fileURL = outputURL
+            statusMessage = "Loaded."
+        } catch {
+            fileContent = ["Unable to fetch file due to network error: \(error.localizedDescription)"]
+            statusMessage = "Unable to fetch file."
+        }
     }
 
     // MARK: - UI helpers
@@ -140,6 +189,9 @@ struct FileView: View {
         if let string = String(data: data, encoding: .utf8), string.isEmpty == false {
             return string
         }
-        return data.map { String(format: "%02X", $0) }.joined(separator: " ")
+        return data.map { byte in
+            let hex = String(byte, radix: 16, uppercase: true)
+            return hex.count == 1 ? "0\(hex)" : hex
+        }.joined(separator: " ")
     }
 }

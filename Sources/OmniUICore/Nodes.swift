@@ -54,6 +54,8 @@ indirect enum _VNode {
     case shadow(child: _VNode, color: Color, radius: Int, x: Int, y: Int)
     case background(child: _VNode, background: _VNode)
     case overlay(child: _VNode, overlay: _VNode)
+    case elevated(zOffset: Int, child: _VNode)
+    case modalOverlay(scrim: Color?, maxWidth: Int, maxHeight: Int?, child: _VNode)
     case frame(width: Int?, height: Int?, minWidth: Int?, maxWidth: Int?, minHeight: Int?, maxHeight: Int?, child: _VNode)
     case edgePadding(top: Int, leading: Int, bottom: Int, trailing: Int, child: _VNode)
     case spacer

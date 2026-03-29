@@ -189,6 +189,7 @@ let package = Package(
         .package(url: "https://github.com/apple/swift-nio.git", from: "2.0.0"),
         .package(url: "https://github.com/apple/swift-nio-transport-services.git", from: "1.0.0"),
         .package(url: "https://github.com/vapor/websocket-kit.git", from: "2.15.0"),
+        .package(url: "https://github.com/navanchauhan/swift-gopher.git", from: "1.1.8"),
         // For Swift macro stubs (SwiftData compatibility).
         .package(url: "https://github.com/swiftlang/swift-syntax.git", from: "602.0.0"),
         // Swift-native testing DSL (`import Testing`, `@Test`, `#expect`).
@@ -255,7 +256,13 @@ let package = Package(
         ),
         .executableTarget(
             name: "iGopherTUI",
-            dependencies: ["OmniSwiftUI", "OmniSwiftData", "OmniUI", "OmniUINotcursesRenderer"],
+            dependencies: [
+                "OmniSwiftUI",
+                "OmniSwiftData",
+                "OmniUI",
+                "OmniUINotcursesRenderer",
+                .product(name: "SwiftGopherClient", package: "swift-gopher"),
+            ],
             path: "Sources/iGopherTUI",
             swiftSettings: commonSwiftSettings + [
                 .unsafeFlags(["-module-alias", "SwiftUI=OmniSwiftUI"]),
