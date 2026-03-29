@@ -631,7 +631,10 @@ public struct List<Content: View>: View, _PrimitiveView {
     ) {
         self.content = content()
         self.selection = _AnySelectionAdapter(
-            get: { selection.wrappedValue.map(AnyHashable.init) },
+            get: {
+                guard let value = selection.wrappedValue else { return nil }
+                return AnyHashable(value)
+            },
             set: { any in
                 selection.wrappedValue = any.base as? SelectionValue
             }
@@ -931,7 +934,7 @@ public struct NavigationPath: Hashable, @unchecked Sendable {
     }
 
     public init<S: Sequence>(_ elements: S) where S.Element: Hashable {
-        self.elements = elements.map(AnyHashable.init)
+        self.elements = elements.map { AnyHashable($0) }
     }
 
     public var count: Int { elements.count }
@@ -1224,7 +1227,10 @@ public struct TabView<Content: View>: View, _PrimitiveView {
     public init<SelectionValue: Hashable>(selection: Binding<SelectionValue?>, @ViewBuilder content: () -> Content) {
         self.content = content()
         self.selection = _AnySelectionAdapter(
-            get: { selection.wrappedValue.map(AnyHashable.init) },
+            get: {
+                guard let value = selection.wrappedValue else { return nil }
+                return AnyHashable(value)
+            },
             set: { any in
                 selection.wrappedValue = any.base as? SelectionValue
             }
@@ -2763,7 +2769,7 @@ public struct Slider<Label: View, ValueLabel: View>: View, _PrimitiveView {
         self.value = value
         self.bounds = bounds
         self.step = step
-        self.label = EmptyView() as! Label
+        self.label = EmptyView()
         self.minimumValueLabel = nil
         self.maximumValueLabel = nil
         self.actionScopePath = _UIRuntime._currentPath ?? []
@@ -2774,7 +2780,7 @@ public struct Slider<Label: View, ValueLabel: View>: View, _PrimitiveView {
         self.value = dbl
         self.bounds = Double(bounds.lowerBound)...Double(bounds.upperBound)
         self.step = step.map(Double.init)
-        self.label = EmptyView() as! Label
+        self.label = EmptyView()
         self.minimumValueLabel = nil
         self.maximumValueLabel = nil
         self.actionScopePath = _UIRuntime._currentPath ?? []
@@ -2878,14 +2884,6 @@ public struct TextEditor: View, _PrimitiveView {
         }
 
         // Build multiline text as a stack of lines
-        let lines = currentText.isEmpty ? [""] : currentText.split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
-        let visibleLines = lines.prefix(max(1, 4))
-        var children: [_VNode] = []
-        for line in visibleLines {
-            children.append(.text(line.isEmpty ? " " : line))
-        }
-        let content: _VNode = .stack(axis: .vertical, spacing: 0, children: children)
-
         let style: _TextFieldStyleKind = env.textFieldStyleKind
         return .textField(id: id, placeholder: "", text: currentText, cursor: editor.cursor, isFocused: isFocused, style: style)
     }

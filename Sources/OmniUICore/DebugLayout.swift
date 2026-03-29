@@ -1409,7 +1409,7 @@ enum _DebugLayout {
                     let labelMax = _Size(width: max(0, maxSize.width - boxCount - xPad), height: 1)
                     let l = measure(label, labelMax)
                     return _Size(width: min(maxSize.width, xPad + boxCount + l.width), height: 1)
-                case .textField(_, let placeholder, let text, _, _, let style):
+                case .textField(_, let placeholder, let text, _, _, _):
                     let display = text.isEmpty ? placeholder : text
                     let prefixCount = 2
                     let s = prefixCount + 2 + display.count
@@ -1939,7 +1939,7 @@ enum _DebugLayout {
                         let labelMax = _Size(width: max(0, maxSize.width - boxCount - xPad), height: 1)
                         let l = m(label, labelMax)
                         return _Size(width: min(maxSize.width, xPad + boxCount + l.width), height: 1)
-                    case .textField(_, let placeholder, let text, _, _, let style):
+                    case .textField(_, let placeholder, let text, _, _, _):
                         let display = text.isEmpty ? placeholder : text
                         let prefixCount = 2
                         let s = prefixCount + 2 + display.count

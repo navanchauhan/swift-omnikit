@@ -2,7 +2,7 @@
 @resultBuilder
 public enum ViewBuilder {
     public static func buildExpression(_ expression: Never) -> Never {
-        fatalError("Unreachable")
+        switch expression {}
     }
 
     public static func buildExpression(_ expression: AnyView) -> AnyView {
@@ -14,7 +14,7 @@ public enum ViewBuilder {
     }
 
     public static func buildBlock(_ content: Never) -> Never {
-        content
+        switch content {}
     }
 
     // Keep the builder's component type stable (`AnyView`) to avoid generic inference

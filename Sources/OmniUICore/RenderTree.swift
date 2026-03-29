@@ -1315,7 +1315,7 @@ enum _RenderLayout {
             // Alignment offset is consumed during stack cross-axis positioning.
             return draw(node: child, origin: origin, maxSize: maxSize, ctx: &ctx, ops: &ops, hitRegions: &hitRegions, hoverRegions: &hoverRegions, scrollRegions: &scrollRegions, scrollTargets: &scrollTargets, shapeRegions: &shapeRegions, cursorPosition: &cursorPosition, activeMenu: &activeMenu, activePicker: &activePicker, activeTextField: &activeTextField, scrollContext: scrollContext)
 
-        case .preferenceNode(let kind, let child):
+        case .preferenceNode(_, let child):
             let result = draw(node: child, origin: origin, maxSize: maxSize, ctx: &ctx, ops: &ops, hitRegions: &hitRegions, hoverRegions: &hoverRegions, scrollRegions: &scrollRegions, scrollTargets: &scrollTargets, shapeRegions: &shapeRegions, cursorPosition: &cursorPosition, activeMenu: &activeMenu, activePicker: &activePicker, activeTextField: &activeTextField, scrollContext: scrollContext)
             // Preference handling is done by the runtime after layout.
             return result
