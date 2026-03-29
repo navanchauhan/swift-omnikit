@@ -1,14 +1,16 @@
 import Foundation
 
 /// Host-directory-backed filesystem.
+/// Safety: callers serialize VFS mutations, and the per-instance `FileManager`
+/// is immutable after initialization.
 public final class DiskFS: @unchecked Sendable, VFSFullFS {
     private let rootPath: String
-    private nonisolated(unsafe) let fileManager: FileManager
+    private let fileManager: FileManager
 
     public init(root: String) {
         // Resolve symlinks and standardize the root path.
         self.rootPath = (root as NSString).standardizingPath
-        self.fileManager = FileManager.default
+        self.fileManager = FileManager()
     }
 
     // MARK: - Path mapping

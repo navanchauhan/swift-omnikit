@@ -103,6 +103,7 @@ public actor HTTPIngressServer {
 
     private var eventLoopGroup: MultiThreadedEventLoopGroup?
     private var channel: Channel?
+    private var webhookForwarderTasks: [UUID: Task<Void, Never>] = [:]
 
     public init(
         gateway: IngressGateway,
@@ -149,6 +150,7 @@ public actor HTTPIngressServer {
     }
 
     public func stop() async throws {
+        cancelWebhookForwardTasks()
         if let channel {
             try await channel.close().get()
             self.channel = nil
@@ -187,9 +189,7 @@ public actor HTTPIngressServer {
             }
             if let telegramWebhookForwarder {
                 let headerMap = Dictionary(uniqueKeysWithValues: headers.map { ($0.name.lowercased(), $0.value) })
-                Task {
-                    await telegramWebhookForwarder(body, headerMap)
-                }
+                enqueueTelegramWebhookForward(body: body, headers: headerMap, forwarder: telegramWebhookForwarder)
                 return try jsonResponse(["value": "accepted"])
             }
             return errorResponse(status: .notFound, message: "Telegram webhook handling is not configured.")
@@ -323,6 +323,30 @@ public actor HTTPIngressServer {
 
     private func sanitizedPath(_ uri: String) -> String {
         URLComponents(string: "http://ingress\(uri)")?.path ?? uri
+    }
+
+    private func enqueueTelegramWebhookForward(
+        body: Data,
+        headers: [String: String],
+        forwarder: @escaping TelegramWebhookForwarder
+    ) {
+        let taskID = UUID()
+        webhookForwarderTasks[taskID] = Task { [weak self] in
+            await forwarder(body, headers)
+            await self?.finishWebhookForwardTask(id: taskID)
+        }
+    }
+
+    private func finishWebhookForwardTask(id: UUID) {
+        webhookForwarderTasks[id] = nil
+    }
+
+    private func cancelWebhookForwardTasks() {
+        let tasks = webhookForwarderTasks.values
+        webhookForwarderTasks.removeAll()
+        for task in tasks {
+            task.cancel()
+        }
     }
 }
 

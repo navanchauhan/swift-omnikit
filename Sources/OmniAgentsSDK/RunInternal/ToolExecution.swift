@@ -59,7 +59,6 @@ enum ToolRuntime {
             toolInput: runContext.toolInput
         )
         erasedContext.rebuildApprovals(from: runContext.serializedApprovals())
-        erasedContext.toolInput = runContext.toolInput
 
         switch tool {
         case .function(let functionTool):
@@ -97,10 +96,23 @@ enum ToolRuntime {
             let acknowledgedSafetyChecks = try await acknowledgeComputerSafetyChecks(
                 tool: computerTool,
                 call: call,
-                runContext: RunContextWrapper<Any>(context: runContext.context as Any, usage: runContext.usage, turnInput: runContext.turnInput),
+                runContext: RunContextWrapper<Any>(
+                    context: runContext.context as Any,
+                    usage: runContext.usage,
+                    turnInput: runContext.turnInput,
+                    toolInput: runContext.toolInput
+                ),
                 agent: agent
             )
-            let computer = try await resolveComputer(tool: computerTool, runContext: RunContextWrapper<Any>(context: runContext.context as Any, usage: runContext.usage, turnInput: runContext.turnInput))
+            let computer = try await resolveComputer(
+                tool: computerTool,
+                runContext: RunContextWrapper<Any>(
+                    context: runContext.context as Any,
+                    usage: runContext.usage,
+                    turnInput: runContext.turnInput,
+                    toolInput: runContext.toolInput
+                )
+            )
             let screenshot = try await executeComputerActionAndCapture(computer: computer, call: call)
             let imageURL = screenshot.isEmpty ? "" : "data:image/png;base64,\(screenshot)"
             let rawItem: TResponseInputItem = [

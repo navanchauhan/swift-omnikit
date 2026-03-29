@@ -147,6 +147,39 @@ enum _DebugLayout {
         }
     }
 
+    private static func allowsOverlayOverflow(_ node: _VNode) -> Bool {
+        switch node {
+        case .menu:
+            return true
+        case .style(_, _, let child),
+             .offset(_, _, let child),
+             .opacity(_, let child),
+             .background(let child, _),
+             .overlay(let child, _),
+             .modalOverlay(_, _, _, let child),
+             .frame(_, _, _, _, _, _, let child),
+             .edgePadding(_, _, _, _, let child),
+             .identified(_, _, let child),
+             .onDelete(_, _, let child),
+             .tagged(_, let child),
+             .shadow(let child, _, _, _, _),
+             .hover(_, let child),
+             .clip(_, let child),
+             .gestureTarget(_, let child),
+             .fixedSize(_, _, let child),
+             .badge(_, let child),
+             .anchorPreference(_, _, _, let child),
+             .geometryReaderProxy(_, let child),
+             .contentShapeRect(_, let child),
+             .textStyled(_, let child):
+            return allowsOverlayOverflow(child)
+        case .group(let nodes), .zstack(let nodes):
+            return nodes.contains(where: allowsOverlayOverflow)
+        default:
+            return false
+        }
+    }
+
     private static func measureNode(_ node: _VNode, _ maxSize: _Size) -> _Size {
         guard maxSize.width > 0, maxSize.height > 0 else { return _Size(width: 0, height: 0) }
         switch node {
@@ -1617,11 +1650,15 @@ enum _DebugLayout {
                     // to prevent them from consuming all remaining space.
                     let m = measure(child, remaining)
                     let constrained: _Size
-                    switch axis {
-                    case .vertical:
-                        constrained = _Size(width: remaining.width, height: min(remaining.height, m.height))
-                    case .horizontal:
-                        constrained = _Size(width: min(remaining.width, m.width), height: remaining.height)
+                    if Self.allowsOverlayOverflow(child) {
+                        constrained = remaining
+                    } else {
+                        switch axis {
+                        case .vertical:
+                            constrained = _Size(width: remaining.width, height: min(remaining.height, m.height))
+                        case .horizontal:
+                            constrained = _Size(width: min(remaining.width, m.width), height: remaining.height)
+                        }
                     }
                     s = draw(
                         node: child,

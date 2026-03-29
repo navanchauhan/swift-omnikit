@@ -1,4 +1,5 @@
 import Foundation
+import Dispatch
 import OmniHTTP
 
 public protocol MCPTransport: Sendable {
@@ -6,6 +7,25 @@ public protocol MCPTransport: Sendable {
     func disconnect() async
     func send(_ data: Data) async throws
     func messageStream() async throws -> AsyncThrowingStream<Data, Error>
+}
+
+private final class _ProcessExitContinuationBox: @unchecked Sendable {
+    // Safety: `resumed` is guarded by `lock`, and the continuation is resumed at most once.
+    private let lock = NSLock()
+    private var resumed = false
+    private let continuation: CheckedContinuation<Void, Never>
+
+    init(_ continuation: CheckedContinuation<Void, Never>) {
+        self.continuation = continuation
+    }
+
+    func resumeOnce() {
+        lock.lock()
+        defer { lock.unlock() }
+        guard !resumed else { return }
+        resumed = true
+        continuation.resume()
+    }
 }
 
 public actor StdioMCPTransport: MCPTransport {
@@ -17,7 +37,6 @@ public actor StdioMCPTransport: MCPTransport {
     private var stdoutHandle: FileHandle?
     private var stderrHandle: FileHandle?
     private var cachedStream: AsyncThrowingStream<Data, Error>?
-    private var stderrTask: Task<Void, Never>?
 
     public init(command: String, args: [String] = [], env: [String: String] = [:]) {
         self.command = command
@@ -63,25 +82,23 @@ public actor StdioMCPTransport: MCPTransport {
 
         cachedStream = makeLineStream(from: stdoutPipe.fileHandleForReading)
         if let stderrHandle {
-            stderrTask = Task.detached {
-                _ = try? stderrHandle.readToEnd()
-            }
+            Self.drain(handle: stderrHandle, label: "omnimcp.stdio.stderr.\(proc.processIdentifier)")
         }
     }
 
     public func disconnect() async {
-        stderrTask?.cancel()
-        stderrTask = nil
         cachedStream = nil
-        stdoutHandle?.closeFile()
-        stdinHandle?.closeFile()
-        stderrHandle?.closeFile()
+        try? stdoutHandle?.close()
+        try? stdinHandle?.close()
+        try? stderrHandle?.close()
         stdoutHandle = nil
         stdinHandle = nil
         stderrHandle = nil
         if let process {
-            process.terminate()
-            process.waitUntilExit()
+            if process.isRunning {
+                process.terminate()
+                await Self.waitForExit(of: process)
+            }
         }
         process = nil
     }
@@ -102,11 +119,12 @@ public actor StdioMCPTransport: MCPTransport {
 
     private func makeLineStream(from handle: FileHandle) -> AsyncThrowingStream<Data, Error> {
         AsyncThrowingStream { continuation in
-            let task = Task {
+            let queue = DispatchQueue(label: "omnimcp.stdio.stdout.\(UUID().uuidString)")
+            queue.async {
                 do {
                     var buffer: [UInt8] = []
                     buffer.reserveCapacity(4096)
-                    while !Task.isCancelled {
+                    while true {
                         let chunk = try handle.read(upToCount: 4096) ?? Data()
                         if chunk.isEmpty {
                             break
@@ -131,9 +149,33 @@ public actor StdioMCPTransport: MCPTransport {
                 }
             }
             continuation.onTermination = { @Sendable _ in
-                task.cancel()
+                try? handle.close()
             }
         }
+    }
+
+    private nonisolated static func drain(handle: FileHandle, label: String) {
+        let queue = DispatchQueue(label: label, qos: .utility)
+        queue.async {
+            _ = try? handle.readToEnd()
+        }
+    }
+
+    private nonisolated static func waitForExit(of process: Process) async {
+        guard process.isRunning else { return }
+
+        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+            let resumeBox = _ProcessExitContinuationBox(continuation)
+
+            process.terminationHandler = { _ in
+                resumeBox.resumeOnce()
+            }
+
+            if !process.isRunning {
+                resumeBox.resumeOnce()
+            }
+        }
+        process.terminationHandler = nil
     }
 }
 

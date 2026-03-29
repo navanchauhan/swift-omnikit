@@ -71,7 +71,7 @@ open class OmniAICoreModel: Model, @unchecked Sendable {
         )
         let upstream = try await client.stream(request)
         return AsyncThrowingStream { continuation in
-            Task {
+            let producer = Task {
                 do {
                     for try await event in upstream {
                         continuation.yield(ModelConversion.streamEventToResponseEvent(event))
@@ -80,6 +80,9 @@ open class OmniAICoreModel: Model, @unchecked Sendable {
                 } catch {
                     continuation.finish(throwing: error)
                 }
+            }
+            continuation.onTermination = { @Sendable _ in
+                producer.cancel()
             }
         }
     }

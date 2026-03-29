@@ -136,6 +136,39 @@ enum _RenderLayout {
         var maxOffsetY: Int
     }
 
+    private static func allowsOverlayOverflow(_ node: _VNode) -> Bool {
+        switch node {
+        case .menu:
+            return true
+        case .style(_, _, let child),
+             .offset(_, _, let child),
+             .opacity(_, let child),
+             .background(let child, _),
+             .overlay(let child, _),
+             .modalOverlay(_, _, _, let child),
+             .frame(_, _, _, _, _, _, let child),
+             .edgePadding(_, _, _, _, let child),
+             .identified(_, _, let child),
+             .onDelete(_, _, let child),
+             .tagged(_, let child),
+             .shadow(let child, _, _, _, _),
+             .hover(_, let child),
+             .clip(_, let child),
+             .gestureTarget(_, let child),
+             .fixedSize(_, _, let child),
+             .badge(_, let child),
+             .anchorPreference(_, _, _, let child),
+             .geometryReaderProxy(_, let child),
+             .contentShapeRect(_, let child),
+             .textStyled(_, let child):
+            return allowsOverlayOverflow(child)
+        case .group(let nodes), .zstack(let nodes):
+            return nodes.contains(where: allowsOverlayOverflow)
+        default:
+            return false
+        }
+    }
+
     static func layout(node: _VNode, size: _Size) -> Result {
         var ops: [RenderOp] = []
         var hits: [(_Rect, _ActionID)] = []
@@ -829,7 +862,9 @@ enum _RenderLayout {
                     // to prevent them from consuming all remaining space.
                     let m = Self.measure(child, remaining)
                     let constrained: _Size
-                    if axis == .vertical {
+                    if Self.allowsOverlayOverflow(child) {
+                        constrained = remaining
+                    } else if axis == .vertical {
                         constrained = _Size(width: remaining.width, height: min(remaining.height, m.height))
                     } else {
                         constrained = _Size(width: min(remaining.width, m.width), height: remaining.height)

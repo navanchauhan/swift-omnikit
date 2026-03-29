@@ -176,9 +176,11 @@ public final class LocalExecutionEnvironment: ExecutionEnvironment, @unchecked S
         stdoutQueue.async { stdoutBox.set(stdoutPipe.fileHandleForReading.readDataToEndOfFile()) }
         stderrQueue.async { stderrBox.set(stderrPipe.fileHandleForReading.readDataToEndOfFile()) }
 
-        // Timeout task
+        // Timeout task. This stays owned by the request and is paired with the
+        // cancellation handler below so child cleanup still runs if the caller
+        // is cancelled while the subprocess remains alive.
         let timeoutFlag = TimeoutFlag()
-        let timeoutTask = Task.detached(priority: .userInitiated) {
+        let timeoutTask = Task(priority: .userInitiated) {
             try await Task.sleep(nanoseconds: UInt64(timeoutMs) * 1_000_000)
             timeoutFlag.markTimedOut()
             // SIGTERM to process group
@@ -193,11 +195,21 @@ public final class LocalExecutionEnvironment: ExecutionEnvironment, @unchecked S
         // Unlike waitUntilExit() on GCD + withCheckedContinuation, terminationHandler
         // is called by the OS directly when the process exits, avoiding cooperative
         // thread pool starvation when multiple subprocesses run in parallel.
-        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
-            process.terminationHandler = { _ in
-                continuation.resume()
+        try await withTaskCancellationHandler {
+            await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+                let resumeBox = _ProcessExitContinuationBox(continuation)
+                process.terminationHandler = { _ in
+                    resumeBox.resumeOnce()
+                }
+                if !process.isRunning {
+                    resumeBox.resumeOnce()
+                }
             }
+            try Task.checkCancellation()
+        } onCancel: {
+            self.terminateProcess(pid: pid, signal: SIGTERM)
         }
+        process.terminationHandler = nil
         timeoutTask.cancel()
 
         // Wait for pipe reads to finish after process exits.
@@ -667,6 +679,24 @@ private final class _DataBox: @unchecked Sendable {
         lock.lock()
         defer { lock.unlock() }
         return data
+    }
+}
+
+private final class _ProcessExitContinuationBox: @unchecked Sendable {
+    private let lock = NSLock()
+    private var resumed = false
+    private let continuation: CheckedContinuation<Void, Never>
+
+    init(_ continuation: CheckedContinuation<Void, Never>) {
+        self.continuation = continuation
+    }
+
+    func resumeOnce() {
+        lock.lock()
+        defer { lock.unlock() }
+        guard !resumed else { return }
+        resumed = true
+        continuation.resume()
     }
 }
 

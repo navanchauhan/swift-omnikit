@@ -745,6 +745,9 @@ public func claudeTaskTool(parentSession: Session? = nil) -> RegisteredTool {
             }
 
             if let resumeID, !resumeID.isEmpty, let existing = await parentSession.getSubagent(resumeID) {
+                // Safety: resuming an existing subagent is intentionally fire-and-forget here;
+                // the subagent session remains owned by the parent session registry and users
+                // observe completion through task polling tools.
                 Task {
                     await existing.session.submit(prompt)
                 }
@@ -809,6 +812,8 @@ public func claudeTaskTool(parentSession: Session? = nil) -> RegisteredTool {
                 )
             }
 
+            // Safety: newly spawned subagents run independently once registered; completion is
+            // observed via task polling tools rather than this call awaiting submit completion.
             Task {
                 await subSession.submit(prompt)
             }

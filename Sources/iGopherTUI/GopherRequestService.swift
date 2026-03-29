@@ -1,4 +1,5 @@
 import Foundation
+import Dispatch
 @preconcurrency import GopherHelpers
 
 #if os(Linux)
@@ -7,8 +8,13 @@ import Glibc
 import Darwin
 #endif
 
-final class GopherRequestService: @unchecked Sendable {
+final class GopherRequestService: Sendable {
     static let shared = GopherRequestService()
+    private static let socketQueue = DispatchQueue(
+        label: "igopher.tui.gopher-transport",
+        qos: .userInitiated,
+        attributes: .concurrent
+    )
 
     func sendRequest(to host: String, port: Int, message: String) async throws -> [gopherItem] {
         let data = try await fetchData(to: host, port: port, message: message)
@@ -16,9 +22,15 @@ final class GopherRequestService: @unchecked Sendable {
     }
 
     func fetchData(to host: String, port: Int, message: String) async throws -> Data {
-        try await Task.detached(priority: .userInitiated) {
-            try Self.fetchDataSync(to: host, port: port, message: message)
-        }.value
+        try await withCheckedThrowingContinuation { continuation in
+            Self.socketQueue.async {
+                do {
+                    continuation.resume(returning: try Self.fetchDataSync(to: host, port: port, message: message))
+                } catch {
+                    continuation.resume(throwing: error)
+                }
+            }
+        }
     }
 
     private static func fetchDataSync(to host: String, port: Int, message: String) throws -> Data {

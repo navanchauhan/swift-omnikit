@@ -1178,9 +1178,9 @@ public struct NavigationSplitView<Sidebar: View, Detail: View>: View, _Primitive
     ) -> NavigationSplitViewVisibility {
         guard requested == .automatic else { return requested }
 
-        // Mirror platform behavior: on narrow terminals (< 120 cols), default
+        // Mirror platform behavior: on narrow terminals (< 80 cols), default
         // to detail-only (sidebar hidden). Show sidebar only on wider terminals.
-        return size.width >= 120 ? .doubleColumn : .detailOnly
+        return size.width >= 80 ? .doubleColumn : .detailOnly
     }
 }
 

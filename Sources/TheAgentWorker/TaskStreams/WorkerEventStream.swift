@@ -31,6 +31,8 @@ public actor WorkerEventStream {
                 continuation.yield(event)
             }
             continuation.onTermination = { [weak self] _ in
+                // Safety: `onTermination` is synchronous; this one-shot hop only removes the
+                // stored continuation from the actor-owned subscriber map.
                 Task {
                     await self?.removeContinuation(identifier)
                 }

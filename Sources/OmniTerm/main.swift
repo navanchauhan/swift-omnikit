@@ -316,7 +316,7 @@ private func spawnBlinkHelper(
     argv: [String],
     env: [String],
     cleanupBaseURL: URL? = nil
-) throws -> Int32 {
+) async throws -> Int32 {
     let fm = FileManager.default
     let keepHelperRoot = ProcessInfo.processInfo.environment["OMNITERM_KEEP_HELPER_ROOT"] != nil
     let helperBaseURL =
@@ -361,7 +361,7 @@ private func spawnBlinkHelper(
     process.standardError = FileHandle.standardError
 
     try process.run()
-    process.waitUntilExit()
+    await waitForOmniTermProcessExit(process)
 
     switch process.terminationReason {
     case .exit:
@@ -379,7 +379,7 @@ private func runViaSpawnedBlinkHelper(
     guestProgramPath: String,
     argv: [String],
     env: [String]
-) throws -> Int32 {
+) async throws -> Int32 {
     let helperBaseURL = FileManager.default.temporaryDirectory.appending(
         path: "omniterm-helper-\(UUID().uuidString)",
         directoryHint: .isDirectory
@@ -389,7 +389,7 @@ private func runViaSpawnedBlinkHelper(
     try FileManager.default.createDirectory(at: helperBaseURL, withIntermediateDirectories: true)
     try materializeFlatVFS(flatVFS, to: rootURL)
 
-    return try spawnBlinkHelper(
+    return try await spawnBlinkHelper(
         rootPath: rootURL.path,
         hostMounts: hostMounts,
         guestProgramPath: guestProgramPath,
@@ -397,6 +397,41 @@ private func runViaSpawnedBlinkHelper(
         env: env,
         cleanupBaseURL: helperBaseURL
     )
+}
+
+private func waitForOmniTermProcessExit(_ process: Process) async {
+    guard process.isRunning else { return }
+
+    await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+        let resumeBox = _OmniTermProcessExitBox(continuation)
+
+        process.terminationHandler = { _ in
+            resumeBox.resumeOnce()
+        }
+
+        if !process.isRunning {
+            resumeBox.resumeOnce()
+        }
+    }
+    process.terminationHandler = nil
+}
+
+private final class _OmniTermProcessExitBox: @unchecked Sendable {
+    private let lock = NSLock()
+    private var resumed = false
+    private let continuation: CheckedContinuation<Void, Never>
+
+    init(_ continuation: CheckedContinuation<Void, Never>) {
+        self.continuation = continuation
+    }
+
+    func resumeOnce() {
+        lock.lock()
+        defer { lock.unlock() }
+        guard !resumed else { return }
+        resumed = true
+        continuation.resume()
+    }
 }
 
 // MARK: - Main
@@ -470,7 +505,7 @@ enum OmniTermMain {
             }
 
             if shouldUseSpawnedBlinkHelper() {
-                exit(try spawnBlinkHelper(
+                exit(try await spawnBlinkHelper(
                     rootPath: statePaths.rootDirectory.path,
                     hostMounts: hostMounts,
                     guestProgramPath: guestProgramPath,
@@ -537,7 +572,7 @@ enum OmniTermMain {
 
         // 5. Build blink config
         if shouldUseSpawnedBlinkHelper() {
-            exit(try runViaSpawnedBlinkHelper(
+            exit(try await runViaSpawnedBlinkHelper(
                 flatVFS: vfsPlan.flatVFS,
                 hostMounts: hostMounts,
                 guestProgramPath: guestProgramPath,

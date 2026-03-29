@@ -45,13 +45,7 @@ public final class JSONRealtimeWebSocketSession: Sendable {
     public func events() -> AsyncThrowingStream<JSONValue, Error> {
         let base = self.base
         return AsyncThrowingStream { continuation in
-            continuation.onTermination = { _ in
-                Task {
-                    await base.close(code: .goingAway)
-                }
-            }
-
-            Task {
+            let producer = Task {
                 do {
                     for try await message in base.incomingMessages() {
                         switch message {
@@ -67,6 +61,15 @@ public final class JSONRealtimeWebSocketSession: Sendable {
                     continuation.finish()
                 } catch {
                     continuation.finish(throwing: error)
+                }
+            }
+
+            continuation.onTermination = { _ in
+                producer.cancel()
+                // Safety: `onTermination` is synchronous; closing the websocket requires an
+                // async hop after the owned producer task has been cancelled.
+                Task {
+                    await base.close(code: .goingAway)
                 }
             }
         }
@@ -199,6 +202,7 @@ private final class URLSessionRealtimeWebSocketSession: RealtimeWebSocketSession
     private let stream: AsyncThrowingStream<RealtimeWebSocketMessage, Error>
     private let continuation: AsyncThrowingStream<RealtimeWebSocketMessage, Error>.Continuation
     private let finishOnce = _RealtimeFinishOnce()
+    private var receiveTask: Task<Void, Never>?
 
     init(request: URLRequest, timeout: Duration?) {
         self.session = URLSession(configuration: .ephemeral)
@@ -226,13 +230,14 @@ private final class URLSessionRealtimeWebSocketSession: RealtimeWebSocketSession
     }
 
     func close(code: RealtimeWebSocketCloseCode?) async {
+        receiveTask?.cancel()
         task.cancel(with: _mapURLSessionCloseCode(code), reason: nil)
         session.invalidateAndCancel()
         finishOnce.run { continuation.finish() }
     }
 
     private func startReceivingLoop() {
-        Task {
+        receiveTask = Task {
             do {
                 while !Task.isCancelled {
                     let message = try await task.receive()
@@ -292,6 +297,22 @@ private func _connectNIOWebSocket(
 
     return try await withCheckedThrowingContinuation { continuation in
         let state = _RealtimeConnectResumeState()
+        let timeoutTask: Task<Void, Never>? = {
+            guard let timeout else { return nil }
+            let timeoutSeconds = _realtimeDurationSeconds(timeout)
+            guard timeoutSeconds > 0 else { return nil }
+            return Task {
+                try? await Task.sleep(nanoseconds: UInt64(timeoutSeconds * 1_000_000_000))
+                state.resumeOnce(continuation) {
+                    continuation.resume(
+                        throwing: RequestTimeoutError(
+                            message: "Realtime websocket connect timed out after \(timeoutSeconds)s"
+                        )
+                    )
+                }
+            }
+        }()
+
         let future = client.connect(
             scheme: scheme,
             host: host,
@@ -300,30 +321,16 @@ private func _connectNIOWebSocket(
             query: query,
             headers: headers
         ) { socket in
+            timeoutTask?.cancel()
             state.resumeOnce(continuation) {
                 continuation.resume(returning: socket)
             }
         }
 
         future.whenFailure { error in
+            timeoutTask?.cancel()
             state.resumeOnce(continuation) {
                 continuation.resume(throwing: error)
-            }
-        }
-
-        if let timeout {
-            let timeoutSeconds = _realtimeDurationSeconds(timeout)
-            if timeoutSeconds > 0 {
-                Task {
-                    try? await Task.sleep(nanoseconds: UInt64(timeoutSeconds * 1_000_000_000))
-                    state.resumeOnce(continuation) {
-                        continuation.resume(
-                            throwing: RequestTimeoutError(
-                                message: "Realtime websocket connect timed out after \(timeoutSeconds)s"
-                            )
-                        )
-                    }
-                }
             }
         }
     }
@@ -336,27 +343,27 @@ private func _sendTextOnNIOWebSocket(
 ) async throws {
     try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
         let state = _RealtimeConnectResumeState()
+        let timeoutTask: Task<Void, Never>? = {
+            guard let timeout else { return nil }
+            let timeoutSeconds = _realtimeDurationSeconds(timeout)
+            guard timeoutSeconds > 0 else { return nil }
+            return Task {
+                try? await Task.sleep(nanoseconds: UInt64(timeoutSeconds * 1_000_000_000))
+                state.resumeOnce(continuation) {
+                    continuation.resume(
+                        throwing: RequestTimeoutError(
+                            message: "Realtime websocket send timed out after \(timeoutSeconds)s"
+                        )
+                    )
+                }
+            }
+        }()
 
         socket.eventLoop.execute {
             socket.send(text)
+            timeoutTask?.cancel()
             state.resumeOnce(continuation) {
                 continuation.resume()
-            }
-        }
-
-        if let timeout {
-            let timeoutSeconds = _realtimeDurationSeconds(timeout)
-            if timeoutSeconds > 0 {
-                Task {
-                    try? await Task.sleep(nanoseconds: UInt64(timeoutSeconds * 1_000_000_000))
-                    state.resumeOnce(continuation) {
-                        continuation.resume(
-                            throwing: RequestTimeoutError(
-                                message: "Realtime websocket send timed out after \(timeoutSeconds)s"
-                            )
-                        )
-                    }
-                }
             }
         }
     }
@@ -369,27 +376,27 @@ private func _sendBinaryOnNIOWebSocket(
 ) async throws {
     try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
         let state = _RealtimeConnectResumeState()
+        let timeoutTask: Task<Void, Never>? = {
+            guard let timeout else { return nil }
+            let timeoutSeconds = _realtimeDurationSeconds(timeout)
+            guard timeoutSeconds > 0 else { return nil }
+            return Task {
+                try? await Task.sleep(nanoseconds: UInt64(timeoutSeconds * 1_000_000_000))
+                state.resumeOnce(continuation) {
+                    continuation.resume(
+                        throwing: RequestTimeoutError(
+                            message: "Realtime websocket send timed out after \(timeoutSeconds)s"
+                        )
+                    )
+                }
+            }
+        }()
 
         socket.eventLoop.execute {
             socket.send(data)
+            timeoutTask?.cancel()
             state.resumeOnce(continuation) {
                 continuation.resume()
-            }
-        }
-
-        if let timeout {
-            let timeoutSeconds = _realtimeDurationSeconds(timeout)
-            if timeoutSeconds > 0 {
-                Task {
-                    try? await Task.sleep(nanoseconds: UInt64(timeoutSeconds * 1_000_000_000))
-                    state.resumeOnce(continuation) {
-                        continuation.resume(
-                            throwing: RequestTimeoutError(
-                                message: "Realtime websocket send timed out after \(timeoutSeconds)s"
-                            )
-                        )
-                    }
-                }
             }
         }
     }

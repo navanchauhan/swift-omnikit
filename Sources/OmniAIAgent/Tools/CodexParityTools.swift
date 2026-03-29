@@ -630,6 +630,8 @@ public func codexSpawnAgentTool(parentSession: Session) -> RegisteredTool {
             let handle = SubAgentHandle(id: UUID().uuidString, session: subSession)
             await parentSession.registerSubagent(handle)
 
+            // Safety: spawned subagents are owned by the parent session registry and intentionally
+            // continue independently after this tool returns.
             Task {
                 await subSession.submit(message)
             }

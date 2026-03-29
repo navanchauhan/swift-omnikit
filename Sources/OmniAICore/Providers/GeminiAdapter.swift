@@ -106,7 +106,7 @@ public final class GeminiAdapter: ProviderAdapter, @unchecked Sendable {
         let sse = SSE.parse(res.body)
 
         return AsyncThrowingStream { continuation in
-            Task {
+            let producer = Task {
                 continuation.yield(StreamEvent(type: .standard(.streamStart)))
 
                 var didStartText = false
@@ -201,6 +201,9 @@ public final class GeminiAdapter: ProviderAdapter, @unchecked Sendable {
                     continuation.yield(StreamEvent(type: .standard(.error), error: (error as? SDKError) ?? StreamError(message: String(describing: error), cause: error)))
                     continuation.finish(throwing: error)
                 }
+            }
+            continuation.onTermination = { @Sendable _ in
+                producer.cancel()
             }
         }
     }

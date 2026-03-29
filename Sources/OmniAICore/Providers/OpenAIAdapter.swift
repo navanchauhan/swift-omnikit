@@ -127,7 +127,7 @@ public final class OpenAIAdapter: ProviderAdapter, @unchecked Sendable {
         let sse = SSE.parse(res.body)
 
         return AsyncThrowingStream { continuation in
-            Task {
+            let producer = Task {
                 var didStartText = false
                 let textId = "text_0"
                 var accumulatedText = ""
@@ -275,6 +275,9 @@ public final class OpenAIAdapter: ProviderAdapter, @unchecked Sendable {
                     continuation.finish(throwing: error)
                 }
             }
+            continuation.onTermination = { @Sendable _ in
+                producer.cancel()
+            }
         }
     }
 
@@ -300,7 +303,7 @@ public final class OpenAIAdapter: ProviderAdapter, @unchecked Sendable {
         )
 
         return AsyncThrowingStream { continuation in
-            Task {
+            let producer = Task {
                 var didStartText = false
                 let textId = "text_0"
                 var accumulatedText = ""
@@ -479,6 +482,9 @@ public final class OpenAIAdapter: ProviderAdapter, @unchecked Sendable {
                     continuation.yield(StreamEvent(type: .standard(.error), error: (error as? SDKError) ?? StreamError(message: String(describing: error), cause: error)))
                     continuation.finish(throwing: error)
                 }
+            }
+            continuation.onTermination = { @Sendable _ in
+                producer.cancel()
             }
         }
     }

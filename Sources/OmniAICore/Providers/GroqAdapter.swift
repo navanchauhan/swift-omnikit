@@ -87,7 +87,7 @@ public final class GroqAdapter: ProviderAdapter, @unchecked Sendable {
         let sse = SSE.parse(res.body)
 
         return AsyncThrowingStream { continuation in
-            Task {
+            let producer = Task {
                 continuation.yield(StreamEvent(type: .standard(.streamStart)))
 
                 struct PartialToolCall {
@@ -276,6 +276,9 @@ public final class GroqAdapter: ProviderAdapter, @unchecked Sendable {
                     continuation.yield(StreamEvent(type: .standard(.error), error: (error as? SDKError) ?? StreamError(message: String(describing: error), cause: error)))
                     continuation.finish(throwing: error)
                 }
+            }
+            continuation.onTermination = { @Sendable _ in
+                producer.cancel()
             }
         }
     }

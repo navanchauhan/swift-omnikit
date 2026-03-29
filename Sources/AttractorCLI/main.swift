@@ -643,11 +643,10 @@ private final class CodexCLICodergenBackend: CodergenBackend, Sendable {
         // when output exceeds ~64KB. Reading must start before process exit.
         let stdoutReadQueue = DispatchQueue(label: "codex.stdout")
         let stderrReadQueue = DispatchQueue(label: "codex.stderr")
-        // Safety: each var is only mutated from its own serial queue and read after synchronization.
-        nonisolated(unsafe) var stdoutData = Data()
-        nonisolated(unsafe) var stderrData = Data()
-        stdoutReadQueue.async { stdoutData = stdoutPipe.fileHandleForReading.readDataToEndOfFile() }
-        stderrReadQueue.async { stderrData = stderrPipe.fileHandleForReading.readDataToEndOfFile() }
+        let stdoutData = _LockedDataBox()
+        let stderrData = _LockedDataBox()
+        stdoutReadQueue.async { stdoutData.store(stdoutPipe.fileHandleForReading.readDataToEndOfFile()) }
+        stderrReadQueue.async { stderrData.store(stderrPipe.fileHandleForReading.readDataToEndOfFile()) }
 
         if await waitForExitOrTimeout(exitSignal, timeoutSeconds: timeoutSeconds) {
             terminate(process)
@@ -662,8 +661,8 @@ private final class CodexCLICodergenBackend: CodergenBackend, Sendable {
         stdoutReadQueue.sync {}
         stderrReadQueue.sync {}
 
-        let stdout = String(data: stdoutData, encoding: .utf8) ?? ""
-        let stderr = String(data: stderrData, encoding: .utf8) ?? ""
+        let stdout = String(data: stdoutData.load(), encoding: .utf8) ?? ""
+        let stderr = String(data: stderrData.load(), encoding: .utf8) ?? ""
 
         guard process.terminationStatus == 0 else {
             throw ExitError(
@@ -853,11 +852,10 @@ private func runCommand(_ argv: [String], timeoutSeconds: Int) async throws -> S
     // when output exceeds ~64KB. Reading must start before process exit.
     let stdoutReadQueue = DispatchQueue(label: "cmd.stdout")
     let stderrReadQueue = DispatchQueue(label: "cmd.stderr")
-    // Safety: each var is only mutated from its own serial queue and read after synchronization.
-    nonisolated(unsafe) var stdoutData = Data()
-    nonisolated(unsafe) var stderrData = Data()
-    stdoutReadQueue.async { stdoutData = stdoutPipe.fileHandleForReading.readDataToEndOfFile() }
-    stderrReadQueue.async { stderrData = stderrPipe.fileHandleForReading.readDataToEndOfFile() }
+    let stdoutData = _LockedDataBox()
+    let stderrData = _LockedDataBox()
+    stdoutReadQueue.async { stdoutData.store(stdoutPipe.fileHandleForReading.readDataToEndOfFile()) }
+    stderrReadQueue.async { stderrData.store(stderrPipe.fileHandleForReading.readDataToEndOfFile()) }
 
     if await waitForExitOrTimeout(exitSignal, timeoutSeconds: timeoutSeconds) {
         terminate(process)
@@ -872,8 +870,8 @@ private func runCommand(_ argv: [String], timeoutSeconds: Int) async throws -> S
     stdoutReadQueue.sync {}
     stderrReadQueue.sync {}
 
-    let stdout = String(data: stdoutData, encoding: .utf8) ?? ""
-    let stderr = String(data: stderrData, encoding: .utf8) ?? ""
+    let stdout = String(data: stdoutData.load(), encoding: .utf8) ?? ""
+    let stderr = String(data: stderrData.load(), encoding: .utf8) ?? ""
 
     guard process.terminationStatus == 0 else {
         throw ExitError(
@@ -1073,6 +1071,23 @@ private final class _AsyncBoolSignal: @unchecked Sendable {
         }
         self.continuation = continuation
         lock.unlock()
+    }
+}
+
+private final class _LockedDataBox: @unchecked Sendable {
+    private let lock = NSLock()
+    private var data = Data()
+
+    func store(_ data: Data) {
+        lock.lock()
+        self.data = data
+        lock.unlock()
+    }
+
+    func load() -> Data {
+        lock.lock()
+        defer { lock.unlock() }
+        return data
     }
 }
 

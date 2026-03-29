@@ -128,6 +128,8 @@ public final class HTTPServerInterviewer: Sendable, Interviewer {
         ))
 
         let answer: InterviewAnswer = await withCheckedContinuation { continuation in
+            // Safety: `withCheckedContinuation` supplies a synchronous registration point; this
+            // one-shot hop stores the continuation inside actor-owned run state.
             Task {
                 await runState.registerQuestionContinuation(qid, continuation)
             }

@@ -123,7 +123,7 @@ public final class NIOHTTPTransport: HTTPTransport, @unchecked Sendable {
             }
 
             let stream: HTTPByteStream = AsyncThrowingStream { continuation in
-                Task {
+                let producer = Task {
                     do {
                         for try await part in response.body {
                             var buf = part
@@ -134,6 +134,9 @@ public final class NIOHTTPTransport: HTTPTransport, @unchecked Sendable {
                     } catch {
                         continuation.finish(throwing: error)
                     }
+                }
+                continuation.onTermination = { @Sendable _ in
+                    producer.cancel()
                 }
             }
 

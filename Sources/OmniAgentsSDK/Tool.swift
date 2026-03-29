@@ -18,9 +18,13 @@ public enum ToolEnabledPredicate: @unchecked Sendable {
         case .always(let enabled):
             return enabled
         case .dynamic(let function):
-            let erased = RunContextWrapper<Any>(context: context.context as Any, usage: context.usage, turnInput: context.turnInput)
+            let erased = RunContextWrapper<Any>(
+                context: context.context as Any,
+                usage: context.usage,
+                turnInput: context.turnInput,
+                toolInput: context.toolInput
+            )
             erased.rebuildApprovals(from: context.serializedApprovals())
-            erased.toolInput = context.toolInput
             return try await function(erased, agent)
         }
     }
@@ -35,9 +39,13 @@ public enum ToolApprovalRequirement: @unchecked Sendable {
         case .always(let required):
             return required
         case .dynamic(let function):
-            let erased = RunContextWrapper<Any>(context: context.context as Any, usage: context.usage, turnInput: context.turnInput)
+            let erased = RunContextWrapper<Any>(
+                context: context.context as Any,
+                usage: context.usage,
+                turnInput: context.turnInput,
+                toolInput: context.toolInput
+            )
             erased.rebuildApprovals(from: context.serializedApprovals())
-            erased.toolInput = context.toolInput
             return try await function(erased, arguments, callID)
         }
     }

@@ -226,6 +226,8 @@ private actor MeshEventHub {
                 continuation.yield(event)
             }
             continuation.onTermination = { [weak self] _ in
+                // Safety: `onTermination` is synchronous; this cleanup hop only removes the
+                // stored subscriber entry from actor-owned state.
                 Task {
                     await self?.removeSubscriber(identifier)
                 }

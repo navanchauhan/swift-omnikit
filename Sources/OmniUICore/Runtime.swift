@@ -1,5 +1,9 @@
 import Foundation
 
+// Safety: OmniUI runtime state is confined to a single render/event loop owner.
+// We intentionally do not use `@MainActor` here because notcurses/terminal renderers
+// may drive the runtime off the process main actor, but they still preserve
+// single-threaded ownership for mutation.
 public final class _UIRuntime: @unchecked Sendable {
     private static let _overlayPathSentinel = Int.min
 
@@ -74,6 +78,7 @@ public final class _UIRuntime: @unchecked Sendable {
         var action: () async -> Void
         var task: Task<Void, Never>?
     }
+    private let taskRegistryLock = NSLock()
     private var tasks: [String: _TaskEntry] = [:]
     private var tasksSeenThisFrame: Set<String> = []
     private var nextLaunchedAsyncActionID: Int = 1
@@ -517,7 +522,9 @@ public final class _UIRuntime: @unchecked Sendable {
         navStackRoots.removeAll(keepingCapacity: true)
         navResolvers.removeAll(keepingCapacity: true)
         overlays.removeAll(keepingCapacity: true)
-        tasksSeenThisFrame.removeAll(keepingCapacity: true)
+        _withTaskRegistryLock {
+            tasksSeenThisFrame.removeAll(keepingCapacity: true)
+        }
         onAppearSeenThisFrame.removeAll(keepingCapacity: true)
         onDisappearSeenThisFrame.removeAll(keepingCapacity: true)
     }
@@ -1178,7 +1185,7 @@ public final class _UIRuntime: @unchecked Sendable {
 
     @MainActor
     private func _runTask(key: String) async {
-        guard let entry = tasks[key] else { return }
+        guard let entry = _withTaskRegistryLock({ tasks[key] }) else { return }
         let env = entry.env
         let path = entry.path
         let action = entry.action
@@ -1196,9 +1203,11 @@ public final class _UIRuntime: @unchecked Sendable {
     func _registerTask(path: [Int], priority: TaskPriority? = nil, action: @escaping () async -> Void) {
         _noteBuildSideEffect()
         let key = _pathKey(prefix: "task", path: path)
-        tasksSeenThisFrame.insert(key)
-
-        if tasks[key] != nil { return }
+        let needsRegistration = _withTaskRegistryLock {
+            tasksSeenThisFrame.insert(key)
+            return tasks[key] == nil
+        }
+        if !needsRegistration { return }
 
         let runtime = self
         let env = _UIRuntime._currentEnvironment ?? _baseEnvironment
@@ -1207,28 +1216,48 @@ public final class _UIRuntime: @unchecked Sendable {
         let t = Task(priority: p) { @MainActor in
             await runtime._runTask(key: key)
         }
-        tasks[key] = _TaskEntry(env: env, path: path, action: action, task: t)
+        let inserted = _withTaskRegistryLock {
+            if tasks[key] != nil { return false }
+            tasks[key] = _TaskEntry(env: env, path: path, action: action, task: t)
+            return true
+        }
+        if !inserted {
+            t.cancel()
+        }
     }
 
     // Task registration with id-based cancellation/restart
     private var taskLastIds: [String: AnyHashable] = [:]
 
+    private func _withTaskRegistryLock<R>(_ body: () -> R) -> R {
+        taskRegistryLock.lock()
+        defer { taskRegistryLock.unlock() }
+        return body()
+    }
+
     func _registerTaskWithId(path: [Int], id: AnyHashable, priority: TaskPriority? = nil, action: @escaping () async -> Void) {
         _noteBuildSideEffect()
         let key = _pathKey(prefix: "task", path: path)
-        tasksSeenThisFrame.insert(key)
+        let previousTask: Task<Void, Never>? = _withTaskRegistryLock {
+            tasksSeenThisFrame.insert(key)
 
-        if let existing = tasks[key] {
-            // Check if id changed
-            if let lastId = taskLastIds[key], lastId == id {
-                return // Same id, no-op
+            if let existing = tasks[key] {
+                if let lastId = taskLastIds[key], lastId == id {
+                    return nil
+                }
+                tasks[key] = nil
+                taskLastIds[key] = id
+                return existing.task
             }
-            // Id changed: cancel old task and restart
-            existing.task?.cancel()
-            tasks[key] = nil
-        }
 
-        taskLastIds[key] = id
+            taskLastIds[key] = id
+            return nil
+        }
+        previousTask?.cancel()
+        let stillNeedsRegistration = _withTaskRegistryLock {
+            tasks[key] == nil && taskLastIds[key] == id
+        }
+        if !stillNeedsRegistration { return }
 
         let runtime = self
         let env = _UIRuntime._currentEnvironment ?? _baseEnvironment
@@ -1237,7 +1266,14 @@ public final class _UIRuntime: @unchecked Sendable {
         let t = Task(priority: p) { @MainActor in
             await runtime._runTask(key: key)
         }
-        tasks[key] = _TaskEntry(env: env, path: path, action: action, task: t)
+        let inserted = _withTaskRegistryLock {
+            guard taskLastIds[key] == id else { return false }
+            tasks[key] = _TaskEntry(env: env, path: path, action: action, task: t)
+            return true
+        }
+        if !inserted {
+            t.cancel()
+        }
     }
 
     // Focus section support
@@ -1256,21 +1292,30 @@ public final class _UIRuntime: @unchecked Sendable {
 
     func _launchAsyncAction(path: [Int], action: @escaping () async -> Void) {
         _noteBuildSideEffect()
-        let id = nextLaunchedAsyncActionID
-        nextLaunchedAsyncActionID += 1
-
         let runtime = self
         let env = _UIRuntime._currentEnvironment ?? _baseEnvironment
-        launchedAsyncActions[id] = _TaskEntry(env: env, path: path, action: action, task: nil)
+        let id = _withTaskRegistryLock {
+            let id = nextLaunchedAsyncActionID
+            nextLaunchedAsyncActionID += 1
+            launchedAsyncActions[id] = _TaskEntry(env: env, path: path, action: action, task: nil)
+            return id
+        }
         let task = Task { @MainActor in
             await runtime._runLaunchedAsyncAction(id: id)
         }
-        launchedAsyncActions[id]?.task = task
+        let stored = _withTaskRegistryLock {
+            guard launchedAsyncActions[id] != nil else { return false }
+            launchedAsyncActions[id]?.task = task
+            return true
+        }
+        if !stored {
+            task.cancel()
+        }
     }
 
     @MainActor
     private func _runLaunchedAsyncAction(id: Int) async {
-        guard let entry = launchedAsyncActions[id] else { return }
+        guard let entry = _withTaskRegistryLock({ launchedAsyncActions[id] }) else { return }
         await _UIRuntime.$_current.withValue(self) {
             await _UIRuntime.$_currentPath.withValue(entry.path) {
                 await _UIRuntime.$_currentEnvironment.withValue(entry.env) {
@@ -1278,23 +1323,27 @@ public final class _UIRuntime: @unchecked Sendable {
                 }
             }
         }
-        launchedAsyncActions[id] = nil
+        _withTaskRegistryLock {
+            launchedAsyncActions[id] = nil
+        }
         _markDirty()
     }
 
     func _reconcileTasksAfterFrame() {
-        guard !tasks.isEmpty else { return }
-        let seen = tasksSeenThisFrame
-        var toCancel: [String] = []
-        toCancel.reserveCapacity(tasks.count)
-        for (k, _) in tasks where !seen.contains(k) {
-            toCancel.append(k)
-        }
-        for k in toCancel {
-            if let t = tasks[k]?.task {
-                t.cancel()
+        let toCancel: [Task<Void, Never>?] = _withTaskRegistryLock {
+            guard !tasks.isEmpty else { return [] }
+            let seen = tasksSeenThisFrame
+            var handles: [Task<Void, Never>?] = []
+            handles.reserveCapacity(tasks.count)
+            for (k, entry) in tasks where !seen.contains(k) {
+                handles.append(entry.task)
+                tasks[k] = nil
+                taskLastIds[k] = nil
             }
-            tasks[k] = nil
+            return handles
+        }
+        for handle in toCancel {
+            handle?.cancel()
         }
     }
 

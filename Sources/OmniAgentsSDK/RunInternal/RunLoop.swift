@@ -64,9 +64,13 @@ enum AgentRunLoop {
                 inputGuardrailResults += try await GuardrailRuntime.runInputGuardrails(
                     globalGuardrails.compactMap { guardrail in
                         InputGuardrail<TContext>(name: guardrail.name, runInParallel: guardrail.runInParallel) { context, agent, input in
-                            let erasedContext = RunContextWrapper<Any>(context: context.context as Any, usage: context.usage, turnInput: context.turnInput)
+                            let erasedContext = RunContextWrapper<Any>(
+                                context: context.context as Any,
+                                usage: context.usage,
+                                turnInput: context.turnInput,
+                                toolInput: context.toolInput
+                            )
                             erasedContext.rebuildApprovals(from: context.serializedApprovals())
-                            erasedContext.toolInput = context.toolInput
                             return guardrail.guardrailFunction(erasedContext, AnyAgent(agent), input)
                         }
                     },
@@ -98,7 +102,15 @@ enum AgentRunLoop {
                     agentInstance: AnyAgent(currentAgent)
                 ))
             }
-            let availableTools = try await prepareToolsForModel(allTools + handoffTools, contextWrapper: RunContextWrapper<Any>(context: contextWrapper.context as Any, usage: contextWrapper.usage, turnInput: contextWrapper.turnInput))
+            let availableTools = try await prepareToolsForModel(
+                allTools + handoffTools,
+                contextWrapper: RunContextWrapper<Any>(
+                    context: contextWrapper.context as Any,
+                    usage: contextWrapper.usage,
+                    turnInput: contextWrapper.turnInput,
+                    toolInput: contextWrapper.toolInput
+                )
+            )
 
             let modelInputData = try await TurnPipeline.prepareModelInput(
                 items: modelInputItems,
@@ -168,9 +180,13 @@ enum AgentRunLoop {
                     outputGuardrailResults += try await GuardrailRuntime.runOutputGuardrails(
                     globalOutputGuardrails.compactMap { guardrail in
                         OutputGuardrail<TContext>(name: guardrail.name) { context, agent, output in
-                                let erasedContext = RunContextWrapper<Any>(context: context.context as Any, usage: context.usage, turnInput: context.turnInput)
+                                let erasedContext = RunContextWrapper<Any>(
+                                    context: context.context as Any,
+                                    usage: context.usage,
+                                    turnInput: context.turnInput,
+                                    toolInput: context.toolInput
+                                )
                                 erasedContext.rebuildApprovals(from: context.serializedApprovals())
-                                erasedContext.toolInput = context.toolInput
                                 return guardrail.guardrailFunction(erasedContext, AnyAgent(agent), output)
                             }
                         },

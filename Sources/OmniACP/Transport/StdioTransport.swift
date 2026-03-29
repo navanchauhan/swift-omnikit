@@ -91,6 +91,8 @@ public actor StdioTransport: Transport {
         process.standardOutput = stdoutPipe
         process.standardError = stderrPipe
         process.terminationHandler = { [weak self] process in
+            // Safety: Process termination handlers are synchronous, so we hop once into async
+            // code to deliver termination to the transport's owned state machine.
             Task {
                 await self?.handleTermination(status: process.terminationStatus)
             }

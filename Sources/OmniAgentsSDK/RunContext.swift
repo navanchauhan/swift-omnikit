@@ -23,20 +23,152 @@ private struct ApprovalRecord {
     var rejectedCallIDs: Set<String> = []
 }
 
+private final class ApprovalStateStore: @unchecked Sendable {
+    // Safety: approval state is only accessed while holding `lock`.
+    private let lock = NSLock()
+    private var approvals: [String: ApprovalRecord] = [:]
+
+    func applyDecision(toolName: String, callID: String?, always: Bool, approve: Bool) {
+        lock.lock()
+        defer { lock.unlock() }
+
+        var entry = approvals[toolName] ?? ApprovalRecord()
+        if always || callID == nil {
+            entry.approvedForAllCalls = approve
+            entry.rejectedForAllCalls = !approve
+            entry.approvedCallIDs.removeAll()
+            entry.rejectedCallIDs.removeAll()
+            approvals[toolName] = entry
+            return
+        }
+
+        guard let callID else {
+            approvals[toolName] = entry
+            return
+        }
+
+        if approve {
+            entry.rejectedCallIDs.remove(callID)
+            entry.approvedCallIDs.insert(callID)
+        } else {
+            entry.approvedCallIDs.remove(callID)
+            entry.rejectedCallIDs.insert(callID)
+        }
+
+        approvals[toolName] = entry
+    }
+
+    func approvalStatus(toolName: String, callID: String) -> Bool? {
+        lock.lock()
+        defer { lock.unlock() }
+
+        guard let entry = approvals[toolName] else {
+            return nil
+        }
+        if entry.approvedForAllCalls && entry.rejectedForAllCalls {
+            return true
+        }
+        if entry.approvedForAllCalls {
+            return true
+        }
+        if entry.rejectedForAllCalls {
+            return false
+        }
+        if entry.approvedCallIDs.contains(callID) {
+            return true
+        }
+        if entry.rejectedCallIDs.contains(callID) {
+            return false
+        }
+        return nil
+    }
+
+    func rebuild(from serializedApprovals: [String: [String: JSONValue]]) {
+        lock.lock()
+        defer { lock.unlock() }
+
+        approvals = [:]
+        for (toolName, recordDict) in serializedApprovals {
+            var record = ApprovalRecord()
+            Self.hydrateApprovalField(recordValue: recordDict["approved"], approve: true, record: &record)
+            Self.hydrateApprovalField(recordValue: recordDict["rejected"], approve: false, record: &record)
+            approvals[toolName] = record
+        }
+    }
+
+    func snapshot() -> [String: [String: JSONValue]] {
+        lock.lock()
+        defer { lock.unlock() }
+
+        var result: [String: [String: JSONValue]] = [:]
+        for (toolName, record) in approvals {
+            let approvedValue: JSONValue = record.approvedForAllCalls
+                ? .bool(true)
+                : .array(record.approvedCallIDs.sorted().map(JSONValue.string))
+            let rejectedValue: JSONValue = record.rejectedForAllCalls
+                ? .bool(true)
+                : .array(record.rejectedCallIDs.sorted().map(JSONValue.string))
+            result[toolName] = [
+                "approved": approvedValue,
+                "rejected": rejectedValue,
+            ]
+        }
+        return result
+    }
+
+    private static func hydrateApprovalField(
+        recordValue: JSONValue?,
+        approve: Bool,
+        record: inout ApprovalRecord
+    ) {
+        guard let recordValue else { return }
+
+        switch recordValue {
+        case .bool(let allCalls):
+            if approve {
+                record.approvedForAllCalls = allCalls
+                if allCalls {
+                    record.approvedCallIDs.removeAll()
+                }
+            } else {
+                record.rejectedForAllCalls = allCalls
+                if allCalls {
+                    record.rejectedCallIDs.removeAll()
+                }
+            }
+        case .array(let values):
+            let ids = values.compactMap { value -> String? in
+                guard case .string(let id) = value else { return nil }
+                return id
+            }
+            if approve {
+                record.approvedForAllCalls = false
+                record.approvedCallIDs = Set(ids)
+            } else {
+                record.rejectedForAllCalls = false
+                record.rejectedCallIDs = Set(ids)
+            }
+        default:
+            break
+        }
+    }
+}
+
 open class RunContextWrapper<TContext>: @unchecked Sendable {
     public let context: TContext
-    public var usage: Usage
-    public var turnInput: [Any]
-    public var toolInput: Any?
+    public let usage: Usage
+    public let turnInput: [Any]
+    public let toolInput: Any?
 
-    private var approvals: [String: ApprovalRecord]
-    private let stateLock = NSLock()
+    // Safety: the mutable approval registry is isolated behind `approvalState`;
+    // the remaining fields are immutable snapshots after initialization.
+    private let approvalState = ApprovalStateStore()
 
-    public init(context: TContext, usage: Usage = Usage(), turnInput: [Any] = []) {
+    public init(context: TContext, usage: Usage = Usage(), turnInput: [Any] = [], toolInput: Any? = nil) {
         self.context = context
         self.usage = usage
         self.turnInput = turnInput
-        self.approvals = [:]
+        self.toolInput = toolInput
     }
 
     public func approveTool(_ approval: ToolApproval, alwaysApprove: Bool = false) {
@@ -68,28 +200,7 @@ open class RunContextWrapper<TContext>: @unchecked Sendable {
     }
 
     public func isToolApproved(toolName: String, callID: String) -> Bool? {
-        stateLock.lock()
-        defer { stateLock.unlock() }
-
-        guard let entry = approvals[toolName] else {
-            return nil
-        }
-        if entry.approvedForAllCalls && entry.rejectedForAllCalls {
-            return true
-        }
-        if entry.approvedForAllCalls {
-            return true
-        }
-        if entry.rejectedForAllCalls {
-            return false
-        }
-        if entry.approvedCallIDs.contains(callID) {
-            return true
-        }
-        if entry.rejectedCallIDs.contains(callID) {
-            return false
-        }
-        return nil
+        approvalState.approvalStatus(toolName: toolName, callID: callID)
     }
 
     public func getApprovalStatus(toolName: String, callID: String, fallbackToolName: String? = nil) -> Bool? {
@@ -178,52 +289,22 @@ open class RunContextWrapper<TContext>: @unchecked Sendable {
 
     /// Restores approval data from serialized state (`approved`/`rejected` as bool or call-id list).
     public func rebuildApprovals(from serializedApprovals: [String: [String: JSONValue]]) {
-        stateLock.lock()
-        defer { stateLock.unlock() }
-
-        approvals = [:]
-        for (toolName, recordDict) in serializedApprovals {
-            var record = ApprovalRecord()
-            Self._hydrateApprovalField(recordValue: recordDict["approved"], approve: true, record: &record)
-            Self._hydrateApprovalField(recordValue: recordDict["rejected"], approve: false, record: &record)
-            approvals[toolName] = record
-        }
+        approvalState.rebuild(from: serializedApprovals)
     }
 
     public func serializedApprovals() -> [String: [String: JSONValue]] {
-        stateLock.lock()
-        defer { stateLock.unlock() }
-
-        var result: [String: [String: JSONValue]] = [:]
-        for (toolName, record) in approvals {
-            let approvedValue: JSONValue = record.approvedForAllCalls
-                ? .bool(true)
-                : .array(record.approvedCallIDs.sorted().map(JSONValue.string))
-            let rejectedValue: JSONValue = record.rejectedForAllCalls
-                ? .bool(true)
-                : .array(record.rejectedCallIDs.sorted().map(JSONValue.string))
-            result[toolName] = [
-                "approved": approvedValue,
-                "rejected": rejectedValue,
-            ]
-        }
-        return result
+        approvalState.snapshot()
     }
 
     public func forkWithToolInput(_ toolInput: Any) -> RunContextWrapper<TContext> {
-        let fork = RunContextWrapper(context: context, usage: usage, turnInput: turnInput)
-        fork.toolInput = toolInput
-        stateLock.lock()
-        fork.approvals = approvals
-        stateLock.unlock()
+        let fork = RunContextWrapper(context: context, usage: usage, turnInput: turnInput, toolInput: toolInput)
+        fork.rebuildApprovals(from: serializedApprovals())
         return fork
     }
 
     public func forkWithoutToolInput() -> RunContextWrapper<TContext> {
         let fork = RunContextWrapper(context: context, usage: usage, turnInput: turnInput)
-        stateLock.lock()
-        fork.approvals = approvals
-        stateLock.unlock()
+        fork.rebuildApprovals(from: serializedApprovals())
         return fork
     }
 
@@ -233,33 +314,7 @@ open class RunContextWrapper<TContext>: @unchecked Sendable {
         always: Bool,
         approve: Bool
     ) {
-        stateLock.lock()
-        defer { stateLock.unlock() }
-
-        var entry = approvals[toolName] ?? ApprovalRecord()
-        if always || callID == nil {
-            entry.approvedForAllCalls = approve
-            entry.rejectedForAllCalls = !approve
-            entry.approvedCallIDs.removeAll()
-            entry.rejectedCallIDs.removeAll()
-            approvals[toolName] = entry
-            return
-        }
-
-        guard let callID else {
-            approvals[toolName] = entry
-            return
-        }
-
-        if approve {
-            entry.rejectedCallIDs.remove(callID)
-            entry.approvedCallIDs.insert(callID)
-        } else {
-            entry.approvedCallIDs.remove(callID)
-            entry.rejectedCallIDs.insert(callID)
-        }
-
-        approvals[toolName] = entry
+        approvalState.applyDecision(toolName: toolName, callID: callID, always: always, approve: approve)
     }
 
     private static func _toStringOrNil(_ value: Any?) -> String? {
@@ -316,7 +371,7 @@ open class RunContextWrapper<TContext>: @unchecked Sendable {
         return nil
     }
 
-    private static func _hydrateApprovalField(
+    fileprivate static func _hydrateApprovalField(
         recordValue: JSONValue?,
         approve: Bool,
         record: inout ApprovalRecord

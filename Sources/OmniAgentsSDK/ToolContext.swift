@@ -27,8 +27,7 @@ open class ToolContext<TContext>: RunContextWrapper<TContext>, @unchecked Sendab
         self.toolCall = toolCall
         self.agent = agent
         self.runConfig = runConfig
-        super.init(context: context, usage: usage, turnInput: turnInput)
-        self.toolInput = toolInput
+        super.init(context: context, usage: usage, turnInput: turnInput, toolInput: toolInput)
     }
 
     public static func fromAgentContext(

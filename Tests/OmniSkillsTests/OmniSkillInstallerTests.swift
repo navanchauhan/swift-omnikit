@@ -6,7 +6,7 @@ import OmniAgentMesh
 @Suite
 struct OmniSkillInstallerTests {
     @Test
-    func installerCopiesLocalDirectoryAndPinsDigest() throws {
+    func installerCopiesLocalDirectoryAndPinsDigest() async throws {
         let root = URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
             .appending(path: "omniskill-installer-\(UUID().uuidString)", directoryHint: .isDirectory)
         let source = root.appending(path: "source", directoryHint: .isDirectory)
@@ -29,7 +29,7 @@ struct OmniSkillInstallerTests {
         try Data("#!/bin/sh\necho hello\n".utf8).write(to: shellDirectory.appending(path: "bootstrap.sh"))
 
         let installer = OmniSkillInstaller(installsRootDirectory: installs)
-        let record = try installer.install(from: source, scope: .workspace, workspaceID: "ws-demo")
+        let record = try await installer.install(from: source, scope: .workspace, workspaceID: "ws-demo")
 
         #expect(record.skillID == "deploy.helper")
         #expect(record.scope == .workspace)

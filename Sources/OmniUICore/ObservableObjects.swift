@@ -10,6 +10,9 @@
 /// of this type on each annotated class.  Property wrappers like `@Bindable`,
 /// `@ObservedObject`, and `@EnvironmentObject` call ``track()`` during body
 /// evaluation so the runtime knows to re-render when ``notify()`` fires.
+///
+/// Safety: registrations and notifications are driven by the OmniUI render/event
+/// loop, and dead weak runtime references are purged before reuse.
 public final class _ObservationRegistrar: @unchecked Sendable {
     private struct _Entry {
         weak var runtime: _UIRuntime?
@@ -63,7 +66,7 @@ extension ObservableObject {
 
 /// A shared no-op registrar used by the default protocol extension.
 private enum _DefaultObservationRegistrar {
-    nonisolated(unsafe) static let shared = _ObservationRegistrar()
+    static let shared = _ObservationRegistrar()
 }
 
 @propertyWrapper
@@ -127,6 +130,7 @@ public struct StateObject<ObjectType: ObservableObject> {
     }
 }
 
+// Safety: this cached location is accessed only during single-threaded view evaluation.
 final class _EnvironmentObjectLocation<ObjectType: AnyObject>: @unchecked Sendable {
     var object: ObjectType? = nil
     init() {}

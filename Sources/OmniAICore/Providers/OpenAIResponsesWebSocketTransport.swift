@@ -46,13 +46,7 @@ func _openOpenAIResponseEventStream(
     return AsyncThrowingStream { continuation in
         let finishOnce = _OpenAIFinishOnce()
 
-        continuation.onTermination = { _ in
-            Task {
-                await session.close(code: .goingAway)
-            }
-        }
-
-        Task {
+        let receiverTask = Task {
             do {
                 for try await payload in session.events() {
                     continuation.yield(payload)
@@ -65,6 +59,15 @@ func _openOpenAIResponseEventStream(
                 finishOnce.run { continuation.finish() }
             } catch {
                 finishOnce.run { continuation.finish(throwing: error) }
+            }
+        }
+
+        continuation.onTermination = { _ in
+            receiverTask.cancel()
+            // Safety: `onTermination` is synchronous; this one-shot cleanup hop closes the
+            // websocket after the owned receiver task has been cancelled.
+            Task {
+                await session.close(code: .goingAway)
             }
         }
     }

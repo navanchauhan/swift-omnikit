@@ -118,6 +118,8 @@ private enum _PendingGopherRequestOutcome: Sendable {
     case cancelled
 }
 
+// Safety: BrowserView state is driven by the single-threaded OmniUI renderer/event loop.
+// The async request task hops results back into the UI update closure before mutating view state.
 struct BrowserView: View, @unchecked Sendable {
     @Environment(\.modelContext) private var modelContext
 

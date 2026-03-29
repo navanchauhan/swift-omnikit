@@ -65,11 +65,13 @@ public enum ToolUseBehavior<TContext>: @unchecked Sendable {
 }
 
 open class AgentBase<TContext>: @unchecked Sendable {
-    public var name: String
-    public var handoffDescription: String?
-    public var tools: [Tool]
-    public var mcpServers: [any MCPServer]
-    public var mcpConfig: MCPConfig
+    // Safety: `AgentBase` holds immutable configuration after initialization; run-time
+    // mutations live in per-run state rather than shared agent instances.
+    public let name: String
+    public let handoffDescription: String?
+    public let tools: [Tool]
+    public let mcpServers: [any MCPServer]
+    public let mcpConfig: MCPConfig
 
     public init(
         name: String,
@@ -148,17 +150,17 @@ open class AgentBase<TContext>: @unchecked Sendable {
 }
 
 public final class Agent<TContext>: AgentBase<TContext>, @unchecked Sendable {
-    public var instructions: AgentInstructions<TContext>?
-    public var prompt: AgentPromptSource<TContext>?
-    public var handoffs: [Handoff<TContext>]
-    public var model: ModelReference?
-    public var modelSettings: ModelSettings
-    public var inputGuardrails: [InputGuardrail<TContext>]
-    public var outputGuardrails: [OutputGuardrail<TContext>]
-    public var outputType: (any AgentOutputSchemaBase)?
-    public var hooks: AgentHooks<TContext>?
-    public var toolUseBehavior: ToolUseBehavior<TContext>
-    public var resetToolChoice: Bool
+    public let instructions: AgentInstructions<TContext>?
+    public let prompt: AgentPromptSource<TContext>?
+    public let handoffs: [Handoff<TContext>]
+    public let model: ModelReference?
+    public let modelSettings: ModelSettings
+    public let inputGuardrails: [InputGuardrail<TContext>]
+    public let outputGuardrails: [OutputGuardrail<TContext>]
+    public let outputType: (any AgentOutputSchemaBase)?
+    public let hooks: AgentHooks<TContext>?
+    public let toolUseBehavior: ToolUseBehavior<TContext>
+    public let resetToolChoice: Bool
 
     public init(
         name: String,

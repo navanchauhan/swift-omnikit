@@ -92,6 +92,8 @@ public final class OpenAIRealtimeClient: @unchecked Sendable {
                 state.eventContinuation = continuation
             }
             continuation.onTermination = { [weak self] _ in
+                // Safety: `onTermination` is synchronous; this cleanup hop closes the realtime
+                // connection after the consumer stops observing events.
                 Task { await self?.disconnect() }
             }
         }

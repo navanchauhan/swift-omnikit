@@ -136,9 +136,47 @@ struct HTTPIngressServerTests {
         await harness.runtimeRegistry.closeAll()
     }
 
+    @Test
+    func telegramWebhookRequestsAreAcceptedAndForwardedAsync() async throws {
+        let recorder = TelegramWebhookRecorder()
+        let harness = try await makeHarness(
+            prefix: "http-ingress-webhook",
+            responses: [httpIngressResponse(text: "unused")],
+            telegramWebhookForwarder: { body, headers in
+                try? await Task.sleep(for: .milliseconds(25))
+                await recorder.record(body: body, headers: headers)
+            }
+        )
+
+        let (statusCode, data) = try await harness.postRawJSON(
+            path: "/telegram/webhook",
+            body: ["update_id": 42],
+            bearerToken: nil
+        )
+
+        #expect(statusCode == 200)
+        #expect(String(decoding: data, as: UTF8.self).localizedStandardContains("accepted"))
+
+        for _ in 0..<20 {
+            if await recorder.count() == 1 {
+                break
+            }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+
+        let forwarded = await recorder.snapshot()
+        #expect(forwarded.count == 1)
+        #expect(String(decoding: forwarded[0].body, as: UTF8.self).localizedStandardContains("\"update_id\":42"))
+        #expect(forwarded[0].headers["content-type"] == "application/json")
+
+        try await harness.server.stop()
+        await harness.runtimeRegistry.closeAll()
+    }
+
     private func makeHarness(
         prefix: String,
-        responses: [Response]
+        responses: [Response],
+        telegramWebhookForwarder: HTTPIngressServer.TelegramWebhookForwarder? = nil
     ) async throws -> HTTPIngressHarness {
         let stateRoot = try makeStateRoot(prefix: prefix)
         let conversationStore = try SQLiteConversationStore(fileURL: stateRoot.conversationDatabaseURL)
@@ -176,6 +214,7 @@ struct HTTPIngressServerTests {
             gateway: gateway,
             runtimeRegistry: runtimeRegistry,
             expectedBearerToken: "secret-token",
+            telegramWebhookForwarder: telegramWebhookForwarder,
             host: "127.0.0.1",
             port: 0
         )
@@ -245,6 +284,22 @@ private struct HTTPIngressMessageEnvelope: Decodable {
     let disposition: String
     let assistantText: String?
     let deliveries: [IngressDeliveryInstruction]
+}
+
+private actor TelegramWebhookRecorder {
+    private var forwards: [(body: Data, headers: [String: String])] = []
+
+    func record(body: Data, headers: [String: String]) {
+        forwards.append((body, headers))
+    }
+
+    func count() -> Int {
+        forwards.count
+    }
+
+    func snapshot() -> [(body: Data, headers: [String: String])] {
+        forwards
+    }
 }
 
 private actor HTTPIngressAdapterState {

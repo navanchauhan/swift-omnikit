@@ -1,4 +1,5 @@
 import Foundation
+import Dispatch
 import OmniACPModel
 #if canImport(Darwin)
 import Darwin
@@ -12,6 +13,11 @@ public enum PermissionStrategy: Sendable {
 }
 
 public actor DefaultClientDelegate: ClientDelegate {
+    private nonisolated static let consolePromptQueue = DispatchQueue(
+        label: "omniacp.console-permission-prompt",
+        qos: .userInitiated
+    )
+
     private let rootDirectory: URL
     private let permissionStrategy: PermissionStrategy
     private let defaultOutputByteLimit: Int
@@ -131,19 +137,22 @@ public actor DefaultClientDelegate: ClientDelegate {
         message: String,
         options: [PermissionOption]
     ) async -> SessionRequestPermission.Result {
-        await Task.detached(priority: .userInitiated) {
-            print("[ACP] Permission request: \(message)")
-            for (index, option) in options.enumerated() {
-                print("  [\(index + 1)] \(option.name) (\(option.kind))")
+        await withCheckedContinuation { continuation in
+            Self.consolePromptQueue.async {
+                print("[ACP] Permission request: \(message)")
+                for (index, option) in options.enumerated() {
+                    print("  [\(index + 1)] \(option.name) (\(option.kind))")
+                }
+                if let promptData = "Choose an option number, or press Enter to cancel: ".data(using: .utf8) {
+                    try? FileHandle.standardOutput.write(contentsOf: promptData)
+                }
+                guard let input = readLine(), let choice = Int(input), choice > 0, choice <= options.count else {
+                    continuation.resume(returning: .init(outcome: .cancelled))
+                    return
+                }
+                continuation.resume(returning: .init(outcome: .selected(options[choice - 1].optionID)))
             }
-            if let promptData = "Choose an option number, or press Enter to cancel: ".data(using: .utf8) {
-                try? FileHandle.standardOutput.write(contentsOf: promptData)
-            }
-            guard let input = readLine(), let choice = Int(input), choice > 0, choice <= options.count else {
-                return .init(outcome: .cancelled)
-            }
-            return .init(outcome: .selected(options[choice - 1].optionID))
-        }.value
+        }
     }
 }
 

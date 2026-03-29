@@ -101,7 +101,7 @@ public final class CodergenHandler: NodeHandler, Sendable {
         // 4. Execute pre-hooks (spec §9.7: exit code 0 means proceed; non-zero skips the tool call)
         if !graph.attributes.toolHooksPre.isEmpty {
             do {
-                let hookResult = try runShellHook(graph.attributes.toolHooksPre, nodeId: node.id)
+                let hookResult = try await runShellHook(graph.attributes.toolHooksPre, nodeId: node.id)
                 context.set("hook_pre_output", hookResult)
             } catch {
                 // Pre-hook returned non-zero: skip the LLM call and return FAIL
@@ -113,7 +113,7 @@ public final class CodergenHandler: NodeHandler, Sendable {
         // Also check node-level tool_hooks.pre override
         if let nodePreHook = node.rawAttributes["tool_hooks.pre"]?.stringValue, !nodePreHook.isEmpty {
             do {
-                let hookResult = try runShellHook(nodePreHook, nodeId: node.id)
+                let hookResult = try await runShellHook(nodePreHook, nodeId: node.id)
                 context.set("hook_pre_output", hookResult)
             } catch {
                 context.set("hook_pre_output", "FAILED: \(error)")
@@ -225,7 +225,7 @@ public final class CodergenHandler: NodeHandler, Sendable {
         // 7. Execute post-hooks (spec §9.7: post-hook failures are logged but do not block execution)
         if !graph.attributes.toolHooksPost.isEmpty {
             do {
-                let hookResult = try runShellHook(graph.attributes.toolHooksPost, nodeId: node.id)
+                let hookResult = try await runShellHook(graph.attributes.toolHooksPost, nodeId: node.id)
                 context.set("hook_post_output", hookResult)
             } catch {
                 // Post-hook failure is recorded but does not block execution
@@ -236,7 +236,7 @@ public final class CodergenHandler: NodeHandler, Sendable {
         // Also check node-level tool_hooks.post override
         if let nodePostHook = node.rawAttributes["tool_hooks.post"]?.stringValue, !nodePostHook.isEmpty {
             do {
-                let hookResult = try runShellHook(nodePostHook, nodeId: node.id)
+                let hookResult = try await runShellHook(nodePostHook, nodeId: node.id)
                 context.set("hook_post_output", hookResult)
             } catch {
                 context.set("hook_post_output", "FAILED: \(error)")
@@ -297,7 +297,7 @@ public final class CodergenHandler: NodeHandler, Sendable {
 
     // Note: Blocks a cooperative thread while waiting for the hook process.
     // Stdout and stderr are drained concurrently to avoid pipe deadlocks.
-    private func runShellHook(_ script: String, nodeId: String) throws -> String {
+    private func runShellHook(_ script: String, nodeId: String) async throws -> String {
         let process = Process()
         let stdout = Pipe()
         let stderr = Pipe()
@@ -331,7 +331,7 @@ public final class CodergenHandler: NodeHandler, Sendable {
             stderrQueue.sync {}
             throw error
         }
-        process.waitUntilExit()
+        await _waitForProcessExit(process)
         stdoutQueue.sync {}
         stderrQueue.sync {}
 
@@ -345,6 +345,41 @@ public final class CodergenHandler: NodeHandler, Sendable {
         }
 
         return outStr.trimmingCharacters(in: CharacterSet.whitespacesAndNewlines)
+    }
+}
+
+private func _waitForProcessExit(_ process: Process) async {
+    guard process.isRunning else { return }
+
+    await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+        let resumeBox = _CodergenProcessExitBox(continuation)
+
+        process.terminationHandler = { _ in
+            resumeBox.resumeOnce()
+        }
+
+        if !process.isRunning {
+            resumeBox.resumeOnce()
+        }
+    }
+    process.terminationHandler = nil
+}
+
+private final class _CodergenProcessExitBox: @unchecked Sendable {
+    private let lock = NSLock()
+    private var resumed = false
+    private let continuation: CheckedContinuation<Void, Never>
+
+    init(_ continuation: CheckedContinuation<Void, Never>) {
+        self.continuation = continuation
+    }
+
+    func resumeOnce() {
+        lock.lock()
+        defer { lock.unlock() }
+        guard !resumed else { return }
+        resumed = true
+        continuation.resume()
     }
 }
 

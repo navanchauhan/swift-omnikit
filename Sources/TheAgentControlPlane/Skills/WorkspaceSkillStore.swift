@@ -72,7 +72,7 @@ public actor WorkspaceSkillStore {
         from sourcePath: String,
         scope installationScope: SkillInstallationRecord.Scope
     ) async throws -> SkillInstallationRecord {
-        let installation = try installer.install(
+        let installation = try await installer.install(
             from: URL(fileURLWithPath: sourcePath),
             scope: installationScope,
             workspaceID: installationScope == .workspace ? scope.workspaceID : nil

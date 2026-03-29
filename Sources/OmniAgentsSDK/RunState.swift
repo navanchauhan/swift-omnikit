@@ -2,27 +2,29 @@ import Foundation
 import OmniAICore
 
 public final class RunState<TContext>: @unchecked Sendable {
-    public var currentTurn: Int
-    public var currentAgent: Agent<TContext>?
-    public var originalInput: StringOrInputList
-    public var modelResponses: [ModelResponse]
-    public var contextWrapper: RunContextWrapper<TContext>?
-    public var generatedItems: [any RunItem]
-    public var sessionItems: [any RunItem]
-    public var maxTurns: Int
-    public var conversationID: String?
-    public var previousResponseID: String?
-    public var autoPreviousResponseID: Bool
-    public var reasoningItemIdPolicy: ReasoningItemIdPolicy?
-    public var inputGuardrailResults: [InputGuardrailResult<TContext>]
-    public var outputGuardrailResults: [OutputGuardrailResult<TContext>]
-    public var toolInputGuardrailResults: [ToolInputGuardrailResult<TContext>]
-    public var toolOutputGuardrailResults: [ToolOutputGuardrailResult<TContext>]
-    public var currentTurnPersistedItemCount: Int
-    public var toolUseTrackerSnapshot: [String: [String]]
-    public var trace: Trace?
-    public var modelInputItems: [TResponseInputItem]
-    public var interruptions: [ToolApprovalItem]
+    // Safety: `RunState` is treated as an immutable run snapshot after initialization.
+    // Approval mutations are routed through `contextWrapper`.
+    public let currentTurn: Int
+    public let currentAgent: Agent<TContext>?
+    public let originalInput: StringOrInputList
+    public let modelResponses: [ModelResponse]
+    public let contextWrapper: RunContextWrapper<TContext>?
+    public let generatedItems: [any RunItem]
+    public let sessionItems: [any RunItem]
+    public let maxTurns: Int
+    public let conversationID: String?
+    public let previousResponseID: String?
+    public let autoPreviousResponseID: Bool
+    public let reasoningItemIdPolicy: ReasoningItemIdPolicy?
+    public let inputGuardrailResults: [InputGuardrailResult<TContext>]
+    public let outputGuardrailResults: [OutputGuardrailResult<TContext>]
+    public let toolInputGuardrailResults: [ToolInputGuardrailResult<TContext>]
+    public let toolOutputGuardrailResults: [ToolOutputGuardrailResult<TContext>]
+    public let currentTurnPersistedItemCount: Int
+    public let toolUseTrackerSnapshot: [String: [String]]
+    public let trace: Trace?
+    public let modelInputItems: [TResponseInputItem]
+    public let interruptions: [ToolApprovalItem]
 
     public init(
         currentTurn: Int = 0,

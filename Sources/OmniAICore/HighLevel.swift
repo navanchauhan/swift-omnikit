@@ -701,7 +701,7 @@ public struct StreamResult: AsyncSequence, Sendable {
 
     public var textStream: AsyncThrowingStream<String, Error> {
         AsyncThrowingStream { continuation in
-            Task {
+            let producer = Task {
                 do {
                     for try await ev in self.stream {
                         if ev.type.rawValue == StreamEventType.textDelta.rawValue, let d = ev.delta {
@@ -712,6 +712,9 @@ public struct StreamResult: AsyncSequence, Sendable {
                 } catch {
                     continuation.finish(throwing: error)
                 }
+            }
+            continuation.onTermination = { @Sendable _ in
+                producer.cancel()
             }
         }
     }
@@ -768,7 +771,7 @@ public func stream(
     let partial = _PartialResponseStore()
 
     let s = AsyncThrowingStream<StreamEvent, Error> { continuation in
-        Task {
+        let producer = Task {
             do {
                 let maxRounds = max(0, maxToolRounds)
 
@@ -915,6 +918,9 @@ public func stream(
                 await final.setError(sdk)
                 continuation.finish(throwing: sdk)
             }
+        }
+        continuation.onTermination = { @Sendable _ in
+            producer.cancel()
         }
     }
 

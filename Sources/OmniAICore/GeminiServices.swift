@@ -567,7 +567,7 @@ public final class GeminiLiveSession: @unchecked Sendable {
     public func events() -> AsyncThrowingStream<GeminiLiveServerMessage, Error> {
         let upstream = session.events()
         return AsyncThrowingStream { continuation in
-            Task {
+            let producer = Task {
                 do {
                     for try await payload in upstream {
                         let message = GeminiLiveServerMessage(
@@ -584,6 +584,9 @@ public final class GeminiLiveSession: @unchecked Sendable {
                 } catch {
                     continuation.finish(throwing: error)
                 }
+            }
+            continuation.onTermination = { @Sendable _ in
+                producer.cancel()
             }
         }
     }

@@ -1,4 +1,5 @@
 import Foundation
+import Dispatch
 import OmniAgentMesh
 
 public enum OmniSkillInstallerError: Error, CustomStringConvertible {
@@ -18,7 +19,25 @@ public enum OmniSkillInstallerError: Error, CustomStringConvertible {
     }
 }
 
-public struct OmniSkillInstaller {
+private final class _OmniSkillInstallerExitBox: @unchecked Sendable {
+    private let lock = NSLock()
+    private var resumed = false
+    private let continuation: CheckedContinuation<Void, Never>
+
+    init(_ continuation: CheckedContinuation<Void, Never>) {
+        self.continuation = continuation
+    }
+
+    func resumeOnce() {
+        lock.lock()
+        defer { lock.unlock() }
+        guard !resumed else { return }
+        resumed = true
+        continuation.resume()
+    }
+}
+
+public struct OmniSkillInstaller: Sendable {
     public let installsRootDirectory: URL
 
     public init(installsRootDirectory: URL) {
@@ -30,8 +49,8 @@ public struct OmniSkillInstaller {
         scope: SkillInstallationRecord.Scope,
         workspaceID: WorkspaceID? = nil,
         now: Date = Date()
-    ) throws -> SkillInstallationRecord {
-        let prepared = try preparedSource(from: sourceURL)
+    ) async throws -> SkillInstallationRecord {
+        let prepared = try await preparedSource(from: sourceURL)
         let manifestURL = prepared.directory.appending(path: "omniskill.json")
         guard FileManager.default.fileExists(atPath: manifestURL.path()) else {
             throw OmniSkillInstallerError.manifestNotFound(prepared.directory)
@@ -73,7 +92,7 @@ public struct OmniSkillInstaller {
 
     private func preparedSource(
         from sourceURL: URL
-    ) throws -> (directory: URL, sourceType: SkillInstallationRecord.SourceType) {
+    ) async throws -> (directory: URL, sourceType: SkillInstallationRecord.SourceType) {
         var isDirectory: ObjCBool = false
         if FileManager.default.fileExists(atPath: sourceURL.path(), isDirectory: &isDirectory), isDirectory.boolValue {
             return (sourceURL, .localDirectory)
@@ -88,7 +107,7 @@ public struct OmniSkillInstaller {
         process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
         process.arguments = ["unzip", "-q", sourceURL.path(), "-d", extractionRoot.path()]
         try process.run()
-        process.waitUntilExit()
+        await Self.waitForExit(of: process)
         guard process.terminationStatus == 0 else {
             throw OmniSkillInstallerError.unzipFailed(sourceURL)
         }
@@ -107,6 +126,23 @@ public struct OmniSkillInstaller {
             return (directory, .localArchive)
         }
         throw OmniSkillInstallerError.manifestNotFound(extractionRoot)
+    }
+
+    private static func waitForExit(of process: Process) async {
+        guard process.isRunning else { return }
+
+        await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+            let resumeBox = _OmniSkillInstallerExitBox(continuation)
+
+            process.terminationHandler = { _ in
+                resumeBox.resumeOnce()
+            }
+
+            if !process.isRunning {
+                resumeBox.resumeOnce()
+            }
+        }
+        process.terminationHandler = nil
     }
 
     private func contentDigest(for directory: URL) throws -> String {
