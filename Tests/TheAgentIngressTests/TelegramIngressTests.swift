@@ -68,20 +68,35 @@ private func telegramProviderResponse(text: String) -> Response {
     )
 }
 
+private struct MockTelegramPollingError: Error, Sendable, CustomStringConvertible {
+    let message: String
+
+    var description: String { message }
+}
+
 private actor MockTelegramBotClient: TelegramBotAPI {
+    private enum PollEvent: Sendable {
+        case updates([TelegramUpdate])
+        case failure(MockTelegramPollingError)
+    }
+
     nonisolated let me: TelegramUser
-    private var queuedUpdateBatches: [[TelegramUpdate]]
+    private var queuedPollEvents: [PollEvent]
     private(set) var sentMessages: [TelegramSendMessageRequest] = []
     private(set) var answeredCallbacks: [(id: String, text: String?)] = []
     private var sentMessageCounter: Int64 = 10_000
 
     init(me: TelegramUser, queuedUpdateBatches: [[TelegramUpdate]] = []) {
         self.me = me
-        self.queuedUpdateBatches = queuedUpdateBatches
+        self.queuedPollEvents = queuedUpdateBatches.map(PollEvent.updates)
     }
 
     func queueUpdates(_ batches: [[TelegramUpdate]]) {
-        queuedUpdateBatches.append(contentsOf: batches)
+        queuedPollEvents.append(contentsOf: batches.map(PollEvent.updates))
+    }
+
+    func queuePollingFailures(_ failures: [MockTelegramPollingError]) {
+        queuedPollEvents.append(contentsOf: failures.map(PollEvent.failure))
     }
 
     func getMe() async throws -> TelegramUser {
@@ -94,14 +109,19 @@ private actor MockTelegramBotClient: TelegramBotAPI {
         allowedUpdates: [String],
         limit: Int
     ) async throws -> [TelegramUpdate] {
-        guard !queuedUpdateBatches.isEmpty else {
+        guard !queuedPollEvents.isEmpty else {
             return []
         }
-        let next = queuedUpdateBatches.removeFirst()
-        if let offset {
-            return next.filter { $0.updateID >= offset }
+        let next = queuedPollEvents.removeFirst()
+        switch next {
+        case .updates(let updates):
+            if let offset {
+                return updates.filter { $0.updateID >= offset }
+            }
+            return updates
+        case .failure(let error):
+            throw error
         }
-        return next
     }
 
     func sendMessage(_ request: TelegramSendMessageRequest) async throws -> TelegramMessage {
@@ -333,6 +353,58 @@ struct TelegramIngressTests {
         await harness.runtimeRegistry.closeAll()
     }
 
+    @Test
+    func pollingRunnerRetriesAfterTransientPollingFailure() async throws {
+        let harness = try await makeHarness(
+            prefix: "telegram-poll-retry",
+            responses: [telegramProviderResponse(text: "Recovered after retry.")]
+        )
+        let update = TelegramUpdate(
+            updateID: 201,
+            message: TelegramMessage(
+                messageID: 201,
+                from: TelegramUser(id: 5, isBot: false, firstName: "Bob", lastName: nil, username: "bob"),
+                chat: TelegramChat(id: 5, type: .private, title: nil, username: nil, firstName: "Bob", lastName: nil),
+                date: 201,
+                text: "hello again"
+            ),
+            callbackQuery: nil
+        )
+        await harness.telegramClient.queuePollingFailures([MockTelegramPollingError(message: "simulated dropped connection")])
+        await harness.telegramClient.queueUpdates([[update]])
+
+        let errorSink = PollingErrorSink()
+        let handler = try await TelegramWebhookHandler.make(
+            client: harness.telegramClient,
+            gateway: harness.gateway,
+            deliveryStore: harness.deliveryStore
+        )
+        let runner = TelegramPollingRunner(
+            client: harness.telegramClient,
+            webhookHandler: handler,
+            onError: { error in
+                Task {
+                    await errorSink.record(String(describing: error))
+                }
+            }
+        )
+        try await runner.run(
+            timeoutSeconds: 0,
+            pollInterval: .milliseconds(1),
+            failureBackoff: .milliseconds(1),
+            maxPolls: 2
+        )
+
+        let sentMessages = await harness.telegramClient.sentMessagesSnapshot()
+        let recordedErrors = await errorSink.snapshot()
+        #expect(sentMessages.count == 1)
+        #expect(sentMessages.first?.text == "Recovered after retry.")
+        #expect(recordedErrors.count == 1)
+        #expect(recordedErrors.first == "simulated dropped connection")
+
+        await harness.runtimeRegistry.closeAll()
+    }
+
     private func seedSharedChannel(
         harness: TelegramIngressHarness,
         scope: SessionScope,
@@ -422,6 +494,18 @@ struct TelegramIngressTests {
         let stateRoot = AgentFabricStateRoot(rootDirectory: rootDirectory)
         try stateRoot.prepare()
         return stateRoot
+    }
+}
+
+private actor PollingErrorSink {
+    private var errors: [String] = []
+
+    func record(_ message: String) {
+        errors.append(message)
+    }
+
+    func snapshot() -> [String] {
+        errors
     }
 }
 

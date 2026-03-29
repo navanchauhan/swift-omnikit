@@ -115,7 +115,10 @@ enum TheAgentControlPlaneMain {
                 let runner = TelegramPollingRunner(
                     client: telegramClient,
                     webhookHandler: handler,
-                    allowedUpdates: await handler.allowedUpdates()
+                    allowedUpdates: await handler.allowedUpdates(),
+                    onError: { error in
+                        fputs("Telegram polling error: \(error)\n", stderr)
+                    }
                 )
                 telegramPollingTask = Task {
                     do {
