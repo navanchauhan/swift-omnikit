@@ -168,7 +168,7 @@ public final class CodingAgentBackend: CodergenBackend, Sendable {
             return AnthropicProfile(model: model.isEmpty ? "claude-opus-4-6" : model, enableInteractiveTools: false)
         case "openai":
             return OpenAIProfile(
-                model: model.isEmpty ? "gpt-5.2-codex" : model,
+                model: model.isEmpty ? "gpt-5.4" : model,
                 forceCodexSystemPrompt: true
             )
         case "gemini":

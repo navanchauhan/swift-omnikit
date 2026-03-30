@@ -15,7 +15,7 @@ private let gpt5NoneDefaultModelSettings = ModelSettings(
 private let gpt5NoneEffortModels: Set<String> = ["gpt-5.1", "gpt-5.2"]
 
 public func getDefaultModel() -> String {
-    ProcessInfo.processInfo.environment[OPENAI_DEFAULT_MODEL_ENV_VARIABLE_NAME] ?? "gpt-5.3-codex"
+    ProcessInfo.processInfo.environment[OPENAI_DEFAULT_MODEL_ENV_VARIABLE_NAME] ?? "gpt-5.4"
 }
 
 public func getDefaultModelSettings(modelName: String? = nil) -> ModelSettings {
@@ -37,4 +37,3 @@ public func gpt5ReasoningSettingsRequired(_ modelName: String) -> Bool {
 public func isGPT5NoneEffortModel(_ modelName: String) -> Bool {
     gpt5NoneEffortModels.contains(modelName)
 }
-

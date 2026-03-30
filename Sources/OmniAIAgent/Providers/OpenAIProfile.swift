@@ -20,7 +20,7 @@ public final class OpenAIProfile: ProviderProfile, @unchecked Sendable {
     }
 
     public init(
-        model: String = "gpt-5.2",
+        model: String = "gpt-5.4",
         session: Session? = nil,
         shellType: ShellType = .shellCommand,
         includeApplyPatch: Bool = true,
@@ -106,10 +106,8 @@ public final class OpenAIProfile: ProviderProfile, @unchecked Sendable {
     }
 
     public func providerOptions() -> [String: JSONValue]? {
-        // Always use WebSocket transport for OpenAI Responses API — more reliable
-        // than HTTP streaming and supports conversation-level resume.
         var options: [String: JSONValue] = [
-            OpenAIProviderOptionKeys.responsesTransport: .string("websocket"),
+            OpenAIProviderOptionKeys.responsesTransport: .string(OpenAIProviderOptionKeys.preferredResponsesTransport),
         ]
 
         if includeNativeWebSearch {

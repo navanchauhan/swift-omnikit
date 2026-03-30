@@ -80,7 +80,7 @@ public actor MCPRemoteServer: MCPServer {
         return MCPToolCallResult(content: result, isError: false)
     }
 
-    private func withReconnect<T>(_ operation: () async throws -> T) async throws -> T {
+    private func withReconnect<T: Sendable>(_ operation: () async throws -> T) async throws -> T {
         do {
             return try await operation()
         } catch {

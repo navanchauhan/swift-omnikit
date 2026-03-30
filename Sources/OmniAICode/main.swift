@@ -220,7 +220,7 @@ private func buildProfile(provider: String, model: String) throws -> ProviderPro
     switch provider.lowercased() {
     case "openai":
         return OpenAIProfile(
-            model: model.isEmpty ? "gpt-5.2-codex" : model,
+            model: model.isEmpty ? "gpt-5.4" : model,
             forceCodexSystemPrompt: true
         )
     case "anthropic":

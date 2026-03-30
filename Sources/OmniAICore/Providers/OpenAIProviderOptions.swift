@@ -20,4 +20,14 @@ public enum OpenAIProviderOptionKeys {
         websocketBaseURL,
         hostedTools,
     ]
+
+    /// Prefer websocket on Darwin, but fall back to SSE on non-Darwin runtimes where
+    /// the websocket transport currently has lower runtime stability.
+    public static var preferredResponsesTransport: String {
+        #if canImport(Darwin)
+        "websocket"
+        #else
+        "sse"
+        #endif
+    }
 }

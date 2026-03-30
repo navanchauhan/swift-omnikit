@@ -32,7 +32,7 @@ public struct CodingAgent {
 
     /// Create an OpenAI-backed session.
     public static func openai(
-        model: String = "gpt-5.2",
+        model: String = "gpt-5.4",
         workingDir: String? = nil,
         config: SessionConfig = SessionConfig(),
         client: Client? = nil,

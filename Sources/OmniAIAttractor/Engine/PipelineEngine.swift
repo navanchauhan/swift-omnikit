@@ -460,23 +460,27 @@ public final class PipelineEngine: Sendable {
         while true {
             let outcome = try await executeHandler(node: node, state: state)
 
-            // Success or partial success: done
-            if outcome.status == .success || outcome.status == .partialSuccess || outcome.status == .skipped {
+            // Success and skipped are terminal.
+            if outcome.status == .success || outcome.status == .skipped {
                 // Reset retry counter on success
                 state.nodeRetries[node.id] = 0
                 return outcome
             }
 
-            // auto_status: if the node has auto_status=true and the handler wrote no
-            // explicit status (i.e. the handler didn't actively report success), treat
-            // the outcome as SUCCESS. This implements spec §2.6 auto_status behavior.
-            if node.autoStatus {
+            // partial_success is also terminal, but `auto_status=true` allows specific
+            // nodes to treat a missing explicit status block as success while still
+            // preserving explicit fail/retry outcomes.
+            if outcome.status == .partialSuccess {
+                state.nodeRetries[node.id] = 0
+                guard node.autoStatus else {
+                    return outcome
+                }
                 return Outcome(
                     status: .success,
                     preferredLabel: outcome.preferredLabel,
                     suggestedNextIds: outcome.suggestedNextIds,
                     contextUpdates: outcome.contextUpdates,
-                    notes: outcome.notes.isEmpty ? "auto_status=true: auto-generated SUCCESS" : outcome.notes
+                    notes: outcome.notes.isEmpty ? "auto_status=true: promoted partial_success to success" : outcome.notes
                 )
             }
 

@@ -257,7 +257,7 @@ private struct WorkerCLIOptions {
             return .attractor(
                 AttractorWorkerRuntimeOptions(
                     provider: attractorProvider,
-                    model: attractorModel ?? "gpt-5.2-codex",
+                    model: attractorModel ?? "gpt-5.4",
                     reasoningEffort: attractorReasoningEffort,
                     workingDirectory: attractorWorkingDirectory,
                     logsRoot: attractorLogsRoot,

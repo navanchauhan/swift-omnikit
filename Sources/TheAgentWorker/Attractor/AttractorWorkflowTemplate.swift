@@ -8,7 +8,7 @@ public struct AttractorWorkflowTemplate: Sendable {
 
     public init(
         provider: String = "openai",
-        model: String = "gpt-5.2-codex",
+        model: String = "gpt-5.4",
         reasoningEffort: String = "high"
     ) {
         self.provider = provider
@@ -83,9 +83,9 @@ public struct AttractorWorkflowTemplate: Sendable {
             plan         [shape=box, prompt="Create a concise execution contract for this task. Task: \(taskBrief). Constraints: \(constraints). Expected outputs: \(expectedOutputs)."]
             \(humanNodes)
             implement    [shape=box, prompt="Implement or execute the task. Task: \(taskBrief). Constraints: \(constraints). Expected outputs: \(expectedOutputs).", auto_status=true]
-            review       [shape=box, prompt="Review the implementation outcome for blockers. Task: \(taskBrief). Expected outputs: \(expectedOutputs). If blockers exist, return outcome fail.", goal_gate=true]
-            scenario     [shape=box, prompt="Validate the result against the expected outputs. Outputs: \(expectedOutputs). If validation fails, return outcome fail.", goal_gate=true]
-            judge        [shape=box, prompt="Judge whether the workflow is complete and safe to report. Return success if complete, fail if blockers remain.", goal_gate=true]
+            review       [shape=box, prompt="Review the implementation outcome for blockers. Task: \(taskBrief). Expected outputs: \(expectedOutputs). If blockers exist, return outcome fail.", goal_gate=true, auto_status=true]
+            scenario     [shape=box, prompt="Validate the result against the expected outputs. Outputs: \(expectedOutputs). If validation fails, return outcome fail.", goal_gate=true, auto_status=true]
+            judge        [shape=box, prompt="Judge whether the workflow is complete and safe to report. Return success if complete, fail if blockers remain.", goal_gate=true, auto_status=true]
             done         [shape=Msquare]
 
             start -> plan

@@ -162,7 +162,7 @@ public final class LLMKitBackend: CodergenBackend, Sendable {
         switch provider.lowercased() {
         case "openai":
             var openAIOptions: [String: JSONValue] = [
-                OpenAIProviderOptionKeys.responsesTransport: .string("websocket"),
+                OpenAIProviderOptionKeys.responsesTransport: .string(OpenAIProviderOptionKeys.preferredResponsesTransport),
             ]
             if let wsBase = environment["OPENAI_WEBSOCKET_BASE_URL"],
                !wsBase.isEmpty

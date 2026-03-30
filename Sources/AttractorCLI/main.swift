@@ -685,7 +685,7 @@ private final class CodexCLICodergenBackend: CodergenBackend, Sendable {
         let lower = requestedModel.lowercased()
         if lower.hasPrefix("gpt-") { return requestedModel }
         if provider.lowercased() == "openai", !requestedModel.isEmpty { return requestedModel }
-        return "gpt-5.2"
+        return "gpt-5.4"
     }
 
     private func resolveTimeoutSeconds(from context: PipelineContext) -> Int {

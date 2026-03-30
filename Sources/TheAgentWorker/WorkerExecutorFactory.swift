@@ -27,7 +27,7 @@ public enum WorkerACPProfile: String, CaseIterable, Sendable {
     fileprivate var defaultModel: String {
         switch self {
         case .codex:
-            return "gpt-5.3-codex"
+            return "gpt-5.4"
         case .claude:
             return "claude-opus-4-6"
         case .gemini:
@@ -117,7 +117,7 @@ public struct AttractorWorkerRuntimeOptions: Sendable {
 
     public init(
         provider: String = "openai",
-        model: String = "gpt-5.2-codex",
+        model: String = "gpt-5.4",
         reasoningEffort: String = "high",
         workingDirectory: String? = nil,
         logsRoot: String? = nil,

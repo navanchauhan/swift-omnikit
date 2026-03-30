@@ -37,9 +37,9 @@ public struct ModelRoutePolicy: Sendable, Equatable {
         .chatLight: Entry(provider: "openai", model: "gpt-5.4", reasoningEffort: "medium"),
         .chatDeep: Entry(provider: "openai", model: "gpt-5.4", reasoningEffort: "high"),
         .planner: Entry(provider: "openai", model: "gpt-5.4", reasoningEffort: "high"),
-        .implementer: Entry(provider: "openai", model: "gpt-5.3-codex", reasoningEffort: "high"),
+        .implementer: Entry(provider: "openai", model: "gpt-5.4", reasoningEffort: "high"),
         .reviewer: Entry(provider: "openai", model: "gpt-5.4", reasoningEffort: "medium"),
         .vision: Entry(provider: "openai", model: "gpt-5.4", reasoningEffort: "high"),
-        .codergen: Entry(provider: "openai", model: "gpt-5.3-codex", reasoningEffort: "high"),
+        .codergen: Entry(provider: "openai", model: "gpt-5.4", reasoningEffort: "high"),
     ]
 }
