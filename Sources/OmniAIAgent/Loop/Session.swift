@@ -36,6 +36,7 @@ public actor Session {
     public var config: SessionConfig
     public private(set) var state: SessionState = .idle
     public let llmClient: Client
+    private let ownsLLMClient: Bool
     private var steeringQueue: [String] = []
     private var followupQueue: [String] = []
     private var responseTimeline: [ResponseTimelineEntry] = []
@@ -79,8 +80,10 @@ public actor Session {
 
         if let client = client {
             self.llmClient = client
+            self.ownsLLMClient = false
         } else {
             self.llmClient = try Client.fromEnv()
+            self.ownsLLMClient = true
         }
     }
 
@@ -138,6 +141,9 @@ public actor Session {
         await cleanupMCPServers()
         await persistStateIfNeeded()
         try? await executionEnv.cleanup()
+        if ownsLLMClient {
+            await llmClient.close()
+        }
     }
 
     public func close() async {
@@ -153,6 +159,9 @@ public actor Session {
         await eventEmitter.flush()
         await persistStateIfNeeded()
         try? await executionEnv.cleanup()
+        if ownsLLMClient {
+            await llmClient.close()
+        }
     }
 
     public func addSystemReminder(_ reminder: String) async {

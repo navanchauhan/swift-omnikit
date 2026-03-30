@@ -17,53 +17,67 @@ public final class LLMKitBackend: CodergenBackend, Sendable {
         reasoningEffort: String,
         context: PipelineContext
     ) async throws -> CodergenResult {
+        let ownsClient = client == nil
         let resolvedClient = try (client ?? Client.fromEnv())
         let goal = context.getString("_graph_goal")
         let systemPrompt = buildSystemPrompt(goal: goal, context: context)
         let inactivityTimeoutSeconds = resolveInactivityTimeoutSeconds(from: context)
         let modelCandidates = fallbackModels(for: model, provider: provider)
 
-        var lastNotFound: NotFoundError?
-        for candidateModel in modelCandidates {
-            // Retry with exponential backoff for transient errors
-            let maxRetries = 3
-            var lastError: (any Error)?
-            for attempt in 0..<maxRetries {
-                do {
-                    let result = try await runWithInactivityTimeout(
-                        model: candidateModel,
-                        prompt: prompt,
-                        system: systemPrompt,
-                        reasoningEffort: effectiveReasoningEffort(for: provider, requested: reasoningEffort),
-                        provider: provider,
-                        providerOptions: providerOptions(for: provider),
-                        inactivityTimeoutSeconds: inactivityTimeoutSeconds,
-                        client: resolvedClient
-                    )
-                    return try parseResponse(result.text)
-                } catch let notFound as NotFoundError {
-                    lastNotFound = notFound
-                    break // Try next model, not retry
-                } catch {
-                    lastError = error
-                    let isTransient = isTransientError(error)
-                    if !isTransient || attempt >= maxRetries - 1 {
-                        if !isTransient { throw error }
-                        break
+        do {
+            var lastNotFound: NotFoundError?
+            for candidateModel in modelCandidates {
+                // Retry with exponential backoff for transient errors
+                let maxRetries = 3
+                var lastError: (any Error)?
+                for attempt in 0..<maxRetries {
+                    do {
+                        let result = try await runWithInactivityTimeout(
+                            model: candidateModel,
+                            prompt: prompt,
+                            system: systemPrompt,
+                            reasoningEffort: effectiveReasoningEffort(for: provider, requested: reasoningEffort),
+                            provider: provider,
+                            providerOptions: providerOptions(for: provider),
+                            inactivityTimeoutSeconds: inactivityTimeoutSeconds,
+                            client: resolvedClient
+                        )
+                        let parsed = try parseResponse(result.text)
+                        if ownsClient {
+                            await resolvedClient.close()
+                        }
+                        return parsed
+                    } catch let notFound as NotFoundError {
+                        lastNotFound = notFound
+                        break // Try next model, not retry
+                    } catch {
+                        lastError = error
+                        let isTransient = isTransientError(error)
+                        if !isTransient || attempt >= maxRetries - 1 {
+                            if !isTransient {
+                                throw error
+                            }
+                            break
+                        }
+                        let delay = pow(2.0, Double(attempt)) * 1.0 // 1s, 2s, 4s
+                        writeToAttractorStderr("[LLMKitBackend] Transient error (attempt \(attempt + 1)/\(maxRetries)), retrying in \(delay)s: \(error)\n")
+                        try await Task.sleep(for: .seconds(delay))
                     }
-                    let delay = pow(2.0, Double(attempt)) * 1.0 // 1s, 2s, 4s
-                    writeToAttractorStderr("[LLMKitBackend] Transient error (attempt \(attempt + 1)/\(maxRetries)), retrying in \(delay)s: \(error)\n")
-                    try await Task.sleep(for: .seconds(delay))
                 }
+                if lastNotFound != nil { continue }
+                if let lastError { throw lastError }
             }
-            if lastNotFound != nil { continue }
-            if let lastError { throw lastError }
-        }
 
-        if let lastNotFound {
-            throw lastNotFound
+            if let lastNotFound {
+                throw lastNotFound
+            }
+            throw RequestTimeoutError(message: "LLM execution failed without a provider response")
+        } catch {
+            if ownsClient {
+                await resolvedClient.close()
+            }
+            throw error
         }
-        throw RequestTimeoutError(message: "LLM execution failed without a provider response")
     }
 
     private func buildSystemPrompt(goal: String, context: PipelineContext) -> String {

@@ -160,6 +160,33 @@ private actor MockTelegramBotClient: TelegramBotAPI {
 @Suite
 struct TelegramIngressTests {
     @Test
+    func deliveryFormatterUsesHTMLAndRendersMarkdownStyleEmphasis() async throws {
+        let instruction = IngressDeliveryInstruction(
+            idempotencyKey: "fmt-1",
+            kind: .message,
+            transport: .telegram,
+            visibility: .sameChannel,
+            workspaceID: WorkspaceID(rawValue: "workspace"),
+            channelID: ChannelID(rawValue: "channel"),
+            actorID: ActorID(rawValue: "actor"),
+            targetExternalID: "dm:42",
+            chunks: [
+                "* first item\n- second item\n1. third item\nthis is **important** and *useful*"
+            ]
+        )
+
+        let requests = TelegramDeliveryFormatter.sendRequests(for: instruction)
+        let request = try #require(requests.first)
+
+        #expect(request.parseMode == .html)
+        #expect(request.text.localizedStandardContains("• first item"))
+        #expect(request.text.localizedStandardContains("• second item"))
+        #expect(request.text.localizedStandardContains("1. third item"))
+        #expect(request.text.localizedStandardContains("<b>important</b>"))
+        #expect(request.text.localizedStandardContains("<i>useful</i>"))
+    }
+
+    @Test
     func webhookHandlerRejectsInvalidSecretToken() async throws {
         let harness = try await makeHarness(prefix: "telegram-secret", responses: [telegramProviderResponse(text: "unused")])
         let handler = try await TelegramWebhookHandler.make(

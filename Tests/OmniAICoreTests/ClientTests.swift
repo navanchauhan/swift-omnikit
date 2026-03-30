@@ -1,5 +1,7 @@
 import Testing
 import Foundation
+import OmniHTTP
+import OmniHTTPNIO
 
 @testable import OmniAICore
 
@@ -110,6 +112,36 @@ private final class HeartbeatAdapter: ProviderAdapter, @unchecked Sendable {
                 task.cancel()
             }
         }
+    }
+}
+
+private actor TransportShutdownRecorder {
+    private var count = 0
+
+    func recordShutdown() {
+        count += 1
+    }
+
+    func shutdownCount() -> Int {
+        count
+    }
+}
+
+private final class TrackingHTTPTransport: HTTPTransport, @unchecked Sendable {
+    let recorder = TransportShutdownRecorder()
+
+    func send(_ request: HTTPRequest, timeout: Duration?) async throws -> HTTPResponse {
+        HTTPResponse(statusCode: 200, headers: HTTPHeaders(), body: [])
+    }
+
+    func openStream(_ request: HTTPRequest, timeout: Duration?) async throws -> HTTPStreamResponse {
+        HTTPStreamResponse(statusCode: 200, headers: HTTPHeaders(), body: AsyncThrowingStream { continuation in
+            continuation.finish()
+        })
+    }
+
+    func shutdown() async throws {
+        await recorder.recordShutdown()
     }
 }
 
@@ -230,5 +262,39 @@ final class ClientTests {
 
         XCTAssertEqual(providerEvents, 3)
         XCTAssertEqual(finish?.text, "ok")
+    }
+
+    @Test
+    func testDefaultHTTPTransportUsesPlatformAppropriateImplementation() {
+        let transport = defaultHTTPTransport()
+        #if os(Linux)
+        XCTAssertTrue(transport is NIOHTTPTransport)
+        #else
+        XCTAssertTrue(transport is URLSessionHTTPTransport)
+        #endif
+    }
+
+    @Test
+    func testClientCloseShutsDownOwnedTransportOnce() async throws {
+        let response = Response(
+            id: "r",
+            model: "m",
+            provider: "p",
+            message: .assistant("ok"),
+            finishReason: FinishReason(kind: .stop, raw: "stop"),
+            usage: Usage(inputTokens: 1, outputTokens: 1)
+        )
+        let transport = TrackingHTTPTransport()
+        let client = try Client(
+            providers: ["p": StaticAdapter(name: "p", response: response)],
+            defaultProvider: "p",
+            ownedTransport: transport
+        )
+
+        await client.close()
+        await client.close()
+
+        let shutdownCount = await transport.recorder.shutdownCount()
+        XCTAssertEqual(shutdownCount, 1)
     }
 }

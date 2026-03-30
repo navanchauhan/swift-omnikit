@@ -106,6 +106,41 @@ private final class ToolThenTimeoutAdapter: ProviderAdapter, @unchecked Sendable
     }
 }
 
+private final class TextOnlyNoJSONAdapter: ProviderAdapter, @unchecked Sendable {
+    let name: String
+
+    init(name: String = "openai") {
+        self.name = name
+    }
+
+    func complete(request: Request) async throws -> Response {
+        Response(
+            id: "resp_text_only_no_json",
+            model: request.model,
+            provider: request.provider ?? name,
+            message: Message(role: .assistant, content: [.text("i checked the host and i am about to write the artifact now")]),
+            finishReason: .stop,
+            usage: Usage(inputTokens: 1, outputTokens: 12)
+        )
+    }
+
+    func stream(request: Request) async throws -> AsyncThrowingStream<StreamEvent, Error> {
+        let response = try await complete(request: request)
+        return AsyncThrowingStream { continuation in
+            continuation.yield(StreamEvent(type: .standard(.streamStart)))
+            continuation.yield(
+                StreamEvent(
+                    type: .standard(.finish),
+                    finishReason: response.finishReason,
+                    usage: response.usage,
+                    response: response
+                )
+            )
+            continuation.finish()
+        }
+    }
+}
+
 @Suite
 struct CodingAgentBackendTests {
     @Test
@@ -156,5 +191,53 @@ struct CodingAgentBackendTests {
         #expect(result.status == .retry)
         #expect(result.notes.localizedStandardContains("retryable llm error"))
         #expect(result.notes.localizedStandardContains("requesttimeouterror"))
+    }
+
+    @Test
+    func missingStructuredStatusReturnsRetryInsteadOfPartialSuccess() async throws {
+        let adapter = TextOnlyNoJSONAdapter()
+        let client = try Client(providers: ["openai": adapter], defaultProvider: "openai")
+
+        let workingDirectory = URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
+            .appendingPathComponent("CodingAgentBackendTests-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: workingDirectory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: workingDirectory) }
+
+        let backend = CodingAgentBackend(client: client, workingDirectory: workingDirectory.path)
+        let result = try await backend.run(
+            prompt: "prove the worker ran hostname and wrote the artifact",
+            model: "gpt-5.4",
+            provider: "openai",
+            reasoningEffort: "high",
+            context: PipelineContext(["_graph_goal": "Regression test"])
+        )
+
+        #expect(result.status == .retry)
+        #expect(result.notes.localizedStandardContains("no structured status block"))
+        #expect(result.notes.localizedStandardContains("retrying stage"))
+    }
+
+    @Test
+    func storageRootUsesTheAgentStateRootWhenPresent() throws {
+        let workingDirectory = URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
+            .appendingPathComponent("CodingAgentBackendTests-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: workingDirectory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: workingDirectory) }
+
+        let stateRoot = workingDirectory.appendingPathComponent("worker-state", isDirectory: true)
+        let previous = ProcessInfo.processInfo.environment["THE_AGENT_STATE_ROOT"]
+        setenv("THE_AGENT_STATE_ROOT", stateRoot.path, 1)
+        defer {
+            if let previous {
+                setenv("THE_AGENT_STATE_ROOT", previous, 1)
+            } else {
+                unsetenv("THE_AGENT_STATE_ROOT")
+            }
+        }
+
+        let backend = CodingAgentBackend(client: nil, workingDirectory: workingDirectory.path)
+        let resolved = backend.resolvedStorageRoot()
+
+        #expect(resolved.path == stateRoot.appendingPathComponent("attractor-agent-state", isDirectory: true).path)
     }
 }

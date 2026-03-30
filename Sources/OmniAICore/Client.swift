@@ -1,5 +1,6 @@
 import Foundation
 import OmniHTTP
+import OmniHTTPNIO
 
 public typealias CompleteMiddleware = @Sendable (
     Request,
@@ -20,6 +21,14 @@ public protocol ProviderAdapter: Sendable {
     func close() async
     func initialize() throws
     func supportsToolChoice(_ mode: ToolChoiceMode) -> Bool
+}
+
+func defaultHTTPTransport() -> OmniHTTP.HTTPTransport {
+    #if os(Linux)
+    return NIOHTTPTransport()
+    #else
+    return OmniHTTP.URLSessionHTTPTransport()
+    #endif
 }
 
 private func exchangeCodexOAuthIDTokenForOpenAIApiKey(
@@ -132,9 +141,11 @@ public final class Client: @unchecked Sendable {
     private var _defaultProvider: String?
     private var _middleware: [Middleware]
     private let stateLock = NSLock()
+    private let ownedTransport: OmniHTTP.HTTPTransport?
+    private var didClose = false
     public let modelCatalog: ModelCatalog
 
-    public init(
+    public convenience init(
         providers: [String: ProviderAdapter],
         defaultProvider: String? = nil,
         middleware: [Middleware] = [],
@@ -142,12 +153,33 @@ public final class Client: @unchecked Sendable {
         streamMiddleware: [StreamMiddleware] = [],
         modelCatalog: ModelCatalog = .default
     ) throws {
+        try self.init(
+            providers: providers,
+            defaultProvider: defaultProvider,
+            middleware: middleware,
+            completeMiddleware: completeMiddleware,
+            streamMiddleware: streamMiddleware,
+            modelCatalog: modelCatalog,
+            ownedTransport: nil
+        )
+    }
+
+    init(
+        providers: [String: ProviderAdapter],
+        defaultProvider: String? = nil,
+        middleware: [Middleware] = [],
+        completeMiddleware: [CompleteMiddleware] = [],
+        streamMiddleware: [StreamMiddleware] = [],
+        modelCatalog: ModelCatalog = .default,
+        ownedTransport: OmniHTTP.HTTPTransport?
+    ) throws {
         self.providers = providers
         self._defaultProvider = defaultProvider ?? providers.first?.key
         self._middleware = middleware
         self._middleware.append(contentsOf: completeMiddleware.map { _ClosureMiddleware(complete: $0, stream: nil) })
         self._middleware.append(contentsOf: streamMiddleware.map { _ClosureMiddleware(complete: nil, stream: $0) })
         self.modelCatalog = modelCatalog
+        self.ownedTransport = ownedTransport
 
         for (_, adapter) in providers {
             try adapter.initialize()
@@ -176,7 +208,7 @@ public final class Client: @unchecked Sendable {
 
     public static func fromEnv(
         environment: [String: String],
-        transport: OmniHTTP.HTTPTransport = OmniHTTP.URLSessionHTTPTransport(),
+        transport: OmniHTTP.HTTPTransport? = nil,
         modelCatalog: ModelCatalog = .default,
         middleware: [Middleware] = [],
         completeMiddleware: [CompleteMiddleware] = [],
@@ -187,20 +219,23 @@ public final class Client: @unchecked Sendable {
         // If OPENAI_API_KEY is set directly, this works fine. If only OPENAI_OAUTH_ID_TOKEN
         // is set, callers must use the async fromEnvAsync() variant instead.
         let env = environment
-        let providers = try _buildProviders(env: env, transport: transport, oauthApiKey: nil, allowEmpty: allowEmptyProviders)
+        let resolvedTransport = transport ?? defaultHTTPTransport()
+        let ownsTransport = transport == nil
+        let providers = try _buildProviders(env: env, transport: resolvedTransport, oauthApiKey: nil, allowEmpty: allowEmptyProviders)
         return try Client(
             providers: providers,
             defaultProvider: providers.first?.key,
             middleware: middleware,
             completeMiddleware: completeMiddleware,
             streamMiddleware: streamMiddleware,
-            modelCatalog: modelCatalog
+            modelCatalog: modelCatalog,
+            ownedTransport: ownsTransport ? resolvedTransport : nil
         )
     }
 
     public static func fromEnvAsync(
         environment: [String: String],
-        transport: OmniHTTP.HTTPTransport = OmniHTTP.URLSessionHTTPTransport(),
+        transport: OmniHTTP.HTTPTransport? = nil,
         modelCatalog: ModelCatalog = .default,
         middleware: [Middleware] = [],
         completeMiddleware: [CompleteMiddleware] = [],
@@ -208,21 +243,24 @@ public final class Client: @unchecked Sendable {
         allowEmptyProviders: Bool = false
     ) async throws -> Client {
         let env = environment
+        let resolvedTransport = transport ?? defaultHTTPTransport()
+        let ownsTransport = transport == nil
         // Resolve OAuth key asynchronously if needed.
-        let oauthKey = try await _resolveOpenAIApiKeyAsync(env: env, transport: transport)
-        let providers = try _buildProviders(env: env, transport: transport, oauthApiKey: oauthKey, allowEmpty: allowEmptyProviders)
+        let oauthKey = try await _resolveOpenAIApiKeyAsync(env: env, transport: resolvedTransport)
+        let providers = try _buildProviders(env: env, transport: resolvedTransport, oauthApiKey: oauthKey, allowEmpty: allowEmptyProviders)
         return try Client(
             providers: providers,
             defaultProvider: providers.first?.key,
             middleware: middleware,
             completeMiddleware: completeMiddleware,
             streamMiddleware: streamMiddleware,
-            modelCatalog: modelCatalog
+            modelCatalog: modelCatalog,
+            ownedTransport: ownsTransport ? resolvedTransport : nil
         )
     }
 
     public static func fromEnvAsync(
-        transport: OmniHTTP.HTTPTransport = OmniHTTP.URLSessionHTTPTransport(),
+        transport: OmniHTTP.HTTPTransport? = nil,
         modelCatalog: ModelCatalog = .default,
         middleware: [Middleware] = [],
         completeMiddleware: [CompleteMiddleware] = [],
@@ -318,7 +356,7 @@ public final class Client: @unchecked Sendable {
     }
 
     public static func fromEnv(
-        transport: OmniHTTP.HTTPTransport = OmniHTTP.URLSessionHTTPTransport(),
+        transport: OmniHTTP.HTTPTransport? = nil,
         modelCatalog: ModelCatalog = .default,
         middleware: [Middleware] = [],
         completeMiddleware: [CompleteMiddleware] = [],
@@ -338,7 +376,7 @@ public final class Client: @unchecked Sendable {
 
     public static func fromEnvAllowingEmpty(
         environment: [String: String],
-        transport: OmniHTTP.HTTPTransport = OmniHTTP.URLSessionHTTPTransport(),
+        transport: OmniHTTP.HTTPTransport? = nil,
         modelCatalog: ModelCatalog = .default,
         middleware: [Middleware] = [],
         completeMiddleware: [CompleteMiddleware] = [],
@@ -356,7 +394,7 @@ public final class Client: @unchecked Sendable {
     }
 
     public static func fromEnvAllowingEmpty(
-        transport: OmniHTTP.HTTPTransport = OmniHTTP.URLSessionHTTPTransport(),
+        transport: OmniHTTP.HTTPTransport? = nil,
         modelCatalog: ModelCatalog = .default,
         middleware: [Middleware] = [],
         completeMiddleware: [CompleteMiddleware] = [],
@@ -393,8 +431,18 @@ public final class Client: @unchecked Sendable {
     }
 
     public func close() async {
-        for (_, adapter) in _withStateLock({ providers }) {
+        let (adapters, transport): ([String: ProviderAdapter], OmniHTTP.HTTPTransport?) = _withStateLock {
+            if didClose {
+                return ([:], nil)
+            }
+            didClose = true
+            return (providers, ownedTransport)
+        }
+        for (_, adapter) in adapters {
             await adapter.close()
+        }
+        if let transport {
+            try? await transport.shutdown()
         }
     }
 

@@ -30,6 +30,11 @@ public struct AttractorWorkflowTemplate: Sendable {
             constraintValue(prefix: "question_prompt=", in: task.historyProjection.constraints)
                 ?? "Do we have enough information to continue with this task?"
         )
+        let statusContract = escape(
+            """
+            after doing the work for real, end with a fenced ```json status block containing outcome, preferred_next_label, context_updates, and notes. if you only planned, could not verify outputs, or did not actually create the requested artifact, return outcome \"retry\" or \"fail\" instead of claiming success.
+            """
+        )
 
         let rejectNode = """
             reject       [shape=box, prompt="The workflow was halted after a human gate. Summarize the stop condition and exit.", auto_status=true]
@@ -75,17 +80,17 @@ public struct AttractorWorkflowTemplate: Sendable {
         digraph attractor_task_\(escapeIdentifier(task.taskID)) {
             graph [
                 goal="\(taskBrief)",
-                default_max_retry=0,
+                default_max_retry=2,
                 model_stylesheet="* { llm_model: \(model); llm_provider: \(provider); reasoning_effort: \(reasoningEffort); }"
             ]
 
             start        [shape=Mdiamond]
-            plan         [shape=box, prompt="Create a concise execution contract for this task. Task: \(taskBrief). Constraints: \(constraints). Expected outputs: \(expectedOutputs)."]
+            plan         [shape=box, prompt="Create a concise execution contract for this task. Task: \(taskBrief). Constraints: \(constraints). Expected outputs: \(expectedOutputs). \(statusContract)"]
             \(humanNodes)
-            implement    [shape=box, prompt="Implement or execute the task. Task: \(taskBrief). Constraints: \(constraints). Expected outputs: \(expectedOutputs).", auto_status=true]
-            review       [shape=box, prompt="Review the implementation outcome for blockers. Task: \(taskBrief). Expected outputs: \(expectedOutputs). If blockers exist, return outcome fail.", goal_gate=true, auto_status=true]
-            scenario     [shape=box, prompt="Validate the result against the expected outputs. Outputs: \(expectedOutputs). If validation fails, return outcome fail.", goal_gate=true, auto_status=true]
-            judge        [shape=box, prompt="Judge whether the workflow is complete and safe to report. Return success if complete, fail if blockers remain.", goal_gate=true, auto_status=true]
+            implement    [shape=box, prompt="Implement or execute the task for real. Task: \(taskBrief). Constraints: \(constraints). Expected outputs: \(expectedOutputs). \(statusContract)", auto_status=true]
+            review       [shape=box, prompt="Review the implementation outcome for blockers. Task: \(taskBrief). Expected outputs: \(expectedOutputs). If blockers exist, return outcome fail. \(statusContract)", goal_gate=true, auto_status=true]
+            scenario     [shape=box, prompt="Validate the result against the expected outputs. Outputs: \(expectedOutputs). If validation fails, return outcome fail. \(statusContract)", goal_gate=true, auto_status=true]
+            judge        [shape=box, prompt="Judge whether the workflow is complete and safe to report. Return success if complete, fail if blockers remain. \(statusContract)", goal_gate=true, auto_status=true]
             done         [shape=Msquare]
 
             start -> plan

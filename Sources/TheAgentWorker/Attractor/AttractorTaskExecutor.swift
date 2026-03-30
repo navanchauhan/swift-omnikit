@@ -128,6 +128,13 @@ public struct AttractorTaskExecutor: Sendable {
                 summary: summary
             )
         }
+        guard Self.hasSubstantiveLastResponse(result) else {
+            throw AttractorTaskExecutorError.workflowFailed(
+                taskID: task.taskID,
+                status: .fail,
+                summary: "Attractor workflow completed without a substantive final response."
+            )
+        }
 
         return LocalTaskExecutionResult(
             summary: summary,
@@ -197,6 +204,22 @@ public struct AttractorTaskExecutor: Sendable {
             return "Attractor workflow \(result.status.rawValue): \(String(lastResponse.prefix(500)))"
         }
         return "Attractor workflow \(result.status.rawValue) after \(result.completedNodes.count) completed node(s)."
+    }
+
+    private static func hasSubstantiveLastResponse(_ result: PipelineResult) -> Bool {
+        let lastResponse = result.context["last_response"]?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            ?? ""
+        guard !lastResponse.isEmpty else {
+            return false
+        }
+        let placeholderOnly = lastResponse.replacingOccurrences(
+            of: #"\[Agent completed \d+ assistant turns, \d+ tool calls\]"#,
+            with: "",
+            options: .regularExpression
+        )
+        .trimmingCharacters(in: .whitespacesAndNewlines)
+        return !placeholderOnly.isEmpty
     }
 
     private static func collectArtifacts(from logsRoot: URL) throws -> [LocalTaskExecutionArtifact] {

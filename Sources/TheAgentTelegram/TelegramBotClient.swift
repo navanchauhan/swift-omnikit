@@ -287,15 +287,21 @@ public struct TelegramInlineKeyboardMarkup: Codable, Sendable, Equatable {
     }
 }
 
+public enum TelegramParseMode: String, Codable, Sendable, Equatable {
+    case html = "HTML"
+}
+
 public struct TelegramSendMessageRequest: Codable, Sendable, Equatable {
     public var chatID: String
     public var text: String
+    public var parseMode: TelegramParseMode?
     public var messageThreadID: Int64?
     public var replyMarkup: TelegramInlineKeyboardMarkup?
 
     enum CodingKeys: String, CodingKey {
         case chatID = "chat_id"
         case text
+        case parseMode = "parse_mode"
         case messageThreadID = "message_thread_id"
         case replyMarkup = "reply_markup"
     }
@@ -303,11 +309,13 @@ public struct TelegramSendMessageRequest: Codable, Sendable, Equatable {
     public init(
         chatID: String,
         text: String,
+        parseMode: TelegramParseMode? = nil,
         messageThreadID: Int64? = nil,
         replyMarkup: TelegramInlineKeyboardMarkup? = nil
     ) {
         self.chatID = chatID
         self.text = text
+        self.parseMode = parseMode
         self.messageThreadID = messageThreadID
         self.replyMarkup = replyMarkup
     }

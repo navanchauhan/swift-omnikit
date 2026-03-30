@@ -7,7 +7,8 @@ public enum TelegramDeliveryFormatter {
         return instruction.chunks.enumerated().map { index, chunk in
             TelegramSendMessageRequest(
                 chatID: target.chatID,
-                text: chunk,
+                text: formatTelegramHTML(chunk),
+                parseMode: .html,
                 messageThreadID: target.messageThreadID,
                 replyMarkup: index == 0 ? replyMarkup(for: instruction) : nil
             )
@@ -88,5 +89,48 @@ public enum TelegramDeliveryFormatter {
             return (chatID: parts[0], messageThreadID: threadID)
         }
         return (chatID: externalID, messageThreadID: nil)
+    }
+
+    private static func formatTelegramHTML(_ text: String) -> String {
+        let normalizedLines = text.split(separator: "\n", omittingEmptySubsequences: false).map { line in
+            normalizeListPrefix(String(line))
+        }
+        let escaped = escapeHTML(normalizedLines.joined(separator: "\n"))
+        let withBold = replacing(
+            pattern: #"\*\*(.+?)\*\*"#,
+            in: escaped,
+            template: "<b>$1</b>"
+        )
+        return replacing(
+            pattern: #"(?<!\*)\*(?!\s)(.+?)(?<!\s)\*(?!\*)"#,
+            in: withBold,
+            template: "<i>$1</i>"
+        )
+    }
+
+    private static func normalizeListPrefix(_ line: String) -> String {
+        let trimmedPrefix = line.trimmingCharacters(in: .whitespaces)
+        guard line.hasPrefix("* ") || line.hasPrefix("- ") else {
+            return trimmedPrefix == line ? line : line
+        }
+        let indentCount = line.prefix { $0 == " " || $0 == "\t" }.count
+        let indent = String(repeating: " ", count: indentCount)
+        let body = line.dropFirst(2)
+        return indent + "• " + body
+    }
+
+    private static func escapeHTML(_ text: String) -> String {
+        text
+            .replacingOccurrences(of: "&", with: "&amp;")
+            .replacingOccurrences(of: "<", with: "&lt;")
+            .replacingOccurrences(of: ">", with: "&gt;")
+    }
+
+    private static func replacing(pattern: String, in text: String, template: String) -> String {
+        guard let regex = try? NSRegularExpression(pattern: pattern, options: []) else {
+            return text
+        }
+        let range = NSRange(text.startIndex..., in: text)
+        return regex.stringByReplacingMatches(in: text, options: [], range: range, withTemplate: template)
     }
 }

@@ -22,7 +22,6 @@ public final class CodingAgentBackend: CodergenBackend, Sendable {
         reasoningEffort: String,
         context: PipelineContext
     ) async throws -> CodergenResult {
-        let resolvedClient = try (client ?? Client.fromEnv())
         let overrides = resolveNodeOverrides(from: context)
 
         // 1. Create the provider profile wrapped with pipeline context
@@ -71,7 +70,7 @@ public final class CodingAgentBackend: CodergenBackend, Sendable {
         let session = try Session(
             profile: profile,
             environment: env,
-            client: resolvedClient,
+            client: client,
             config: sessionConfig,
             sessionID: sessionID,
             storageBackend: storageBackend
@@ -308,7 +307,7 @@ public final class CodingAgentBackend: CodergenBackend, Sendable {
             }
         }
         // Default watchdog for agent backend requests.
-        return 90
+        return 180
     }
 
     private func resolveNodeOverrides(from context: PipelineContext) -> NodeOverrides {
@@ -332,9 +331,21 @@ public final class CodingAgentBackend: CodergenBackend, Sendable {
     }
 
     private func makeStorageBackend() -> SessionStorageBackend {
-        let root = URL(fileURLWithPath: workingDirectory, isDirectory: true)
-            .appendingPathComponent(".ai/attractor-agent-state", isDirectory: true)
+        let root = resolvedStorageRoot()
         return FileSessionStorageBackend(rootDirectory: root)
+    }
+
+    func resolvedStorageRoot() -> URL {
+        let env = ProcessInfo.processInfo.environment
+        if let explicit = env["ATTRACTOR_AGENT_STATE_ROOT"], !explicit.isEmpty {
+            return URL(fileURLWithPath: explicit, isDirectory: true)
+        }
+        if let stateRoot = env["THE_AGENT_STATE_ROOT"], !stateRoot.isEmpty {
+            return URL(fileURLWithPath: stateRoot, isDirectory: true)
+                .appendingPathComponent("attractor-agent-state", isDirectory: true)
+        }
+        return URL(fileURLWithPath: workingDirectory, isDirectory: true)
+            .appendingPathComponent(".ai/attractor-agent-state", isDirectory: true)
     }
 
     private func buildSessionID(for resumeKey: String?) -> String {
@@ -422,8 +433,8 @@ public final class CodingAgentBackend: CodergenBackend, Sendable {
 
         return CodergenResult(
             response: response,
-            status: .partialSuccess,
-            notes: "WARNING: No structured status block found in agent response; defaulting to partial_success"
+            status: .retry,
+            notes: "No structured status block found in agent response after follow-up; retrying stage instead of promoting placeholder output"
         )
     }
 

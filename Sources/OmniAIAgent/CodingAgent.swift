@@ -55,7 +55,7 @@ public struct CodingAgent {
         return try Session(
             profile: fullProfile,
             environment: session.executionEnv,
-            client: try (client ?? Client.fromEnv()),
+            client: client,
             config: config,
             sessionID: sessionID,
             storageBackend: storageBackend,
@@ -87,7 +87,7 @@ public struct CodingAgent {
         return try Session(
             profile: fullProfile,
             environment: session.executionEnv,
-            client: try (client ?? Client.fromEnv()),
+            client: client,
             config: config,
             sessionID: sessionID,
             storageBackend: storageBackend,
@@ -119,7 +119,7 @@ public struct CodingAgent {
         return try Session(
             profile: fullProfile,
             environment: session.executionEnv,
-            client: try (client ?? Client.fromEnv()),
+            client: client,
             config: config,
             sessionID: sessionID,
             storageBackend: storageBackend,

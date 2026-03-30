@@ -424,6 +424,7 @@ let package = Package(
             name: "OmniAICore",
             dependencies: [
                 "OmniHTTP",
+                "OmniHTTPNIO",
                 .product(name: "NIOPosix", package: "swift-nio"),
                 .product(name: "WebSocketKit", package: "websocket-kit"),
             ],
@@ -433,7 +434,6 @@ let package = Package(
             name: "OmniAIAgent",
             dependencies: [
                 "OmniAICore", "OmniMCP", "OmniExecution", "OmniSkills",
-                .target(name: "OmniContainer", condition: .when(platforms: [.macOS, .linux])),
             ],
             path: "Sources/OmniAIAgent",
             resources: [

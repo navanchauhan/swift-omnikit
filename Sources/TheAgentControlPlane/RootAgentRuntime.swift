@@ -59,17 +59,20 @@ public final class RootAgentRuntime: @unchecked Sendable {
     public let profile: RootOrchestratorProfile
 
     private let contextBuffer: RootPromptContextBuffer
+    private let ownedClient: Client?
 
     init(
         server: RootAgentServer,
         session: Session,
         profile: RootOrchestratorProfile,
-        contextBuffer: RootPromptContextBuffer
+        contextBuffer: RootPromptContextBuffer,
+        ownedClient: Client?
     ) {
         self.server = server
         self.session = session
         self.profile = profile
         self.contextBuffer = contextBuffer
+        self.ownedClient = ownedClient
     }
 
     public static func make(
@@ -108,10 +111,13 @@ public final class RootAgentRuntime: @unchecked Sendable {
         let storageBackend = FileSessionStorageBackend(rootDirectory: sessionStorageRoot)
 
         let resolvedClient: Client
+        let ownedClient: Client?
         if let client {
             resolvedClient = client
+            ownedClient = nil
         } else {
             resolvedClient = try Client.fromEnv()
+            ownedClient = resolvedClient
         }
 
         let session = try Session(
@@ -134,7 +140,8 @@ public final class RootAgentRuntime: @unchecked Sendable {
             server: server,
             session: session,
             profile: profile,
-            contextBuffer: contextBuffer
+            contextBuffer: contextBuffer,
+            ownedClient: ownedClient
         )
         try await runtime.refreshPromptContext()
         return runtime
@@ -173,6 +180,9 @@ public final class RootAgentRuntime: @unchecked Sendable {
 
     public func close() async {
         await session.close()
+        if let ownedClient {
+            await ownedClient.close()
+        }
     }
 
     private func refreshPromptContext() async throws {

@@ -125,6 +125,20 @@ struct RootOrchestratorTests {
         #expect(prompt.localizedStandardContains("native web research"))
         #expect(prompt.localizedStandardContains("spawn_agent"))
         #expect(prompt.localizedStandardContains("do not claim you lack tool access"))
+        #expect(prompt.localizedStandardContains("only user-facing agent persona"))
+        #expect(prompt.localizedStandardContains("workers and subagents are not user-facing"))
+        #expect(prompt.localizedStandardContains("a little sarcastic"))
+        #expect(prompt.localizedStandardContains("avoid corporate filler"))
+        #expect(prompt.localizedStandardContains("all lowercase"))
+        #expect(prompt.localizedStandardContains("no emojis"))
+        #expect(prompt.localizedStandardContains("do not end normal user-facing sentences with periods"))
+        #expect(prompt.localizedStandardContains("default to plain text"))
+        #expect(prompt.localizedStandardContains("use markdown only when structure materially helps"))
+        #expect(prompt.localizedStandardContains("try not to use bullet lists or numbered lists"))
+        #expect(prompt.localizedStandardContains("exact identifiers and field names"))
+        #expect(prompt.localizedStandardContains("retry the same search or action at most three times"))
+        #expect(prompt.localizedStandardContains("use the smallest tool that can complete the task"))
+        #expect(prompt.localizedStandardContains("prefer direct tool calls for simple work"))
     }
 
     @Test
