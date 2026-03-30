@@ -1560,6 +1560,47 @@ final class ProviderAdapterTests {
     }
 
     @Test
+    func testAnthropicAdapterStreamingEmitsProviderEventsForControlFrames() async throws {
+        let sse = """
+        event: message_start
+        data: {\"type\":\"message_start\",\"message\":{\"id\":\"msg_1\",\"model\":\"claude-opus-4-6\",\"usage\":{\"input_tokens\":5,\"output_tokens\":0}}}
+
+        event: ping
+        data: {}
+
+        event: message_delta
+        data: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"},\"usage\":{\"input_tokens\":5,\"output_tokens\":7}}
+
+        event: message_stop
+        data: {\"type\":\"message_stop\"}
+
+        """
+
+        let transport = StubTransport(stream: { _ in
+            HTTPStreamResponse(statusCode: 200, headers: HTTPHeaders(), body: streamFromSSE(sse))
+        })
+
+        let adapter = AnthropicAdapter(apiKey: "anthropic-test", transport: transport)
+        let stream = try await adapter.stream(request: Request(model: "claude-opus-4-6", messages: [.user("hi")]))
+
+        var controlEvents: [String] = []
+        var finish: Response?
+        for try await ev in stream {
+            if ev.type.rawValue == StreamEventType.providerEvent.rawValue {
+                if let kind = ev.raw?["type"]?.stringValue ?? ev.raw?["event"]?.stringValue {
+                    controlEvents.append(kind)
+                }
+            }
+            if ev.type.rawValue == StreamEventType.finish.rawValue {
+                finish = ev.response
+            }
+        }
+
+        XCTAssertEqual(controlEvents, ["message_start", "ping", "message_delta", "message_stop"])
+        XCTAssertEqual(finish?.finishReason.rawValue, "stop")
+    }
+
+    @Test
     func testGeminiAdapterStreamingMapsTextEvents() async throws {
         let sse = """
         data: {\"candidates\":[{\"finishReason\":\"STOP\",\"content\":{\"parts\":[{\"text\":\"he\"}]}}],\"usageMetadata\":{\"promptTokenCount\":5,\"candidatesTokenCount\":7}}

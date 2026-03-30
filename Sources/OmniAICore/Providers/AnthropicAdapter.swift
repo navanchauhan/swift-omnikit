@@ -114,6 +114,34 @@ public final class AnthropicAdapter: ProviderAdapter, @unchecked Sendable {
                         }()
                         let type = ev.event ?? payload?["type"]?.stringValue ?? ""
 
+                        let providerEnvelope: JSONValue? = {
+                            let eventName = ev.event?.trimmingCharacters(in: .whitespacesAndNewlines)
+                            if let payload {
+                                if case .object(var object) = payload {
+                                    if let eventName, !eventName.isEmpty {
+                                        object["event"] = .string(eventName)
+                                        object["type"] = object["type"] ?? .string(eventName)
+                                    }
+                                    return .object(object)
+                                }
+                                if let eventName, !eventName.isEmpty {
+                                    return .object([
+                                        "event": .string(eventName),
+                                        "payload": payload,
+                                    ])
+                                }
+                                return payload
+                            }
+                            if let eventName, !eventName.isEmpty {
+                                return .object([
+                                    "event": .string(eventName),
+                                    "type": .string(eventName),
+                                ])
+                            }
+                            return nil
+                        }()
+                        continuation.yield(StreamEvent(type: .standard(.providerEvent), raw: providerEnvelope))
+
                         switch type {
                         case "message_start":
                             if let msg = payload?["message"] {

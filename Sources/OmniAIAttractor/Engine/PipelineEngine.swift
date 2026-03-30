@@ -190,26 +190,12 @@ public final class PipelineEngine: Sendable {
             }
         }
 
-        // Determine the next node after the checkpointed current node
+        // The checkpoint's current_node is the last completed node.
+        // Resume must route from that completed node using the recorded outcome,
+        // including condition matching and loop_restart semantics.
         if let currentId = state.currentNodeId,
-           g.node(currentId) != nil {
-            // The checkpoint's current_node is the last completed node.
-            // Use the actual last outcome from the checkpoint instead of hardcoded success.
-            let lastStatusStr = checkpoint.nodeOutcomes[currentId] ?? "success"
-            let lastStatus = OutcomeStatus(rawValue: lastStatusStr) ?? .success
-            let preferredLabel = context.getString("preferred_label")
-            let lastOutcome = Outcome(
-                status: lastStatus,
-                preferredLabel: preferredLabel
-            )
-            if let nextEdge = selectNextEdge(
-                from: currentId,
-                outcome: lastOutcome,
-                context: context,
-                graph: g
-            ) {
-                state.currentNodeId = nextEdge.to
-            }
+           let currentNode = g.node(currentId) {
+            try await advanceFromCompletedNode(node: currentNode, state: state)
         }
 
         while true {
@@ -297,13 +283,10 @@ public final class PipelineEngine: Sendable {
 
             // Check if already completed (resume scenario)
             if state.completedNodes.contains(currentId) && node.handlerType != .start {
-                // Skip already-completed nodes during resume
-                let outgoing = state.graph.outgoingEdges(from: currentId)
-                if let edge = outgoing.first {
-                    state.currentNodeId = edge.to
-                } else {
-                    state.currentNodeId = nil
-                }
+                // Skip already-completed nodes during resume, but preserve the
+                // actual recorded routing semantics instead of taking the first
+                // outgoing edge blindly.
+                try await advanceFromCompletedNode(node: node, state: state)
                 continue
             }
 
@@ -900,6 +883,74 @@ public final class PipelineEngine: Sendable {
 
         // Step 6: No failure route
         return nil
+    }
+
+    private func advanceFromCompletedNode(node: Node, state: ExecutionState) async throws {
+        let recordedOutcome = await restoredOutcome(for: node.id, state: state)
+        let nextEdge: Edge?
+        if recordedOutcome.status == .fail || recordedOutcome.status == .retry {
+            nextEdge = try resolveFailureEdge(node: node, outcome: recordedOutcome, state: state)
+        } else {
+            nextEdge = selectNextEdge(
+                from: node.id,
+                outcome: recordedOutcome,
+                context: state.context,
+                graph: state.graph
+            )
+        }
+
+        guard let edge = nextEdge else {
+            state.currentNodeId = nil
+            return
+        }
+
+        state.lastEdge = edge
+        if edge.loopRestart {
+            let loopCount = state.context.getInt("internal.loop_restart_count") + 1
+            state.context.set("internal.loop_restart_count", String(loopCount))
+            state.context.set("loop_restart", "true")
+            state.restartTargetNodeId = edge.to
+            state.currentNodeId = nil
+            return
+        }
+
+        state.currentNodeId = edge.to
+    }
+
+    private func restoredOutcome(for nodeId: String, state: ExecutionState) async -> Outcome {
+        let statusURL = state.logsRoot
+            .appendingPathComponent(nodeId, isDirectory: true)
+            .appendingPathComponent("status.json")
+        if let data = try? Data(contentsOf: statusURL),
+           let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+           let restored = parseOutcomeStatusArtifact(object) {
+            return restored
+        }
+
+        let fallbackStatus = state.nodeOutcomes[nodeId] ?? .success
+        return Outcome(status: fallbackStatus)
+    }
+
+    private func parseOutcomeStatusArtifact(_ object: [String: Any]) -> Outcome? {
+        guard let outcomeRaw = object["outcome"] as? String,
+              let status = OutcomeStatus(rawValue: outcomeRaw) else {
+            return nil
+        }
+
+        let preferredLabel = object["preferred_next_label"] as? String ?? ""
+        let suggestedNextIds = (object["suggested_next_ids"] as? [String]) ?? []
+        let notes = object["notes"] as? String ?? ""
+        let failureReason = object["failure_reason"] as? String ?? ""
+        let contextUpdates = (object["context_updates"] as? [String: String]) ?? [:]
+
+        return Outcome(
+            status: status,
+            preferredLabel: preferredLabel,
+            suggestedNextIds: suggestedNextIds,
+            contextUpdates: contextUpdates,
+            notes: notes,
+            failureReason: failureReason
+        )
     }
 
     // MARK: - Record Outcome

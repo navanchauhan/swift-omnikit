@@ -1326,18 +1326,12 @@ You are running in non-interactive (automated pipeline) mode. Complete your assi
     }
 
     private static func isActivityEvent(_ event: StreamEvent) -> Bool {
-        switch event.type.rawValue {
-        case StreamEventType.textStart.rawValue,
-             StreamEventType.textDelta.rawValue,
-             StreamEventType.reasoningDelta.rawValue,
-             StreamEventType.toolCallStart.rawValue,
-             StreamEventType.toolCallDelta.rawValue,
-             StreamEventType.toolCallEnd.rawValue,
-             StreamEventType.finish.rawValue:
-            return true
-        default:
-            return false
-        }
+        // Any streamed event indicates the upstream connection is still alive.
+        // This must include provider/control frames such as Anthropic ping,
+        // message_start, and message_delta events that may not produce user-visible
+        // text/tool deltas but still prove forward progress.
+        _ = event
+        return true
     }
 
     private static func secondsBetween(_ start: ContinuousClock.Instant, and end: ContinuousClock.Instant) -> Double {

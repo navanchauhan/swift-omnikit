@@ -436,6 +436,107 @@ final class IntegrationTests {
     }
 
     @Test
+    func testResumeFromCompletedNodeHonorsRecordedOutcomeRouting() async throws {
+        let logsRoot = try makeTempDir()
+        defer { cleanup(logsRoot) }
+
+        let backend = TrackingIntBackend()
+        let config = PipelineConfig(
+            logsRoot: logsRoot,
+            retryPolicy: .none,
+            backend: backend,
+            interviewer: AutoApproveInterviewer()
+        )
+
+        let engine = PipelineEngine(config: config)
+        let dot = """
+        digraph test {
+            graph [goal="Resume outcome routing"]
+            start [shape=Mdiamond]
+            decision [shape=box, prompt="Decision node"]
+            bad [shape=box, prompt="Bad branch"]
+            good [shape=box, prompt="Good branch"]
+            done [shape=Msquare]
+            start -> decision
+            decision -> bad [condition="outcome=fail"]
+            decision -> good [condition="outcome=success"]
+            bad -> done
+            good -> done
+        }
+        """
+
+        let checkpoint = Checkpoint(
+            currentNode: "decision",
+            completedNodes: ["start", "decision"],
+            nodeRetries: [:],
+            nodeOutcomes: [
+                "start": OutcomeStatus.success.rawValue,
+                "decision": OutcomeStatus.success.rawValue,
+            ],
+            contextValues: ["_graph_goal": "Resume outcome routing"],
+            logs: []
+        )
+
+        let result = try await engine.resume(dot: dot, checkpoint: checkpoint)
+
+        #expect(result.status == .success)
+        #expect(backend.calls.count == 1)
+        #expect(backend.calls.first?.prompt == "Good branch")
+    }
+
+    @Test
+    func testResumePreservesLoopRestartSemantics() async throws {
+        let logsRoot = try makeTempDir()
+        defer { cleanup(logsRoot) }
+
+        let backend = MockIntBackend()
+        let config = PipelineConfig(
+            logsRoot: logsRoot,
+            retryPolicy: .none,
+            backend: backend,
+            interviewer: AutoApproveInterviewer()
+        )
+
+        let engine = PipelineEngine(config: config)
+        let dot = """
+        digraph test {
+            graph [goal="Resume loop restart", default_max_retry=3]
+            start [shape=Mdiamond]
+            step1 [shape=box, prompt="Step 1"]
+            check [shape=parallelogram, tool_command="printf COMPLETE"]
+            done [shape=Msquare]
+            start -> step1 -> check
+            check -> step1 [condition="outcome=fail", loop_restart=true]
+            check -> done [condition="outcome=success"]
+        }
+        """
+
+        let checkpoint = Checkpoint(
+            currentNode: "check",
+            completedNodes: ["start", "step1", "check"],
+            nodeRetries: [:],
+            nodeOutcomes: [
+                "start": OutcomeStatus.success.rawValue,
+                "step1": OutcomeStatus.success.rawValue,
+                "check": OutcomeStatus.fail.rawValue,
+            ],
+            contextValues: [
+                "_graph_goal": "Resume loop restart",
+                "tool.output": "INCOMPLETE",
+                "tool.exit_code": "1",
+            ],
+            logs: []
+        )
+
+        let result = try await engine.resume(dot: dot, checkpoint: checkpoint)
+
+        #expect(result.status == .success)
+        #expect(backend.callCount == 1)
+        #expect(result.logsRoot.lastPathComponent.contains("_cycle1"))
+        #expect(result.context["internal.loop_restart_count"] == "1")
+    }
+
+    @Test
     func testEngineStylesheetAppliesModel() async throws {
         let logsRoot = try makeTempDir()
         defer { cleanup(logsRoot) }

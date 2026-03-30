@@ -60,6 +60,59 @@ private final class StaticAdapter: ProviderAdapter, @unchecked Sendable {
     }
 }
 
+private final class HeartbeatAdapter: ProviderAdapter, @unchecked Sendable {
+    let name: String
+    let response: Response
+    let heartbeatCount: Int
+    let heartbeatInterval: Duration
+
+    init(name: String, response: Response, heartbeatCount: Int, heartbeatInterval: Duration) {
+        self.name = name
+        self.response = response
+        self.heartbeatCount = heartbeatCount
+        self.heartbeatInterval = heartbeatInterval
+    }
+
+    func complete(request: Request) async throws -> Response { response }
+
+    func stream(request: Request) async throws -> AsyncThrowingStream<StreamEvent, Error> {
+        AsyncThrowingStream { continuation in
+            let task = Task {
+                do {
+                    continuation.yield(StreamEvent(type: .standard(.streamStart)))
+                    for beat in 0..<heartbeatCount {
+                        try await Task.sleep(for: heartbeatInterval)
+                        continuation.yield(
+                            StreamEvent(
+                                type: .standard(.providerEvent),
+                                raw: .object([
+                                    "event": .string("ping"),
+                                    "beat": .number(Double(beat)),
+                                ])
+                            )
+                        )
+                    }
+                    try await Task.sleep(for: heartbeatInterval)
+                    continuation.yield(
+                        StreamEvent(
+                            type: .standard(.finish),
+                            finishReason: response.finishReason,
+                            usage: response.usage,
+                            response: response
+                        )
+                    )
+                    continuation.finish()
+                } catch {
+                    continuation.finish(throwing: error)
+                }
+            }
+            continuation.onTermination = { @Sendable _ in
+                task.cancel()
+            }
+        }
+    }
+}
+
 @Suite
 final class ClientTests {
     @Test
@@ -131,5 +184,51 @@ final class ClientTests {
             XCTFail("Unexpected error: \(error)")
         }
     }
-}
 
+    @Test
+    func testStreamTimeoutTreatsProviderEventsAsLiveness() async throws {
+        let response = Response(
+            id: "heartbeat",
+            model: "m",
+            provider: "p",
+            message: .assistant("ok"),
+            finishReason: FinishReason(kind: .stop, raw: "stop"),
+            usage: Usage(inputTokens: 1, outputTokens: 1)
+        )
+
+        let client = try Client(
+            providers: [
+                "p": HeartbeatAdapter(
+                    name: "p",
+                    response: response,
+                    heartbeatCount: 3,
+                    heartbeatInterval: .milliseconds(400)
+                )
+            ],
+            defaultProvider: "p"
+        )
+
+        let stream = try await client.stream(
+            Request(
+                model: "m",
+                messages: [.user("hi")],
+                provider: "p",
+                timeout: .seconds(1)
+            )
+        )
+
+        var providerEvents = 0
+        var finish: Response?
+        for try await event in stream {
+            if event.type.rawValue == StreamEventType.providerEvent.rawValue {
+                providerEvents += 1
+            }
+            if event.type.rawValue == StreamEventType.finish.rawValue {
+                finish = event.response
+            }
+        }
+
+        XCTAssertEqual(providerEvents, 3)
+        XCTAssertEqual(finish?.text, "ok")
+    }
+}

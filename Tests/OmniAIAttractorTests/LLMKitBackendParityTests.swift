@@ -59,6 +59,7 @@ final class LLMKitBackendParityTests {
 
     @Test
     func testInactivityActivityEventsMatchParityContract() {
+        XCTAssertTrue(LLMKitBackend.isActivityEvent(StreamEvent(type: .streamStart)))
         XCTAssertTrue(LLMKitBackend.isActivityEvent(StreamEvent(type: .textStart)))
         XCTAssertTrue(LLMKitBackend.isActivityEvent(StreamEvent(type: .textDelta)))
         XCTAssertTrue(LLMKitBackend.isActivityEvent(StreamEvent(type: .reasoningDelta)))
@@ -66,10 +67,9 @@ final class LLMKitBackendParityTests {
         XCTAssertTrue(LLMKitBackend.isActivityEvent(StreamEvent(type: .toolCallDelta)))
         XCTAssertTrue(LLMKitBackend.isActivityEvent(StreamEvent(type: .toolCallEnd)))
         XCTAssertTrue(LLMKitBackend.isActivityEvent(StreamEvent(type: .finish)))
-
-        XCTAssertFalse(LLMKitBackend.isActivityEvent(StreamEvent(type: .providerEvent)))
-        XCTAssertFalse(LLMKitBackend.isActivityEvent(StreamEvent(type: .textEnd)))
-        XCTAssertFalse(LLMKitBackend.isActivityEvent(StreamEvent(type: .reasoningEnd)))
-        XCTAssertFalse(LLMKitBackend.isActivityEvent(StreamEvent(type: .error)))
+        XCTAssertTrue(LLMKitBackend.isActivityEvent(StreamEvent(type: .providerEvent)))
+        XCTAssertTrue(LLMKitBackend.isActivityEvent(StreamEvent(type: .textEnd)))
+        XCTAssertTrue(LLMKitBackend.isActivityEvent(StreamEvent(type: .reasoningEnd)))
+        XCTAssertTrue(LLMKitBackend.isActivityEvent(StreamEvent(type: .error)))
     }
 }

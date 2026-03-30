@@ -261,12 +261,19 @@ private struct CLICommand {
         let engine = PipelineEngine(config: config)
 
         let result: PipelineResult
-        if let checkpoint {
-            fputs("[AttractorCLI] Resuming from checkpoint: \(checkpoint.currentNode)\n", stderr)
-            fputs("[AttractorCLI] Completed nodes: \(checkpoint.completedNodes.joined(separator: ", "))\n", stderr)
-            result = try await engine.resume(dot: dot, checkpoint: checkpoint)
-        } else {
-            result = try await engine.run(dot: dot)
+        do {
+            if let checkpoint {
+                fputs("[AttractorCLI] Resuming from checkpoint: \(checkpoint.currentNode)\n", stderr)
+                fputs("[AttractorCLI] Completed nodes: \(checkpoint.completedNodes.joined(separator: ", "))\n", stderr)
+                result = try await engine.resume(dot: dot, checkpoint: checkpoint)
+            } else {
+                result = try await engine.run(dot: dot)
+            }
+        } catch {
+            manifestWriter.failFromLatestCheckpoint(
+                checkpointURL: logs.appendingPathComponent("checkpoint.json")
+            )
+            throw error
         }
         manifestWriter.finish(status: result.status)
 
@@ -380,27 +387,36 @@ private struct CLICommand {
         for runDir in contents {
             let manifestURL = runDir.appendingPathComponent("run.manifest.json")
             guard FileManager.default.fileExists(atPath: manifestURL.path),
-                  let manifest = try? RunManifest.load(from: manifestURL)
+                  let loadedManifest = try? RunManifest.load(from: manifestURL)
             else {
                 continue
             }
 
-            guard normalizePath(manifest.dotPath) == dotPath,
-                  manifest.backend.lowercased() == backend.lowercased(),
-                  normalizePath(manifest.workingDirectory) == workdir
+            let lockURL = runDir.appendingPathComponent("run.lock")
+
+            guard normalizePath(loadedManifest.dotPath) == dotPath,
+                  loadedManifest.backend.lowercased() == backend.lowercased(),
+                  normalizePath(loadedManifest.workingDirectory) == workdir
             else {
                 continue
             }
 
-            if manifest.completionState == .completed {
-                continue
-            }
-
-            let logsRoot = URL(fileURLWithPath: manifest.logsRoot, isDirectory: true)
+            let logsRoot = URL(fileURLWithPath: loadedManifest.logsRoot, isDirectory: true)
             let checkpointURL = logsRoot.appendingPathComponent("checkpoint.json")
             guard FileManager.default.fileExists(atPath: checkpointURL.path),
                   let checkpoint = try? Checkpoint.load(from: checkpointURL)
             else {
+                continue
+            }
+
+            let manifest = reconcileManifestForSelection(
+                loadedManifest,
+                manifestURL: manifestURL,
+                lockURL: lockURL,
+                checkpoint: checkpoint
+            )
+
+            if manifest.completionState == .completed {
                 continue
             }
 
@@ -410,6 +426,41 @@ private struct CLICommand {
             }
         }
         return best
+    }
+
+    private func reconcileManifestForSelection(
+        _ manifest: RunManifest,
+        manifestURL: URL,
+        lockURL: URL,
+        checkpoint: Checkpoint
+    ) -> RunManifest {
+        var manifest = manifest
+        var changed = false
+
+        if manifest.completionState == .running,
+           let pid = manifest.pid,
+           !isProcessAlive(pid)
+        {
+            manifest.repairAfterUnexpectedExit(checkpoint: checkpoint)
+            changed = true
+        }
+
+        if manifest.completionState != .running, manifest.pid != nil {
+            manifest.pid = nil
+            changed = true
+        }
+
+        if changed {
+            try? manifest.save(to: manifestURL)
+        }
+
+        if manifest.completionState != .running,
+           FileManager.default.fileExists(atPath: lockURL.path)
+        {
+            try? FileManager.default.removeItem(at: lockURL)
+        }
+
+        return manifest
     }
 
     private func resolveLogsRoot() throws -> URL {
@@ -424,6 +475,11 @@ private struct CLICommand {
 
     private func normalizePath(_ path: String) -> String {
         URL(fileURLWithPath: path).standardizedFileURL.path
+    }
+
+    private func isProcessAlive(_ pid: Int32) -> Bool {
+        guard pid > 0 else { return false }
+        return kill(pid, 0) == 0
     }
 }
 
@@ -448,7 +504,7 @@ private final class RunManifestWriter: @unchecked Sendable {
     func start() throws {
         let dir = manifestURL.deletingLastPathComponent()
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-        manifest.updatedAt = Date()
+        manifest.beginRun(currentNode: manifest.currentNode)
         try manifest.save(to: manifestURL)
         touchLock()
     }
@@ -461,38 +517,55 @@ private final class RunManifestWriter: @unchecked Sendable {
         case .stageStarted, .stageCompleted, .stageFailed:
             manifest.currentNode = event.nodeId ?? manifest.currentNode
         case .pipelineCompleted:
-            manifest.completionState = .completed
+            manifest.finish(
+                state: .completed,
+                currentNode: event.nodeId ?? manifest.currentNode,
+                at: event.timestamp
+            )
         case .pipelineFailed:
-            manifest.completionState = .failed
+            manifest.finish(
+                state: .failed,
+                currentNode: event.nodeId ?? manifest.currentNode,
+                at: event.timestamp
+            )
         default:
             break
         }
-        manifest.updatedAt = event.timestamp
+
+        if event.kind != .pipelineCompleted && event.kind != .pipelineFailed {
+            manifest.updatedAt = event.timestamp
+        }
 
         try? manifest.save(to: manifestURL)
-        if manifest.completionState == .completed {
-            removeLock()
-        } else {
+        if manifest.completionState == .running {
             touchLock()
+        } else {
+            removeLock()
         }
     }
 
     func finish(status: OutcomeStatus) {
         lock.lock()
         defer { lock.unlock() }
-        manifest.updatedAt = Date()
-        switch status {
-        case .success:
-            manifest.completionState = .completed
-        default:
-            manifest.completionState = .failed
+        manifest.finish(state: status == .success ? .completed : .failed)
+        try? manifest.save(to: manifestURL)
+        if manifest.completionState == .running {
+            touchLock()
+        } else {
+            removeLock()
+        }
+    }
+
+    func failFromLatestCheckpoint(checkpointURL: URL) {
+        lock.lock()
+        defer { lock.unlock() }
+        if let checkpoint = try? Checkpoint.load(from: checkpointURL) {
+            manifest.repairAfterUnexpectedExit(checkpoint: checkpoint)
+        } else {
+            manifest.finish(state: .failed)
         }
         try? manifest.save(to: manifestURL)
-        if manifest.completionState == .completed {
-            removeLock()
-        } else {
-            touchLock()
-        }
+        removeLock()
     }
 
     private func touchLock() {

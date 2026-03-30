@@ -269,18 +269,10 @@ public final class LLMKitBackend: CodergenBackend, Sendable {
     }
 
     static func isActivityEvent(_ event: StreamEvent) -> Bool {
-        switch event.type.rawValue {
-        case StreamEventType.textStart.rawValue,
-             StreamEventType.textDelta.rawValue,
-             StreamEventType.reasoningDelta.rawValue,
-             StreamEventType.toolCallStart.rawValue,
-             StreamEventType.toolCallDelta.rawValue,
-             StreamEventType.toolCallEnd.rawValue,
-             StreamEventType.finish.rawValue:
-            return true
-        default:
-            return false
-        }
+        // Match Session/Client watchdog semantics: any upstream event counts as
+        // liveness, even if it is only a provider/control frame.
+        _ = event
+        return true
     }
 
     private func parseResponse(_ response: String) throws -> CodergenResult {

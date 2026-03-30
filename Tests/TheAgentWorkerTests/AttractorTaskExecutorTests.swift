@@ -116,6 +116,44 @@ struct AttractorTaskExecutorTests {
         }
     }
 
+    @Test
+    func executorThrowsWhenBackendReturnsEmptySuccessResponses() async throws {
+        let workingDirectory = try makeTemporaryDirectory(prefix: "attractor-worker-empty")
+        let logsRoot = workingDirectory.appending(path: ".ai/attractor-runs", directoryHint: .isDirectory)
+        let backend = SequentialCodergenBackend(
+            results: [
+                CodergenResult(response: "", status: .success),
+                CodergenResult(response: "", status: .success),
+                CodergenResult(response: "", status: .success),
+                CodergenResult(response: "", status: .success),
+                CodergenResult(response: "", status: .success),
+            ]
+        )
+        let executor = AttractorTaskExecutor(
+            workflowTemplate: AttractorWorkflowTemplate(
+                provider: "openai",
+                model: "gpt-test",
+                reasoningEffort: "high"
+            ),
+            backend: backend,
+            workingDirectory: workingDirectory.path(),
+            logsRoot: logsRoot
+        )
+        let task = TaskRecord(
+            rootSessionID: SessionScope(
+                actorID: ActorID(rawValue: "chief"),
+                workspaceID: WorkspaceID(rawValue: "workspace-c"),
+                channelID: ChannelID(rawValue: "dm-c")
+            ).sessionID,
+            missionID: "mission-3",
+            historyProjection: HistoryProjection(taskBrief: "Reject empty workflow output.")
+        )
+
+        await #expect(throws: AttractorTaskExecutorError.self) {
+            try await executor.execute(task: task) { _, _ in }
+        }
+    }
+
     private func makeTemporaryDirectory(prefix: String) throws -> URL {
         let directory = FileManager.default.temporaryDirectory.appending(
             path: "omnikit-\(prefix)-\(UUID().uuidString)",

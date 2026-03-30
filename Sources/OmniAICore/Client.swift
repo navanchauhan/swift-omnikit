@@ -561,18 +561,10 @@ public final class Client: @unchecked Sendable {
     }
 
     private static func isActivityEvent(_ event: StreamEvent) -> Bool {
-        switch event.type.rawValue {
-        case StreamEventType.textStart.rawValue,
-             StreamEventType.textDelta.rawValue,
-             StreamEventType.reasoningDelta.rawValue,
-             StreamEventType.toolCallStart.rawValue,
-             StreamEventType.toolCallDelta.rawValue,
-             StreamEventType.toolCallEnd.rawValue,
-             StreamEventType.finish.rawValue:
-            return true
-        default:
-            return false
-        }
+        // Liveness is transport-level, not UI-payload-level. Control frames such as
+        // provider pings or message metadata updates must reset the watchdog too.
+        _ = event
+        return true
     }
 
     private static func durationSeconds(_ duration: Duration) -> Double {

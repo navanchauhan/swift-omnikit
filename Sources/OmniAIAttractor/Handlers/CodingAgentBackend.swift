@@ -98,6 +98,32 @@ public final class CodingAgentBackend: CodergenBackend, Sendable {
         let initialHistory = await session.getHistory()
         let initialResponse = buildFinalResponse(from: initialHistory, tracker: tracker)
 
+        // Some providers occasionally return an empty assistant turn with no tool calls.
+        // Do not send a follow-up on that poisoned session state; surface a retry so the
+        // pipeline can rerun the stage cleanly instead of tripping provider validation.
+        if codingAgentProducedNoSubstantiveWork(from: initialHistory) {
+            let detail = noSubstantiveWorkDetail(errors: errorTracker.errors)
+            writeToAttractorStderr("[CodingAgentBackend:WARN] \(detail)\n")
+            try? await session.clearPersistedState()
+            await session.close()
+            return CodergenResult(
+                response: initialResponse,
+                status: .retry,
+                notes: detail
+            )
+        }
+
+        if let detail = retryableSessionFailureDetail(errors: errorTracker.errors) {
+            writeToAttractorStderr("[CodingAgentBackend:WARN] \(detail)\n")
+            try? await session.clearPersistedState()
+            await session.close()
+            return CodergenResult(
+                response: initialResponse,
+                status: .retry,
+                notes: detail
+            )
+        }
+
         // Follow-up: If no JSON status block, ask for summary + block (single follow-up only)
         if extractJSONBlock(from: initialResponse) == nil {
             await session.submit(
@@ -111,6 +137,30 @@ public final class CodingAgentBackend: CodergenBackend, Sendable {
         // 8. Extract the final response from session history (including all follow-ups)
         let history = await session.getHistory()
         let finalResponse = buildFinalResponse(from: history, tracker: tracker)
+
+        if codingAgentProducedNoSubstantiveWork(from: history) {
+            let detail = noSubstantiveWorkDetail(errors: errorTracker.errors)
+            writeToAttractorStderr("[CodingAgentBackend:WARN] \(detail)\n")
+            try? await session.clearPersistedState()
+            await session.close()
+            return CodergenResult(
+                response: finalResponse,
+                status: .retry,
+                notes: detail
+            )
+        }
+
+        if let detail = retryableSessionFailureDetail(errors: errorTracker.errors) {
+            writeToAttractorStderr("[CodingAgentBackend:WARN] \(detail)\n")
+            try? await session.clearPersistedState()
+            await session.close()
+            return CodergenResult(
+                response: finalResponse,
+                status: .retry,
+                notes: detail
+            )
+        }
+
         let parsed = parseResponse(finalResponse)
 
         // Log errors if agent produced no output
@@ -156,6 +206,48 @@ public final class CodingAgentBackend: CodergenBackend, Sendable {
         parts.append("\n\n[Agent completed \(allAssistantTexts.count) assistant turns, \(totalToolCalls) tool calls]")
 
         return parts.joined()
+    }
+
+    private func codingAgentProducedNoSubstantiveWork(from history: [Turn]) -> Bool {
+        var assistantTurnCount = 0
+        var totalToolCalls = 0
+
+        for turn in history {
+            guard case .assistant(let assistantTurn) = turn else {
+                continue
+            }
+            if !assistantTurn.content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                assistantTurnCount += 1
+            }
+            totalToolCalls += assistantTurn.toolCalls.count
+        }
+
+        return assistantTurnCount == 0 && totalToolCalls == 0
+    }
+
+    private func noSubstantiveWorkDetail(errors: [String]) -> String {
+        if errors.isEmpty {
+            return "Coding agent produced no assistant text and no tool calls; retrying the stage is safer than continuing."
+        }
+        return "Coding agent produced no assistant text and no tool calls; retrying the stage is safer than continuing. Errors: \(errors.joined(separator: " | "))"
+    }
+
+    private func retryableSessionFailureDetail(errors: [String]) -> String? {
+        let retryableErrors = errors.filter(isRetryableSessionError)
+        guard !retryableErrors.isEmpty else {
+            return nil
+        }
+        return "Coding agent session ended with retryable LLM error(s); retrying stage instead of continuing with a poisoned follow-up. Errors: \(retryableErrors.joined(separator: " | "))"
+    }
+
+    private func isRetryableSessionError(_ error: String) -> Bool {
+        let normalized = error.localizedLowercase
+        return normalized.contains("requesttimeouterror")
+            || normalized.contains("llm inactivity timeout")
+            || normalized.contains("llm wall-clock timeout")
+            || normalized.contains("stream completed without producing a response")
+            || normalized.contains("stream ended with")
+            || normalized.contains("empty stream")
     }
 
     // MARK: - Profile Factory
