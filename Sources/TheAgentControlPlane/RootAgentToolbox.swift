@@ -10,6 +10,10 @@ public actor RootAgentToolbox {
         self.server = server
     }
 
+    static func testingSerializeDeliveryMetadata(_ metadata: [String: String]) -> [String: Any] {
+        serialize(deliveryMetadata: metadata)
+    }
+
     public func registeredTools() -> [RegisteredTool] {
         [
             listSkillsTool(),
@@ -1395,6 +1399,7 @@ private extension RootAgentToolbox {
             "verification_artifact_id": mission.verificationArtifactID ?? NSNull(),
             "budget_units": mission.budgetUnits,
             "max_recursion_depth": mission.maxRecursionDepth,
+            "delivery": serialize(deliveryMetadata: mission.metadata),
             "metadata": mission.metadata,
             "created_at": iso8601String(mission.createdAt),
             "updated_at": iso8601String(mission.updatedAt),
@@ -1491,6 +1496,24 @@ private extension RootAgentToolbox {
             "status": inboxItem.status,
             "created_at": iso8601String(inboxItem.createdAt),
             "metadata": inboxItem.metadata,
+        ]
+    }
+
+    static func serialize(deliveryMetadata metadata: [String: String]) -> [String: Any] {
+        let service = metadata["delivery_service"] ?? metadata["service"]
+        return [
+            "mode": metadata["delivery_mode"] ?? NSNull(),
+            "service": service ?? NSNull(),
+            "target_environment": metadata["deploy_target"] ?? NSNull(),
+            "deploy_approval_required": metadata["deploy_approval_required"] ?? NSNull(),
+            "auto_rollout_eligible": metadata["auto_rollout_eligible"] ?? NSNull(),
+            "release_bundle_id": metadata["release_bundle_id"] ?? NSNull(),
+            "release_id": metadata["release_id"] ?? NSNull(),
+            "deployment_state": metadata["deployment_state"] ?? NSNull(),
+            "health_status": metadata["health_status"] ?? NSNull(),
+            "delivery_summary": metadata["delivery_summary"] ?? NSNull(),
+            "release_generation": metadata["release_generation"] ?? NSNull(),
+            "rollback_release_id": metadata["rollback_release_id"] ?? NSNull(),
         ]
     }
 

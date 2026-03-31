@@ -1,5 +1,6 @@
 import Foundation
 import Testing
+import OmniAgentDeliveryCore
 import OmniAgentMesh
 import TheAgentWorkerKit
 @testable import TheAgentControlPlaneKit
@@ -92,16 +93,16 @@ struct MissionCoordinatorTests {
 
         let started = try await harness.server.startMission(
             MissionStartRequest(
-                title: "Deploy change",
+                title: "Run gated worker mission",
                 brief: "Only continue once approved.",
                 capabilityRequirements: ["macOS"],
-                expectedOutputs: ["deploy-report"],
+                expectedOutputs: ["report"],
                 requireApproval: true,
-                approvalPrompt: "Approve the deploy mission?"
+                approvalPrompt: "Approve the mission?"
             )
         )
 
-        #expect(started.mission.status == .awaitingApproval)
+        #expect(started.mission.status == MissionRecord.Status.awaitingApproval)
         #expect(started.approvals.count == 1)
 
         let inbox = try await harness.server.listInbox()
@@ -126,7 +127,7 @@ struct MissionCoordinatorTests {
             timeoutSeconds: 5
         )
 
-        #expect(finished.mission.status == .completed)
+        #expect(finished.mission.status == MissionRecord.Status.completed)
         #expect(finished.task?.status == .completed)
         #expect(finished.task?.capabilityRequirements == ["macOS"])
     }
@@ -182,20 +183,184 @@ struct MissionCoordinatorTests {
         #expect(missionA.approvals.first?.requestID != missionB.approvals.first?.requestID)
     }
 
-    private func makeHarness(prefix: String, scope: SessionScope) throws -> MissionHarness {
+    @Test
+    func deployableCodeChangeMissionCarriesDeliveryMetadataAndApproval() async throws {
+        let harness = try makeHarness(
+            prefix: "mission-deployable",
+            scope: SessionScope(actorID: "chief", workspaceID: "workspace-deploy", channelID: "dm-deploy"),
+            workspacePolicy: WorkspacePolicy(
+                defaultRepoChangesDeployable: true,
+                defaultDeploymentTarget: "canary",
+                allowedDeploymentTargets: ["canary", "prod"],
+                requireDeploymentApproval: true,
+                allowAutomaticRollout: true
+            )
+        )
+
+        let started = try await harness.server.startMission(
+            MissionStartRequest(
+                title: "Ship the feature",
+                brief: "Implement the feature and deploy it",
+                expectedOutputs: ["implementation", "deploy"],
+                metadata: ["mission_kind": "code_change"]
+            )
+        )
+
+        #expect(started.mission.status == .awaitingApproval)
+        #expect(started.approvals.count == 1)
+        #expect(started.mission.metadata["delivery_mode"] == "deployable")
+        #expect(started.mission.metadata["deploy_target"] == "canary")
+        #expect(started.mission.metadata["deploy_approval_required"] == "true")
+        #expect(started.mission.metadata["auto_rollout_eligible"] == "true")
+    }
+
+    @Test
+    func deployableCodeChangeMissionWithoutTargetBlocksForTargeting() async throws {
+        let harness = try makeHarness(
+            prefix: "mission-blocked-target",
+            scope: SessionScope(actorID: "chief", workspaceID: "workspace-target", channelID: "dm-target"),
+            workspacePolicy: WorkspacePolicy(
+                defaultRepoChangesDeployable: true,
+                allowedDeploymentTargets: ["staging", "prod"],
+                requireDeploymentApproval: true
+            )
+        )
+
+        let started = try await harness.server.startMission(
+            MissionStartRequest(
+                title: "Ship the feature",
+                brief: "Implement the feature and deploy it",
+                expectedOutputs: ["implementation", "deploy"],
+                metadata: ["mission_kind": "code_change", "deployable": "true"]
+            )
+        )
+
+        #expect(started.questions.count == 1)
+        #expect(started.mission.metadata["delivery_mode"] == "blocked_for_targeting")
+        #expect(started.mission.status == .awaitingUserInput || started.mission.status == .blocked)
+        #expect(started.questions.first?.options == ["staging", "prod"])
+    }
+
+    @Test
+    func deployableCodeChangeMissionCompletesWithReleaseBundleAndDeploymentState() async throws {
+        let harness = try makeHarness(
+            prefix: "mission-deploy-success",
+            scope: SessionScope(actorID: "chief", workspaceID: "workspace-release", channelID: "dm-release"),
+            workspacePolicy: WorkspacePolicy(
+                defaultRepoChangesDeployable: true,
+                defaultDeploymentTarget: "canary",
+                allowedDeploymentTargets: ["canary", "prod"],
+                requireDeploymentApproval: false,
+                allowAutomaticRollout: true
+            )
+        )
+
+        let implementationWorker = WorkerDaemon(
+            displayName: "implementation-worker",
+            capabilities: WorkerCapabilities(["lane:implementation", "swift"]),
+            jobStore: harness.jobStore,
+            artifactStore: harness.artifactStore,
+            executor: LocalTaskExecutor { _, reportProgress in
+                try await reportProgress("implementation running", [:])
+                return LocalTaskExecutionResult(
+                    summary: "implementation complete",
+                    artifacts: [
+                        LocalTaskExecutionArtifact(
+                            name: "feature.swift",
+                            contentType: "text/plain",
+                            data: Data("func shippedFeature() -> Bool { true }\n".utf8)
+                        ),
+                    ]
+                )
+            }
+        )
+        let reviewWorker = WorkerDaemon(
+            displayName: "review-worker",
+            capabilities: WorkerCapabilities(["lane:review"]),
+            jobStore: harness.jobStore,
+            artifactStore: harness.artifactStore,
+            executor: ReviewWorker().makeExecutor(artifactStore: harness.artifactStore)
+        )
+        let scenarioWorker = WorkerDaemon(
+            displayName: "scenario-worker",
+            capabilities: WorkerCapabilities(["lane:scenario"]),
+            jobStore: harness.jobStore,
+            artifactStore: harness.artifactStore,
+            executor: ScenarioEvalWorker().makeExecutor()
+        )
+        try await harness.server.registerLocalWorker(implementationWorker)
+        try await harness.server.registerLocalWorker(reviewWorker)
+        try await harness.server.registerLocalWorker(scenarioWorker)
+
+        let started = try await harness.server.startMission(
+            MissionStartRequest(
+                title: "Ship the feature",
+                brief: "Implement the feature and deploy it",
+                expectedOutputs: ["unit-tests", "smoke-tests"],
+                metadata: [
+                    "mission_kind": "code_change",
+                    "version": "2.1.0",
+                    "service": "the-agent",
+                ]
+            )
+        )
+
+        let finished = try await harness.server.waitForMission(
+            missionID: started.mission.missionID,
+            timeoutSeconds: 8
+        )
+        let activeRelease = try await harness.deploymentStore.activeRelease()
+
+        #expect(finished.mission.status == .completed)
+        #expect(finished.mission.metadata["delivery_mode"] == "deployable")
+        #expect(finished.mission.metadata["release_bundle_id"] != nil)
+        #expect(finished.mission.metadata["release_id"] != nil)
+        #expect(finished.mission.metadata["deployment_state"] == DeploymentRecord.State.live.rawValue)
+        #expect(finished.mission.metadata["health_status"] == DeploymentRecord.HealthStatus.healthy.rawValue)
+        #expect(finished.mission.metadata["delivery_summary"]?.localizedStandardContains("deployed") == true)
+        #expect(finished.stages.contains { $0.kind == .implement && $0.status == .completed })
+        #expect(finished.stages.contains { $0.kind == .review && $0.status == .completed })
+        #expect(finished.stages.contains { $0.kind == .scenario && $0.status == .completed })
+        #expect(finished.stages.contains { $0.kind == .judge && $0.status == .completed })
+        #expect(finished.stages.contains { $0.kind == .finalize && $0.status == .completed })
+        #expect(activeRelease?.releaseID == finished.mission.metadata["release_id"])
+        #expect(activeRelease?.releaseBundleID == finished.mission.metadata["release_bundle_id"])
+        #expect(activeRelease?.state == .live)
+        #expect(activeRelease?.slot == .active)
+    }
+
+    private func makeHarness(
+        prefix: String,
+        scope: SessionScope,
+        workspacePolicy: WorkspacePolicy = WorkspacePolicy()
+    ) throws -> MissionHarness {
         let stateRoot = try makeStateRoot(prefix: prefix)
         let conversationStore = try SQLiteConversationStore(fileURL: stateRoot.conversationDatabaseURL)
         let missionStore = try SQLiteMissionStore(fileURL: stateRoot.missionsDatabaseURL)
         let deliveryStore = try SQLiteDeliveryStore(fileURL: stateRoot.missionsDatabaseURL)
         let jobStore = try SQLiteJobStore(fileURL: stateRoot.jobsDatabaseURL)
         let artifactStore = try FileArtifactStore(rootDirectory: stateRoot.artifactsDirectoryURL)
+        let deploymentStore = try SQLiteDeploymentStore(fileURL: stateRoot.deploymentDatabaseURL)
+        let releaseBundleStore = try FileReleaseBundleStore(
+            rootDirectory: stateRoot.releasesDirectoryURL.appending(path: "bundles", directoryHint: .isDirectory)
+        )
+        let releaseController = ReleaseController(
+            deploymentStore: deploymentStore,
+            supervisor: Supervisor(releasesDirectory: stateRoot.releasesDirectoryURL),
+            healthService: DeployHealthService { _ in
+                DeployHealthOutcome(status: .healthy, summary: "healthy")
+            }
+        )
         let server = RootAgentServer(
             scope: scope,
             conversationStore: conversationStore,
             jobStore: jobStore,
             missionStore: missionStore,
             artifactStore: artifactStore,
-            deliveryStore: deliveryStore
+            deliveryStore: deliveryStore,
+            releaseBundleStore: releaseBundleStore,
+            releaseController: releaseController,
+            workspacePolicy: workspacePolicy
         )
         return MissionHarness(
             scope: scope,
@@ -205,6 +370,7 @@ struct MissionCoordinatorTests {
             deliveryStore: deliveryStore,
             jobStore: jobStore,
             artifactStore: artifactStore,
+            deploymentStore: deploymentStore,
             server: server
         )
     }
@@ -228,5 +394,6 @@ private struct MissionHarness {
     let deliveryStore: SQLiteDeliveryStore
     let jobStore: SQLiteJobStore
     let artifactStore: FileArtifactStore
+    let deploymentStore: SQLiteDeploymentStore
     let server: RootAgentServer
 }

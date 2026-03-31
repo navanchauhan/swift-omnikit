@@ -34,6 +34,19 @@ public actor WorkerRegistry {
         try await jobStore.workers()
     }
 
+    public func markGeneration(
+        _ generation: Int,
+        state: WorkerRecord.State,
+        at: Date = Date()
+    ) async throws {
+        let workers = try await jobStore.workers().filter { $0.generation == generation }
+        for var worker in workers {
+            worker.state = state
+            worker.lastHeartbeatAt = at
+            try await jobStore.upsertWorker(worker)
+        }
+    }
+
     public func matchingDispatchers(
         for task: TaskRecord,
         matcher: CapabilityMatcher,

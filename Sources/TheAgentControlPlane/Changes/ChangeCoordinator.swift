@@ -7,6 +7,12 @@ public enum ChangeIntegrationPolicy: String, Codable, Sendable {
     case directMain = "direct_main"
 }
 
+public enum ChangeDeliveryMode: String, Codable, Sendable {
+    case deployable
+    case artifactOnly = "artifact_only"
+    case blockedForTargeting = "blocked_for_targeting"
+}
+
 public struct ChangeRequest: Codable, Sendable, Equatable {
     public var changeID: String
     public var rootSessionID: String
@@ -21,6 +27,11 @@ public struct ChangeRequest: Codable, Sendable, Equatable {
     public var scenarioCapabilities: [String]
     public var priority: Int
     public var policy: ChangeIntegrationPolicy
+    public var deliveryMode: ChangeDeliveryMode
+    public var service: String
+    public var targetEnvironment: String?
+    public var requireDeployApproval: Bool
+    public var autoRolloutEligible: Bool
     public var maxRetries: Int
 
     public init(
@@ -37,6 +48,11 @@ public struct ChangeRequest: Codable, Sendable, Equatable {
         scenarioCapabilities: [String] = ["lane:scenario"],
         priority: Int = 100,
         policy: ChangeIntegrationPolicy = .pullRequestOnly,
+        deliveryMode: ChangeDeliveryMode = .artifactOnly,
+        service: String = "default",
+        targetEnvironment: String? = nil,
+        requireDeployApproval: Bool = false,
+        autoRolloutEligible: Bool = false,
         maxRetries: Int = 1
     ) {
         self.changeID = changeID
@@ -52,6 +68,11 @@ public struct ChangeRequest: Codable, Sendable, Equatable {
         self.scenarioCapabilities = scenarioCapabilities
         self.priority = priority
         self.policy = policy
+        self.deliveryMode = deliveryMode
+        self.service = service
+        self.targetEnvironment = targetEnvironment
+        self.requireDeployApproval = requireDeployApproval
+        self.autoRolloutEligible = autoRolloutEligible
         self.maxRetries = max(0, maxRetries)
     }
 }
@@ -78,12 +99,15 @@ public actor ChangeCoordinator {
                 constraints: [
                     "integration_policy=\(request.policy.rawValue)",
                     "version=\(request.version)",
+                    "delivery_mode=\(request.deliveryMode.rawValue)",
+                    "service=\(request.service)",
+                    "target_environment=\(request.targetEnvironment ?? "unspecified")",
                 ],
                 expectedOutputs: [
                     "implementation",
                     "review",
                     "scenario-eval",
-                    "deploy",
+                    request.deliveryMode == .artifactOnly ? "artifact-bundle" : "deploy",
                 ]
             ),
             priority: request.priority,
@@ -114,6 +138,7 @@ public actor ChangeCoordinator {
                 constraints: [
                     "change_id=\(request.changeID)",
                     "integration_policy=\(request.policy.rawValue)",
+                    "delivery_mode=\(request.deliveryMode.rawValue)",
                 ],
                 expectedOutputs: ["implementation-artifacts"],
                 priority: request.priority
@@ -136,6 +161,7 @@ public actor ChangeCoordinator {
                 constraints: [
                     "change_id=\(request.changeID)",
                     "policy_requires_blocking_review=true",
+                    "delivery_mode=\(request.deliveryMode.rawValue)",
                 ],
                 expectedOutputs: ["review-report"],
                 artifactRefs: implementationArtifactRefs,
@@ -159,6 +185,7 @@ public actor ChangeCoordinator {
                 constraints: [
                     "change_id=\(request.changeID)",
                     "deploy_version=\(request.version)",
+                    "delivery_mode=\(request.deliveryMode.rawValue)",
                 ],
                 expectedOutputs: ["scenario-report"],
                 artifactRefs: implementationArtifactRefs,

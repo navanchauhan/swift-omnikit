@@ -1,5 +1,6 @@
 import Foundation
 import Testing
+import OmniAgentDeliveryCore
 import OmniAgentMesh
 import TheAgentControlPlaneKit
 import TheAgentWorkerKit
@@ -13,12 +14,17 @@ struct AgentFabricScenarioTests {
         let jobStore = try SQLiteJobStore(fileURL: stateRoot.jobsDatabaseURL)
         let artifactStore = try FileArtifactStore(rootDirectory: stateRoot.artifactsDirectoryURL)
         let deploymentStore = try SQLiteDeploymentStore(fileURL: stateRoot.deploymentDatabaseURL)
+        let releaseBundleStore = try FileReleaseBundleStore(
+            rootDirectory: stateRoot.releasesDirectoryURL.appending(path: "bundles", directoryHint: .isDirectory)
+        )
         let scheduler = RootScheduler(jobStore: jobStore)
         let coordinator = ChangeCoordinator(jobStore: jobStore)
         let previousRelease = DeploymentRecord(
             releaseID: "stable-release",
             version: "1.0.0",
             state: .live,
+            slot: .active,
+            healthStatus: .healthy,
             checkpointDirectory: stateRoot.checkpointsDirectoryURL.path()
         )
         try await deploymentStore.saveRelease(previousRelease, makeActive: true)
@@ -38,6 +44,7 @@ struct AgentFabricScenarioTests {
             jobStore: jobStore,
             artifactStore: artifactStore,
             changeCoordinator: coordinator,
+            releaseBundleStore: releaseBundleStore,
             releaseController: releaseController
         )
 
@@ -70,6 +77,10 @@ struct AgentFabricScenarioTests {
             summary: "Attempt a deploy that should roll back cleanly.",
             version: "2.0.0",
             implementationBrief: "Implement the change",
+            deliveryMode: .deployable,
+            service: "the-agent",
+            targetEnvironment: "canary",
+            autoRolloutEligible: true,
             maxRetries: 0
         )
 

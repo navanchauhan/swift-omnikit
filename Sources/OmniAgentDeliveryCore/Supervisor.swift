@@ -23,6 +23,7 @@ public struct ManagedRelease: Codable, Sendable, Equatable {
 public actor Supervisor {
     public typealias HealthCheck = @Sendable (DeploymentRecord) async -> Bool
 
+    public nonisolated let releasesDirectoryURL: URL?
     private let releasesDirectory: URL?
     private let healthCheck: HealthCheck
     private let encoder = JSONEncoder()
@@ -33,6 +34,7 @@ public actor Supervisor {
         releasesDirectory: URL? = nil,
         healthCheck: @escaping HealthCheck = { _ in true }
     ) {
+        self.releasesDirectoryURL = releasesDirectory
         self.releasesDirectory = releasesDirectory
         self.healthCheck = healthCheck
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]

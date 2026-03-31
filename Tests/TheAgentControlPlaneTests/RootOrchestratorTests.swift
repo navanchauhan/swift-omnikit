@@ -142,6 +142,35 @@ struct RootOrchestratorTests {
     }
 
     @Test
+    func deliveryMetadataSerializerIncludesRolloutStateHealthAndSummary() {
+        let serialized = RootAgentToolbox.testingSerializeDeliveryMetadata(
+            [
+                "delivery_mode": "deployable",
+                "delivery_service": "the-agent",
+                "deploy_target": "canary",
+                "release_bundle_id": "bundle-1",
+                "release_id": "release-1",
+                "deployment_state": "live",
+                "health_status": "healthy",
+                "delivery_summary": "deployed cleanly",
+                "release_generation": "2",
+                "rollback_release_id": "release-0",
+            ]
+        )
+
+        #expect(serialized["mode"] as? String == "deployable")
+        #expect(serialized["service"] as? String == "the-agent")
+        #expect(serialized["target_environment"] as? String == "canary")
+        #expect(serialized["release_bundle_id"] as? String == "bundle-1")
+        #expect(serialized["release_id"] as? String == "release-1")
+        #expect(serialized["deployment_state"] as? String == "live")
+        #expect(serialized["health_status"] as? String == "healthy")
+        #expect(serialized["delivery_summary"] as? String == "deployed cleanly")
+        #expect(serialized["release_generation"] as? String == "2")
+        #expect(serialized["rollback_release_id"] as? String == "release-0")
+    }
+
+    @Test
     func rootRuntimeYoloEnablesSubagentsAndNativeWebSearch() async throws {
         let stateRoot = try makeStateRoot(prefix: "root-yolo-runtime")
         let conversationStore = try SQLiteConversationStore(fileURL: stateRoot.conversationDatabaseURL)

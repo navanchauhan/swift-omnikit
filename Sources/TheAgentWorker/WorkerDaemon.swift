@@ -5,6 +5,7 @@ public actor WorkerDaemon: WorkerDispatching {
     public nonisolated let workerID: String
     public nonisolated let displayName: String
     public nonisolated let advertisedCapabilities: [String]
+    public nonisolated let generation: Int
 
     private let jobStore: any JobStore
     private let artifactStore: any ArtifactStore
@@ -12,11 +13,13 @@ public actor WorkerDaemon: WorkerDispatching {
     private let leaseDuration: TimeInterval
     private let eventStream: WorkerEventStream
     private var runningTasks: [String: Task<Void, Never>] = [:]
+    private var currentState: WorkerRecord.State = .idle
 
     public init(
         workerID: String = UUID().uuidString,
         displayName: String,
         capabilities: WorkerCapabilities,
+        generation: Int = 0,
         jobStore: any JobStore,
         artifactStore: any ArtifactStore,
         executor: LocalTaskExecutor = LocalTaskExecutor(),
@@ -26,6 +29,7 @@ public actor WorkerDaemon: WorkerDispatching {
         self.workerID = workerID
         self.displayName = displayName
         self.advertisedCapabilities = capabilities.labels
+        self.generation = max(0, generation)
         self.jobStore = jobStore
         self.artifactStore = artifactStore
         self.executor = executor
@@ -34,20 +38,36 @@ public actor WorkerDaemon: WorkerDispatching {
     }
 
     public func register(at: Date = Date(), metadata: [String: String] = [:]) async throws -> WorkerRecord {
+        var registrationMetadata = metadata
+        registrationMetadata["generation"] = String(generation)
         let record = WorkerRecord(
             workerID: workerID,
             displayName: displayName,
             capabilities: advertisedCapabilities,
-            state: .idle,
+            state: currentState,
+            generation: generation,
             lastHeartbeatAt: at,
-            metadata: metadata
+            metadata: registrationMetadata
         )
         try await jobStore.upsertWorker(record)
         return record
     }
 
     public func heartbeat(at: Date = Date(), state: WorkerRecord.State? = nil) async throws -> WorkerRecord? {
-        try await jobStore.recordHeartbeat(workerID: workerID, state: state, at: at)
+        if let state {
+            currentState = state
+        }
+        return try await jobStore.recordHeartbeat(workerID: workerID, state: currentState, at: at)
+    }
+
+    public func beginDraining(at: Date = Date()) async throws -> WorkerRecord? {
+        currentState = .draining
+        return try await heartbeat(at: at, state: .draining)
+    }
+
+    public func markDrained(at: Date = Date()) async throws -> WorkerRecord? {
+        currentState = .drained
+        return try await heartbeat(at: at, state: .drained)
     }
 
     public func recoverOrphanedTasks(now: Date = Date()) async throws -> [TaskRecord] {
@@ -55,6 +75,10 @@ public actor WorkerDaemon: WorkerDispatching {
     }
 
     public func drainOnce(now: Date = Date()) async throws -> TaskRecord? {
+        guard currentState != .draining, currentState != .drained else {
+            _ = try await heartbeat(at: now, state: currentState)
+            return nil
+        }
         guard let claimed = try await claimNextTask(now: now) else {
             _ = try await heartbeat(at: now, state: .idle)
             return nil
@@ -65,6 +89,10 @@ public actor WorkerDaemon: WorkerDispatching {
     }
 
     public func runNextTaskInBackground(now: Date = Date()) async throws -> TaskRecord? {
+        guard currentState != .draining, currentState != .drained else {
+            _ = try await heartbeat(at: now, state: currentState)
+            return nil
+        }
         guard let claimed = try await claimNextTask(now: now) else {
             _ = try await heartbeat(at: now, state: .idle)
             return nil

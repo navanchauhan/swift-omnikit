@@ -13,6 +13,11 @@ public struct WorkspacePolicy: Sendable, Equatable {
     public var maxStageAttempts: Int
     public var allowAmbientChannelHandling: Bool
     public var sensitiveInteractionDelivery: SensitiveInteractionDelivery
+    public var defaultRepoChangesDeployable: Bool
+    public var defaultDeploymentTarget: String?
+    public var allowedDeploymentTargets: [String]
+    public var requireDeploymentApproval: Bool
+    public var allowAutomaticRollout: Bool
 
     public init(
         maxActiveMissions: Int = 8,
@@ -20,7 +25,12 @@ public struct WorkspacePolicy: Sendable, Equatable {
         maxRecursionDepth: Int = 2,
         maxStageAttempts: Int = 2,
         allowAmbientChannelHandling: Bool = false,
-        sensitiveInteractionDelivery: SensitiveInteractionDelivery = .directMessage
+        sensitiveInteractionDelivery: SensitiveInteractionDelivery = .directMessage,
+        defaultRepoChangesDeployable: Bool = false,
+        defaultDeploymentTarget: String? = nil,
+        allowedDeploymentTargets: [String] = [],
+        requireDeploymentApproval: Bool = true,
+        allowAutomaticRollout: Bool = false
     ) {
         self.maxActiveMissions = max(1, maxActiveMissions)
         self.maxBudgetUnits = max(1, maxBudgetUnits)
@@ -28,6 +38,11 @@ public struct WorkspacePolicy: Sendable, Equatable {
         self.maxStageAttempts = max(1, maxStageAttempts)
         self.allowAmbientChannelHandling = allowAmbientChannelHandling
         self.sensitiveInteractionDelivery = sensitiveInteractionDelivery
+        self.defaultRepoChangesDeployable = defaultRepoChangesDeployable
+        self.defaultDeploymentTarget = defaultDeploymentTarget?.trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty
+        self.allowedDeploymentTargets = allowedDeploymentTargets
+        self.requireDeploymentApproval = requireDeploymentApproval
+        self.allowAutomaticRollout = allowAutomaticRollout
     }
 
     public static func resolve(from workspace: WorkspaceRecord?) -> WorkspacePolicy {
@@ -47,7 +62,12 @@ public struct WorkspacePolicy: Sendable, Equatable {
                 default:
                     return .directMessage
                 }
-            }()
+            }(),
+            defaultRepoChangesDeployable: parseBool(workspace.metadata["default_repo_changes_deployable"]) ?? false,
+            defaultDeploymentTarget: workspace.metadata["default_deployment_target"]?.trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty,
+            allowedDeploymentTargets: parseCSV(workspace.metadata["deployment_targets"]),
+            requireDeploymentApproval: parseBool(workspace.metadata["require_deployment_approval"]) ?? true,
+            allowAutomaticRollout: parseBool(workspace.metadata["allow_automatic_rollout"]) ?? false
         )
     }
 }
@@ -74,5 +94,18 @@ private func parseBool(_ rawValue: String?) -> Bool? {
         return false
     default:
         return nil
+    }
+}
+
+private func parseCSV(_ rawValue: String?) -> [String] {
+    rawValue?
+        .split(separator: ",")
+        .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+        .filter { !$0.isEmpty } ?? []
+}
+
+private extension String {
+    var nilIfEmpty: String? {
+        isEmpty ? nil : self
     }
 }

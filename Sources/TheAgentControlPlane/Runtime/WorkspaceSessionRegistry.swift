@@ -1,4 +1,5 @@
 import Foundation
+import OmniAgentDeliveryCore
 import OmniAgentMesh
 import OmniSkills
 
@@ -12,6 +13,8 @@ public actor WorkspaceSessionRegistry {
     private let artifactStore: (any ArtifactStore)?
     private let deliveryStore: (any DeliveryStore)?
     private let pairingStore: PairingStore?
+    private let releaseBundleStore: (any ReleaseBundleStore)?
+    private let releaseController: ReleaseController?
     private let hotWindowLimit: Int
     private let notificationPolicy: NotificationPolicy
     private let workspacePolicy: WorkspacePolicy
@@ -27,6 +30,8 @@ public actor WorkspaceSessionRegistry {
         artifactStore: (any ArtifactStore)? = nil,
         deliveryStore: (any DeliveryStore)? = nil,
         pairingStore: PairingStore? = nil,
+        releaseBundleStore: (any ReleaseBundleStore)? = nil,
+        releaseController: ReleaseController? = nil,
         hotWindowLimit: Int = 12,
         notificationPolicy: NotificationPolicy = NotificationPolicy(),
         workspacePolicy: WorkspacePolicy = WorkspacePolicy()
@@ -40,6 +45,8 @@ public actor WorkspaceSessionRegistry {
         self.artifactStore = artifactStore
         self.deliveryStore = deliveryStore
         self.pairingStore = pairingStore
+        self.releaseBundleStore = releaseBundleStore
+        self.releaseController = releaseController
         self.hotWindowLimit = hotWindowLimit
         self.notificationPolicy = notificationPolicy
         self.workspacePolicy = workspacePolicy
@@ -61,6 +68,8 @@ public actor WorkspaceSessionRegistry {
             runtimeRootDirectory: stateRoot.runtimeDirectoryURL,
             artifactStore: artifactStore,
             deliveryStore: deliveryStore,
+            releaseBundleStore: releaseBundleStore,
+            releaseController: releaseController,
             hotWindowLimit: hotWindowLimit,
             notificationPolicy: notificationPolicy,
             workspacePolicy: workspacePolicy,
@@ -87,6 +96,8 @@ public actor WorkspaceSessionRegistry {
             runtimeRootDirectory: stateRoot.runtimeDirectoryURL,
             artifactStore: artifactStore,
             deliveryStore: deliveryStore,
+            releaseBundleStore: releaseBundleStore,
+            releaseController: releaseController,
             hotWindowLimit: hotWindowLimit,
             notificationPolicy: notificationPolicy,
             workspacePolicy: workspacePolicy,

@@ -174,6 +174,10 @@ let package = Package(
             name: "OmniAgentDeploy",
             targets: ["OmniAgentDeployKit"]
         ),
+        .library(
+            name: "OmniAgentDeliveryCore",
+            targets: ["OmniAgentDeliveryCore"]
+        ),
         .executable(
             name: "OmniAgentDeployCLI",
             targets: ["OmniAgentDeployCLI"]
@@ -615,11 +619,20 @@ let package = Package(
             swiftSettings: swift6CommonSwiftSettings
         ),
         .target(
+            name: "OmniAgentDeliveryCore",
+            dependencies: [
+                "OmniAgentMesh",
+            ],
+            path: "Sources/OmniAgentDeliveryCore",
+            swiftSettings: swift6CommonSwiftSettings
+        ),
+        .target(
             name: "TheAgentControlPlaneKit",
             dependencies: [
                 "OmniAIAgent",
                 "OmniAICore",
                 "OmniAgentMesh",
+                "OmniAgentDeliveryCore",
                 "OmniSkills",
                 "TheAgentWorkerKit",
             ],
@@ -686,6 +699,7 @@ let package = Package(
         .target(
             name: "OmniAgentDeployKit",
             dependencies: [
+                "OmniAgentDeliveryCore",
                 "OmniAgentMesh",
                 "TheAgentControlPlaneKit",
                 "TheAgentWorkerKit",
@@ -698,11 +712,7 @@ let package = Package(
             name: "OmniAgentDeployCLI",
             dependencies: ["OmniAgentDeployKit"],
             path: "Sources/OmniAgentDeploy",
-            exclude: [
-                "ChangePipeline.swift",
-                "ReleaseController.swift",
-                "Supervisor.swift",
-            ],
+            exclude: ["ChangePipeline.swift"],
             sources: ["main.swift"],
             swiftSettings: swift6CommonSwiftSettings
         ),
@@ -820,6 +830,7 @@ let package = Package(
         .testTarget(
             name: "TheAgentControlPlaneTests",
             dependencies: [
+                "OmniAgentDeliveryCore",
                 "TheAgentControlPlaneKit",
                 "TheAgentWorkerKit",
                 "OmniAICore",
@@ -845,6 +856,7 @@ let package = Package(
         .testTarget(
             name: "OmniAgentDeployTests",
             dependencies: [
+                "OmniAgentDeliveryCore",
                 "OmniAgentDeployKit",
                 "TheAgentControlPlaneKit",
                 "TheAgentWorkerKit",
@@ -856,6 +868,7 @@ let package = Package(
         .testTarget(
             name: "OmniAgentScenarioTests",
             dependencies: [
+                "OmniAgentDeliveryCore",
                 "OmniAgentDeployKit",
                 "TheAgentControlPlaneKit",
                 "TheAgentWorkerKit",

@@ -1,5 +1,6 @@
 import Foundation
 import Testing
+import OmniAgentDeliveryCore
 import OmniAgentMesh
 import TheAgentControlPlaneKit
 import TheAgentWorkerKit
@@ -13,6 +14,9 @@ struct ChangePipelineTests {
         let jobStore = try SQLiteJobStore(fileURL: stateRoot.jobsDatabaseURL)
         let artifactStore = try FileArtifactStore(rootDirectory: stateRoot.artifactsDirectoryURL)
         let deploymentStore = try SQLiteDeploymentStore(fileURL: stateRoot.deploymentDatabaseURL)
+        let releaseBundleStore = try FileReleaseBundleStore(
+            rootDirectory: stateRoot.releasesDirectoryURL.appending(path: "bundles", directoryHint: .isDirectory)
+        )
         let scheduler = RootScheduler(jobStore: jobStore)
         let coordinator = ChangeCoordinator(jobStore: jobStore)
         let supervisor = Supervisor(releasesDirectory: stateRoot.releasesDirectoryURL) { _ in true }
@@ -25,6 +29,7 @@ struct ChangePipelineTests {
             jobStore: jobStore,
             artifactStore: artifactStore,
             changeCoordinator: coordinator,
+            releaseBundleStore: releaseBundleStore,
             releaseController: releaseController
         )
 
@@ -46,7 +51,11 @@ struct ChangePipelineTests {
             title: "Ship safe change",
             summary: "Land a safe code change through isolated lanes.",
             version: "2.0.0",
-            implementationBrief: "Implement the safe change"
+            implementationBrief: "Implement the safe change",
+            deliveryMode: .deployable,
+            service: "the-agent",
+            targetEnvironment: "canary",
+            autoRolloutEligible: true
         )
 
         let result = try await pipeline.run(
@@ -59,8 +68,12 @@ struct ChangePipelineTests {
         let changeTask = try await jobStore.task(taskID: result.changeTaskID)
 
         #expect(result.deployed)
+        #expect(result.deliveryMode == .deployable)
+        #expect(result.releaseBundleID != nil)
         #expect(activeRelease?.releaseID == result.releaseID)
         #expect(activeRelease?.state == .live)
+        #expect(activeRelease?.slot == .active)
+        #expect(activeRelease?.healthStatus == .healthy)
         #expect(activeRelease?.metadata["integration_policy"] == ChangeIntegrationPolicy.pullRequestOnly.rawValue)
         #expect(changeTask?.status == .completed)
     }

@@ -1,4 +1,5 @@
 import Foundation
+import OmniAgentDeliveryCore
 import OmniAgentMesh
 import OmniSkills
 
@@ -109,6 +110,8 @@ public actor RootAgentServer {
         runtimeRootDirectory: URL? = nil,
         artifactStore: (any ArtifactStore)? = nil,
         deliveryStore: (any DeliveryStore)? = nil,
+        releaseBundleStore: (any ReleaseBundleStore)? = nil,
+        releaseController: ReleaseController? = nil,
         hotWindowLimit: Int = 12,
         notificationPolicy: NotificationPolicy = NotificationPolicy(),
         workspacePolicy: WorkspacePolicy = WorkspacePolicy(),
@@ -193,7 +196,9 @@ public actor RootAgentServer {
                 workspacePolicy: workspacePolicy,
                 reflectionLoop: self.reflectionLoop,
                 modelRouter: self.modelRouter,
-                changeCoordinator: ChangeCoordinator(jobStore: jobStore)
+                changeCoordinator: ChangeCoordinator(jobStore: jobStore),
+                releaseBundleStore: releaseBundleStore,
+                releaseController: releaseController
             )
         } else {
             self.interactionBroker = nil
@@ -213,6 +218,8 @@ public actor RootAgentServer {
         runtimeRootDirectory: URL? = nil,
         artifactStore: (any ArtifactStore)? = nil,
         deliveryStore: (any DeliveryStore)? = nil,
+        releaseBundleStore: (any ReleaseBundleStore)? = nil,
+        releaseController: ReleaseController? = nil,
         hotWindowLimit: Int = 12,
         notificationPolicy: NotificationPolicy = NotificationPolicy(),
         workspacePolicy: WorkspacePolicy = WorkspacePolicy(),
@@ -290,7 +297,9 @@ public actor RootAgentServer {
                 workspacePolicy: workspacePolicy,
                 reflectionLoop: self.reflectionLoop,
                 modelRouter: self.modelRouter,
-                changeCoordinator: ChangeCoordinator(jobStore: jobStore)
+                changeCoordinator: ChangeCoordinator(jobStore: jobStore),
+                releaseBundleStore: releaseBundleStore,
+                releaseController: releaseController
             )
         } else {
             self.interactionBroker = nil

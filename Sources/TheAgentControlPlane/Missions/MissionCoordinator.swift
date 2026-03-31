@@ -1,5 +1,13 @@
 import Foundation
+import OmniAgentDeliveryCore
 import OmniAgentMesh
+import TheAgentWorkerKit
+
+public enum MissionDeliveryMode: String, Sendable, Equatable {
+    case deployable
+    case artifactOnly = "artifact_only"
+    case blockedForTargeting = "blocked_for_targeting"
+}
 
 public struct MissionStartRequest: Sendable, Equatable {
     public var title: String
@@ -98,6 +106,8 @@ public actor MissionCoordinator {
     private let reflectionLoop: ReflectionLoop?
     private let modelRouter: ModelRouter
     private let changeCoordinator: ChangeCoordinator?
+    private let releaseBundleStore: (any ReleaseBundleStore)?
+    private let releaseController: ReleaseController?
 
     public init(
         scope: SessionScope,
@@ -110,7 +120,9 @@ public actor MissionCoordinator {
         supervisor: MissionSupervisor? = nil,
         reflectionLoop: ReflectionLoop? = nil,
         modelRouter: ModelRouter = ModelRouter(),
-        changeCoordinator: ChangeCoordinator? = nil
+        changeCoordinator: ChangeCoordinator? = nil,
+        releaseBundleStore: (any ReleaseBundleStore)? = nil,
+        releaseController: ReleaseController? = nil
     ) {
         self.scope = scope
         self.scheduler = scheduler
@@ -123,6 +135,8 @@ public actor MissionCoordinator {
         self.reflectionLoop = reflectionLoop
         self.modelRouter = modelRouter
         self.changeCoordinator = changeCoordinator
+        self.releaseBundleStore = releaseBundleStore
+        self.releaseController = releaseController
     }
 
     public func startMission(
@@ -140,6 +154,22 @@ public actor MissionCoordinator {
                 workspaceID: scope.workspaceID,
                 limit: workspacePolicy.maxActiveMissions
             )
+        }
+
+        let deliveryMode = resolveDeliveryMode(for: request)
+        if shouldUseChangeCoordinator(for: request) {
+            request.metadata["mission_kind"] = request.metadata["mission_kind"] ?? "code_change"
+            request.metadata["delivery_mode"] = deliveryMode.rawValue
+            request.metadata["delivery_service"] = request.metadata["delivery_service"] ?? request.metadata["service"] ?? "default"
+            if let deployTarget = resolvedDeploymentTarget(for: request) {
+                request.metadata["deploy_target"] = deployTarget
+            }
+            request.metadata["deploy_approval_required"] = String(deliveryMode == .deployable && workspacePolicy.requireDeploymentApproval)
+            request.metadata["auto_rollout_eligible"] = String(deliveryMode == .deployable && workspacePolicy.allowAutomaticRollout)
+            if deliveryMode == .deployable && workspacePolicy.requireDeploymentApproval {
+                request.requireApproval = true
+                request.approvalPrompt = request.approvalPrompt ?? "approve deploy to \(request.metadata["deploy_target"] ?? "the configured target") for \(request.title)?"
+            }
         }
 
         let routingDecision = await modelRouter.route(
@@ -184,7 +214,7 @@ public actor MissionCoordinator {
             title: request.title,
             brief: request.brief,
             executionMode: executionMode,
-            status: request.requireApproval ? .awaitingApproval : .planning,
+            status: request.requireApproval ? .awaitingApproval : (deliveryMode == .blockedForTargeting ? .blocked : .planning),
             contractArtifactID: contractArtifact.artifactID,
             progressArtifactID: progressArtifact.artifactID,
             verificationArtifactID: verificationArtifact.artifactID,
@@ -219,6 +249,43 @@ public actor MissionCoordinator {
                 completedAt: now
             )
         )
+
+        if deliveryMode == .blockedForTargeting {
+            let options = workspacePolicy.allowedDeploymentTargets
+            _ = try await missionStore.saveStage(
+                MissionStageRecord(
+                    missionID: mission.missionID,
+                    rootSessionID: mission.rootSessionID,
+                    workspaceID: mission.workspaceID,
+                    channelID: mission.channelID,
+                    kind: .question,
+                    executionMode: .direct,
+                    title: "Select deployment target",
+                    status: .waiting,
+                    maxAttempts: 1,
+                    metadata: [
+                        "delivery_mode": deliveryMode.rawValue,
+                        "delivery_service": request.metadata["delivery_service"] ?? "default",
+                    ],
+                    createdAt: now,
+                    updatedAt: now
+                )
+            )
+            _ = try await interactionBroker.requestQuestion(
+                scope: scope,
+                title: "Deployment target required",
+                prompt: "Which deployment target should i use for \(request.title)?",
+                kind: options.isEmpty ? .freeText : .singleSelect,
+                options: options,
+                missionID: mission.missionID,
+                requesterActorID: scope.actorID,
+                metadata: [
+                    "delivery_mode": deliveryMode.rawValue,
+                    "delivery_service": request.metadata["delivery_service"] ?? "default",
+                ]
+            )
+            return try await missionStatus(missionID: mission.missionID)
+        }
 
         if request.requireApproval {
             _ = try await missionStore.saveStage(
@@ -476,20 +543,31 @@ public actor MissionCoordinator {
                 version: request.metadata["version"] ?? "draft",
                 implementationBrief: request.brief,
                 implementationCapabilities: request.capabilityRequirements,
-                priority: request.priority
+                priority: request.priority,
+                deliveryMode: request.metadata["delivery_mode"].flatMap(ChangeDeliveryMode.init(rawValue:)) ?? .artifactOnly,
+                service: request.metadata["delivery_service"] ?? request.metadata["service"] ?? "default",
+                targetEnvironment: request.metadata["deploy_target"],
+                requireDeployApproval: request.metadata["deploy_approval_required"] == "true",
+                autoRolloutEligible: request.metadata["auto_rollout_eligible"] == "true"
             )
             let changeTask = try await changeCoordinator.startChange(changeRequest, createdAt: now)
-            _ = try await changeCoordinator.enqueueImplementation(
+            let implementationTask = try await changeCoordinator.enqueueImplementation(
                 for: changeTask.taskID,
                 request: changeRequest,
                 createdAt: now
             )
+            var updatedMission = mission
+            updatedMission.metadata["change_task_id"] = changeTask.taskID
+            updatedMission.updatedAt = now
+            _ = try await missionStore.saveMission(updatedMission)
             try await saveExecutionStage(
-                mission: mission,
+                mission: updatedMission,
                 request: request,
-                taskID: changeTask.taskID,
+                taskID: implementationTask.taskID,
+                primaryTaskID: changeTask.taskID,
                 now: now
             )
+            _ = try? await scheduler.dispatchAllAvailableTasksInBackground(now: now)
             return
         }
 
@@ -540,10 +618,11 @@ public actor MissionCoordinator {
         mission: MissionRecord,
         request: MissionStartRequest,
         taskID: String,
+        primaryTaskID: String? = nil,
         now: Date
     ) async throws {
         var updatedMission = mission
-        updatedMission.primaryTaskID = taskID
+        updatedMission.primaryTaskID = primaryTaskID ?? taskID
         updatedMission.status = .executing
         updatedMission.updatedAt = now
         _ = try await missionStore.saveMission(updatedMission)
@@ -562,6 +641,7 @@ public actor MissionCoordinator {
                 maxAttempts: workspacePolicy.maxStageAttempts,
                 metadata: [
                     "brief": request.brief,
+                    "change_task_id": primaryTaskID ?? taskID,
                     "capability_requirements": request.capabilityRequirements.joined(separator: ","),
                     "expected_outputs": request.expectedOutputs.joined(separator: ","),
                     "constraints": request.constraints.joined(separator: ","),
@@ -578,6 +658,10 @@ public actor MissionCoordinator {
     private func reconcileMission(missionID: String, now: Date = Date()) async throws {
         guard var mission = try await missionStore.mission(missionID: missionID) else {
             throw MissionCoordinatorError.missionNotFound(missionID)
+        }
+        if mission.metadata["mission_kind"] == "code_change", changeCoordinator != nil {
+            try await reconcileChangeMission(missionID: missionID, now: now)
+            return
         }
         var stages = try await missionStore.stages(missionID: missionID)
         guard let latestStageIndex = stages.lastIndex(where: { !$0.status.isTerminal || $0.taskID != nil }) else {
@@ -666,6 +750,531 @@ public actor MissionCoordinator {
         _ = try await missionStore.saveMission(mission)
     }
 
+    private func reconcileChangeMission(missionID: String, now: Date) async throws {
+        guard var mission = try await missionStore.mission(missionID: missionID) else {
+            throw MissionCoordinatorError.missionNotFound(missionID)
+        }
+        guard let changeCoordinator else {
+            return
+        }
+        guard let changeTaskID = mission.metadata["change_task_id"] ?? mission.primaryTaskID else {
+            return
+        }
+
+        _ = try? await changeCoordinator.reconcileChange(changeTaskID: changeTaskID, now: now)
+
+        var stages = try await missionStore.stages(missionID: missionID)
+        guard let implementIndex = stages.lastIndex(where: { $0.kind == .implement }) else {
+            return
+        }
+
+        var implementStage = stages[implementIndex]
+        let (syncedImplementStage, implementationTask) = try await synchronizedStage(implementStage, now: now)
+        implementStage = syncedImplementStage
+        stages[implementIndex] = implementStage
+        _ = try await missionStore.saveStage(implementStage)
+
+        guard let implementationTask else {
+            mission.status = .executing
+            mission.updatedAt = now
+            _ = try await missionStore.saveMission(mission)
+            return
+        }
+
+        switch implementationTask.status {
+        case .submitted, .assigned, .running, .waiting:
+            mission.status = .executing
+            mission.updatedAt = now
+            _ = try await missionStore.saveMission(mission)
+            return
+        case .failed, .cancelled:
+            let summary = "implementation failed for change mission \(mission.title)"
+            _ = try? await changeCoordinator.failChange(changeTaskID: changeTaskID, summary: summary, now: now)
+            try await terminalizeChangeMission(
+                mission: mission,
+                status: implementationTask.status == .cancelled ? .cancelled : .failed,
+                summary: summary,
+                task: implementationTask,
+                metadataUpdates: [:],
+                now: now
+            )
+            return
+        case .completed:
+            break
+        }
+
+        let changeRequest = changeRequest(for: mission, request: resumeRequest(for: mission))
+
+        let reviewIndex = stages.lastIndex(where: { $0.kind == .review })
+        let scenarioIndex = stages.lastIndex(where: { $0.kind == .scenario })
+
+        if reviewIndex == nil || scenarioIndex == nil {
+            let reviewTask = try await changeCoordinator.enqueueReview(
+                for: changeTaskID,
+                request: changeRequest,
+                implementationArtifactRefs: implementationTask.artifactRefs,
+                createdAt: now
+            )
+            let scenarioTask = try await changeCoordinator.enqueueScenarioEvaluation(
+                for: changeTaskID,
+                request: changeRequest,
+                implementationArtifactRefs: implementationTask.artifactRefs,
+                createdAt: now.addingTimeInterval(1)
+            )
+            _ = try await missionStore.saveStage(
+                MissionStageRecord(
+                    missionID: mission.missionID,
+                    rootSessionID: mission.rootSessionID,
+                    workspaceID: mission.workspaceID,
+                    channelID: mission.channelID,
+                    taskID: reviewTask.taskID,
+                    kind: .review,
+                    executionMode: .workerTask,
+                    title: "Review",
+                    status: .running,
+                    attemptCount: 1,
+                    maxAttempts: workspacePolicy.maxStageAttempts,
+                    metadata: [
+                        "change_task_id": changeTaskID,
+                        "implementation_task_id": implementationTask.taskID,
+                        "brief": changeRequest.reviewBrief,
+                        "capability_requirements": changeRequest.reviewCapabilities.joined(separator: ","),
+                    ],
+                    createdAt: now,
+                    updatedAt: now
+                )
+            )
+            _ = try await missionStore.saveStage(
+                MissionStageRecord(
+                    missionID: mission.missionID,
+                    rootSessionID: mission.rootSessionID,
+                    workspaceID: mission.workspaceID,
+                    channelID: mission.channelID,
+                    taskID: scenarioTask.taskID,
+                    kind: .scenario,
+                    executionMode: .workerTask,
+                    title: "Scenario",
+                    status: .running,
+                    attemptCount: 1,
+                    maxAttempts: workspacePolicy.maxStageAttempts,
+                    metadata: [
+                        "change_task_id": changeTaskID,
+                        "implementation_task_id": implementationTask.taskID,
+                        "brief": changeRequest.scenarioBrief,
+                        "capability_requirements": changeRequest.scenarioCapabilities.joined(separator: ","),
+                    ],
+                    createdAt: now,
+                    updatedAt: now
+                )
+            )
+            mission.status = .validating
+            mission.updatedAt = now
+            _ = try await missionStore.saveMission(mission)
+            _ = try? await scheduler.dispatchAllAvailableTasksInBackground(now: now)
+            return
+        }
+
+        var reviewStage = stages[reviewIndex!]
+        var scenarioStage = stages[scenarioIndex!]
+        let (syncedReviewStage, reviewTask) = try await synchronizedStage(reviewStage, now: now)
+        reviewStage = syncedReviewStage
+        let (syncedScenarioStage, scenarioTask) = try await synchronizedStage(scenarioStage, now: now)
+        scenarioStage = syncedScenarioStage
+        _ = try await missionStore.saveStage(reviewStage)
+        _ = try await missionStore.saveStage(scenarioStage)
+
+        guard let reviewTask, let scenarioTask else {
+            mission.status = .validating
+            mission.updatedAt = now
+            _ = try await missionStore.saveMission(mission)
+            return
+        }
+
+        if [.submitted, .assigned, .running, .waiting].contains(reviewTask.status)
+            || [.submitted, .assigned, .running, .waiting].contains(scenarioTask.status) {
+            mission.status = .validating
+            mission.updatedAt = now
+            _ = try await missionStore.saveMission(mission)
+            return
+        }
+
+        if [.failed, .cancelled].contains(reviewTask.status) || [.failed, .cancelled].contains(scenarioTask.status) {
+            let summary = reviewTask.status == .failed || reviewTask.status == .cancelled
+                ? "review blocked deployment for \(mission.title)"
+                : "scenario validation blocked deployment for \(mission.title)"
+            _ = try? await changeCoordinator.failChange(changeTaskID: changeTaskID, summary: summary, now: now)
+            try await terminalizeChangeMission(
+                mission: mission,
+                status: .failed,
+                summary: summary,
+                task: reviewTask.status == .failed || reviewTask.status == .cancelled ? reviewTask : scenarioTask,
+                metadataUpdates: [:],
+                now: now
+            )
+            return
+        }
+
+        let reviewSummary = try await latestSummary(taskID: reviewTask.taskID)
+        let scenarioSummary = try await latestSummary(taskID: scenarioTask.taskID)
+        let reviewApproved = ReviewWorker().isApproved(summary: reviewSummary)
+        let scenarioPassed = ScenarioEvalWorker().didPass(summary: scenarioSummary)
+        let judgeSummary = reviewApproved && scenarioPassed
+            ? "review and scenario checks passed"
+            : (reviewApproved ? "scenario validation blocked deployment" : "review blocked deployment")
+        try await saveOrUpdateDirectStage(
+            existing: stages.last(where: { $0.kind == .judge }),
+            mission: mission,
+            kind: .judge,
+            title: "Judge",
+            status: reviewApproved && scenarioPassed ? .completed : .failed,
+            metadata: [
+                "summary": judgeSummary,
+                "review_summary": reviewSummary,
+                "scenario_summary": scenarioSummary,
+            ],
+            now: now
+        )
+
+        guard reviewApproved && scenarioPassed else {
+            _ = try? await changeCoordinator.failChange(changeTaskID: changeTaskID, summary: judgeSummary, now: now)
+            try await terminalizeChangeMission(
+                mission: mission,
+                status: .failed,
+                summary: judgeSummary,
+                task: reviewTask,
+                metadataUpdates: [:],
+                now: now
+            )
+            return
+        }
+
+        switch changeRequest.deliveryMode {
+        case .artifactOnly:
+            let summary = "change completed with durable artifacts and no deployment"
+            _ = try? await changeCoordinator.completeChange(
+                changeTaskID: changeTaskID,
+                summary: summary,
+                artifactRefs: implementationTask.artifactRefs,
+                now: now
+            )
+            try await terminalizeChangeMission(
+                mission: mission,
+                status: .completed,
+                summary: summary,
+                task: implementationTask,
+                metadataUpdates: [
+                    "deployment_state": "skipped",
+                    "health_status": "inconclusive",
+                    "delivery_summary": summary,
+                    "delivery_completed": "true",
+                ],
+                now: now
+            )
+        case .blockedForTargeting:
+            mission.status = .blocked
+            mission.updatedAt = now
+            _ = try await missionStore.saveMission(mission)
+        case .deployable:
+            try await performDeployableChangeDelivery(
+                mission: mission,
+                changeTaskID: changeTaskID,
+                request: changeRequest,
+                implementationTask: implementationTask,
+                now: now
+            )
+        }
+    }
+
+    private func performDeployableChangeDelivery(
+        mission: MissionRecord,
+        changeTaskID: String,
+        request: ChangeRequest,
+        implementationTask: TaskRecord,
+        now: Date
+    ) async throws {
+        guard let releaseBundleStore, let releaseController, let changeCoordinator else {
+            let summary = "delivery runtime is unavailable for deployable mission \(mission.title)"
+            try await terminalizeChangeMission(
+                mission: mission,
+                status: .failed,
+                summary: summary,
+                task: implementationTask,
+                metadataUpdates: [
+                    "deployment_state": "unavailable",
+                    "health_status": "inconclusive",
+                    "delivery_summary": summary,
+                ],
+                now: now
+            )
+            return
+        }
+
+        let implementationArtifacts = try await artifactStore.list(taskID: implementationTask.taskID)
+        let releaseBundle = try await makeReleaseBundle(
+            request: request,
+            implementationArtifacts: implementationArtifacts,
+            now: now
+        )
+        try await releaseBundleStore.saveBundle(releaseBundle)
+
+        let unrelatedRunningTasks = try await jobStore.tasks(statuses: [.submitted, .assigned, .running, .waiting])
+            .map(\.taskID)
+            .filter { $0 != changeTaskID && $0 != implementationTask.taskID }
+
+        try await saveOrUpdateDirectStage(
+            existing: try await missionStore.stages(missionID: mission.missionID).last(where: { $0.kind == .finalize }),
+            mission: mission,
+            kind: .finalize,
+            title: "Deploy",
+            status: .running,
+            metadata: [
+                "release_bundle_id": releaseBundle.bundleID,
+                "summary": "prepared release bundle and starting canary rollout",
+            ],
+            now: now
+        )
+
+        let release = try await releaseController.prepareRelease(
+            version: request.version,
+            releaseBundleID: releaseBundle.bundleID,
+            service: request.service,
+            targetEnvironment: request.targetEnvironment,
+            deliveryMode: .deployable,
+            autoRolloutEligible: request.autoRolloutEligible,
+            drainingTaskIDs: unrelatedRunningTasks,
+            metadata: [
+                "mission_id": mission.missionID,
+                "change_id": request.changeID,
+                "integration_policy": request.policy.rawValue,
+            ],
+            now: now
+        )
+        let deployResult = try await releaseController.deployCanary(
+            releaseID: release.releaseID,
+            maxAttempts: max(1, request.maxRetries + 1),
+            now: now.addingTimeInterval(1)
+        )
+
+        var metadataUpdates: [String: String] = [
+            "release_bundle_id": releaseBundle.bundleID,
+            "release_id": release.releaseID,
+            "deployment_state": deployResult.state.rawValue,
+            "health_status": deployResult.healthStatus.rawValue,
+            "delivery_summary": deployResult.summary,
+            "delivery_completed": "true",
+            "release_generation": String(release.generation),
+        ]
+        if let rolledBack = deployResult.rolledBackToReleaseID {
+            metadataUpdates["rollback_release_id"] = rolledBack
+        }
+
+        if deployResult.deployed {
+            let summary = "deployed \(mission.title) as release \(release.releaseID)"
+            metadataUpdates["delivery_summary"] = summary
+            _ = try? await changeCoordinator.completeChange(
+                changeTaskID: changeTaskID,
+                summary: summary,
+                artifactRefs: implementationTask.artifactRefs,
+                now: now.addingTimeInterval(2)
+            )
+            try await terminalizeChangeMission(
+                mission: mission,
+                status: .completed,
+                summary: summary,
+                task: implementationTask,
+                metadataUpdates: metadataUpdates,
+                now: now.addingTimeInterval(2)
+            )
+        } else {
+            let summary = deployResult.summary
+            metadataUpdates["delivery_summary"] = summary
+            _ = try? await changeCoordinator.failChange(
+                changeTaskID: changeTaskID,
+                summary: summary,
+                now: now.addingTimeInterval(2)
+            )
+            try await terminalizeChangeMission(
+                mission: mission,
+                status: .failed,
+                summary: summary,
+                task: implementationTask,
+                metadataUpdates: metadataUpdates,
+                now: now.addingTimeInterval(2)
+            )
+        }
+    }
+
+    private func synchronizedStage(
+        _ stage: MissionStageRecord,
+        now: Date
+    ) async throws -> (MissionStageRecord, TaskRecord?) {
+        guard let taskID = stage.taskID, let task = try await jobStore.task(taskID: taskID) else {
+            return (stage, nil)
+        }
+        var updated = stage
+        switch task.status {
+        case .submitted, .assigned, .running:
+            updated.status = .running
+            updated.updatedAt = now
+        case .waiting:
+            updated.status = .waiting
+            updated.updatedAt = now
+        case .completed:
+            updated.status = .completed
+            updated.updatedAt = now
+            updated.completedAt = updated.completedAt ?? now
+            updated.artifactRefs = Array(Set(updated.artifactRefs + task.artifactRefs)).sorted()
+        case .failed:
+            updated.status = .failed
+            updated.updatedAt = now
+            updated.completedAt = updated.completedAt ?? now
+        case .cancelled:
+            updated.status = .cancelled
+            updated.updatedAt = now
+            updated.completedAt = updated.completedAt ?? now
+        }
+        return (updated, task)
+    }
+
+    private func saveOrUpdateDirectStage(
+        existing: MissionStageRecord?,
+        mission: MissionRecord,
+        kind: MissionStageRecord.Kind,
+        title: String,
+        status: MissionStageRecord.Status,
+        metadata: [String: String],
+        now: Date
+    ) async throws {
+        var stage = existing ?? MissionStageRecord(
+            missionID: mission.missionID,
+            rootSessionID: mission.rootSessionID,
+            workspaceID: mission.workspaceID,
+            channelID: mission.channelID,
+            kind: kind,
+            executionMode: .direct,
+            title: title,
+            status: status,
+            createdAt: now,
+            updatedAt: now
+        )
+        stage.title = title
+        stage.status = status
+        stage.metadata = metadata
+        stage.updatedAt = now
+        stage.completedAt = status.isTerminal ? now : nil
+        _ = try await missionStore.saveStage(stage)
+    }
+
+    private func latestSummary(taskID: String) async throws -> String {
+        let events = try await jobStore.events(taskID: taskID, afterSequence: nil)
+        return events.last?.summary ?? ""
+    }
+
+    private func terminalizeChangeMission(
+        mission: MissionRecord,
+        status: MissionRecord.Status,
+        summary: String,
+        task: TaskRecord?,
+        metadataUpdates: [String: String],
+        now: Date
+    ) async throws {
+        var updatedMission = mission
+        updatedMission.status = status
+        updatedMission.completedAt = now
+        updatedMission.updatedAt = now
+        updatedMission.metadata.merge(metadataUpdates) { _, new in new }
+        let taskEvents = if let task {
+            try await jobStore.events(taskID: task.taskID, afterSequence: nil)
+        } else {
+            [TaskEvent]()
+        }
+        if updatedMission.metadata["reflection_completed"] != "true" {
+            _ = try await reflectionLoop?.reflectOnMissionCompletion(
+                mission: updatedMission,
+                task: task,
+                events: taskEvents
+            )
+            updatedMission.metadata["reflection_completed"] = "true"
+        }
+        let verificationArtifact = try await writeVerificationArtifact(
+            mission: updatedMission,
+            task: task,
+            summary: summary
+        )
+        updatedMission.verificationArtifactID = verificationArtifact.artifactID
+        _ = try await missionStore.saveMission(updatedMission)
+        try await saveOrUpdateDirectStage(
+            existing: try await missionStore.stages(missionID: mission.missionID).last(where: { $0.kind == .finalize }),
+            mission: updatedMission,
+            kind: .finalize,
+            title: status == .completed ? "Finalize" : "Finalize failure",
+            status: status == .completed ? .completed : .failed,
+            metadata: ["summary": summary].merging(metadataUpdates) { _, new in new },
+            now: now
+        )
+    }
+
+    private func changeRequest(for mission: MissionRecord, request: MissionStartRequest) -> ChangeRequest {
+        ChangeRequest(
+            changeID: mission.metadata["change_task_id"] ?? UUID().uuidString,
+            rootSessionID: mission.rootSessionID,
+            title: mission.title,
+            summary: mission.brief,
+            version: request.metadata["version"] ?? "draft",
+            implementationBrief: request.brief,
+            implementationCapabilities: request.capabilityRequirements.isEmpty ? ["lane:implementation"] : request.capabilityRequirements,
+            priority: request.priority,
+            policy: request.metadata["integration_policy"].flatMap(ChangeIntegrationPolicy.init(rawValue:)) ?? .pullRequestOnly,
+            deliveryMode: request.metadata["delivery_mode"].flatMap(ChangeDeliveryMode.init(rawValue:)) ?? .artifactOnly,
+            service: request.metadata["delivery_service"] ?? request.metadata["service"] ?? "default",
+            targetEnvironment: request.metadata["deploy_target"],
+            requireDeployApproval: request.metadata["deploy_approval_required"] == "true",
+            autoRolloutEligible: request.metadata["auto_rollout_eligible"] == "true",
+            maxRetries: Int(request.metadata["deploy_max_retries"] ?? "") ?? 1
+        )
+    }
+
+    private func makeReleaseBundle(
+        request: ChangeRequest,
+        implementationArtifacts: [ArtifactRecord],
+        now: Date
+    ) async throws -> ReleaseBundle {
+        var artifactRefs: [ReleaseBundleArtifact] = []
+        artifactRefs.reserveCapacity(implementationArtifacts.count)
+        for artifact in implementationArtifacts {
+            let data = try await artifactStore.data(for: artifact.artifactID) ?? Data()
+            artifactRefs.append(
+                ReleaseBundleArtifact(
+                    artifactID: artifact.artifactID,
+                    name: artifact.name,
+                    contentType: artifact.contentType,
+                    byteCount: data.count,
+                    contentHash: ReleaseBundleHash.hash(data)
+                )
+            )
+        }
+        return ReleaseBundle(
+            changeID: request.changeID,
+            rootSessionID: request.rootSessionID,
+            service: request.service,
+            targetEnvironment: request.targetEnvironment ?? "unspecified",
+            version: request.version,
+            commitish: request.policy.rawValue,
+            artifactRefs: artifactRefs,
+            healthPlan: [
+                "service_liveness",
+                "worker_heartbeats",
+                "smoke_checks",
+            ],
+            rollbackEligible: request.deliveryMode == .deployable,
+            metadata: [
+                "delivery_mode": request.deliveryMode.rawValue,
+                "auto_rollout_eligible": String(request.autoRolloutEligible),
+            ],
+            createdAt: now
+        )
+    }
+
     private func markMissionCompleted(
         missionID: String,
         summary: String,
@@ -743,6 +1352,9 @@ public actor MissionCoordinator {
         if request.metadata["workflow"] == "attractor" || request.capabilityRequirements.contains("execution:attractor") {
             return .attractorWorkflow
         }
+        if resolveDeliveryMode(for: request) == .deployable {
+            return .workerTask
+        }
         if request.capabilityRequirements.isEmpty &&
             request.expectedOutputs.isEmpty &&
             request.constraints.isEmpty &&
@@ -754,7 +1366,14 @@ public actor MissionCoordinator {
 
     private func shouldUseChangeCoordinator(for request: MissionStartRequest) -> Bool {
         request.metadata["mission_kind"] == "code_change"
-            || request.expectedOutputs.contains(where: { $0.localizedStandardContains("implementation") })
+            || request.expectedOutputs.contains(where: {
+                $0.localizedStandardContains("implementation") ||
+                $0.localizedStandardContains("deploy") ||
+                $0.localizedStandardContains("release")
+            })
+            || request.brief.localizedStandardContains("implement")
+            || request.brief.localizedStandardContains("ship")
+            || request.brief.localizedStandardContains("deploy")
     }
 
     private func contractBody(
@@ -810,6 +1429,33 @@ public actor MissionCoordinator {
             approvalPrompt: nil,
             metadata: mission.metadata
         )
+    }
+
+    private func resolveDeliveryMode(for request: MissionStartRequest) -> MissionDeliveryMode {
+        if let explicit = request.metadata["delivery_mode"].flatMap(MissionDeliveryMode.init(rawValue:)) {
+            return explicit
+        }
+        guard shouldUseChangeCoordinator(for: request) else {
+            return .artifactOnly
+        }
+        if request.metadata["deployable"] == "false" {
+            return .artifactOnly
+        }
+        if resolvedDeploymentTarget(for: request) != nil &&
+            (request.metadata["deployable"] == "true" || request.expectedOutputs.contains(where: { $0.localizedStandardContains("deploy") || $0.localizedStandardContains("release") || $0.localizedStandardContains("ship") }) || workspacePolicy.defaultRepoChangesDeployable) {
+            return .deployable
+        }
+        if request.metadata["deployable"] == "true" || request.expectedOutputs.contains(where: { $0.localizedStandardContains("deploy") || $0.localizedStandardContains("release") || $0.localizedStandardContains("ship") }) {
+            return .blockedForTargeting
+        }
+        return workspacePolicy.defaultRepoChangesDeployable ? .blockedForTargeting : .artifactOnly
+    }
+
+    private func resolvedDeploymentTarget(for request: MissionStartRequest) -> String? {
+        if let explicit = request.metadata["deploy_target"]?.trimmingCharacters(in: .whitespacesAndNewlines), !explicit.isEmpty {
+            return explicit
+        }
+        return workspacePolicy.defaultDeploymentTarget
     }
 }
 

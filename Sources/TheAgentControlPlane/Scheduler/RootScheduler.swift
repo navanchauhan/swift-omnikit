@@ -24,6 +24,14 @@ public actor RootScheduler {
         try await registry.register(worker, placement: .remote, at: at)
     }
 
+    public func markGenerationDraining(_ generation: Int, at: Date = Date()) async throws {
+        try await registry.markGeneration(generation, state: .draining, at: at)
+    }
+
+    public func markGenerationDrained(_ generation: Int, at: Date = Date()) async throws {
+        try await registry.markGeneration(generation, state: .drained, at: at)
+    }
+
     public func submitTask(
         rootSessionID: String,
         requesterActorID: ActorID? = nil,

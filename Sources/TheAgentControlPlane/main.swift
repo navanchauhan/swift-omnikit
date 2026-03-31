@@ -1,4 +1,5 @@
 import Foundation
+import OmniAgentDeliveryCore
 import OmniAgentMesh
 import TheAgentControlPlaneKit
 import TheAgentIngress
@@ -24,7 +25,33 @@ enum TheAgentControlPlaneMain {
         let missionStore = try SQLiteMissionStore(fileURL: stateRoot.missionsDatabaseURL)
         let skillStore = try SQLiteSkillStore(fileURL: stateRoot.skillsDatabaseURL)
         let deliveryStore = try SQLiteDeliveryStore(fileURL: stateRoot.deliveriesDatabaseURL)
+        let deploymentStore = try SQLiteDeploymentStore(fileURL: stateRoot.deploymentDatabaseURL)
         let artifactStore = try FileArtifactStore(rootDirectory: stateRoot.artifactsDirectoryURL)
+        let releaseBundleStore = try FileReleaseBundleStore(
+            rootDirectory: stateRoot.releasesDirectoryURL.appending(path: "bundles", directoryHint: .isDirectory)
+        )
+        let deployHealthService = DeployHealthService { release in
+            let workers = (try? await jobStore.workers()) ?? []
+            let now = Date()
+            let freshWorkers = workers.filter { now.timeIntervalSince($0.lastHeartbeatAt) <= 120 && $0.state != .drained }
+            let healthy = !freshWorkers.isEmpty
+            return DeployHealthOutcome(
+                status: healthy ? .healthy : .unhealthy,
+                summary: healthy
+                    ? "canary health check passed with \(freshWorkers.count) fresh worker(s)"
+                    : "no fresh workers were available during canary verification",
+                metadata: [
+                    "fresh_worker_count": String(freshWorkers.count),
+                    "service": release.service ?? "unspecified",
+                    "target_environment": release.targetEnvironment ?? "unspecified",
+                ]
+            )
+        }
+        let releaseController = ReleaseController(
+            deploymentStore: deploymentStore,
+            supervisor: Supervisor(releasesDirectory: stateRoot.releasesDirectoryURL),
+            healthService: deployHealthService
+        )
         let pairingStore = PairingStore(fileURL: stateRoot.runtimeDirectoryURL.appending(path: "pairings.json"))
         let channelPolicyManager = ChannelPolicyManager(
             identityStore: identityStore,
@@ -46,7 +73,9 @@ enum TheAgentControlPlaneMain {
             skillStore: skillStore,
             artifactStore: artifactStore,
             deliveryStore: deliveryStore,
-            pairingStore: pairingStore
+            pairingStore: pairingStore,
+            releaseBundleStore: releaseBundleStore,
+            releaseController: releaseController
         )
         let runtimeRegistry = WorkspaceRuntimeRegistry(
             serverRegistry: serverRegistry,
