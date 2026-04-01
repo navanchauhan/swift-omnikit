@@ -690,6 +690,11 @@ public actor Session {
         var policyBlocked: [String: String] = [:] // toolCall.id -> denial message
         let policyDenial = "same tool run five times in a row. denied by policy. try something else"
         for toolCall in toolCalls {
+            if repeatedToolPolicyExempts(toolCall) {
+                lastToolCallSignature = nil
+                consecutiveIdenticalToolCallCount = 0
+                continue
+            }
             let signature = toolCallSignature(toolCall)
             if signature == lastToolCallSignature {
                 consecutiveIdenticalToolCallCount += 1
@@ -699,6 +704,10 @@ public actor Session {
             }
             if consecutiveIdenticalToolCallCount >= 6 {
                 policyBlocked[toolCall.id] = policyDenial
+                // Reset the streak after denying the 6th identical call so
+                // long-running polling flows can recover instead of getting
+                // permanently wedged behind the policy.
+                consecutiveIdenticalToolCallCount = 0
             }
         }
 
@@ -909,6 +918,10 @@ public actor Session {
     private func toolCallSignature(_ toolCall: ToolCall) -> String {
         let args = JSONValue.object(toolCall.arguments).description
         return "\(toolCall.name)::\(args)"
+    }
+
+    private func repeatedToolPolicyExempts(_ toolCall: ToolCall) -> Bool {
+        toolCall.name == "write_stdin"
     }
 
     // MARK: - Timeline

@@ -245,6 +245,131 @@ struct CodingLoopParityTests {
     }
 
     @Test
+    func repeatedToolPolicyResetsAfterDenyingSixthIdenticalCall() async throws {
+        let registry = ToolRegistry()
+        registry.register(RegisteredTool(
+            definition: AgentToolDefinition(
+                name: "repeat_tool",
+                description: "Repeatable test tool",
+                parameters: [
+                    "type": "object",
+                    "properties": [:] as [String: Any],
+                    "additionalProperties": false,
+                ] as [String: Any]
+            ),
+            executor: { _, _ in
+                "ok"
+            }
+        ))
+        let profile = CodingLoopTestProfile(toolRegistry: registry)
+
+        var responses: [Response] = []
+        for index in 1...7 {
+            responses.append(codingLoopResponse(
+                provider: "test",
+                model: "test-model",
+                toolCalls: [ToolCall(id: "repeat-\(index)", name: "repeat_tool", arguments: [:], rawArguments: nil)],
+                finishReason: "tool_calls"
+            ))
+        }
+        responses.append(codingLoopResponse(provider: "test", model: "test-model", text: "done"))
+
+        let adapter = CodingLoopTestAdapter(responses: responses)
+        let client = try Client(providers: ["test": adapter], defaultProvider: "test")
+        let session = try Session(
+            profile: profile,
+            environment: ToolOutputExecutionEnvironment(output: ""),
+            client: client
+        )
+
+        await session.submit("keep polling")
+
+        let history = await session.getHistory()
+        let toolResults = history.compactMap { turn -> ToolResult? in
+            guard case .toolResults(let resultsTurn) = turn else {
+                return nil
+            }
+            return resultsTurn.results.first
+        }
+
+        #expect(toolResults.count == 7)
+        #expect(toolResults.prefix(5).allSatisfy { !$0.isError && $0.content.stringValue == "ok" })
+        #expect(toolResults[5].isError)
+        #expect(toolResults[5].content.stringValue == "same tool run five times in a row. denied by policy. try something else")
+        #expect(!toolResults[6].isError)
+        #expect(toolResults[6].content.stringValue == "ok")
+
+        let toolEndEvents = await session.eventEmitter.allEvents().filter { $0.kind == .toolCallEnd }
+        #expect(toolEndEvents.count == 7)
+        #expect(toolEndEvents[5].boolValue(for: "policy_blocked") == true)
+        #expect(toolEndEvents[6].boolValue(for: "policy_blocked") != true)
+    }
+
+    @Test
+    func writeStdinIsExemptFromRepeatedToolPolicy() async throws {
+        let registry = ToolRegistry()
+        registry.register(RegisteredTool(
+            definition: AgentToolDefinition(
+                name: "write_stdin",
+                description: "Polling test tool",
+                parameters: [
+                    "type": "object",
+                    "properties": [
+                        "session_id": ["type": "number"],
+                    ] as [String: Any],
+                    "required": ["session_id"],
+                    "additionalProperties": false,
+                ] as [String: Any]
+            ),
+            executor: { _, _ in
+                "poll"
+            }
+        ))
+        let profile = CodingLoopTestProfile(toolRegistry: registry)
+
+        var responses: [Response] = []
+        for index in 1...7 {
+            responses.append(codingLoopResponse(
+                provider: "test",
+                model: "test-model",
+                toolCalls: [ToolCall(
+                    id: "poll-\(index)",
+                    name: "write_stdin",
+                    arguments: ["session_id": .number(1)],
+                    rawArguments: nil
+                )],
+                finishReason: "tool_calls"
+            ))
+        }
+        responses.append(codingLoopResponse(provider: "test", model: "test-model", text: "done"))
+
+        let adapter = CodingLoopTestAdapter(responses: responses)
+        let client = try Client(providers: ["test": adapter], defaultProvider: "test")
+        let session = try Session(
+            profile: profile,
+            environment: ToolOutputExecutionEnvironment(output: ""),
+            client: client
+        )
+
+        await session.submit("keep polling")
+
+        let history = await session.getHistory()
+        let toolResults = history.compactMap { turn -> ToolResult? in
+            guard case .toolResults(let resultsTurn) = turn else {
+                return nil
+            }
+            return resultsTurn.results.first
+        }
+
+        #expect(toolResults.count == 7)
+        #expect(toolResults.allSatisfy { !$0.isError && $0.content.stringValue == "poll" })
+
+        let toolEndEvents = await session.eventEmitter.allEvents().filter { $0.kind == .toolCallEnd }
+        #expect(toolEndEvents.count == 7)
+        #expect(toolEndEvents.allSatisfy { $0.boolValue(for: "policy_blocked") != true })
+    }
+
+    @Test
     func claudeTaskWorktreeIsolationCreatesSeparateCheckoutAndCleansUp() async throws {
         let repoRoot = try makeTempDirectory(prefix: "omnikit-worktree")
         let readme = repoRoot.appendingPathComponent("README.md")
