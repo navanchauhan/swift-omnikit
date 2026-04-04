@@ -15,15 +15,8 @@ permissions:
 
 jobs:
   build-macos:
-    name: Build macOS (${{ matrix.arch }})
-    runs-on: ${{ matrix.runner }}
-    strategy:
-      matrix:
-        include:
-          - arch: arm64
-            runner: macos-14
-          - arch: x86_64
-            runner: macos-13
+    name: Build macOS (arm64)
+    runs-on: macos-15
     steps:
       - uses: actions/checkout@v4
 
@@ -35,17 +28,17 @@ jobs:
           BIN_PATH=$(swift build --product AttractorCLI -c release --show-bin-path)/AttractorCLI
           cp "$BIN_PATH" AttractorCLI
           chmod +x AttractorCLI
-          tar czf "AttractorCLI-macos-${{ matrix.arch }}.tar.gz" AttractorCLI
+          tar czf AttractorCLI-macos-arm64.tar.gz AttractorCLI
 
       - uses: actions/upload-artifact@v4
         with:
-          name: AttractorCLI-macos-${{ matrix.arch }}
-          path: AttractorCLI-macos-${{ matrix.arch }}.tar.gz
+          name: AttractorCLI-macos-arm64
+          path: AttractorCLI-macos-arm64.tar.gz
 
   build-linux:
     name: Build Linux (x86_64)
     runs-on: ubuntu-latest
-    container: swift:6.0
+    container: swift:6.1
     steps:
       - uses: actions/checkout@v4
 
