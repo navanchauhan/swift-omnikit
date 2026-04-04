@@ -8,3 +8,5 @@ sprint_id	title	status	updated_at
 007	The Agent Product Runtime — Multi-User Chief-of-Staff Missions, Telegram Ingress, and Attractor Worker Workflows	in_progress	2026-03-24T22:03:30Z
 008	The Agent Productization Mega Sprint — OmniSkills, Channel Operations, Reflection, and Runtime Discipline	in_progress	2026-03-25T02:29:38Z
 009	KitchenSink Attractor Run — Making OmniUI TUI Features Real	completed	2026-03-26T00:00:00Z
+010	Swift 6 Concurrency Cleanup — Isolation Hardening, Blocking I/O Removal, and Sendable Debt Paydown	completed	2026-03-29T19:30:06Z
+011	The Agent Autonomous Delivery Runtime — Telegram-Driven Change Missions, Release Bundles, Canary Rollout, and Automatic Rollback	in_progress	2026-03-31T00:06:11Z
