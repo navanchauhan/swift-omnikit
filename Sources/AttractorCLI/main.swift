@@ -6,6 +6,12 @@ import Darwin
 import Glibc
 #endif
 
+#if canImport(Darwin)
+nonisolated(unsafe) let stderrStream = stderr
+#else
+nonisolated(unsafe) let stderrStream = stderr!
+#endif
+
 @main
 struct AttractorCLI {
     static func main() async {
@@ -14,11 +20,11 @@ struct AttractorCLI {
             try await command.run()
         } catch let error as ExitError {
             if !error.message.isEmpty {
-                fputs("Error: \(error.message)\n", stderr)
+                fputs("Error: \(error.message)\n", stderrStream)
             }
             Foundation.exit(error.code)
         } catch {
-            fputs("Error: \(error)\n", stderr)
+            fputs("Error: \(error)\n", stderrStream)
             Foundation.exit(1)
         }
     }
@@ -230,7 +236,7 @@ private struct CLICommand {
             manifest.currentNode = checkpoint?.currentNode
             manifest.updatedAt = Date()
             manifest.completionState = .running
-            fputs("[AttractorCLI] Autoresuming run from \(logs.path)\n", stderr)
+            fputs("[AttractorCLI] Autoresuming run from \(logs.path)\n", stderrStream)
         } else {
             logs = try resolveLogsRoot()
             checkpoint = nil
@@ -263,8 +269,8 @@ private struct CLICommand {
         let result: PipelineResult
         do {
             if let checkpoint {
-                fputs("[AttractorCLI] Resuming from checkpoint: \(checkpoint.currentNode)\n", stderr)
-                fputs("[AttractorCLI] Completed nodes: \(checkpoint.completedNodes.joined(separator: ", "))\n", stderr)
+                fputs("[AttractorCLI] Resuming from checkpoint: \(checkpoint.currentNode)\n", stderrStream)
+                fputs("[AttractorCLI] Completed nodes: \(checkpoint.completedNodes.joined(separator: ", "))\n", stderrStream)
                 result = try await engine.resume(dot: dot, checkpoint: checkpoint)
             } else {
                 result = try await engine.run(dot: dot)
