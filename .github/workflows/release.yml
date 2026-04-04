@@ -38,7 +38,7 @@ jobs:
   build-linux:
     name: Build Linux (x86_64)
     runs-on: ubuntu-latest
-    container: swift:6.1
+    container: swift:6.1-jammy
     steps:
       - uses: actions/checkout@v4
 
