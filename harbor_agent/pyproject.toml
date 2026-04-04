@@ -1,0 +1,17 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "attractor-harbor-agent"
+version = "0.0.4"
+description = "Harbor Framework agent for AttractorCLI - multi-model consensus workflows for Terminal Bench"
+requires-python = ">=3.10"
+license = {text = "MIT"}
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["harbor_agent*"]
+
+[tool.setuptools.package-data]
+harbor_agent = ["templates/*.j2"]

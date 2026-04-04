@@ -42,12 +42,12 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Build AttractorCLI
-        run: swift build --product AttractorCLI -c release
+      - name: Build AttractorCLI (static)
+        run: swift build --product AttractorCLI -c release --static-swift-stdlib
 
       - name: Package binary
         run: |
-          BIN_PATH=$(swift build --product AttractorCLI -c release --show-bin-path)/AttractorCLI
+          BIN_PATH=$(swift build --product AttractorCLI -c release --static-swift-stdlib --show-bin-path)/AttractorCLI
           cp "$BIN_PATH" AttractorCLI
           chmod +x AttractorCLI
           tar czf AttractorCLI-linux-x86_64.tar.gz AttractorCLI
