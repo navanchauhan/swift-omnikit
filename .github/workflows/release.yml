@@ -1,0 +1,91 @@
+name: Release AttractorCLI
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Tag to build (e.g. v1.0.0)'
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  build-macos:
+    name: Build macOS (${{ matrix.arch }})
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      matrix:
+        include:
+          - arch: arm64
+            runner: macos-14
+          - arch: x86_64
+            runner: macos-13
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build AttractorCLI
+        run: swift build --product AttractorCLI -c release
+
+      - name: Package binary
+        run: |
+          BIN_PATH=$(swift build --product AttractorCLI -c release --show-bin-path)/AttractorCLI
+          cp "$BIN_PATH" AttractorCLI
+          chmod +x AttractorCLI
+          tar czf "AttractorCLI-macos-${{ matrix.arch }}.tar.gz" AttractorCLI
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: AttractorCLI-macos-${{ matrix.arch }}
+          path: AttractorCLI-macos-${{ matrix.arch }}.tar.gz
+
+  build-linux:
+    name: Build Linux (x86_64)
+    runs-on: ubuntu-latest
+    container: swift:6.0
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build AttractorCLI
+        run: swift build --product AttractorCLI -c release
+
+      - name: Package binary
+        run: |
+          BIN_PATH=$(swift build --product AttractorCLI -c release --show-bin-path)/AttractorCLI
+          cp "$BIN_PATH" AttractorCLI
+          chmod +x AttractorCLI
+          tar czf AttractorCLI-linux-x86_64.tar.gz AttractorCLI
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: AttractorCLI-linux-x86_64
+          path: AttractorCLI-linux-x86_64.tar.gz
+
+  release:
+    name: Create Release
+    needs: [build-macos, build-linux]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: Determine tag
+        id: tag
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "version=${{ github.event.inputs.tag }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "version=${GITHUB_REF#refs/tags/}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.tag.outputs.version }}
+          name: AttractorCLI ${{ steps.tag.outputs.version }}
+          generate_release_notes: true
+          files: artifacts/*

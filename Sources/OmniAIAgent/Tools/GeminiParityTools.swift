@@ -1,6 +1,8 @@
 import Foundation
 import OmniAICore
+#if canImport(OmniSkills)
 import OmniSkills
+#endif
 
 // MARK: - Tool Name Constants (Gemini CLI parity)
 
@@ -799,6 +801,7 @@ public func geminiActivateSkillTool() -> RegisteredTool {
             guard let name = args["name"] as? String else {
                 throw ToolError.validationError("name is required")
             }
+            #if canImport(OmniSkills)
             let workingDirectory = URL(fileURLWithPath: env.workingDirectory(), isDirectory: true)
             guard let package = try OmniSkillRegistry().resolveSkill(named: name, workingDirectory: workingDirectory),
                   let content = try package.textAsset(at: package.manifest.promptFile) else {
@@ -811,6 +814,9 @@ public func geminiActivateSkillTool() -> RegisteredTool {
   </instructions>
 </activated_skill>
 """
+            #else
+            throw ToolError.validationError("Skills are not available in this build")
+            #endif
         }
     )
 }

@@ -437,7 +437,7 @@ let package = Package(
         .target(
             name: "OmniAIAgent",
             dependencies: [
-                "OmniAICore", "OmniMCP", "OmniExecution", "OmniSkills",
+                "OmniAICore", "OmniMCP", "OmniExecution",
             ],
             path: "Sources/OmniAIAgent",
             resources: [

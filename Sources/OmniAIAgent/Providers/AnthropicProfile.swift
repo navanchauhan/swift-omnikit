@@ -1,6 +1,8 @@
 import Foundation
 import OmniAICore
+#if canImport(OmniSkills)
 import OmniSkills
+#endif
 
 public final class AnthropicProfile: ProviderProfile, @unchecked Sendable {
 
@@ -109,6 +111,7 @@ public final class AnthropicProfile: ProviderProfile, @unchecked Sendable {
     }
 
     private func loadSkills(from workingDirectory: URL) -> [ClaudePromptSkill] {
+        #if canImport(OmniSkills)
         do {
             return try OmniSkillRegistry()
                 .availablePackages(in: workingDirectory)
@@ -125,6 +128,9 @@ public final class AnthropicProfile: ProviderProfile, @unchecked Sendable {
         } catch {
             return []
         }
+        #else
+        return []
+        #endif
     }
 
     private var modelDisplayName: String {

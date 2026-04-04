@@ -1,6 +1,8 @@
 import Foundation
 import OmniAICore
+#if canImport(OmniSkills)
 import OmniSkills
+#endif
 
 // MARK: - Claude file tools
 
@@ -1667,6 +1669,7 @@ public func claudeSkillTool() -> RegisteredTool {
                 throw ToolError.validationError("skill is required")
             }
             let skillArgs = (args["args"] as? String) ?? ""
+            #if canImport(OmniSkills)
             let workingDirectory = URL(fileURLWithPath: env.workingDirectory(), isDirectory: true)
             guard let package = try OmniSkillRegistry().resolveSkill(named: skill, workingDirectory: workingDirectory),
                   let content = try package.textAsset(at: package.manifest.promptFile) else {
@@ -1680,6 +1683,9 @@ public func claudeSkillTool() -> RegisteredTool {
   </instructions>
 </activated_skill>
 """
+            #else
+            throw ToolError.validationError("Skills are not available in this build")
+            #endif
         }
     )
 }
