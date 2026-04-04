@@ -6,11 +6,9 @@ import Darwin
 import Glibc
 #endif
 
-#if canImport(Darwin)
-nonisolated(unsafe) let stderrStream = stderr
-#else
-nonisolated(unsafe) let stderrStream = stderr!
-#endif
+private func writeStandardError(_ message: String) {
+    FileHandle.standardError.write(Data(message.utf8))
+}
 
 @main
 struct AttractorCLI {
@@ -20,11 +18,11 @@ struct AttractorCLI {
             try await command.run()
         } catch let error as ExitError {
             if !error.message.isEmpty {
-                fputs("Error: \(error.message)\n", stderrStream)
+                writeStandardError("Error: \(error.message)\n")
             }
             Foundation.exit(error.code)
         } catch {
-            fputs("Error: \(error)\n", stderrStream)
+            writeStandardError("Error: \(error)\n")
             Foundation.exit(1)
         }
     }
@@ -236,7 +234,7 @@ private struct CLICommand {
             manifest.currentNode = checkpoint?.currentNode
             manifest.updatedAt = Date()
             manifest.completionState = .running
-            fputs("[AttractorCLI] Autoresuming run from \(logs.path)\n", stderrStream)
+            writeStandardError("[AttractorCLI] Autoresuming run from \(logs.path)\n")
         } else {
             logs = try resolveLogsRoot()
             checkpoint = nil
@@ -269,8 +267,8 @@ private struct CLICommand {
         let result: PipelineResult
         do {
             if let checkpoint {
-                fputs("[AttractorCLI] Resuming from checkpoint: \(checkpoint.currentNode)\n", stderrStream)
-                fputs("[AttractorCLI] Completed nodes: \(checkpoint.completedNodes.joined(separator: ", "))\n", stderrStream)
+                writeStandardError("[AttractorCLI] Resuming from checkpoint: \(checkpoint.currentNode)\n")
+                writeStandardError("[AttractorCLI] Completed nodes: \(checkpoint.completedNodes.joined(separator: ", "))\n")
                 result = try await engine.resume(dot: dot, checkpoint: checkpoint)
             } else {
                 result = try await engine.run(dot: dot)
@@ -576,8 +574,10 @@ private final class RunManifestWriter: @unchecked Sendable {
 
     private func touchLock() {
         if !FileManager.default.fileExists(atPath: lockURL.path) {
-            FileManager.default.createFile(atPath: lockURL.path, contents: Data())
-            return
+            let created = FileManager.default.createFile(atPath: lockURL.path, contents: Data())
+            if created {
+                return
+            }
         }
         let attrs: [FileAttributeKey: Any] = [.modificationDate: Date()]
         try? FileManager.default.setAttributes(attrs, ofItemAtPath: lockURL.path)

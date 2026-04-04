@@ -118,7 +118,9 @@ public final class LocalExecutionEnvironment: ExecutionEnvironment, @unchecked S
         return contents.compactMap { name in
             let fullPath = (resolvedPath as NSString).appendingPathComponent(name)
             var isSubDir: ObjCBool = false
-            fileManager.fileExists(atPath: fullPath, isDirectory: &isSubDir)
+            guard fileManager.fileExists(atPath: fullPath, isDirectory: &isSubDir) else {
+                return nil
+            }
             let attrs = try? fileManager.attributesOfItem(atPath: fullPath)
             let size = attrs?[.size] as? Int
             return DirEntry(name: name, isDir: isSubDir.boolValue, size: size)
