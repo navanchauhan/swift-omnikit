@@ -36,8 +36,15 @@ jobs:
           path: AttractorCLI-macos-arm64.tar.gz
 
   build-linux:
-    name: Build Linux (x86_64)
-    runs-on: ubuntu-latest
+    name: Build Linux (${{ matrix.arch }})
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      matrix:
+        include:
+          - arch: x86_64
+            runner: ubuntu-latest
+          - arch: arm64
+            runner: ubuntu-24.04-arm
     container: swift:6.1-jammy
     steps:
       - uses: actions/checkout@v4
@@ -50,12 +57,12 @@ jobs:
           BIN_PATH=$(swift build --product AttractorCLI -c release --static-swift-stdlib --show-bin-path)/AttractorCLI
           cp "$BIN_PATH" AttractorCLI
           chmod +x AttractorCLI
-          tar czf AttractorCLI-linux-x86_64.tar.gz AttractorCLI
+          tar czf "AttractorCLI-linux-${{ matrix.arch }}.tar.gz" AttractorCLI
 
       - uses: actions/upload-artifact@v4
         with:
-          name: AttractorCLI-linux-x86_64
-          path: AttractorCLI-linux-x86_64.tar.gz
+          name: AttractorCLI-linux-${{ matrix.arch }}
+          path: AttractorCLI-linux-${{ matrix.arch }}.tar.gz
 
   release:
     name: Create Release

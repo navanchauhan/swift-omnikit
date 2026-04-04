@@ -37,7 +37,7 @@ class AttractorAgent(BaseInstalledAgent):
         return "attractor"
 
     def version(self) -> str | None:
-        return "0.0.4"
+        return "0.0.5"
 
     @property
     def _install_agent_template_path(self) -> Path:
