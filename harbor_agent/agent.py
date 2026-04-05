@@ -1,15 +1,13 @@
 """
 AttractorCLI Agent for Harbor Framework / Terminal Bench 2.0
 
-This agent wraps AttractorCLI to execute multi-model consensus workflows
-for solving terminal-based tasks.
-
 Usage:
     harbor run -d terminal-bench@2.0 --agent-import-path harbor_agent:AttractorAgent
 """
 
 from __future__ import annotations
 
+import base64
 import os
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -20,17 +18,25 @@ if TYPE_CHECKING:
     from harbor.agents.base import AgentContext
 
 
-class AttractorAgent(BaseInstalledAgent):
-    """
-    Harbor agent that uses AttractorCLI's consensus workflow.
+# Runs inside the container to inject task into the DOT file as a graph attribute.
+_INJECT_SCRIPT = r"""
+import base64, sys
+task_b64 = open('.ai/task_b64.txt').read().strip()
+task = base64.b64decode(task_b64).decode()
+task_escaped = task.replace('\\', '\\\\').replace('"', '\\"').replace('\n', '\\n')
+dot = open('/opt/attractor/workflows/single_agent.dot').read()
+dot = dot.replace(
+    'graph [',
+    'graph [ task="' + task_escaped + '", definition_of_done="", ',
+    1,
+)
+open('.ai/workflow.dot', 'w').write(dot)
+print('Injected task into workflow.dot')
+"""
 
-    The agent runs a multi-model DOT workflow where:
-    1. Three models independently create plans
-    2. Plans are debated and consolidated
-    3. Implementation is done by Opus
-    4. All three models review the work
-    5. On failure, a postmortem is conducted and the loop restarts
-    """
+
+class AttractorAgent(BaseInstalledAgent):
+    """Harbor agent that uses AttractorCLI to solve Terminal Bench tasks."""
 
     @staticmethod
     def name() -> str:
@@ -57,20 +63,24 @@ class AttractorAgent(BaseInstalledAgent):
 
     def create_run_agent_commands(self, instruction: str) -> list[ExecInput]:
         api_keys = self._get_api_keys_env()
+        b64_task = base64.b64encode(instruction.encode()).decode()
 
         commands = [
             ExecInput(command="mkdir -p .ai"),
             ExecInput(
                 command=f"cat > .ai/task_instruction.txt << 'TASK_EOF'\n{instruction}\nTASK_EOF"
             ),
+            ExecInput(command=f"echo '{b64_task}' > .ai/task_b64.txt"),
+            ExecInput(
+                command=f"cat > .ai/inject_task.py << 'PYEOF'\n{_INJECT_SCRIPT}\nPYEOF"
+            ),
             ExecInput(
                 command=(
                     "trap 'cp -r .ai /logs/agent/attractor-artifacts 2>/dev/null || true' EXIT; "
-                    "export task=\"$(cat .ai/task_instruction.txt | tr '\\n' ' ')\" && "
-                    "export definition_of_done='' && "
+                    "python3 .ai/inject_task.py && "
                     "/opt/attractor/bin/AttractorCLI run "
                     "--logs-root .ai/attractor_logs "
-                    "/opt/attractor/workflows/consensus_task.dot 2>&1; "
+                    ".ai/workflow.dot 2>&1; "
                     "cp -r .ai /logs/agent/attractor-artifacts || true"
                 ),
                 timeout_sec=36000,

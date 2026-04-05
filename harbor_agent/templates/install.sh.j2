@@ -61,7 +61,7 @@ digraph Workflow {
     type="codergen",
     llm_provider="anthropic", llm_model="claude-opus-4-6",
     max_agent_turns=2, timeout=120s,
-    prompt="Check if a definition of done was provided.\n\nTASK: $task\nDOD: $definition_of_done\n\nIf the DOD is empty or just a placeholder, write a status.json file containing {\"outcome\": \"needs_dod\"}.\nOtherwise write {\"outcome\": \"has_dod\"}."
+    prompt="Check if a definition of done was provided.\n\nTASK: $task\nDOD: $definition_of_done\n\nIf the DOD is empty or just a placeholder, respond with:\n```json\n{\"outcome\": \"needs_dod\", \"notes\": \"No DOD provided\"}\n```\nOtherwise respond with:\n```json\n{\"outcome\": \"has_dod\", \"notes\": \"DOD provided\"}\n```"
   ];
 
   // ── Define DoD (parallel, 3 models) ──
@@ -170,7 +170,7 @@ digraph Workflow {
     type="codergen",
     llm_provider="anthropic", llm_model="claude-opus-4-6",
     max_agent_turns=6, timeout=5m,
-    prompt="Reach a consensus verdict from three independent reviews.\n\nRead .ai/review_gemini.md, .ai/review_gpt.md, and .ai/review_opus.md.\nWrite the consensus to .ai/review_consensus.md.\n\nThen write status.json: {\"outcome\": \"yes\"} if the consensus is PASS, or {\"outcome\": \"retry\"} if FAIL."
+    prompt="Reach a consensus verdict from three independent reviews.\n\nRead .ai/review_gemini.md, .ai/review_gpt.md, and .ai/review_opus.md.\nWrite the consensus to .ai/review_consensus.md.\n\nThen respond with:\n```json\n{\"outcome\": \"yes\", \"notes\": \"consensus PASS\"}\n```\nif the consensus is PASS, or:\n```json\n{\"outcome\": \"retry\", \"notes\": \"consensus FAIL\"}\n```\nif FAIL."
   ];
 
   // ── Postmortem (on failure) ──
@@ -229,11 +229,43 @@ digraph Workflow {
 }
 WORKFLOW_EOF
 
+# Create a single-agent workflow (faster, for simpler tasks)
+echo "Creating single_agent.dot workflow..."
+cat > "${INSTALL_DIR}/workflows/single_agent.dot" << 'WORKFLOW_EOF'
+digraph Workflow {
+  graph [
+    label="Single Agent Workflow",
+    goal="$task"
+  ];
+
+  Start [
+    shape=Mdiamond, label="Start",
+    type="start"
+  ];
+
+  Implement [
+    shape=box, label="Implement",
+    type="codergen",
+    llm_provider="anthropic", llm_model="claude-opus-4-6",
+    max_agent_turns=50, timeout=30m, allow_partial=true,
+    prompt="Complete the following task. Read the relevant files, understand the codebase, and make the necessary changes.\n\nTASK: $task"
+  ];
+
+  Done [
+    shape=Msquare, label="Done",
+    type="exit"
+  ];
+
+  Start -> Implement;
+  Implement -> Done;
+}
+WORKFLOW_EOF
+
 ln -sf "${INSTALL_DIR}/bin/AttractorCLI" /usr/local/bin/AttractorCLI 2>/dev/null || true
 echo "export PATH=\"${INSTALL_DIR}/bin:\${PATH}\"" >> /etc/bash.bashrc
 
 echo "=== Installation Complete ==="
-echo "Workflow: ${INSTALL_DIR}/workflows/consensus_task.dot"
+echo "Workflows: ${INSTALL_DIR}/workflows/"
 
 if [ -f "${INSTALL_DIR}/bin/AttractorCLI" ]; then
     echo "Binary: ${INSTALL_DIR}/bin/AttractorCLI"
