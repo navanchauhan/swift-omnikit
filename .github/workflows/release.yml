@@ -54,10 +54,13 @@ jobs:
 
       - name: Package binary
         run: |
-          BIN_PATH=$(swift build --product AttractorCLI -c release --static-swift-stdlib --show-bin-path)/AttractorCLI
-          cp "$BIN_PATH" AttractorCLI
-          chmod +x AttractorCLI
-          tar czf "AttractorCLI-linux-${{ matrix.arch }}.tar.gz" AttractorCLI
+          BIN_DIR=$(swift build --product AttractorCLI -c release --static-swift-stdlib --show-bin-path)
+          mkdir -p staging
+          cp "$BIN_DIR/AttractorCLI" staging/
+          chmod +x staging/AttractorCLI
+          # Include resource bundles needed at runtime
+          cp -r "$BIN_DIR"/*.resources staging/ 2>/dev/null || true
+          tar czf "AttractorCLI-linux-${{ matrix.arch }}.tar.gz" -C staging .
 
       - uses: actions/upload-artifact@v4
         with:

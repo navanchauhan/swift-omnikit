@@ -13,7 +13,7 @@ apt-get update -qq
 apt-get install -y -qq curl ca-certificates > /dev/null 2>&1 || true
 
 # Download pre-built binary from GitHub Releases
-ATTRACTOR_VERSION="${ATTRACTOR_VERSION:-v0.0.5}"
+ATTRACTOR_VERSION="${ATTRACTOR_VERSION:-v0.0.7}"
 
 # Detect architecture
 ARCH=$(uname -m)
@@ -29,6 +29,8 @@ echo "Downloading AttractorCLI ${ATTRACTOR_VERSION} from ${ATTRACTOR_BINARY_URL}
 if curl -fsSL "${ATTRACTOR_BINARY_URL}" -o /tmp/attractor.tar.gz; then
     tar xzf /tmp/attractor.tar.gz -C "${INSTALL_DIR}/bin/"
     chmod +x "${INSTALL_DIR}/bin/AttractorCLI"
+    # Ensure resource bundles are alongside the binary
+    ls "${INSTALL_DIR}/bin/"*.resources > /dev/null 2>&1 && echo "Resource bundles found"
     rm /tmp/attractor.tar.gz
     echo "Binary installed successfully"
 else
