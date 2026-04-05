@@ -46,7 +46,7 @@ digraph Workflow {
     label="Consensus Task Workflow",
     goal="$task",
     default_max_retry=3,
-    retry_target="CheckDoD",
+    retry_target="PlanGemini",
     fallback_retry_target="Start",
     default_fidelity="truncate"
   ];
@@ -57,79 +57,34 @@ digraph Workflow {
     type="start"
   ];
 
-  // ── Check if Definition-of-Done was provided ──
-  CheckDoD [
-    shape=box, label="Check DoD",
-    type="codergen",
-    llm_provider="anthropic", llm_model="claude-opus-4-6",
-    max_agent_turns=2, timeout=120s,
-    prompt="Check if a definition of done was provided.\n\nTASK: $task\nDOD: $definition_of_done\n\nIf the DOD is empty or just a placeholder, respond with:\n```json\n{\"outcome\": \"needs_dod\", \"notes\": \"No DOD provided\"}\n```\nOtherwise respond with:\n```json\n{\"outcome\": \"has_dod\", \"notes\": \"DOD provided\"}\n```"
-  ];
-
-  // ── Define DoD (parallel, 3 models) ──
-  DefineDoD_Gemini [
-    shape=box, label="Define DoD (Gemini)",
-    type="codergen",
-    llm_provider="gemini", llm_model="gemini-3.1-pro-preview",
-    max_agent_turns=6, timeout=5m,
-    prompt="Propose a concrete, testable definition of done for this task.\n\nTASK: $task\n\nWrite your proposal to .ai/dod_gemini.md"
-  ];
-
-  DefineDoD_GPT [
-    shape=box, label="Define DoD (GPT)",
-    type="codergen",
-    llm_provider="openai", llm_model="gpt-5.4",
-    max_agent_turns=6, timeout=5m, reasoning_effort="high",
-    prompt="Propose a concrete, testable definition of done for this task.\n\nTASK: $task\n\nWrite your proposal to .ai/dod_gpt.md"
-  ];
-
-  DefineDoD_Opus [
-    shape=box, label="Define DoD (Opus)",
-    type="codergen",
-    llm_provider="anthropic", llm_model="claude-opus-4-6",
-    max_agent_turns=6, timeout=5m,
-    prompt="Propose a concrete, testable definition of done for this task.\n\nTASK: $task\n\nWrite your proposal to .ai/dod_opus.md"
-  ];
-
-  ConsolidateDoD [
-    shape=box, label="Consolidate DoD",
-    type="codergen",
-    llm_provider="anthropic", llm_model="claude-opus-4-6",
-    max_agent_turns=8, timeout=7m,
-    prompt="Synthesize three definition-of-done proposals into one consensus DoD.\n\nTASK: $task\n\nRead .ai/dod_gemini.md, .ai/dod_gpt.md, and .ai/dod_opus.md.\nWrite the consolidated definition of done to .ai/definition_of_done.md"
-  ];
-
   // ── Plan (parallel, 3 models) ──
   PlanGemini [
     shape=box, label="Plan (Gemini)",
     type="codergen",
     llm_provider="gemini", llm_model="gemini-3.1-pro-preview",
-    max_agent_turns=8, timeout=7m,
-    prompt="Create an implementation plan for this task.\n\nTASK: $task\nDOD: Read .ai/definition_of_done.md (or use: $definition_of_done)\n\nWrite your plan to .ai/plan_gemini.md"
+    prompt="You are a planning agent. Explore the codebase/environment and write a SHORT, step-by-step plan to accomplish this task. Focus on the exact commands and file changes needed. Do not implement anything — only plan.\n\nTASK: $task\n\nWrite your plan (max 20 lines) to .ai/plan_gemini.md"
   ];
 
   PlanGPT [
     shape=box, label="Plan (GPT)",
     type="codergen",
     llm_provider="openai", llm_model="gpt-5.4",
-    max_agent_turns=8, timeout=7m, reasoning_effort="high",
-    prompt="Create an implementation plan for this task.\n\nTASK: $task\nDOD: Read .ai/definition_of_done.md (or use: $definition_of_done)\n\nWrite your plan to .ai/plan_gpt.md"
+    timeout=10m, reasoning_effort="high",
+    prompt="You are a planning agent. Explore the codebase/environment and write a SHORT, step-by-step plan to accomplish this task. Focus on the exact commands and file changes needed. Do not implement anything — only plan.\n\nTASK: $task\n\nWrite your plan (max 20 lines) to .ai/plan_gpt.md"
   ];
 
   PlanOpus [
     shape=box, label="Plan (Opus)",
     type="codergen",
     llm_provider="anthropic", llm_model="claude-opus-4-6",
-    max_agent_turns=8, timeout=7m,
-    prompt="Create an implementation plan for this task.\n\nTASK: $task\nDOD: Read .ai/definition_of_done.md (or use: $definition_of_done)\n\nWrite your plan to .ai/plan_opus.md"
+    prompt="You are a planning agent. Explore the codebase/environment and write a SHORT, step-by-step plan to accomplish this task. Focus on the exact commands and file changes needed. Do not implement anything — only plan.\n\nTASK: $task\n\nWrite your plan (max 20 lines) to .ai/plan_opus.md"
   ];
 
-  DebateConsolidate [
-    shape=box, label="Debate & Consolidate",
+  ConsolidatePlan [
+    shape=box, label="Consolidate Plan",
     type="codergen",
     llm_provider="anthropic", llm_model="claude-opus-4-6",
-    max_agent_turns=10, timeout=10m,
-    prompt="Synthesize three independent plans into one final implementation plan.\n\nTASK: $task\n\nRead .ai/plan_gemini.md, .ai/plan_gpt.md, and .ai/plan_opus.md.\nIdentify the strongest ideas from each, resolve conflicts, and write the consolidated plan to .ai/plan_final.md"
+    prompt="Read these three plans and merge them into one final plan. PREFER THE SIMPLEST APPROACH — do the minimum necessary to solve the task. If multiple plans suggest different strategies, pick the one with the fewest steps that still solves the problem correctly.\n\nTASK: $task\n\nRead .ai/plan_gemini.md, .ai/plan_gpt.md, .ai/plan_opus.md.\nWrite the final plan to .ai/plan_final.md (max 15 lines, simplest correct approach)."
   ];
 
   // ── Implement ──
@@ -137,8 +92,8 @@ digraph Workflow {
     shape=box, label="Implement (Opus)",
     type="codergen",
     llm_provider="anthropic", llm_model="claude-opus-4-6",
-    max_agent_turns=25, timeout=20m, allow_partial=true,
-    prompt="Execute the implementation plan.\n\nTASK: $task\n\nFollow .ai/plan_final.md step by step. Log progress to .ai/implementation_log.md"
+    allow_partial=true,
+    prompt="You are an implementation agent. Your job is to EXECUTE the task, not analyze it.\n\nTASK: $task\n\nINSTRUCTIONS:\n1. You may glance at .ai/plan_final.md for ideas, but use your own judgment — do the SIMPLEST thing that solves the task\n2. IMMEDIATELY start executing — run commands, edit files, make changes\n3. Do NOT over-engineer or do extra work beyond what the task asks\n4. After making changes, VERIFY they work (run tests, check output, etc.)\n5. If something fails, fix it and try again\n\nDo the minimum necessary to complete the task correctly. Less is more."
   ];
 
   // ── Review (parallel, 3 models) ──
@@ -146,24 +101,22 @@ digraph Workflow {
     shape=box, label="Review (Gemini)",
     type="codergen",
     llm_provider="gemini", llm_model="gemini-3.1-pro-preview",
-    max_agent_turns=6, timeout=5m,
-    prompt="Review the implementation against the task and definition of done.\n\nTASK: $task\n\nRead the code changes and .ai/definition_of_done.md.\nWrite your review to .ai/review_gemini.md. End with a clear PASS or FAIL verdict."
+    prompt="Verify the task was completed correctly.\n\nTASK: $task\n\nCheck the actual state of files, git status, command outputs, etc. Do not just read logs — actually verify the work was done.\n\nWrite to .ai/review_gemini.md: what you checked, what you found, and a final PASS or FAIL verdict."
   ];
 
   ReviewGPT [
     shape=box, label="Review (GPT)",
     type="codergen",
     llm_provider="openai", llm_model="gpt-5.4",
-    max_agent_turns=6, timeout=5m, reasoning_effort="high",
-    prompt="Review the implementation against the task and definition of done.\n\nTASK: $task\n\nRead the code changes and .ai/definition_of_done.md.\nWrite your review to .ai/review_gpt.md. End with a clear PASS or FAIL verdict."
+    timeout=10m, reasoning_effort="high",
+    prompt="Verify the task was completed correctly.\n\nTASK: $task\n\nCheck the actual state of files, git status, command outputs, etc. Do not just read logs — actually verify the work was done.\n\nWrite to .ai/review_gpt.md: what you checked, what you found, and a final PASS or FAIL verdict."
   ];
 
   ReviewOpus [
     shape=box, label="Review (Opus)",
     type="codergen",
     llm_provider="anthropic", llm_model="claude-opus-4-6",
-    max_agent_turns=6, timeout=5m,
-    prompt="Review the implementation against the task and definition of done.\n\nTASK: $task\n\nRead the code changes and .ai/definition_of_done.md.\nWrite your review to .ai/review_opus.md. End with a clear PASS or FAIL verdict."
+    prompt="Verify the task was completed correctly.\n\nTASK: $task\n\nCheck the actual state of files, git status, command outputs, etc. Do not just read logs — actually verify the work was done.\n\nWrite to .ai/review_opus.md: what you checked, what you found, and a final PASS or FAIL verdict."
   ];
 
   // ── Review Consensus (steering node) ──
@@ -171,8 +124,7 @@ digraph Workflow {
     shape=box, label="Review Consensus",
     type="codergen",
     llm_provider="anthropic", llm_model="claude-opus-4-6",
-    max_agent_turns=6, timeout=5m,
-    prompt="Reach a consensus verdict from three independent reviews.\n\nRead .ai/review_gemini.md, .ai/review_gpt.md, and .ai/review_opus.md.\nWrite the consensus to .ai/review_consensus.md.\n\nThen respond with:\n```json\n{\"outcome\": \"yes\", \"notes\": \"consensus PASS\"}\n```\nif the consensus is PASS, or:\n```json\n{\"outcome\": \"retry\", \"notes\": \"consensus FAIL\"}\n```\nif FAIL."
+    prompt="Read the three review verdicts and decide: is the task done?\n\nRead .ai/review_gemini.md, .ai/review_gpt.md, .ai/review_opus.md.\nWrite consensus to .ai/review_consensus.md.\n\nThen respond with:\n```json\n{\"outcome\": \"yes\", \"notes\": \"task completed\"}\n```\nif at least 2 of 3 reviewers say PASS, or:\n```json\n{\"outcome\": \"retry\", \"notes\": \"task not completed\"}\n```\nif not."
   ];
 
   // ── Postmortem (on failure) ──
@@ -180,8 +132,7 @@ digraph Workflow {
     shape=box, label="Postmortem",
     type="codergen",
     llm_provider="anthropic", llm_model="claude-opus-4-6",
-    max_agent_turns=8, timeout=7m,
-    prompt="Conduct a failure postmortem.\n\nTASK: $task\n\nRead .ai/review_consensus.md and .ai/implementation_log.md.\nAnalyze root causes and write actionable improvements to .ai/postmortem.md"
+    prompt="The implementation failed review. Read .ai/review_consensus.md to understand why.\n\nTASK: $task\n\nWrite a brief (10 lines max) action plan to .ai/postmortem.md explaining exactly what needs to be fixed."
   ];
 
   // ── Exit ──
@@ -191,28 +142,15 @@ digraph Workflow {
   ];
 
   // ── Edges ──
-  Start -> CheckDoD;
+  Start -> PlanGemini;
+  Start -> PlanGPT;
+  Start -> PlanOpus;
 
-  CheckDoD -> DefineDoD_Gemini [condition="outcome=needs_dod"];
-  CheckDoD -> DefineDoD_GPT    [condition="outcome=needs_dod"];
-  CheckDoD -> DefineDoD_Opus   [condition="outcome=needs_dod"];
-  CheckDoD -> PlanGemini       [condition="outcome=has_dod"];
-  CheckDoD -> PlanGPT          [condition="outcome=has_dod"];
-  CheckDoD -> PlanOpus         [condition="outcome=has_dod"];
+  PlanGemini -> ConsolidatePlan;
+  PlanGPT    -> ConsolidatePlan;
+  PlanOpus   -> ConsolidatePlan;
 
-  DefineDoD_Gemini -> ConsolidateDoD;
-  DefineDoD_GPT    -> ConsolidateDoD;
-  DefineDoD_Opus   -> ConsolidateDoD;
-
-  ConsolidateDoD -> PlanGemini;
-  ConsolidateDoD -> PlanGPT;
-  ConsolidateDoD -> PlanOpus;
-
-  PlanGemini -> DebateConsolidate;
-  PlanGPT    -> DebateConsolidate;
-  PlanOpus   -> DebateConsolidate;
-
-  DebateConsolidate -> Implement;
+  ConsolidatePlan -> Implement;
 
   Implement -> ReviewGemini;
   Implement -> ReviewGPT;
@@ -249,7 +187,7 @@ digraph Workflow {
     shape=box, label="Implement",
     type="codergen",
     llm_provider="anthropic", llm_model="claude-opus-4-6",
-    max_agent_turns=50, timeout=30m, allow_partial=true,
+    allow_partial=true,
     prompt="Complete the following task. Read the relevant files, understand the codebase, and make the necessary changes.\n\nTASK: $task"
   ];
 
