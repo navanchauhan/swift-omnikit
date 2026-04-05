@@ -24,7 +24,7 @@ import base64, sys
 task_b64 = open('.ai/task_b64.txt').read().strip()
 task = base64.b64decode(task_b64).decode()
 task_escaped = task.replace('\\', '\\\\').replace('"', '\\"').replace('\n', '\\n')
-dot = open('/opt/attractor/workflows/single_agent.dot').read()
+dot = open('/opt/attractor/workflows/consensus_task.dot').read()
 dot = dot.replace(
     'graph [',
     'graph [ task="' + task_escaped + '", definition_of_done="", ',
