@@ -431,10 +431,15 @@ public final class CodingAgentBackend: CodergenBackend, Sendable {
             }
         }
 
+        // No JSON block found, but if the agent did real work (the caller already
+        // checked for no-substantive-work above), default to success rather than
+        // retrying endlessly.  Steering nodes that need a specific outcome should
+        // include explicit JSON-block instructions in their prompt.
+        writeToAttractorStderr("[CodingAgentBackend] No structured status block found; defaulting to success\n")
         return CodergenResult(
             response: response,
-            status: .retry,
-            notes: "No structured status block found in agent response after follow-up; retrying stage instead of promoting placeholder output"
+            status: .success,
+            notes: "Agent completed work but did not return a structured status block; defaulting to success"
         )
     }
 

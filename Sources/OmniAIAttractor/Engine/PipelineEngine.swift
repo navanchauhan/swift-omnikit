@@ -410,12 +410,46 @@ public final class PipelineEngine: Sendable {
                     break
                 }
             } else {
-                // Normal edge selection
-                if let edge = selectNextEdge(from: currentId, outcome: outcome, context: state.context, graph: state.graph) {
+                // Normal edge selection — check for parallel fan-out (multiple
+                // condition-matching edges) before falling back to single-edge.
+                let allEdges = selectAllMatchingEdges(from: currentId, outcome: outcome, context: state.context, graph: state.graph)
+
+                if allEdges.count > 1 {
+                    // Parallel fan-out: run all target nodes, then advance to
+                    // the common fan-in successor (the node all branches lead to).
+                    for edge in allEdges {
+                        guard let targetNode = state.graph.node(edge.to),
+                              !state.completedNodes.contains(edge.to) else { continue }
+
+                        state.context.set("current_node", edge.to)
+                        state.currentNodeId = edge.to
+                        state.lastEdge = edge
+
+                        let branchOutcome = try await executeWithRetry(node: targetNode, state: state)
+                        await recordOutcome(node: targetNode, outcome: branchOutcome, state: state)
+                        try writeStatusJSON(nodeId: edge.to, outcome: branchOutcome, state: state)
+
+                        if !branchOutcome.contextUpdates.isEmpty {
+                            state.context.applyUpdates(branchOutcome.contextUpdates)
+                        }
+                        try await saveCheckpoint(state: state)
+                    }
+
+                    // After all parallel branches, advance to the common fan-in
+                    // node (the first unconditional successor of any branch target).
+                    let branchTargets = Set(allEdges.map { $0.to })
+                    var fanInNodeId: String?
+                    for targetId in branchTargets {
+                        let successors = state.graph.outgoingEdges(from: targetId)
+                        if let next = successors.first {
+                            fanInNodeId = next.to
+                            break
+                        }
+                    }
+                    state.currentNodeId = fanInNodeId
+                } else if let edge = allEdges.first {
                     state.lastEdge = edge
                     if edge.loopRestart {
-                        // loop_restart semantics: terminate current run cycle and relaunch from
-                        // the target node with a fresh state/log directory.
                         let loopCount = state.context.getInt("internal.loop_restart_count") + 1
                         state.context.set("internal.loop_restart_count", String(loopCount))
                         state.context.set("loop_restart", "true")
@@ -681,6 +715,46 @@ public final class PipelineEngine: Sendable {
     }
 
     // MARK: - 5-Step Edge Selection
+
+    /// Return ALL edges whose conditions match (for parallel fan-out).
+    /// Falls back to single-edge selection logic when only one edge qualifies.
+    func selectAllMatchingEdges(
+        from nodeId: String,
+        outcome: Outcome,
+        context: PipelineContext,
+        graph: Graph
+    ) -> [Edge] {
+        let outgoing = graph.outgoingEdges(from: nodeId)
+        if outgoing.isEmpty { return [] }
+
+        // Condition-matching edges
+        var conditionMatched: [Edge] = []
+        for edge in outgoing {
+            let condition = edge.condition.trimmingCharacters(in: .whitespaces)
+            if condition.isEmpty { continue }
+            if let expr = try? ConditionParser.parse(condition) {
+                if expr.evaluate(
+                    outcome: outcome.status.rawValue,
+                    preferredLabel: outcome.preferredLabel,
+                    context: context
+                ) {
+                    conditionMatched.append(edge)
+                }
+            }
+        }
+        if conditionMatched.count > 1 {
+            return conditionMatched
+        }
+        if conditionMatched.count == 1 {
+            return conditionMatched
+        }
+
+        // Fall back to single-edge logic for label/suggestion/unconditional
+        if let edge = selectNextEdge(from: nodeId, outcome: outcome, context: context, graph: graph) {
+            return [edge]
+        }
+        return []
+    }
 
     func selectNextEdge(
         from nodeId: String,
