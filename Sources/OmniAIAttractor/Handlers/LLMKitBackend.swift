@@ -314,6 +314,7 @@ public final class LLMKitBackend: CodergenBackend, Sendable {
                 return CodergenResult(
                     response: response,
                     status: status,
+                    rawOutcome: outcomeStr,
                     contextUpdates: contextUpdates,
                     preferredLabel: preferredLabel,
                     suggestedNextIds: suggestedNextIds,

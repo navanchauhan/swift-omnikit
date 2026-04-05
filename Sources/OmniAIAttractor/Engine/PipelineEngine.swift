@@ -346,7 +346,7 @@ public final class PipelineEngine: Sendable {
             if !outcome.contextUpdates.isEmpty {
                 state.context.applyUpdates(outcome.contextUpdates)
             }
-            state.context.set("outcome", outcome.status.rawValue)
+            state.context.set("outcome", outcome.rawOutcome)
             if !outcome.preferredLabel.isEmpty {
                 state.context.set("preferred_label", outcome.preferredLabel)
             }
@@ -734,7 +734,7 @@ public final class PipelineEngine: Sendable {
             if condition.isEmpty { continue }
             if let expr = try? ConditionParser.parse(condition) {
                 if expr.evaluate(
-                    outcome: outcome.status.rawValue,
+                    outcome: outcome.rawOutcome,
                     preferredLabel: outcome.preferredLabel,
                     context: context
                 ) {
@@ -742,14 +742,17 @@ public final class PipelineEngine: Sendable {
                 }
             }
         }
-        if conditionMatched.count > 1 {
-            return conditionMatched
-        }
-        if conditionMatched.count == 1 {
+        if !conditionMatched.isEmpty {
             return conditionMatched
         }
 
-        // Fall back to single-edge logic for label/suggestion/unconditional
+        // Unconditional edges — return all if multiple (fan-out)
+        let unconditional = outgoing.filter { $0.condition.trimmingCharacters(in: .whitespaces).isEmpty }
+        if unconditional.count > 1 {
+            return unconditional
+        }
+
+        // Fall back to single-edge logic for label/suggestion/single-unconditional
         if let edge = selectNextEdge(from: nodeId, outcome: outcome, context: context, graph: graph) {
             return [edge]
         }
@@ -772,7 +775,7 @@ public final class PipelineEngine: Sendable {
             if condition.isEmpty { continue }
             if let expr = try? ConditionParser.parse(condition) {
                 if expr.evaluate(
-                    outcome: outcome.status.rawValue,
+                    outcome: outcome.rawOutcome,
                     preferredLabel: outcome.preferredLabel,
                     context: context
                 ) {

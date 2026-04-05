@@ -14,6 +14,10 @@ public enum OutcomeStatus: String, Sendable, Codable, Equatable {
 
 public struct Outcome: Sendable {
     public var status: OutcomeStatus
+    /// The raw outcome string from the agent's JSON status block (e.g. "needs_dod",
+    /// "has_dod", "yes", "retry").  Falls back to `status.rawValue` when not set.
+    /// Used for edge-condition evaluation so custom outcomes work.
+    public var rawOutcome: String
     public var preferredLabel: String
     public var suggestedNextIds: [String]
     public var contextUpdates: [String: String]
@@ -22,6 +26,7 @@ public struct Outcome: Sendable {
 
     public init(
         status: OutcomeStatus,
+        rawOutcome: String? = nil,
         preferredLabel: String = "",
         suggestedNextIds: [String] = [],
         contextUpdates: [String: String] = [:],
@@ -29,6 +34,7 @@ public struct Outcome: Sendable {
         failureReason: String = ""
     ) {
         self.status = status
+        self.rawOutcome = rawOutcome ?? status.rawValue
         self.preferredLabel = preferredLabel
         self.suggestedNextIds = suggestedNextIds
         self.contextUpdates = contextUpdates

@@ -17,6 +17,9 @@ public protocol CodergenBackend: Sendable {
 public struct CodergenResult: Sendable {
     public var response: String
     public var status: OutcomeStatus
+    /// The raw outcome string from the JSON block (e.g. "needs_dod").
+    /// Preserved for edge-condition evaluation when custom outcomes are used.
+    public var rawOutcome: String?
     public var contextUpdates: [String: String]
     public var preferredLabel: String
     public var suggestedNextIds: [String]
@@ -25,6 +28,7 @@ public struct CodergenResult: Sendable {
     public init(
         response: String,
         status: OutcomeStatus = .success,
+        rawOutcome: String? = nil,
         contextUpdates: [String: String] = [:],
         preferredLabel: String = "",
         suggestedNextIds: [String] = [],
@@ -32,6 +36,7 @@ public struct CodergenResult: Sendable {
     ) {
         self.response = response
         self.status = status
+        self.rawOutcome = rawOutcome
         self.contextUpdates = contextUpdates
         self.preferredLabel = preferredLabel
         self.suggestedNextIds = suggestedNextIds
@@ -257,6 +262,7 @@ public final class CodergenHandler: NodeHandler, Sendable {
         // 10. Write status.json
         let outcome = Outcome(
             status: status,
+            rawOutcome: result.rawOutcome,
             preferredLabel: result.preferredLabel,
             suggestedNextIds: result.suggestedNextIds,
             contextUpdates: updates,

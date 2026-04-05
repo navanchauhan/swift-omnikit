@@ -388,6 +388,7 @@ public final class ACPAgentBackend: CodergenBackend, Sendable {
             return CodergenResult(
                 response: response,
                 status: status,
+                rawOutcome: outcomeString,
                 contextUpdates: contextUpdates,
                 preferredLabel: preferredLabel,
                 suggestedNextIds: suggestedNextIds,
