@@ -1,0 +1,81 @@
+services:
+  control-plane:
+    build:
+      context: .
+      dockerfile: Dockerfile.agent
+    image: omnikit-agent:latest
+    restart: unless-stopped
+    command:
+      - --mesh-port
+      - "9100"
+      - --http-ingress-port
+      - "8080"
+      - --http-ingress-host
+      - "0.0.0.0"
+      - --telegram-polling
+    env_file: .env
+    environment:
+      - THE_AGENT_STATE_ROOT=/data/state
+    volumes:
+      - agent-state:/data/state
+      - agent-home:/root
+      - workspace:/workspace
+    ports:
+      - "8180:8080"
+      - "9100:9100"
+
+  worker:
+    image: omnikit-agent:latest
+    restart: unless-stopped
+    entrypoint: ["TheAgentWorker"]
+    command:
+      - --mesh-url
+      - http://control-plane:9100
+      - --acp-profile
+      - codex
+      - --acp-model
+      - gpt-5.3-codex
+    env_file: .env
+    environment:
+      - THE_AGENT_STATE_ROOT=/data/state
+    volumes:
+      - agent-state:/data/state
+      - agent-home:/root
+      - workspace:/workspace
+    depends_on:
+      - control-plane
+
+  supervisor:
+    image: omnikit-agent:latest
+    restart: unless-stopped
+    entrypoint: ["TheAgentSupervisor"]
+    command:
+      - --interval-seconds
+      - "10"
+    env_file: .env
+    environment:
+      - THE_AGENT_STATE_ROOT=/data/state
+    volumes:
+      - agent-state:/data/state
+    depends_on:
+      - control-plane
+
+volumes:
+  agent-state:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: /mnt/user/appdata/omnikit-agent/state
+  agent-home:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: /mnt/user/appdata/omnikit-agent/home
+  workspace:
+    driver: local
+    driver_opts:
+      type: none
+      o: bind
+      device: /mnt/user/appdata/omnikit-agent/workspace
