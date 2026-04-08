@@ -1,0 +1,53 @@
+# ── Build stage ──────────────────────────────────────────────────────────────
+FROM swiftlang/swift:nightly-6.1-jammy AS builder
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential cmake pkg-config git curl ca-certificates \
+    libsqlite3-dev zlib1g-dev \
+    && rm -rf /var/lib/apt/lists/* \
+    && pkg-config --cflags --libs sqlite3
+
+WORKDIR /app
+COPY Package.swift Package.resolved ./
+COPY Sources/ Sources/
+COPY Tests/ Tests/
+
+RUN swift build -c release --product TheAgentControlPlane && \
+    swift build -c release --product TheAgentWorker && \
+    swift build -c release --product TheAgentSupervisor && \
+    ls -la .build/release/TheAgent*
+
+# ── Runtime stage ────────────────────────────────────────────────────────────
+FROM ubuntu:22.04
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ca-certificates curl git libsqlite3-0 libcurl4 openssh-client gnupg \
+    && curl -fsSL https://deb.nodesource.com/setup_22.x | bash - \
+    && apt-get install -y --no-install-recommends nodejs \
+    && curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
+       -o /usr/share/keyrings/githubcli-archive-keyring.gpg \
+    && echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" \
+       > /etc/apt/sources.list.d/github-cli.list \
+    && apt-get update && apt-get install -y --no-install-recommends gh \
+    && rm -rf /var/lib/apt/lists/*
+
+# Codex CLI (provides codex-acp binary for ACP mode)
+RUN npm install -g @openai/codex
+
+# Swift runtime libraries
+COPY --from=builder /usr/lib/swift/linux /usr/lib/swift/linux
+COPY --from=builder /usr/lib/swift/dispatch /usr/lib/swift/dispatch
+ENV LD_LIBRARY_PATH=/usr/lib/swift/linux
+
+# Agent binaries
+COPY --from=builder /app/.build/release/TheAgentControlPlane /usr/local/bin/
+COPY --from=builder /app/.build/release/TheAgentWorker /usr/local/bin/
+COPY --from=builder /app/.build/release/TheAgentSupervisor /usr/local/bin/
+# AttractorCLI omitted — using ACP/Codex mode, not attractor
+
+# Resource bundles — place next to binaries where Swift expects them
+RUN --mount=from=builder,source=/app/.build/release,target=/builder-release \
+    cp -r /builder-release/*.resources /usr/local/bin/ 2>/dev/null || true
+
+WORKDIR /workspace
+ENTRYPOINT ["TheAgentControlPlane"]

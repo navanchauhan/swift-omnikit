@@ -12,3 +12,4 @@ Tests/tui/output/
 .ai/
 semport/
 Sources/CBlinkEmulator/.build/
+.env

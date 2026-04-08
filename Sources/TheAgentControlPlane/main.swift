@@ -5,6 +5,16 @@ import TheAgentControlPlaneKit
 import TheAgentIngress
 import TheAgentTelegram
 
+/// Concurrency-safe stderr writer for use in Sendable closures and Tasks.
+private struct StderrWriter: Sendable {
+    func write(_ message: String) {
+        var standardError = FileHandle.standardError
+        standardError.write(Data(message.utf8))
+    }
+}
+
+private let stderrWriter = StderrWriter()
+
 @main
 enum TheAgentControlPlaneMain {
     static func main() async throws {
@@ -146,7 +156,7 @@ enum TheAgentControlPlaneMain {
                     webhookHandler: handler,
                     allowedUpdates: await handler.allowedUpdates(),
                     onError: { error in
-                        fputs("Telegram polling error: \(error)\n", stderr)
+                        stderrWriter.write("Telegram polling error: \(error)\n")
                     }
                 )
                 telegramPollingTask = Task {
@@ -157,7 +167,7 @@ enum TheAgentControlPlaneMain {
                         )
                     } catch is CancellationError {
                     } catch {
-                        fputs("Telegram polling stopped: \(error)\n", stderr)
+                        stderrWriter.write("Telegram polling stopped: \(error)\n")
                     }
                 }
                 print("TheAgentControlPlane telegram polling enabled.")
@@ -258,7 +268,7 @@ enum TheAgentControlPlaneMain {
                     }
                 } catch is CancellationError {
                 } catch {
-                    fputs("Supervisor loop stopped: \(error)\n", stderr)
+                    stderrWriter.write("Supervisor loop stopped: \(error)\n")
                 }
             }
             do {

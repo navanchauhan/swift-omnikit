@@ -116,7 +116,7 @@ public final class RootAgentRuntime: @unchecked Sendable {
             resolvedClient = client
             ownedClient = nil
         } else {
-            resolvedClient = try Client.fromEnv()
+            resolvedClient = try await Client.fromEnvAsync()
             ownedClient = resolvedClient
         }
 
