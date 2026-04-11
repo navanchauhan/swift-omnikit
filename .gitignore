@@ -13,3 +13,5 @@ Tests/tui/output/
 semport/
 Sources/CBlinkEmulator/.build/
 .env
+__pycache__/
+*.pyc
