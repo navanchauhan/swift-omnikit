@@ -145,11 +145,13 @@ public final class RootOrchestratorProfile: ProviderProfile, @unchecked Sendable
             userInstructions: mergedInstructions,
             gitContext: gitContext
         )
+
+        var sections = [basePrompt, buildRuntimeClockSection()]
         let durableState = buildDurableStateSection()
-        guard !durableState.isEmpty else {
-            return basePrompt
+        if !durableState.isEmpty {
+            sections.append(durableState)
         }
-        return basePrompt + "\n\n" + durableState
+        return sections.joined(separator: "\n\n")
     }
 }
 
@@ -206,6 +208,25 @@ private extension RootOrchestratorProfile {
         ])
 
         return lines.joined(separator: "\n")
+    }
+
+    func buildRuntimeClockSection(now: Date = Date()) -> String {
+        let isoFormatter = ISO8601DateFormatter()
+        isoFormatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        let timestamp = isoFormatter.string(from: now)
+
+        let displayFormatter = DateFormatter()
+        displayFormatter.locale = Locale(identifier: "en_US_POSIX")
+        displayFormatter.dateFormat = "EEEE, MMMM d, yyyy 'at' h:mm:ss a zzz"
+        let displayTime = displayFormatter.string(from: now)
+
+        return """
+        # Runtime Clock Context
+
+        - Current local date/time: \(displayTime)
+        - Current timestamp (ISO 8601): \(timestamp)
+        - Use this runtime clock context when the user asks what time or date it is right now.
+        """
     }
 
     func buildDurableStateSection() -> String {

@@ -23,7 +23,7 @@ public struct RootAgentRuntimeOptions: Sendable {
         sessionID: String = "root",
         sessionConfig: SessionConfig = SessionConfig(),
         autoRestoreFromStorage: Bool = true,
-        enableNativeWebSearch: Bool = true,
+        enableNativeWebSearch: Bool = false,
         nativeWebSearchExternalWebAccess: Bool? = true,
         enableSubagentTools: Bool = true,
         forceCodexSystemPrompt: Bool = false,
@@ -213,6 +213,8 @@ public final class RootAgentRuntime: @unchecked Sendable {
 }
 
 private extension RootAgentRuntimeOptions {
+    static let defaultLLMInactivityTimeoutSeconds = 180.0
+
     var effectiveEnableNativeWebSearch: Bool {
         provider == .openai && (enableNativeWebSearch || yoloMode)
     }
@@ -234,6 +236,9 @@ private extension RootAgentRuntimeOptions {
 
     func effectiveSessionConfig() -> SessionConfig {
         var resolved = sessionConfig
+        if resolved.llmInactivityTimeoutSeconds == nil {
+            resolved.llmInactivityTimeoutSeconds = resolveLLMInactivityTimeoutSeconds()
+        }
         if yoloMode {
             if resolved.reasoningEffort == nil {
                 resolved.reasoningEffort = "high"
@@ -244,5 +249,19 @@ private extension RootAgentRuntimeOptions {
             resolved.maxSubagentDepth = max(resolved.maxSubagentDepth, 3)
         }
         return resolved
+    }
+
+    private func resolveLLMInactivityTimeoutSeconds() -> Double {
+        let env = ProcessInfo.processInfo.environment
+        let keys = [
+            "ATTRACTOR_AGENT_INACTIVITY_TIMEOUT_SECONDS",
+            "ATTRACTOR_LLM_INACTIVITY_TIMEOUT_SECONDS",
+        ]
+        for key in keys {
+            if let raw = env[key], let value = Double(raw), value > 0 {
+                return value
+            }
+        }
+        return Self.defaultLLMInactivityTimeoutSeconds
     }
 }

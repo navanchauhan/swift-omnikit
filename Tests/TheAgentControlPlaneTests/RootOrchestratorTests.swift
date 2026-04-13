@@ -95,6 +95,24 @@ private func rootOrchestratorResponse(
 @Suite
 struct RootOrchestratorTests {
     @Test
+    func runtimeClockSectionIncludesHumanAndISOTimestamps() {
+        let contextBuffer = RootPromptContextBuffer()
+        let profile = RootOrchestratorProfile(
+            wrapping: OpenAIProfile(model: "gpt-test"),
+            contextBuffer: contextBuffer,
+            additionalTools: []
+        )
+        let now = Date(timeIntervalSince1970: 1_762_260_245)
+
+        let section = profile.buildRuntimeClockSection(now: now)
+
+        #expect(section.contains("# Runtime Clock Context"))
+        #expect(section.contains("Current local date/time:"))
+        #expect(section.contains("Current timestamp (ISO 8601):"))
+        #expect(section.contains("2025-11-02T20:30:45"))
+    }
+
+    @Test
     func openAIRootDefaultsToGPT54AndAdvertisesDirectCodingTools() async throws {
         let contextBuffer = RootPromptContextBuffer()
         let profile = RootOrchestratorProfile(
@@ -139,6 +157,10 @@ struct RootOrchestratorTests {
         #expect(prompt.localizedStandardContains("retry the same search or action at most three times"))
         #expect(prompt.localizedStandardContains("use the smallest tool that can complete the task"))
         #expect(prompt.localizedStandardContains("prefer direct tool calls for simple work"))
+        #expect(prompt.localizedStandardContains("runtime clock context"))
+        #expect(prompt.localizedStandardContains("current local date/time"))
+        #expect(prompt.localizedStandardContains("current timestamp (iso 8601)"))
+        #expect(prompt.localizedStandardContains("when the user asks what time or date it is right now"))
     }
 
     @Test
@@ -168,6 +190,22 @@ struct RootOrchestratorTests {
         #expect(serialized["delivery_summary"] as? String == "deployed cleanly")
         #expect(serialized["release_generation"] as? String == "2")
         #expect(serialized["rollback_release_id"] as? String == "release-0")
+    }
+
+    @Test
+    func rootRuntimeDefaultsLLMInactivityTimeoutTo180Seconds() {
+        let config = RootAgentRuntimeOptions().effectiveSessionConfig()
+
+        #expect(config.llmInactivityTimeoutSeconds == 180)
+    }
+
+    @Test
+    func rootRuntimePreservesExplicitLLMInactivityTimeout() {
+        let config = RootAgentRuntimeOptions(
+            sessionConfig: SessionConfig(llmInactivityTimeoutSeconds: 42)
+        ).effectiveSessionConfig()
+
+        #expect(config.llmInactivityTimeoutSeconds == 42)
     }
 
     @Test

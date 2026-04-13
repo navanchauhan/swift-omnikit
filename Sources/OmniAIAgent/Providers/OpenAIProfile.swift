@@ -9,7 +9,7 @@ public final class OpenAIProfile: ProviderProfile, @unchecked Sendable {
     private let webSearchExternalWebAccess: Bool?
     private let forceCodexSystemPrompt: Bool
     public let supportsReasoning = true
-    public let supportsStreaming = true
+    public let supportsStreaming: Bool
     public let supportsParallelToolCalls = true
     public let contextWindowSize = 200_000
 
@@ -34,6 +34,7 @@ public final class OpenAIProfile: ProviderProfile, @unchecked Sendable {
         self.includeNativeWebSearch = includeWebSearch
         self.webSearchExternalWebAccess = webSearchExternalWebAccess
         self.forceCodexSystemPrompt = forceCodexSystemPrompt
+        self.supportsStreaming = true
 
         let registry = ToolRegistry()
         if useUnifiedExec {

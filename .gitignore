@@ -12,6 +12,7 @@ Tests/tui/output/
 .ai/
 semport/
 Sources/CBlinkEmulator/.build/
+.agent-data/
 .env
 __pycache__/
 *.pyc

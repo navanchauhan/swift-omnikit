@@ -13,13 +13,19 @@ services:
       - --http-ingress-host
       - "0.0.0.0"
       - --telegram-polling
+      - --provider
+      - openai
+      - --model
+      - huihui-qwopus3.5-9b-v3-abliterated
     env_file: .env
     environment:
       - THE_AGENT_STATE_ROOT=/data/state
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     volumes:
-      - agent-state:/data/state
-      - agent-home:/root
-      - workspace:/workspace
+      - ./.agent-data/state:/data/state
+      - ./.agent-data/home:/root
+      - .:/workspace
     ports:
       - "8180:8080"
       - "9100:9100"
@@ -39,9 +45,9 @@ services:
     environment:
       - THE_AGENT_STATE_ROOT=/data/state
     volumes:
-      - agent-state:/data/state
-      - agent-home:/root
-      - workspace:/workspace
+      - ./.agent-data/state:/data/state
+      - ./.agent-data/home:/root
+      - .:/workspace
     depends_on:
       - control-plane
 
@@ -56,26 +62,6 @@ services:
     environment:
       - THE_AGENT_STATE_ROOT=/data/state
     volumes:
-      - agent-state:/data/state
+      - ./.agent-data/state:/data/state
     depends_on:
       - control-plane
-
-volumes:
-  agent-state:
-    driver: local
-    driver_opts:
-      type: none
-      o: bind
-      device: /mnt/user/appdata/omnikit-agent/state
-  agent-home:
-    driver: local
-    driver_opts:
-      type: none
-      o: bind
-      device: /mnt/user/appdata/omnikit-agent/home
-  workspace:
-    driver: local
-    driver_opts:
-      type: none
-      o: bind
-      device: /mnt/user/appdata/omnikit-agent/workspace
