@@ -156,6 +156,9 @@ public final class CodergenHandler: NodeHandler, Sendable {
         if let userInstructions = node.rawAttributes["user_instructions"]?.stringValue, !userInstructions.isEmpty {
             context.set("_current_node_user_instructions", userInstructions)
         }
+        if let requireStatusBlock = node.rawAttributes["require_status_block"]?.boolValue {
+            context.set("_current_node_require_status_block", requireStatusBlock ? "true" : "false")
+        }
         if let parallelToolCalls = node.rawAttributes["parallel_tool_calls"]?.boolValue {
             context.set("_current_node_parallel_tool_calls", parallelToolCalls ? "true" : "false")
         }
@@ -254,10 +257,33 @@ public final class CodergenHandler: NodeHandler, Sendable {
             status = .success
         }
 
+        var combinedNotes = result.notes
+        var contractCheckOutput = ""
+        if status == .success || status == .partialSuccess {
+            let contractValidation = try await validateSuccessCriteriaIfNeeded(
+                node: node,
+                stageDir: stageDir
+            )
+            contractCheckOutput = contractValidation.output
+            if !contractValidation.note.isEmpty {
+                if combinedNotes.isEmpty {
+                    combinedNotes = contractValidation.note
+                } else {
+                    combinedNotes += " | " + contractValidation.note
+                }
+            }
+            if let overrideStatus = contractValidation.overrideStatus {
+                status = overrideStatus
+            }
+        }
+
         // 9. Store response in context for downstream stages
         var updates = result.contextUpdates
         updates["last_response"] = String(result.response.prefix(8000))
         updates["last_stage"] = node.id
+        if !contractCheckOutput.isEmpty {
+            updates["contract_check_output"] = String(contractCheckOutput.prefix(4000))
+        }
 
         // 10. Write status.json
         let outcome = Outcome(
@@ -266,7 +292,8 @@ public final class CodergenHandler: NodeHandler, Sendable {
             preferredLabel: result.preferredLabel,
             suggestedNextIds: result.suggestedNextIds,
             contextUpdates: updates,
-            notes: result.notes
+            notes: combinedNotes,
+            failureReason: status == .fail && combinedNotes.isEmpty ? "success criteria validation failed" : ""
         )
         let statusJSON = outcome.toStatusJSON()
         let statusData = try JSONSerialization.data(withJSONObject: statusJSON, options: [.prettyPrinted, .sortedKeys])
@@ -297,6 +324,57 @@ public final class CodergenHandler: NodeHandler, Sendable {
             hash = hash &* prime
         }
         return String(hash, radix: 16)
+    }
+
+    private struct SuccessCriteriaValidationResult {
+        let overrideStatus: OutcomeStatus?
+        let note: String
+        let output: String
+    }
+
+    private func validateSuccessCriteriaIfNeeded(
+        node: Node,
+        stageDir: URL
+    ) async throws -> SuccessCriteriaValidationResult {
+        let command = node.rawAttributes["success_criteria_command"]?.stringValue
+            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        guard !command.isEmpty
+        else {
+            return SuccessCriteriaValidationResult(overrideStatus: nil, note: "", output: "")
+        }
+
+        let validation = try await runCommandWithExitStatus(command, nodeId: node.id, stageDir: stageDir)
+        let contractOutput = [validation.stdout, validation.stderr]
+            .filter { !$0.isEmpty }
+            .joined(separator: validation.stdout.isEmpty || validation.stderr.isEmpty ? "" : "\n\n")
+
+        let contractFile = stageDir.appendingPathComponent("contract-check.txt")
+        let persistedOutput = contractOutput.isEmpty
+            ? "exit_status=\(validation.exitStatus)\n"
+            : "exit_status=\(validation.exitStatus)\n\(contractOutput)\n"
+        try Data(persistedOutput.utf8).write(to: contractFile)
+
+        guard validation.exitStatus != 0 else {
+            let note = "Success criteria passed."
+            return SuccessCriteriaValidationResult(
+                overrideStatus: nil,
+                note: note,
+                output: persistedOutput
+            )
+        }
+
+        let requestedFailureOutcome = node.rawAttributes["success_criteria_failure_outcome"]?.stringValue
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased() ?? ""
+        let overrideStatus = OutcomeStatus(rawValue: requestedFailureOutcome) ?? .retry
+        let summary = "Success criteria failed (exit \(validation.exitStatus))."
+        let detail = contractOutput.trimmingCharacters(in: .whitespacesAndNewlines)
+        let note = detail.isEmpty ? summary : "\(summary) \(detail)"
+        return SuccessCriteriaValidationResult(
+            overrideStatus: overrideStatus,
+            note: note,
+            output: persistedOutput
+        )
     }
 
     // MARK: - Shell Hook Execution
@@ -351,6 +429,62 @@ public final class CodergenHandler: NodeHandler, Sendable {
         }
 
         return outStr.trimmingCharacters(in: CharacterSet.whitespacesAndNewlines)
+    }
+
+    private struct CommandWithExitStatusResult {
+        let exitStatus: Int32
+        let stdout: String
+        let stderr: String
+    }
+
+    private func runCommandWithExitStatus(
+        _ script: String,
+        nodeId: String,
+        stageDir: URL
+    ) async throws -> CommandWithExitStatusResult {
+        let process = Process()
+        let stdout = Pipe()
+        let stderr = Pipe()
+        let stdoutData = _ShellHookDataBox()
+        let stderrData = _ShellHookDataBox()
+
+        process.executableURL = URL(fileURLWithPath: "/bin/sh")
+        process.arguments = ["-c", script]
+        process.standardOutput = stdout
+        process.standardError = stderr
+
+        var env = ProcessInfo.processInfo.environment
+        env["ATTRACTOR_NODE_ID"] = nodeId
+        env["ATTRACTOR_STAGE_DIR"] = stageDir.path
+        process.environment = env
+
+        let stdoutQueue = DispatchQueue(label: "attractor.command.stdout")
+        let stderrQueue = DispatchQueue(label: "attractor.command.stderr")
+        stdoutQueue.async {
+            stdoutData.store(stdout.fileHandleForReading.readDataToEndOfFile())
+        }
+        stderrQueue.async {
+            stderrData.store(stderr.fileHandleForReading.readDataToEndOfFile())
+        }
+
+        do {
+            try process.run()
+        } catch {
+            try? stdout.fileHandleForWriting.close()
+            try? stderr.fileHandleForWriting.close()
+            stdoutQueue.sync {}
+            stderrQueue.sync {}
+            throw error
+        }
+        await _waitForProcessExit(process)
+        stdoutQueue.sync {}
+        stderrQueue.sync {}
+
+        return CommandWithExitStatusResult(
+            exitStatus: process.terminationStatus,
+            stdout: String(data: stdoutData.load(), encoding: .utf8) ?? "",
+            stderr: String(data: stderrData.load(), encoding: .utf8) ?? ""
+        )
     }
 }
 

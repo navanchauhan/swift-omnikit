@@ -123,19 +123,39 @@ public final class CodingAgentBackend: CodergenBackend, Sendable {
             )
         }
 
-        // Follow-up: If no JSON status block, ask for summary + block (single follow-up only)
+        // Follow-up: If no JSON status block, ask for summary + block.
         if extractJSONBlock(from: initialResponse) == nil {
-            await session.submit(
-                "Summarize everything you did: files read, changes made, findings. " +
-                "Then end with the JSON status block:\n\n" +
-                "```json\n{\n  \"outcome\": \"success\",\n  \"preferred_next_label\": \"\",\n  " +
-                "\"context_updates\": {},\n  \"notes\": \"what you accomplished\"\n}\n```"
-            )
+            let followupPrompt: String
+            if overrides.requireStatusBlock {
+                followupPrompt =
+                    "Do not do any more work. Use the artifacts and work already completed in this stage. " +
+                    "Reply with a short summary and then the exact fenced JSON status block:\n\n" +
+                    "```json\n{\n  \"outcome\": \"success\",\n  \"preferred_next_label\": \"\",\n  " +
+                    "\"context_updates\": {},\n  \"notes\": \"what you accomplished\"\n}\n```"
+            } else {
+                followupPrompt =
+                    "Summarize everything you did: files read, changes made, findings. " +
+                    "Then end with the JSON status block:\n\n" +
+                    "```json\n{\n  \"outcome\": \"success\",\n  \"preferred_next_label\": \"\",\n  " +
+                    "\"context_updates\": {},\n  \"notes\": \"what you accomplished\"\n}\n```"
+            }
+            await session.submit(followupPrompt)
         }
 
         // 8. Extract the final response from session history (including all follow-ups)
-        let history = await session.getHistory()
-        let finalResponse = buildFinalResponse(from: history, tracker: tracker)
+        var history = await session.getHistory()
+        var finalResponse = buildFinalResponse(from: history, tracker: tracker)
+
+        if overrides.requireStatusBlock && extractJSONBlock(from: finalResponse) == nil {
+            await session.submit(
+                "Do not do any more analysis, tool use, or file edits. " +
+                "Return only the fenced JSON status block now, using the stage outcome that matches the artifacts already on disk.\n\n" +
+                "```json\n{\n  \"outcome\": \"success\",\n  \"preferred_next_label\": \"\",\n  " +
+                "\"context_updates\": {},\n  \"notes\": \"what you accomplished\"\n}\n```"
+            )
+            history = await session.getHistory()
+            finalResponse = buildFinalResponse(from: history, tracker: tracker)
+        }
 
         if codingAgentProducedNoSubstantiveWork(from: history) {
             let detail = noSubstantiveWorkDetail(errors: errorTracker.errors)
@@ -160,7 +180,7 @@ public final class CodingAgentBackend: CodergenBackend, Sendable {
             )
         }
 
-        let parsed = parseResponse(finalResponse)
+        let parsed = parseResponse(finalResponse, requireStatusBlock: overrides.requireStatusBlock)
 
         // Log errors if agent produced no output
         let errors = errorTracker.errors
@@ -317,6 +337,7 @@ public final class CodingAgentBackend: CodergenBackend, Sendable {
             maxCommandTimeoutMs: parseInt(context.getString("_current_node_max_command_timeout_ms")),
             llmInactivityTimeoutSeconds: parseDouble(context.getString("_current_node_llm_inactivity_timeout_seconds")),
             loopDetectionWindow: parseInt(context.getString("_current_node_loop_detection_window")),
+            requireStatusBlock: parseBool(context.getString("_current_node_require_status_block")) ?? false,
             parallelToolCalls: parseBool(context.getString("_current_node_parallel_tool_calls")),
             userInstructions: {
                 let value = context.getString("_current_node_user_instructions")
@@ -349,6 +370,10 @@ public final class CodingAgentBackend: CodergenBackend, Sendable {
     }
 
     private func buildSessionID(for resumeKey: String?) -> String {
+        let env = ProcessInfo.processInfo.environment
+        if let raw = env["ATTRACTOR_DISABLE_AGENT_RESUME"], parseBool(raw) == true {
+            return UUID().uuidString
+        }
         guard let resumeKey, !resumeKey.isEmpty else {
             return UUID().uuidString
         }
@@ -399,7 +424,7 @@ public final class CodingAgentBackend: CodergenBackend, Sendable {
 
     // MARK: - Response Parsing (reused from LLMKitBackend)
 
-    private func parseResponse(_ response: String) -> CodergenResult {
+    private func parseResponse(_ response: String, requireStatusBlock: Bool) -> CodergenResult {
         if let jsonBlock = extractJSONBlock(from: response) {
             if let data = jsonBlock.data(using: .utf8),
                let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
@@ -432,10 +457,19 @@ public final class CodingAgentBackend: CodergenBackend, Sendable {
             }
         }
 
+        if requireStatusBlock {
+            writeToAttractorStderr("[CodingAgentBackend:WARN] No structured status block found; returning retry because require_status_block=true\n")
+            return CodergenResult(
+                response: response,
+                status: .retry,
+                notes: "Agent completed some work but did not return the required structured status block; retrying the stage"
+            )
+        }
+
         // No JSON block found, but if the agent did real work (the caller already
         // checked for no-substantive-work above), default to success rather than
-        // retrying endlessly.  Steering nodes that need a specific outcome should
-        // include explicit JSON-block instructions in their prompt.
+        // retrying endlessly. Steering nodes that need a specific outcome should
+        // set require_status_block=true.
         writeToAttractorStderr("[CodingAgentBackend] No structured status block found; defaulting to success\n")
         return CodergenResult(
             response: response,
@@ -464,6 +498,7 @@ private struct NodeOverrides: Sendable {
     var maxCommandTimeoutMs: Int?
     var llmInactivityTimeoutSeconds: Double?
     var loopDetectionWindow: Int?
+    var requireStatusBlock: Bool
     var parallelToolCalls: Bool?
     var userInstructions: String?
     var excludedTools: [String]
