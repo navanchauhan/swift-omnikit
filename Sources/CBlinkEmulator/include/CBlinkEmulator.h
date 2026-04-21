@@ -60,6 +60,10 @@ typedef struct {
     size_t stderr_len;
 } blink_run_result_t;
 
+typedef struct {
+    void *opaque;
+} blink_pty_session_t;
+
 /// Run an x86-64 ELF binary under blink emulation.
 ///
 /// This function forks a child process, sets up the blink emulator with the
@@ -112,6 +116,30 @@ typedef struct {
     const flatvfs_entry_t *entries;
     int entry_count;
 } flatvfs_t;
+
+/// Start an interactive PTY-backed blink session using a flat VFS snapshot.
+///
+/// The returned PTY master file descriptor is owned by the caller. The session
+/// handle must be destroyed with blink_pty_session_destroy() after waiting for
+/// exit or requesting termination.
+int blink_pty_session_start_memvfs(const blink_run_config_t *config,
+                                   const flatvfs_t *vfs,
+                                   int rows,
+                                   int cols,
+                                   blink_pty_session_t **out_session,
+                                   int *out_master_fd);
+
+/// Request termination of a PTY-backed interactive session.
+int blink_pty_session_terminate(blink_pty_session_t *session);
+
+/// Update the PTY-backed session window size.
+int blink_pty_session_resize(blink_pty_session_t *session, int rows, int cols);
+
+/// Wait for a PTY-backed interactive session to finish.
+int blink_pty_session_wait(blink_pty_session_t *session, int *out_exit_code);
+
+/// Destroy a PTY-backed interactive session handle.
+void blink_pty_session_destroy(blink_pty_session_t *session);
 
 /// Run blink with a flat VFS snapshot as the guest root filesystem.
 ///

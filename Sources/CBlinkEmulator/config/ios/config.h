@@ -1,6 +1,10 @@
 #ifndef BLINK_CONFIG_H_
 #define BLINK_CONFIG_H_
 
+#if defined(__APPLE__)
+#include <TargetConditionals.h>
+#endif
+
 #define DISABLE_JIT
 // #define DISABLE_X87
 // #define DISABLE_THREADS
@@ -18,7 +22,9 @@
 // #define DISABLE_ROM
 // #define DISABLE_BMI2
 
-// #define HAVE_FORK
+#if defined(__APPLE__) && TARGET_OS_SIMULATOR
+#define HAVE_FORK
+#endif
 #define HAVE_SYNC
 // #define HAVE_DUP3
 // #define HAVE_PIPE2
@@ -40,7 +46,7 @@
 #define HAVE_STRCHRNUL
 #define HAVE_VASPRINTF
 // #define HAVE_SETRESUID
-#define HAVE_KERN_ARND
+// #define HAVE_KERN_ARND
 // #define HAVE_GETRANDOM
 // #define HAVE_SETGROUPS
 // #define HAVE_LIBUNWIND
@@ -63,7 +69,7 @@
 #define HAVE_STRUCT_TIMEZONE
 // #define HAVE_SCHED_GETAFFINITY
 // #define HAVE_PTHREAD_PROCESS_SHARED
-// #define HAVE_SYS_MOUNT_H
+#define HAVE_SYS_MOUNT_H
 #define HAVE_PTHREAD_SETCANCELSTATE
 #define HAVE_SOCKATMARK
 

@@ -12,6 +12,8 @@ public enum OpenAIProviderOptionKeys {
     public static let websocketBaseURL = "_omnikit_websocket_base_url"
     /// Hosted OpenAI Responses tools that should be injected directly into the request payload.
     public static let hostedTools = "_omnikit_hosted_tools"
+    /// Disables `previous_response_id` continuation so callers can resend full history.
+    public static let disablePreviousResponseId = "_omnikit_disable_previous_response_id"
 
     static let internalKeys: Set<String> = [
         includeNativeWebSearch,
@@ -19,6 +21,7 @@ public enum OpenAIProviderOptionKeys {
         responsesTransport,
         websocketBaseURL,
         hostedTools,
+        disablePreviousResponseId,
     ]
 
     /// Prefer websocket on Darwin, but fall back to SSE on non-Darwin runtimes where

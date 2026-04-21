@@ -135,6 +135,9 @@ public final class LocalExecutionEnvironment: ExecutionEnvironment, @unchecked S
         workingDir: String?,
         envVars: [String: String]?
     ) async throws -> ExecResult {
+        #if os(iOS) || os(tvOS) || os(watchOS) || os(visionOS)
+        throw ToolError.validationError("Local command execution is unavailable on this platform")
+        #else
         let resolvedWorkingDir = workingDir.map { resolvePath($0) } ?? self.workingDir
         let startTime = Date()
 
@@ -231,6 +234,7 @@ public final class LocalExecutionEnvironment: ExecutionEnvironment, @unchecked S
             timedOut: timeoutFlag.isTimedOut(),
             durationMs: durationMs
         )
+        #endif
     }
 
     // MARK: - Search Operations

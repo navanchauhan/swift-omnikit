@@ -5,18 +5,31 @@ import PackageDescription
 import CompilerPluginSupport
 import Foundation
 
-let blinkSourcesRoot = URL(fileURLWithPath: "Sources/CBlinkEmulator/vendor/blink/blink")
-let excludedBlinkSources: Set<String> = ["blink.c", "blinkenlights.c", "uop.c", "sse2.c", "oneoff.c"]
+let packageRoot = URL(fileURLWithPath: #filePath)
+    .deletingLastPathComponent()
+    .standardizedFileURL
+let blinkSourcesRoot = packageRoot.appending(path: "Sources/CBlinkEmulator/vendor/blink/blink", directoryHint: .isDirectory)
+let excludedBlinkSources: Set<String> = ["blink.c", "blinkenlights.c", "uop.c", "sse2.c", "oneoff.c", "inotifyfd.c"]
 let requiredBlinkSourceFiles: Set<String> = [
     "vendor/blink/blink/epollfd.c",
     "vendor/blink/blink/eventfd.c",
 ]
+let availableRequiredBlinkSourceFiles: Set<String> = Set(
+    requiredBlinkSourceFiles.filter { relativePath in
+        FileManager.default.fileExists(atPath: packageRoot.appending(path: "Sources/CBlinkEmulator/\(relativePath)").path)
+    }
+)
+// Re-evaluate vendored Blink sources from the current checkout at manifest load time.
 let blinkSourceFiles: [String] = Set(
     ((try? FileManager.default.contentsOfDirectory(atPath: blinkSourcesRoot.path)) ?? [])
         .filter { $0.hasSuffix(".c") && !excludedBlinkSources.contains($0) }
         .map { "vendor/blink/blink/\($0)" }
-).union(requiredBlinkSourceFiles)
-    .sorted()
+).union(availableRequiredBlinkSourceFiles)
+.sorted()
+let blinkWrapperFiles: [String] = blinkSourceFiles.map { relativePath in
+    let stem = URL(fileURLWithPath: relativePath).deletingPathExtension().lastPathComponent
+    return "blink_vendor_\(stem).c"
+}
 
 let commonSwiftSettings: [SwiftSetting] = [
     .unsafeFlags(["-warn-concurrency", "-strict-concurrency=complete"]),
@@ -26,6 +39,24 @@ let commonSwiftSettings: [SwiftSetting] = [
 let swift6CommonSwiftSettings: [SwiftSetting] = [
     .swiftLanguageMode(.v6),
 ] + commonSwiftSettings
+
+#if os(macOS)
+let zlibPkgConfig: String? = nil
+let zlibProviders: [SystemPackageProvider]? = nil
+let sqlitePkgConfig: String? = nil
+let sqliteProviders: [SystemPackageProvider]? = nil
+#else
+let zlibPkgConfig: String? = "zlib"
+let zlibProviders: [SystemPackageProvider]? = [
+    .apt(["zlib1g-dev"]),
+    .brew(["zlib"]),
+]
+let sqlitePkgConfig: String? = "sqlite3"
+let sqliteProviders: [SystemPackageProvider]? = [
+    .apt(["libsqlite3-dev"]),
+    .brew(["sqlite"]),
+]
+#endif
 
 let package = Package(
     name: "OmniKit",
@@ -206,19 +237,13 @@ let package = Package(
         // Targets can depend on other targets in this package and products from dependencies.
         .systemLibrary(
             name: "CZlib",
-            pkgConfig: "zlib",
-            providers: [
-                .apt(["zlib1g-dev"]),
-                .brew(["zlib"]),
-            ]
+            pkgConfig: zlibPkgConfig,
+            providers: zlibProviders
         ),
         .systemLibrary(
             name: "CSQLite",
-            pkgConfig: "sqlite3",
-            providers: [
-                .apt(["libsqlite3-dev"]),
-                .brew(["sqlite"]),
-            ]
+            pkgConfig: sqlitePkgConfig,
+            providers: sqliteProviders
         ),
         .target(
             name: "OmniSwiftUI",
@@ -294,6 +319,7 @@ let package = Package(
                 .headerSearchPath("../CBlinkEmulator/config/linux", .when(platforms: [.linux])),
                 .headerSearchPath("../CBlinkEmulator/config/macos", .when(platforms: [.macOS])),
                 .headerSearchPath("../CBlinkEmulator/config/ios", .when(platforms: [.iOS, .tvOS, .watchOS, .visionOS])),
+                .define("DISABLE_JIT", .when(platforms: [.iOS, .tvOS, .watchOS, .visionOS])),
                 .define("NDEBUG"),
                 .define("_FILE_OFFSET_BITS", to: "64"),
                 .define("_DARWIN_C_SOURCE", .when(platforms: [.macOS])),
@@ -325,6 +351,7 @@ let package = Package(
                 .headerSearchPath("../CBlinkEmulator/config/linux", .when(platforms: [.linux])),
                 .headerSearchPath("../CBlinkEmulator/config/macos", .when(platforms: [.macOS])),
                 .headerSearchPath("../CBlinkEmulator/config/ios", .when(platforms: [.iOS, .tvOS, .watchOS, .visionOS])),
+                .define("DISABLE_JIT", .when(platforms: [.iOS, .tvOS, .watchOS, .visionOS])),
                 .define("NDEBUG"),
                 .define("_FILE_OFFSET_BITS", to: "64"),
                 .define("_DARWIN_C_SOURCE", .when(platforms: [.macOS])),
@@ -348,7 +375,7 @@ let package = Package(
             name: "CBlinkEmulator",
             dependencies: ["CBlinkUop", "CBlinkSse2"],
             path: "Sources/CBlinkEmulator",
-            sources: ["blink_shim.c", "memvfs.c", "omni_fdfs.c"] + blinkSourceFiles,
+            sources: ["blink_shim.c", "blink_nojit_stubs.c", "memvfs.c", "omni_fdfs.c"] + blinkWrapperFiles,
             publicHeadersPath: "include",
             cSettings: [
                 .headerSearchPath("vendor/blink"),
@@ -399,6 +426,10 @@ let package = Package(
                 .product(name: "WasmKitWASI", package: "WasmKit"),
             ],
             path: "Sources/OmniContainer",
+            resources: [
+                .copy("Resources/alpine-codex-ios-3.21.3-x86_64.tar.gz"),
+                .copy("Resources/alpine-minirootfs-3.21.3-x86_64.tar.gz"),
+            ],
             swiftSettings: commonSwiftSettings
         ),
         .target(
@@ -437,7 +468,11 @@ let package = Package(
         .target(
             name: "OmniAIAgent",
             dependencies: [
-                "OmniAICore", "OmniMCP", "OmniExecution", "CSQLite",
+                "OmniAICore",
+                "OmniMCP",
+                "OmniExecution",
+                "CSQLite",
+                .target(name: "OmniContainer", condition: .when(platforms: [.iOS, .tvOS, .watchOS, .visionOS])),
             ],
             path: "Sources/OmniAIAgent",
             resources: [

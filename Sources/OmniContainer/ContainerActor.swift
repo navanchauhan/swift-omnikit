@@ -34,6 +34,13 @@ public actor ContainerActor {
         self.blinkRuntime = BlinkRuntime(networkEnabled: networkEnabled)
         self.wasmEngine = WasmEngine()
 
+        if networkEnabled {
+            let hostResolv = try? String(contentsOfFile: "/etc/resolv.conf", encoding: .utf8)
+            let guestResolv = BlinkGuestNetworking.resolvConf(hostContents: hostResolv)
+            try? self.overlay.mkdir("etc")
+            try? self.overlay.writeFile("etc/resolv.conf", data: Array(guestResolv.utf8))
+        }
+
         // Install capabilities
         for cap in config.capabilities {
             switch cap {
@@ -144,6 +151,22 @@ public actor ContainerActor {
             workingDir: resolvedWorkDir
         )
 
+        if let wasmInvocation = directWasmInvocation(
+            command: command,
+            args: args,
+            workingDir: session.workingDir,
+            namespace: session.namespace
+        ) {
+            return try await wasmEngine.execute(
+                binaryPath: wasmInvocation.binaryPath,
+                args: wasmInvocation.args,
+                env: session.env,
+                workingDir: session.workingDir,
+                namespace: session.namespace,
+                timeoutMs: timeoutMs
+            )
+        }
+
         // Shell commands go through Blink's /bin/sh.
         return try await blinkRuntime.executeShell(
             command: ([command] + args).joined(separator: " "),
@@ -152,5 +175,160 @@ public actor ContainerActor {
             namespace: session.namespace,
             timeoutMs: timeoutMs
         )
+    }
+
+    public func startInteractiveShell(
+        command: String? = nil,
+        env: [String: String]? = nil,
+        workingDir: String? = nil,
+        size: TerminalSize
+    ) async throws -> any InteractiveExecutionSession {
+        guard case .running = state else { throw ContainerError.notRunning }
+
+        let mergedEnv = (env ?? [:]).merging(config.env) { new, _ in new }
+        let resolvedWorkDir = workingDir ?? config.workingDir
+        let session = ExecSession(
+            namespace: namespace,
+            env: mergedEnv,
+            workingDir: resolvedWorkDir
+        )
+
+        return try await blinkRuntime.startInteractiveShell(
+            command: command,
+            env: session.env,
+            workingDir: session.workingDir,
+            namespace: session.namespace,
+            size: size
+        )
+    }
+
+    private struct DirectExecutionInvocation: Sendable {
+        let binaryPath: String
+        let args: [String]
+    }
+
+    private func directWasmInvocation(
+        command: String,
+        args: [String],
+        workingDir: String,
+        namespace: VFSNamespace
+    ) -> DirectExecutionInvocation? {
+        let argv: [String]
+        if args.isEmpty {
+            guard let parsed = tokenizeDirectInvocation(command) else {
+                return nil
+            }
+            argv = parsed
+        } else {
+            guard let parsedCommand = tokenizeDirectInvocation(command), parsedCommand.count == 1 else {
+                return nil
+            }
+            argv = parsedCommand + args
+        }
+
+        guard let executable = argv.first else {
+            return nil
+        }
+
+        let binaryPath = resolveGuestExecutablePath(executable, relativeTo: workingDir)
+        guard probeBinaryHeader(at: binaryPath, namespace: namespace).map(wasmEngine.canExecute) == true else {
+            return nil
+        }
+
+        return DirectExecutionInvocation(
+            binaryPath: binaryPath,
+            args: Array(argv.dropFirst())
+        )
+    }
+
+    private func tokenizeDirectInvocation(_ command: String) -> [String]? {
+        let trimmed = command.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else {
+            return nil
+        }
+
+        var tokens: [String] = []
+        var current = ""
+        var inSingleQuote = false
+        var inDoubleQuote = false
+        var escaping = false
+
+        for scalar in trimmed.unicodeScalars {
+            if escaping {
+                current.unicodeScalars.append(scalar)
+                escaping = false
+                continue
+            }
+
+            switch scalar {
+            case "\\":
+                if inSingleQuote {
+                    current.unicodeScalars.append(scalar)
+                } else {
+                    escaping = true
+                }
+            case "'":
+                if inDoubleQuote {
+                    current.unicodeScalars.append(scalar)
+                } else {
+                    inSingleQuote.toggle()
+                }
+            case "\"":
+                if inSingleQuote {
+                    current.unicodeScalars.append(scalar)
+                } else {
+                    inDoubleQuote.toggle()
+                }
+            case " ", "\t", "\n", "\r":
+                if inSingleQuote || inDoubleQuote {
+                    current.unicodeScalars.append(scalar)
+                } else if !current.isEmpty {
+                    tokens.append(current)
+                    current.removeAll(keepingCapacity: true)
+                }
+            case "|", "&", ";", "<", ">", "(", ")", "{", "}", "[", "]", "$", "`", "*", "?", "~":
+                if inSingleQuote || inDoubleQuote {
+                    current.unicodeScalars.append(scalar)
+                } else {
+                    return nil
+                }
+            default:
+                current.unicodeScalars.append(scalar)
+            }
+        }
+
+        guard !escaping, !inSingleQuote, !inDoubleQuote else {
+            return nil
+        }
+
+        if !current.isEmpty {
+            tokens.append(current)
+        }
+
+        return tokens.isEmpty ? nil : tokens
+    }
+
+    private func resolveGuestExecutablePath(_ executable: String, relativeTo workingDir: String) -> String {
+        let normalizedWorkingDir = PathUtils.resolvePath(workingDir, relativeTo: "/")
+        let resolvedPath = PathUtils.resolvePath(executable, relativeTo: normalizedWorkingDir)
+        return resolvedPath == "." ? "/" : resolvedPath
+    }
+
+    private func probeBinaryHeader(at binaryPath: String, namespace: VFSNamespace, maxBytes: Int = 8) -> [UInt8]? {
+        let namespacePath = PathUtils.stripLeadingSlash(binaryPath)
+        guard let (fs, resolvedPath) = try? namespace.resolveFS(namespacePath) else {
+            return nil
+        }
+
+        guard let file = try? fs.open(resolvedPath) else {
+            return nil
+        }
+        defer { try? file.close() }
+
+        var buffer = Array(repeating: UInt8(0), count: maxBytes)
+        guard let bytesRead = try? file.read(into: &buffer, count: maxBytes), bytesRead > 0 else {
+            return nil
+        }
+        return Array(buffer.prefix(bytesRead))
     }
 }

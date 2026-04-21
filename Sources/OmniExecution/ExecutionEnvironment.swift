@@ -8,9 +8,30 @@ public protocol ExecutionEnvironment: Sendable {
     func execCommand(command: String, timeoutMs: Int, workingDir: String?, envVars: [String: String]?) async throws -> ExecResult
     func grep(pattern: String, path: String, options: GrepOptions) async throws -> String
     func glob(pattern: String, path: String) async throws -> [String]
+    func startInteractiveSession(
+        command: String?,
+        workingDir: String?,
+        envVars: [String: String]?,
+        size: TerminalSize
+    ) async throws -> any InteractiveExecutionSession
     func initialize() async throws
     func cleanup() async throws
     func workingDirectory() -> String
     func platform() -> String
     func osVersion() -> String
+}
+
+public extension ExecutionEnvironment {
+    func startInteractiveSession(
+        command: String?,
+        workingDir: String?,
+        envVars: [String: String]?,
+        size: TerminalSize
+    ) async throws -> any InteractiveExecutionSession {
+        _ = command
+        _ = workingDir
+        _ = envVars
+        _ = size
+        throw InteractiveSessionUnsupportedError()
+    }
 }

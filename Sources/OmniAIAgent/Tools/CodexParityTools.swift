@@ -33,33 +33,14 @@ public func codexReadFileTool() -> RegisteredTool {
             guard let filePath = args["file_path"] as? String else {
                 throw ToolError.validationError("file_path is required")
             }
-            let resolvedPath: String
-            if filePath.hasPrefix("/") {
-                resolvedPath = filePath
-            } else {
-                resolvedPath = (env.workingDirectory() as NSString).appendingPathComponent(filePath)
-            }
-            guard FileManager.default.fileExists(atPath: resolvedPath) else {
-                throw ToolError.fileNotFound(filePath)
-            }
-            let content = try String(contentsOfFile: resolvedPath, encoding: .utf8)
-            let lines = content.components(separatedBy: .newlines)
+            let resolvedPath = codexResolvePath(filePath, env: env)
             let offset = max(1, Int((args["offset"] as? Double) ?? Double(codexIntValue(args["offset"]) ?? 1)))
             let limit = max(1, Int((args["limit"] as? Double) ?? Double(codexIntValue(args["limit"]) ?? 2000)))
-            let startIndex = offset - 1
-            let endIndex = min(startIndex + limit, lines.count)
-            guard startIndex < lines.count else {
-                return "File has \(lines.count) lines, requested offset \(offset) is out of range."
+            let content = try await env.readFile(path: resolvedPath, offset: offset, limit: limit)
+            if content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                return "File is empty or requested range is out of range."
             }
-
-            var result = ""
-            for index in startIndex..<endIndex {
-                result += "\(index + 1)\t\(lines[index])\n"
-            }
-            if endIndex < lines.count {
-                result += "\n... (\(lines.count - endIndex) more lines)"
-            }
-            return result
+            return content
         }
     )
 }
@@ -152,25 +133,25 @@ public func codexListDirTool() -> RegisteredTool {
             guard let dirPath = args["dir_path"] as? String else {
                 throw ToolError.validationError("dir_path is required")
             }
-            let resolvedPath: String
-            if dirPath.hasPrefix("/") {
-                resolvedPath = dirPath
-            } else {
-                resolvedPath = (env.workingDirectory() as NSString).appendingPathComponent(dirPath)
-            }
-            var isDirectory: ObjCBool = false
-            guard FileManager.default.fileExists(atPath: resolvedPath, isDirectory: &isDirectory), isDirectory.boolValue else {
-                throw ToolError.fileNotFound(dirPath)
-            }
+            let resolvedPath = codexResolvePath(dirPath, env: env)
 
             let offset = max(1, Int((args["offset"] as? Double) ?? Double(codexIntValue(args["offset"]) ?? 1)))
             let limit = max(1, Int((args["limit"] as? Double) ?? Double(codexIntValue(args["limit"]) ?? 100)))
             let depth = max(1, Int((args["depth"] as? Double) ?? Double(codexIntValue(args["depth"]) ?? 1)))
 
-            let rootURL = URL(fileURLWithPath: resolvedPath, isDirectory: true)
             var entries: [(path: String, type: String)] = []
-            try codexCollectEntries(at: rootURL, basePath: "", depth: depth, entries: &entries)
+            try await codexCollectEntries(
+                at: resolvedPath,
+                basePath: "",
+                depth: depth,
+                env: env,
+                entries: &entries
+            )
             entries.sort { $0.path < $1.path }
+
+            guard !entries.isEmpty else {
+                return "Directory is empty."
+            }
 
             let startIndex = offset - 1
             let endIndex = min(startIndex + limit, entries.count)
@@ -413,38 +394,17 @@ public func grepFilesTool() -> RegisteredTool {
             let searchPath = (args["path"] as? String) ?? env.workingDirectory()
             let include = args["include"] as? String
             let limit = max(1, codexIntValue(args["limit"]) ?? 100)
-
-            var command = "rg -l --max-count=1"
-            if let include, !include.isEmpty {
-                command += " --glob " + codexShellEscape(include)
-            }
-            command += " " + codexShellEscape(pattern) + " " + codexShellEscape(searchPath)
-            command += " | head -n \(limit)"
-
-            let result = try await env.execCommand(
-                command: command,
-                timeoutMs: 15_000,
-                workingDir: nil,
-                envVars: nil
-            )
-
-            if result.exitCode != 0 && result.exitCode != 1 {
-                // Fallback when rg is unavailable.
-                let grepInclude = include.map { "--include=\(codexShellEscape($0)) " } ?? ""
-                let fallback = "grep -r -l -E \(grepInclude)\(codexShellEscape(pattern)) \(codexShellEscape(searchPath)) | head -n \(limit)"
-                let fallbackResult = try await env.execCommand(
-                    command: fallback,
-                    timeoutMs: 15_000,
-                    workingDir: nil,
-                    envVars: nil
+            let grepOutput = try await env.grep(
+                pattern: pattern,
+                path: searchPath,
+                options: GrepOptions(
+                    globFilter: include,
+                    caseInsensitive: false,
+                    maxResults: max(limit * 20, limit)
                 )
-                return fallbackResult.stdout.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-                    ? "No matching files found."
-                    : fallbackResult.stdout.trimmingCharacters(in: .whitespacesAndNewlines)
-            }
-
-            let output = result.stdout.trimmingCharacters(in: .whitespacesAndNewlines)
-            return output.isEmpty ? "No matching files found." : output
+            )
+            let matchingFiles = codexUniqueMatchedFiles(from: grepOutput, limit: limit)
+            return matchingFiles.isEmpty ? "No matching files found." : matchingFiles.joined(separator: "\n")
         }
     )
 }
@@ -479,6 +439,23 @@ private func codexRunExecSession(
     let maxChars = codexIntValue(args["max_output_tokens"]).map { max(500, $0 * 4) }
     let shellPath = codexResolveShellPath(requestedShell: args["shell"] as? String)
 
+    #if os(iOS) || os(tvOS) || os(watchOS) || os(visionOS)
+    _ = shellPath
+    _ = login
+    let sessionId = try await CodexInteractiveExecSessionStore.shared.create(
+        env: env,
+        command: cmd,
+        workingDirectory: workdir,
+        tty: tty
+    )
+    let snapshot = try await CodexInteractiveExecSessionStore.shared.read(
+        sessionId: sessionId,
+        waitMs: yieldMs,
+        maxChars: maxChars,
+        onChunk: onChunk
+    )
+    return codexExecSnapshotText(sessionId: sessionId, snapshot: snapshot)
+    #else
     let sessionId = try await CodexExecSessionStore.shared.create(
         command: cmd,
         shell: shellPath,
@@ -493,6 +470,7 @@ private func codexRunExecSession(
         onChunk: onChunk
     )
     return codexExecSnapshotText(sessionId: sessionId, snapshot: snapshot)
+    #endif
 }
 
 private func codexWriteExecSession(
@@ -506,6 +484,19 @@ private func codexWriteExecSession(
     let yieldMs = max(0, codexIntValue(args["yield_time_ms"]) ?? 1_000)
     let maxChars = codexIntValue(args["max_output_tokens"]).map { max(500, $0 * 4) }
 
+    #if os(iOS) || os(tvOS) || os(watchOS) || os(visionOS)
+    if !chars.isEmpty {
+        try await CodexInteractiveExecSessionStore.shared.write(sessionId: sessionId, chars: chars)
+    }
+
+    let snapshot = try await CodexInteractiveExecSessionStore.shared.read(
+        sessionId: sessionId,
+        waitMs: yieldMs,
+        maxChars: maxChars,
+        onChunk: onChunk
+    )
+    return codexExecSnapshotText(sessionId: sessionId, snapshot: snapshot)
+    #else
     if !chars.isEmpty {
         try await CodexExecSessionStore.shared.write(sessionId: sessionId, chars: chars)
     }
@@ -517,15 +508,17 @@ private func codexWriteExecSession(
         onChunk: onChunk
     )
     return codexExecSnapshotText(sessionId: sessionId, snapshot: snapshot)
+    #endif
 }
 
 // MARK: - exec_command / write_stdin
 
 public func execCommandTool() -> RegisteredTool {
-    RegisteredTool(
+    let description = "Runs a command in a PTY, returning output or a session ID for ongoing interaction."
+    return RegisteredTool(
         definition: AgentToolDefinition(
             name: "exec_command",
-            description: "Runs a command in a PTY, returning output or a session ID for ongoing interaction.",
+            description: description,
             parameters: [
                 "type": "object",
                 "properties": [
@@ -776,33 +769,27 @@ Status: \(status)
 }
 
 private func codexCollectEntries(
-    at url: URL,
+    at path: String,
     basePath: String,
     depth: Int,
+    env: ExecutionEnvironment,
     entries: inout [(path: String, type: String)]
-) throws {
+) async throws {
     guard depth > 0 else { return }
-    let items = try FileManager.default.contentsOfDirectory(
-        at: url,
-        includingPropertiesForKeys: [.isDirectoryKey, .isSymbolicLinkKey],
-        options: [.skipsHiddenFiles]
-    )
-    for item in items {
-        let values = try item.resourceValues(forKeys: [.isDirectoryKey, .isSymbolicLinkKey])
-        let isDirectory = values.isDirectory ?? false
-        let isSymlink = values.isSymbolicLink ?? false
-        let relativePath = basePath.isEmpty ? item.lastPathComponent : "\(basePath)/\(item.lastPathComponent)"
-        let type: String
-        if isSymlink {
-            type = "link"
-        } else if isDirectory {
-            type = "dir"
-        } else {
-            type = "file"
-        }
+    let items = try await env.listDirectory(path: path, depth: 1)
+    for item in items.sorted(by: { $0.name < $1.name }) {
+        let relativePath = basePath.isEmpty ? item.name : "\(basePath)/\(item.name)"
+        let type = item.isDir ? "dir" : "file"
         entries.append((path: relativePath, type: type))
-        if isDirectory && !isSymlink && depth > 1 {
-            try codexCollectEntries(at: item, basePath: relativePath, depth: depth - 1, entries: &entries)
+        if item.isDir && depth > 1 {
+            let childPath = (path as NSString).appendingPathComponent(item.name)
+            try await codexCollectEntries(
+                at: childPath,
+                basePath: relativePath,
+                depth: depth - 1,
+                env: env,
+                entries: &entries
+            )
         }
     }
 }
@@ -815,6 +802,179 @@ private struct CodexExecSnapshot: Sendable {
     let truncatedCharCount: Int
 }
 
+#if os(iOS) || os(tvOS) || os(watchOS) || os(visionOS)
+private final class CodexInteractiveExecSession: @unchecked Sendable {
+    private let session: any InteractiveExecutionSession
+    private let lock = NSLock()
+    private var buffer: String = ""
+    private var readOffset: String.Index
+    private var running = true
+    private var exitCodeValue: Int32?
+
+    private init(session: any InteractiveExecutionSession) {
+        self.session = session
+        self.readOffset = buffer.startIndex
+    }
+
+    static func start(
+        env: ExecutionEnvironment,
+        command: String,
+        workingDirectory: String,
+        tty: Bool
+    ) async throws -> CodexInteractiveExecSession {
+        let session = try await env.startInteractiveSession(
+            command: command,
+            workingDir: workingDirectory,
+            envVars: nil,
+            size: tty ? TerminalSize(columns: 120, rows: 36) : TerminalSize(columns: 120, rows: 24)
+        )
+        let wrapper = CodexInteractiveExecSession(session: session)
+        await session.setEventHandler { event in
+            wrapper.handle(event)
+        }
+        return wrapper
+    }
+
+    var isRunning: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return running
+    }
+
+    var exitCode: Int32? {
+        lock.lock()
+        defer { lock.unlock() }
+        return exitCodeValue
+    }
+
+    func write(_ chars: String) async throws {
+        guard let data = chars.data(using: .utf8) else {
+            throw ToolError.validationError("chars must be UTF-8 text")
+        }
+        try await session.write(data)
+    }
+
+    func drainNewOutput(maxChars: Int?) -> String {
+        lock.lock()
+        defer { lock.unlock() }
+        guard readOffset < buffer.endIndex else { return "" }
+        let output = String(buffer[readOffset..<buffer.endIndex])
+        readOffset = buffer.endIndex
+        guard let maxChars, output.count > maxChars else {
+            return output
+        }
+        return String(output.suffix(maxChars))
+    }
+
+    func terminate() async {
+        await session.setEventHandler(nil)
+        await session.terminate()
+    }
+
+    private func handle(_ event: InteractiveSessionEvent) {
+        lock.lock()
+        switch event {
+        case .output(let data):
+            buffer += String(decoding: data, as: UTF8.self)
+        case .exit(let code):
+            running = false
+            exitCodeValue = code
+        }
+        lock.unlock()
+    }
+}
+
+private actor CodexInteractiveExecSessionStore {
+    static let shared = CodexInteractiveExecSessionStore()
+
+    private var sessions: [Int: CodexInteractiveExecSession] = [:]
+    private var nextSessionID: Int = 1
+
+    func create(
+        env: ExecutionEnvironment,
+        command: String,
+        workingDirectory: String,
+        tty: Bool
+    ) async throws -> Int {
+        let sessionID = nextSessionID
+        nextSessionID += 1
+        let session = try await CodexInteractiveExecSession.start(
+            env: env,
+            command: command,
+            workingDirectory: workingDirectory,
+            tty: tty
+        )
+        sessions[sessionID] = session
+        return sessionID
+    }
+
+    func write(sessionId: Int, chars: String) async throws {
+        guard let session = sessions[sessionId] else {
+            throw ToolError.validationError("Session \(sessionId) not found")
+        }
+        try await session.write(chars)
+    }
+
+    func read(
+        sessionId: Int,
+        waitMs: Int,
+        maxChars: Int?,
+        onChunk: StreamingToolOutputEmitter
+    ) async throws -> CodexExecSnapshot {
+        guard let session = sessions[sessionId] else {
+            throw ToolError.validationError("Session \(sessionId) not found")
+        }
+
+        let deadline = Date().addingTimeInterval(Double(waitMs) / 1000.0)
+        var output = session.drainNewOutput(maxChars: nil)
+        if !output.isEmpty {
+            await onChunk(output)
+        }
+
+        while session.isRunning && Date() < deadline {
+            try? await Task.sleep(nanoseconds: 100_000_000)
+            let chunk = session.drainNewOutput(maxChars: nil)
+            if !chunk.isEmpty {
+                output += chunk
+                await onChunk(chunk)
+            }
+        }
+
+        if !session.isRunning {
+            let chunk = session.drainNewOutput(maxChars: nil)
+            if !chunk.isEmpty {
+                output += chunk
+                await onChunk(chunk)
+            }
+        }
+
+        var truncatedByMaxOutputTokens = false
+        var truncatedCharCount = 0
+        if let maxChars, output.count > maxChars {
+            truncatedByMaxOutputTokens = true
+            truncatedCharCount = output.count - maxChars
+            output = String(output.suffix(maxChars))
+        }
+
+        let snapshot = CodexExecSnapshot(
+            output: output,
+            running: session.isRunning,
+            exitCode: session.exitCode,
+            truncatedByMaxOutputTokens: truncatedByMaxOutputTokens,
+            truncatedCharCount: truncatedCharCount
+        )
+
+        if !snapshot.running {
+            await session.terminate()
+            sessions.removeValue(forKey: sessionId)
+        }
+
+        return snapshot
+    }
+}
+#endif
+
+#if !os(iOS) && !os(tvOS) && !os(watchOS) && !os(visionOS)
 // Safety: @unchecked Sendable because all mutable state (buffer, readOffset)
 // is guarded by `lock`. Process properties (isRunning, terminationStatus) are
 // also accessed under the lock to avoid racing with the readabilityHandler
@@ -921,6 +1081,26 @@ private final class CodexExecSession: @unchecked Sendable {
         lock.unlock()
     }
 }
+#else
+private final class CodexExecSession: @unchecked Sendable {
+    init(command: String, shell: String, login: Bool, workingDirectory: String, tty: Bool) throws {
+        throw ToolError.validationError("Persistent exec sessions are unavailable on this platform")
+    }
+
+    var isRunning: Bool { false }
+    var exitCode: Int32? { nil }
+
+    func write(_ chars: String) throws {
+        throw ToolError.validationError("Persistent exec sessions are unavailable on this platform")
+    }
+
+    func drainNewOutput(maxChars: Int?) -> String {
+        ""
+    }
+
+    func terminate() {}
+}
+#endif
 
 private actor CodexExecSessionStore {
     static let shared = CodexExecSessionStore()
@@ -1042,6 +1222,376 @@ private func codexFormatExecOutput(result: ExecResult, timeoutMs: Int) -> String
     return output
 }
 
+private struct CodexGitCloneRequest: Sendable {
+    let url: String
+    let destination: String
+    let branch: String?
+}
+
+private func codexShellSplit(_ command: String) -> [String]? {
+    var tokens: [String] = []
+    var current = ""
+    var inSingleQuote = false
+    var inDoubleQuote = false
+    var isEscaping = false
+
+    for character in command {
+        if isEscaping {
+            current.append(character)
+            isEscaping = false
+            continue
+        }
+
+        switch character {
+        case "\\":
+            if inSingleQuote {
+                current.append(character)
+            } else {
+                isEscaping = true
+            }
+        case "'":
+            if inDoubleQuote {
+                current.append(character)
+            } else {
+                inSingleQuote.toggle()
+            }
+        case "\"":
+            if inSingleQuote {
+                current.append(character)
+            } else {
+                inDoubleQuote.toggle()
+            }
+        case " ", "\t", "\n", "\r":
+            if inSingleQuote || inDoubleQuote {
+                current.append(character)
+            } else if !current.isEmpty {
+                tokens.append(current)
+                current.removeAll(keepingCapacity: true)
+            }
+        case ";", "|", "&", ">", "<", "(", ")":
+            if inSingleQuote || inDoubleQuote {
+                current.append(character)
+            } else {
+                return nil
+            }
+        default:
+            current.append(character)
+        }
+    }
+
+    guard !isEscaping, !inSingleQuote, !inDoubleQuote else {
+        return nil
+    }
+
+    if !current.isEmpty {
+        tokens.append(current)
+    }
+
+    return tokens
+}
+
+private func codexParseGitCloneRequest(command: String, workingDirectory: String) -> CodexGitCloneRequest? {
+    guard let tokens = codexShellSplit(command), !tokens.isEmpty else {
+        return nil
+    }
+
+    let executable = tokens[0]
+    guard executable == "git" || executable == "/usr/bin/git" || executable == "/usr/local/bin/git" else {
+        return nil
+    }
+
+    var index = 1
+    var sawClone = false
+    while index < tokens.count {
+        switch tokens[index] {
+        case "clone":
+            sawClone = true
+            index += 1
+            break
+        case "-c", "--config-env", "-C", "--exec-path", "--git-dir", "--work-tree", "--namespace", "--super-prefix":
+            guard index + 1 < tokens.count else { return nil }
+            index += 2
+        case "--bare", "--no-pager", "--paginate", "--literal-pathspecs", "--no-literal-pathspecs",
+             "--glob-pathspecs", "--noglob-pathspecs", "--icase-pathspecs", "--no-optional-locks",
+             "--no-replace-objects":
+            index += 1
+        default:
+            index = tokens.count
+        }
+
+        if sawClone {
+            break
+        }
+    }
+
+    guard sawClone else {
+        return nil
+    }
+
+    var branch: String?
+    while index < tokens.count {
+        switch tokens[index] {
+        case "-b", "--branch":
+            guard index + 1 < tokens.count else { return nil }
+            branch = tokens[index + 1]
+            index += 2
+        case "--depth":
+            guard index + 1 < tokens.count else { return nil }
+            index += 2
+        case "--single-branch", "--progress", "--quiet", "-q":
+            index += 1
+        case "--":
+            index += 1
+            break
+        case let option where option.hasPrefix("-"):
+            return nil
+        default:
+            let url = tokens[index]
+            guard url.hasPrefix("https://github.com/") || url.hasPrefix("http://github.com/") else {
+                return nil
+            }
+
+            let repoName = url
+                .trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+                .split(separator: "/")
+                .last
+                .map(String.init)?
+                .replacingOccurrences(of: ".git", with: "") ?? "repo"
+
+            let destinationToken = index + 1 < tokens.count ? tokens[index + 1] : repoName
+            guard index + 2 >= tokens.count else { return nil }
+            let destination = destinationToken.hasPrefix("/")
+                ? destinationToken
+                : (workingDirectory as NSString).appendingPathComponent(destinationToken)
+            return CodexGitCloneRequest(url: url, destination: destination, branch: branch)
+        }
+    }
+
+    return nil
+}
+
+private func codexResolveDefaultGitHubBranch(for url: String) async -> String? {
+    guard let components = URLComponents(string: url) else {
+        return nil
+    }
+
+    let pathParts = components.path.split(separator: "/").map(String.init)
+    guard pathParts.count >= 2 else {
+        return nil
+    }
+
+    let owner = pathParts[0]
+    let repo = pathParts[1].replacingOccurrences(of: ".git", with: "")
+    guard let apiURL = URL(string: "https://api.github.com/repos/\(owner)/\(repo)") else {
+        return nil
+    }
+
+    do {
+        let (data, response) = try await URLSession.shared.data(from: apiURL)
+        guard let httpResponse = response as? HTTPURLResponse,
+              (200..<300).contains(httpResponse.statusCode),
+              let object = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let branch = object["default_branch"] as? String,
+              !branch.isEmpty
+        else {
+            return nil
+        }
+        return branch
+    } catch {
+        return nil
+    }
+}
+
+private func codexRunGuestCommand(
+    env: ExecutionEnvironment,
+    command: String,
+    timeoutMs: Int,
+    workdir: String,
+    emitOutputDelta: StreamingToolOutputEmitter
+) async throws -> ExecResult {
+    let result = try await env.execCommand(
+        command: command,
+        timeoutMs: timeoutMs,
+        workingDir: workdir,
+        envVars: nil
+    )
+    let combinedOutput = result.combinedOutput
+    if !combinedOutput.isEmpty {
+        await emitOutputDelta(combinedOutput)
+        if !combinedOutput.hasSuffix("\n") {
+            await emitOutputDelta("\n")
+        }
+    }
+    guard result.exitCode == 0, !result.timedOut else {
+        throw ToolError.validationError(codexFormatExecOutput(result: result, timeoutMs: timeoutMs))
+    }
+    return result
+}
+
+private func codexExecuteGitHubCloneFallback(
+    request: CodexGitCloneRequest,
+    env: ExecutionEnvironment,
+    timeoutMs: Int,
+    workdir: String,
+    emitOutputDelta: StreamingToolOutputEmitter
+) async throws -> String {
+    let start = DispatchTime.now()
+    let tempDir = "/tmp/iagentsmith-git-clone-\(UUID().uuidString)"
+    let branchCandidates = Array(
+        NSOrderedSet(
+            array: [
+                request.branch,
+                await codexResolveDefaultGitHubBranch(for: request.url),
+                "main",
+                "master",
+            ].compactMap { $0?.trimmingCharacters(in: .whitespacesAndNewlines) }.filter { !$0.isEmpty }
+        )
+    ).compactMap { $0 as? String }
+
+    let destinationEntries = try? await env.listDirectory(path: request.destination, depth: 1)
+    if await env.fileExists(path: request.destination), let destinationEntries, !destinationEntries.isEmpty {
+        throw ToolError.validationError("destination path '\(request.destination)' already exists and is not an empty directory.")
+    }
+
+    await emitOutputDelta("Cloning \(request.url) into \(request.destination) via GitHub snapshot fallback...\n")
+    _ = try? await env.execCommand(
+        command: codexShellJoin(["rm", "-rf", tempDir]),
+        timeoutMs: timeoutMs,
+        workingDir: workdir,
+        envVars: nil
+    )
+    try await codexRunGuestCommand(
+        env: env,
+        command: codexShellJoin(["mkdir", "-p", tempDir]),
+        timeoutMs: timeoutMs,
+        workdir: workdir,
+        emitOutputDelta: emitOutputDelta
+    )
+
+    var selectedBranch: String?
+    let archivePath = "\(tempDir)/repo.tar.gz"
+    for candidate in branchCandidates {
+        let archiveURL = "https://codeload.github.com/\(request.url.replacingOccurrences(of: "https://github.com/", with: "").replacingOccurrences(of: "http://github.com/", with: "").replacingOccurrences(of: ".git", with: ""))/tar.gz/refs/heads/\(candidate)"
+        let download = try await env.execCommand(
+            command: codexShellJoin(["curl", "-L", "--fail", "--silent", "--show-error", archiveURL, "-o", archivePath]),
+            timeoutMs: timeoutMs,
+            workingDir: workdir,
+            envVars: nil
+        )
+        if download.exitCode == 0 {
+            if !download.combinedOutput.isEmpty {
+                await emitOutputDelta(download.combinedOutput + (download.combinedOutput.hasSuffix("\n") ? "" : "\n"))
+            }
+            selectedBranch = candidate
+            break
+        }
+    }
+
+    guard let selectedBranch else {
+        throw ToolError.validationError("Unable to download a GitHub snapshot for \(request.url).")
+    }
+
+    try await codexRunGuestCommand(
+        env: env,
+        command: codexShellJoin(["tar", "-xzf", archivePath, "-C", tempDir]),
+        timeoutMs: timeoutMs,
+        workdir: workdir,
+        emitOutputDelta: emitOutputDelta
+    )
+
+    let extractedEntries = try await env.listDirectory(path: tempDir, depth: 1)
+    guard let extractedDirName = extractedEntries.first(where: \.isDir)?.name else {
+        throw ToolError.validationError("Unable to unpack repository archive for \(request.url).")
+    }
+    let extractedDir = "\(tempDir)/\(extractedDirName)"
+
+    try await codexRunGuestCommand(
+        env: env,
+        command: codexShellJoin(["mkdir", "-p", request.destination]),
+        timeoutMs: timeoutMs,
+        workdir: workdir,
+        emitOutputDelta: emitOutputDelta
+    )
+    try await codexRunGuestCommand(
+        env: env,
+        command: codexShellJoin(["cp", "-R", "\(extractedDir)/.", "\(request.destination)/"]),
+        timeoutMs: timeoutMs,
+        workdir: workdir,
+        emitOutputDelta: emitOutputDelta
+    )
+
+    let gitPath = "/usr/bin/git"
+    let gitCommands: [[String]] = [
+        [gitPath, "-C", request.destination, "init", "-q", "--template=/tmp/iagentsmith-empty-git-template"],
+        [gitPath, "-C", request.destination, "config", "user.name", "iAgentSmith"],
+        [gitPath, "-C", request.destination, "config", "user.email", "local@iagentsmith.invalid"],
+        [gitPath, "-C", request.destination, "add", "-A"],
+        [gitPath, "-C", request.destination, "commit", "-q", "-m", "Snapshot imported from \(request.url)"],
+    ]
+    for gitCommand in gitCommands {
+        try await codexRunGuestCommand(
+            env: env,
+            command: codexShellJoin(gitCommand),
+            timeoutMs: timeoutMs,
+            workdir: workdir,
+            emitOutputDelta: emitOutputDelta
+        )
+    }
+    _ = try? await env.execCommand(
+        command: codexShellJoin([gitPath, "-C", request.destination, "branch", "-M", selectedBranch]),
+        timeoutMs: timeoutMs,
+        workingDir: workdir,
+        envVars: nil
+    )
+    _ = try? await env.execCommand(
+        command: codexShellJoin([gitPath, "-C", request.destination, "remote", "add", "origin", request.url]),
+        timeoutMs: timeoutMs,
+        workingDir: workdir,
+        envVars: nil
+    )
+    _ = try? await env.execCommand(
+        command: codexShellJoin(["rm", "-rf", tempDir]),
+        timeoutMs: timeoutMs,
+        workingDir: workdir,
+        envVars: nil
+    )
+
+    let topLevelEntries = (try? await env.listDirectory(path: request.destination, depth: 1)) ?? []
+    let topLevelListing = topLevelEntries
+        .sorted { $0.name < $1.name }
+        .map { $0.isDir ? "\($0.name)/" : $0.name }
+        .joined(separator: "\n")
+    let elapsed = DispatchTime.now().uptimeNanoseconds - start.uptimeNanoseconds
+    let durationMs = Int(elapsed / 1_000_000)
+
+    return codexFormatExecOutput(
+        result: ExecResult(
+            stdout: """
+Cloned \(request.url) into \(request.destination) via GitHub snapshot fallback.
+Branch: \(selectedBranch)
+\(topLevelListing.isEmpty ? "Top-level files: (empty)" : "Top-level files:\n\(topLevelListing)")
+""",
+            stderr: "",
+            exitCode: 0,
+            timedOut: false,
+            durationMs: durationMs
+        ),
+        timeoutMs: timeoutMs
+    )
+}
+
+private func codexShouldUseGitHubCloneFallback() -> Bool {
+    #if os(iOS) || os(tvOS) || os(watchOS) || os(visionOS)
+    #if targetEnvironment(simulator)
+    false
+    #else
+    true
+    #endif
+    #else
+    false
+    #endif
+}
+
 private func codexExecuteCommand(
     env: ExecutionEnvironment,
     command: String,
@@ -1049,6 +1599,17 @@ private func codexExecuteCommand(
     workdir: String?,
     emitOutputDelta: StreamingToolOutputEmitter
 ) async throws -> String {
+    let resolvedWorkdir = workdir ?? env.workingDirectory()
+    if codexShouldUseGitHubCloneFallback(),
+       let gitCloneRequest = codexParseGitCloneRequest(command: command, workingDirectory: resolvedWorkdir) {
+        return try await codexExecuteGitHubCloneFallback(
+            request: gitCloneRequest,
+            env: env,
+            timeoutMs: timeoutMs,
+            workdir: resolvedWorkdir,
+            emitOutputDelta: emitOutputDelta
+        )
+    }
     let result = try await env.execCommand(command: command, timeoutMs: timeoutMs, workingDir: workdir, envVars: nil)
     let combinedOutput = result.combinedOutput
     if !combinedOutput.isEmpty {
@@ -1106,4 +1667,34 @@ private func codexShellEscape(_ value: String) -> String {
         return "''"
     }
     return "'" + value.replacing("'", with: "'\\''") + "'"
+}
+
+private func codexResolvePath(_ path: String, env: ExecutionEnvironment) -> String {
+    if path.hasPrefix("/") {
+        return path
+    }
+    return (env.workingDirectory() as NSString).appendingPathComponent(path)
+}
+
+private func codexUniqueMatchedFiles(from grepOutput: String, limit: Int) -> [String] {
+    let trimmed = grepOutput.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !trimmed.isEmpty, trimmed != "No matches found." else {
+        return []
+    }
+
+    var files: [String] = []
+    var seen: Set<String> = []
+
+    for line in trimmed.split(separator: "\n") {
+        let parts = line.split(separator: ":", maxSplits: 2, omittingEmptySubsequences: false)
+        guard let firstPart = parts.first else { continue }
+        let path = String(firstPart)
+        guard !path.isEmpty, seen.insert(path).inserted else { continue }
+        files.append(path)
+        if files.count >= limit {
+            break
+        }
+    }
+
+    return files
 }

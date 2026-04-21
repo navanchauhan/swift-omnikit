@@ -347,7 +347,11 @@ public actor Session {
                 gitContext: gitCtx
             )
             let toolDefs = providerProfile.tools()
-            let previousResponseId = providerProfile.id == "openai"
+            let providerOptions = providerProfile.providerOptions()
+            let scopedProviderOptions = providerOptions?[providerProfile.id]?.objectValue
+            let disablesPreviousResponseId =
+                scopedProviderOptions?[OpenAIProviderOptionKeys.disablePreviousResponseId]?.boolValue ?? false
+            let previousResponseId = providerProfile.id == "openai" && !disablesPreviousResponseId
                 ? latestAssistantResponseId()
                 : nil
             let messages: [Message]
@@ -371,7 +375,7 @@ public actor Session {
                 tools: toolDefs.isEmpty ? nil : toolDefs,
                 toolChoice: toolDefs.isEmpty ? nil : ToolChoice.auto,
                 reasoningEffort: config.reasoningEffort,
-                providerOptions: providerProfile.providerOptions()
+                providerOptions: providerOptions
             )
 
             // 3. Call LLM
@@ -1652,10 +1656,12 @@ You are running in non-interactive (automated pipeline) mode. Complete your assi
 
         // Modified file count
         if let result = try? await executionEnv.execCommand(
-            command: "git status --porcelain | wc -l",
+            command: "git status --porcelain",
             timeoutMs: 5000, workingDir: workingDir, envVars: nil
         ), result.exitCode == 0 {
-            context.modifiedFileCount = Int(result.stdout.trimmingCharacters(in: .whitespacesAndNewlines)) ?? 0
+            context.modifiedFileCount = result.stdout
+                .split(whereSeparator: \.isNewline)
+                .count
         }
 
         // Recent commits

@@ -32,10 +32,12 @@ public actor StdioMCPTransport: MCPTransport {
     private let command: String
     private let arguments: [String]
     private let environment: [String: String]
+    #if !os(iOS) && !os(tvOS) && !os(watchOS) && !os(visionOS)
     private var process: Process?
     private var stdinHandle: FileHandle?
     private var stdoutHandle: FileHandle?
     private var stderrHandle: FileHandle?
+    #endif
     private var cachedStream: AsyncThrowingStream<Data, Error>?
 
     public init(command: String, args: [String] = [], env: [String: String] = [:]) {
@@ -45,6 +47,9 @@ public actor StdioMCPTransport: MCPTransport {
     }
 
     public func connect() async throws {
+        #if os(iOS) || os(tvOS) || os(watchOS) || os(visionOS)
+        throw MCPError.invalidConfiguration("Stdio MCP transport is unavailable on this platform")
+        #else
         guard process == nil else { return }
         let proc = Process()
         let resolvedURL: URL
@@ -84,10 +89,12 @@ public actor StdioMCPTransport: MCPTransport {
         if let stderrHandle {
             Self.drain(handle: stderrHandle, label: "omnimcp.stdio.stderr.\(proc.processIdentifier)")
         }
+        #endif
     }
 
     public func disconnect() async {
         cachedStream = nil
+        #if !os(iOS) && !os(tvOS) && !os(watchOS) && !os(visionOS)
         try? stdoutHandle?.close()
         try? stdinHandle?.close()
         try? stderrHandle?.close()
@@ -101,15 +108,20 @@ public actor StdioMCPTransport: MCPTransport {
             }
         }
         process = nil
+        #endif
     }
 
     public func send(_ data: Data) async throws {
+        #if os(iOS) || os(tvOS) || os(watchOS) || os(visionOS)
+        throw MCPError.invalidConfiguration("Stdio MCP transport is unavailable on this platform")
+        #else
         guard let stdinHandle else { throw MCPError.notConnected }
         var payload = data
         if payload.last != 0x0A {
             payload.append(0x0A)
         }
         stdinHandle.write(payload)
+        #endif
     }
 
     public func messageStream() async throws -> AsyncThrowingStream<Data, Error> {
@@ -161,6 +173,7 @@ public actor StdioMCPTransport: MCPTransport {
         }
     }
 
+    #if !os(iOS) && !os(tvOS) && !os(watchOS) && !os(visionOS)
     private nonisolated static func waitForExit(of process: Process) async {
         guard process.isRunning else { return }
 
@@ -177,6 +190,7 @@ public actor StdioMCPTransport: MCPTransport {
         }
         process.terminationHandler = nil
     }
+    #endif
 }
 
 public actor SSEMCPTransport: MCPTransport {

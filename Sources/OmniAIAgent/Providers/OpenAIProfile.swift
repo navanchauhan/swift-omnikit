@@ -8,6 +8,7 @@ public final class OpenAIProfile: ProviderProfile, @unchecked Sendable {
     private let includeNativeWebSearch: Bool
     private let webSearchExternalWebAccess: Bool?
     private let forceCodexSystemPrompt: Bool
+    private let disablePreviousResponseId: Bool
     public let supportsReasoning = true
     public let supportsStreaming: Bool
     public let supportsParallelToolCalls = true
@@ -28,12 +29,14 @@ public final class OpenAIProfile: ProviderProfile, @unchecked Sendable {
         includeCollabTools: Bool = false,
         includeWebSearch: Bool = false,
         webSearchExternalWebAccess: Bool? = true,
-        forceCodexSystemPrompt: Bool = false
+        forceCodexSystemPrompt: Bool = false,
+        disablePreviousResponseId: Bool = false
     ) {
         self.model = model
         self.includeNativeWebSearch = includeWebSearch
         self.webSearchExternalWebAccess = webSearchExternalWebAccess
         self.forceCodexSystemPrompt = forceCodexSystemPrompt
+        self.disablePreviousResponseId = disablePreviousResponseId
         self.supportsStreaming = true
 
         let registry = ToolRegistry()
@@ -79,12 +82,18 @@ public final class OpenAIProfile: ProviderProfile, @unchecked Sendable {
             basePrompt = CodexSystemPrompt.openAIPrompt(for: model)
         }
         let workingDir = environment.workingDirectory()
+        let workdirGuidance: String
+        if workingDir == "/workspace" {
+            workdirGuidance = "When using shell tools, use \".\" or \"/workspace\" for the workdir parameter."
+        } else {
+            workdirGuidance = "When using shell tools, use \".\" or \"\(workingDir)\" for the workdir parameter, not \"/workspace\""
+        }
         let envContext = """
 
 # Environment Context
 
 - Working directory: \(workingDir)
-- When using shell tools, use "." or "\(workingDir)" for the workdir parameter, not "/workspace"
+- \(workdirGuidance)
 - Platform: \(environment.platform()) \(environment.osVersion())
 """
         var sections: [String] = [basePrompt + envContext]
@@ -116,6 +125,9 @@ public final class OpenAIProfile: ProviderProfile, @unchecked Sendable {
         }
         if let webSearchExternalWebAccess {
             options[OpenAIProviderOptionKeys.webSearchExternalWebAccess] = .bool(webSearchExternalWebAccess)
+        }
+        if disablePreviousResponseId {
+            options[OpenAIProviderOptionKeys.disablePreviousResponseId] = .bool(true)
         }
         return [id: .object(options)]
     }
