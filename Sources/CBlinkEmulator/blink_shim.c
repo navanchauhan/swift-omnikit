@@ -28,6 +28,9 @@
 #include <termios.h>
 #include <time.h>
 #include <unistd.h>
+#if defined(__APPLE__)
+#include <TargetConditionals.h>
+#endif
 #if defined(__APPLE__) || defined(__FreeBSD__) || defined(__NetBSD__) || \
     defined(__OpenBSD__)
 #include <util.h>
@@ -56,6 +59,12 @@
 #include "blink/flags.h"
 
 struct OmniNoForkProcess;
+
+#if defined(__APPLE__) && TARGET_OS_IPHONE
+#define OMNI_THREAD_WAKE_SIGNAL SIGURG
+#else
+#define OMNI_THREAD_WAKE_SIGNAL SIGSYS
+#endif
 
 struct OmniNoForkContext {
     sigjmp_buf escape;
@@ -816,7 +825,7 @@ static int install_blink_runtime_signal_handlers(
     sigfillset(&sa.sa_mask);
     sa.sa_flags = 0;
     sa.sa_handler = OmniOnSigSys;
-    if (sigaction(SIGSYS, &sa, &saved->sigsys) == -1) {
+    if (sigaction(OMNI_THREAD_WAKE_SIGNAL, &sa, &saved->sigsys) == -1) {
         return -1;
     }
     saved->have_sigsys = true;
@@ -885,7 +894,7 @@ static void restore_blink_runtime_signal_handlers(
     }
 #ifdef HAVE_THREADS
     if (saved->have_sigsys) {
-        sigaction(SIGSYS, &saved->sigsys, NULL);
+        sigaction(OMNI_THREAD_WAKE_SIGNAL, &saved->sigsys, NULL);
     }
 #endif
 }
@@ -1741,7 +1750,7 @@ static void nofork_wake_process_locked(struct OmniNoForkProcess *process) {
     }
     pthread_cond_broadcast(&process->context->cond);
     if (process->thread_started && !pthread_equal(process->thread, pthread_self())) {
-        pthread_kill(process->thread, SIGSYS);
+        pthread_kill(process->thread, OMNI_THREAD_WAKE_SIGNAL);
     }
 }
 
@@ -2667,7 +2676,7 @@ static int run_machine_nofork(struct Machine *machine) {
     unassert(context);
     machine->system->trapexit = true;
     sigemptyset(&unblock);
-    sigaddset(&unblock, SIGSYS);
+    sigaddset(&unblock, OMNI_THREAD_WAKE_SIGNAL);
     unassert(!pthread_sigmask(SIG_UNBLOCK, &unblock, 0));
 
     for (g_machine = machine, m = machine;;) {
