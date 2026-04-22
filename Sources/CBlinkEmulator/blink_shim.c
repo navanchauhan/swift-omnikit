@@ -76,7 +76,7 @@ struct OmniNoForkContext {
 };
 
 static _Thread_local struct OmniNoForkContext *g_nofork_context = NULL;
-struct Machine *m = NULL;
+_Thread_local struct Machine *m = NULL;
 
 struct BlinkExecRequest {
     char *execfn;
@@ -106,6 +106,7 @@ struct OmniNoForkProcess {
     bool parent_released;
     bool has_pending_wait_status;
     bool has_final_wait_status;
+    bool final_status_reported_nonblocking;
     bool is_root;
     bool is_thread;
     bool is_vfork;
@@ -416,6 +417,15 @@ static void configure_exec_machine(struct Machine *machine) {
     machine->system->trapexit = true;
     machine->system->embedded_exit_fastpath = (g_nofork_context == NULL);
     machine->system->exec = queue_exec_request;
+#ifdef HAVE_JIT
+    // The no-fork runtime replaces exec'd programs in-process. On Apple arm64,
+    // Blink's host JIT is not stable across that replacement boundary, and even
+    // simple `sh -c` flows can trap in the guest loader after a self-exec. Run
+    // no-fork machines through the interpreter path instead.
+    if (g_nofork_context != NULL) {
+        DisableJit(&machine->system->jit);
+    }
+#endif
 }
 
 static bool should_canonicalize_node_argv0(const char *prog, char **argv) {
@@ -499,6 +509,10 @@ static void copy_exec_inherited_state(struct System *dst, const struct System *s
     if (!dst || !src) {
         return;
     }
+    dst->pid = src->pid;
+    dst->next_tid = src->next_tid;
+    dst->blinksigs = src->blinksigs;
+    memcpy(&dst->exec_sigmask, &src->exec_sigmask, sizeof(dst->exec_sigmask));
     for (sig = 1; sig <= 64; ++sig) {
         if (Read64(src->hands[sig - 1].handler) == SIG_IGN_LINUX) {
             Write64(dst->hands[sig - 1].handler, SIG_IGN_LINUX);
@@ -528,13 +542,79 @@ static void transfer_exec_vfs_process(struct System *dst, struct System *src) {
     src->vfs = NULL;
 }
 
+static void debug_dump_system_fds(const char *label, const struct System *system) {
+    struct Dll *e;
+
+    if (!getenv("OMNIKIT_DEBUG_EXEC_FDS") || !system) {
+        return;
+    }
+    fprintf(stderr, "[exec-fds] %s pid=%d\n", label ? label : "fds",
+            system->pid);
+    LOCK(&((struct System *)system)->fds.lock);
+    for (e = dll_first(system->fds.list); e; e = dll_next(system->fds.list, e)) {
+        struct Fd *fd = FD_CONTAINER(e);
+        fprintf(stderr, "[exec-fds]   fd=%d oflags=%#x path=%s\n", fd->fildes,
+                fd->oflags, fd->path ? fd->path : "<null>");
+    }
+    UNLOCK(&((struct System *)system)->fds.lock);
+    fflush(stderr);
+}
+
+static void debug_dump_context_process_fds_locked(const char *label,
+                                                  struct OmniNoForkContext *context) {
+    struct OmniNoForkProcess *process;
+
+    if (!getenv("OMNIKIT_DEBUG_PROCESS_FDS") || !context) {
+        return;
+    }
+    fprintf(stderr, "[process-fds] %s\n", label ? label : "context");
+    VfsDebugDumpBootstrapFds("bootstrap");
+    for (process = context->processes; process; process = process->next) {
+        fprintf(stderr,
+                "[process-fds]   pid=%d ppid=%d tgid=%d finished=%d stopped=%d"
+                " thread=%d root=%d machine=%p system=%p\n",
+                process->pid, process->ppid, process->tgid,
+                process->finished ? 1 : 0, process->stopped ? 1 : 0,
+                process->is_thread ? 1 : 0, process->is_root ? 1 : 0,
+                (void *)process->machine,
+                process->machine ? (void *)process->machine->system : NULL);
+        if (process->machine && process->machine->system) {
+            debug_dump_system_fds("process", process->machine->system);
+            VfsDebugDumpProcessFds("process", process->machine->system->vfs);
+        }
+    }
+}
+
+static void debug_dump_context_processes_locked(const char *label,
+                                                struct OmniNoForkContext *context) {
+    struct OmniNoForkProcess *process;
+
+    if (!getenv("OMNIKIT_DEBUG_NOFORK_WAIT") || !context) {
+        return;
+    }
+
+    fprintf(stderr, "[nofork-wait] process-table %s\n", label ? label : "<null>");
+    for (process = context->processes; process; process = process->next) {
+        fprintf(stderr,
+                "[nofork-wait]   pid=%d ppid=%d tgid=%d pgid=%d sid=%d root=%d thread=%d finished=%d waited=%d pending=%d final=%d stopped=%d parent_released=%d machine=%p\n",
+                process->pid, process->ppid, process->tgid, process->pgid, process->sid,
+                process->is_root ? 1 : 0, process->is_thread ? 1 : 0,
+                process->finished ? 1 : 0, process->waited ? 1 : 0,
+                process->has_pending_wait_status ? 1 : 0,
+                process->has_final_wait_status ? 1 : 0, process->stopped ? 1 : 0,
+                process->parent_released ? 1 : 0, (void *)process->machine);
+    }
+    fflush(stderr);
+}
+
 static void load_exec_program(struct Machine *machine, char *execfn,
                               char *prog, char **argv, char **envp,
                               bool bootstrap_stdio) {
     bool debug = getenv("OMNIKIT_DEBUG_EXEC_LOOP") != NULL;
 
     if (debug) {
-        fprintf(stderr, "[exec-loop] load_exec_program prog=%s argv0=%s\n",
+        fprintf(stderr, "[exec-loop] load_exec_program execfn=%s prog=%s argv0=%s\n",
+                execfn ? execfn : "<null>",
                 prog ? prog : "<null>",
                 (argv && argv[0]) ? argv[0] : "<null>");
         fflush(stderr);
@@ -597,6 +677,9 @@ static void prepare_exec_machine(struct Machine *machine, struct Machine *old,
         transfer_exec_fd_state(machine->system, old->system);
         transfer_exec_vfs_process(machine->system, old->system);
         VfsSetCurrentProcess(machine->system->vfs);
+        debug_dump_system_fds("before-cloexec", machine->system);
+        SysCloseExec(machine->system);
+        debug_dump_system_fds("after-cloexec", machine->system);
     }
 }
 
@@ -827,10 +910,14 @@ ssize_t ReadAnsi(int fd, char *p, size_t n) {
     return read(fd, p, n);
 }
 
+_Noreturn void OmniNoForkExitSignal(struct Machine *machine, int sig);
+_Noreturn void OmniNoForkExitThreadGroup(struct Machine *machine, int rc);
+
 // ── TerminateSignal ──────────────────────────────────────────────────────────
 // Called when the guest receives a fatal signal.
 void TerminateSignal(struct Machine *machine, int sig, int code) {
     struct OmniNoForkContext *context = g_nofork_context;
+    struct OmniNoForkProcess *process = NULL;
     struct FileMap *rip_map = NULL;
     struct FileMap *fault_map = NULL;
     u64 rip_entry = 0;
@@ -884,16 +971,14 @@ void TerminateSignal(struct Machine *machine, int sig, int code) {
     }
     fflush(stderr);
 
-    if (context) {
-        nofork_context_detach_current_machine(context, machine);
-        FreeMachine(machine);
-#ifdef HAVE_JIT
-        ShutdownJit();
-#endif
-        g_machine = NULL;
-        m = NULL;
-        context->exit_code = 128 + sig;
-        siglongjmp(context->escape, 1);
+    if (context && machine && machine->system) {
+        pthread_mutex_lock(&context->lock);
+        process = nofork_find_process_by_machine_locked(context, machine);
+        pthread_mutex_unlock(&context->lock);
+        if (process && process->is_thread) {
+            OmniNoForkExitThreadGroup(machine, (128 + sig) & 255);
+        }
+        OmniNoForkExitSignal(machine, sig);
     }
 
     FreeMachine(machine);
@@ -1517,6 +1602,19 @@ static void nofork_context_finish(struct OmniNoForkContext *context) {
     pthread_mutex_lock(&context->lock);
     context->finished = true;
     context->current_machine = NULL;
+    for (process = context->processes; process; process = process->next) {
+        if (process->finished || !process->machine || !process->machine->system) {
+            continue;
+        }
+        process->requested_exit_code = 128 + SIGKILL;
+        process->exit_requested = true;
+        process->group_exit_requested = true;
+        process->machine->system->exitcode = 128 + SIGKILL;
+        process->machine->system->exited = true;
+        atomic_store_explicit(&process->machine->killed, true, memory_order_release);
+        atomic_store_explicit(&process->machine->attention, true, memory_order_release);
+        nofork_deliver_signal_to_process_locked(process, SIGKILL_LINUX);
+    }
     pthread_cond_broadcast(&context->cond);
     pthread_mutex_unlock(&context->lock);
     for (process = context->processes; process; process = next) {
@@ -1626,19 +1724,11 @@ static int nofork_make_continued_wait_status(void) {
 }
 
 static bool nofork_wait_status_is_stopped(int wait_status) {
-#ifdef WIFSTOPPED
-    return WIFSTOPPED(wait_status);
-#else
     return (wait_status & 0xff) == 0x7f;
-#endif
 }
 
 static bool nofork_wait_status_is_continued(int wait_status) {
-#ifdef WIFCONTINUED
-    return WIFCONTINUED(wait_status);
-#else
     return wait_status == 0xffff;
-#endif
 }
 
 static void nofork_wake_process_locked(struct OmniNoForkProcess *process) {
@@ -1658,10 +1748,19 @@ static void nofork_wake_process_locked(struct OmniNoForkProcess *process) {
 static void nofork_notify_parent_sigchld_locked(
     struct OmniNoForkProcess *process) {
     struct OmniNoForkProcess *parent;
+    bool debug = getenv("OMNIKIT_DEBUG_NOFORK_WAIT") != NULL;
 
     if (!process || process->is_thread) return;
     parent = nofork_find_process_by_pid_locked(process->context, process->ppid);
     if (parent && parent->machine && !parent->finished) {
+        if (debug) {
+            fprintf(stderr,
+                    "[nofork-wait] notify-sigchld child=%d parent=%d pending=%d final=%d\n",
+                    process->pid, parent->pid,
+                    process->has_pending_wait_status ? 1 : 0,
+                    process->has_final_wait_status ? 1 : 0);
+            fflush(stderr);
+        }
         nofork_deliver_signal_to_process_locked(parent, SIGCHLD_LINUX);
     }
 }
@@ -1715,20 +1814,28 @@ static bool nofork_process_matches_wait_target_locked(
 static bool nofork_process_next_wait_status_locked(struct OmniNoForkProcess *process,
                                                    int options,
                                                    int *wait_status) {
+    bool pending_status_allowed;
+
     if (!process) return false;
     if (process->has_pending_wait_status) {
+        pending_status_allowed = true;
         if (nofork_wait_status_is_stopped(process->wait_status) &&
             !(options & WUNTRACED)) {
-            return false;
+            pending_status_allowed = false;
         }
         if (nofork_wait_status_is_continued(process->wait_status) &&
             !(options & WCONTINUED)) {
-            return false;
+            pending_status_allowed = false;
         }
-        if (wait_status) *wait_status = process->wait_status;
-        return true;
+        if (pending_status_allowed) {
+            if (wait_status) *wait_status = process->wait_status;
+            return true;
+        }
     }
     if (process->finished && process->has_final_wait_status) {
+        if ((options & WNOHANG) && process->final_status_reported_nonblocking) {
+            return false;
+        }
         if (wait_status) *wait_status = process->final_wait_status;
         return true;
     }
@@ -1748,9 +1855,16 @@ static void nofork_consume_wait_status_locked(struct OmniNoForkProcess *process)
 static void nofork_deliver_signal_to_process_locked(
     struct OmniNoForkProcess *process, int sig) {
     struct Machine *machine;
+    bool debug = getenv("OMNIKIT_DEBUG_NOFORK_WAIT") != NULL;
 
     if (!process || !process->machine || !sig) return;
     machine = process->machine;
+    if (debug) {
+        fprintf(stderr,
+                "[nofork-wait] deliver-signal pid=%d sig=%d stopped=%d finished=%d\n",
+                process->pid, sig, process->stopped ? 1 : 0, process->finished ? 1 : 0);
+        fflush(stderr);
+    }
     EnqueueSignal(machine, sig);
     nofork_wake_process_locked(process);
 }
@@ -1771,16 +1885,30 @@ static void nofork_unregister_process_locked(struct OmniNoForkContext *context,
 static struct OmniNoForkProcess *nofork_ensure_root_process(
     struct OmniNoForkContext *context, struct Machine *machine) {
     struct OmniNoForkProcess *process;
+    bool debug = getenv("OMNIKIT_DEBUG_NOFORK_CLONE_PAGES") != NULL;
+    int root_pid;
 
     if (!context || !machine || !machine->system) {
         return NULL;
     }
     pthread_mutex_lock(&context->lock);
     nofork_note_root_pid_locked(context, machine);
-    process = nofork_register_process_locked(context, machine, machine->system->pid,
-                                             getppid(), machine->system->pid, true,
-                                             false);
+    root_pid = context->root_pid ? context->root_pid : machine->system->pid;
+    if (machine->system->pid != root_pid) {
+        process = nofork_find_process_by_pid_locked(context, root_pid);
+        pthread_mutex_unlock(&context->lock);
+        return process;
+    }
+    process = nofork_register_process_locked(context, machine, root_pid, getppid(),
+                                             root_pid, true, false);
     nofork_set_initial_group_state_locked(context, process);
+    if (debug && process) {
+        fprintf(stderr,
+                "[nofork-wait] root pid=%d machine=%p ppid=%d sid=%d pgid=%d\n",
+                process->pid, (void *)machine, process->ppid, process->sid,
+                process->pgid);
+        fflush(stderr);
+    }
     pthread_mutex_unlock(&context->lock);
     return process;
 }
@@ -2018,7 +2146,10 @@ static int host_runtime_setup(const blink_run_config_t *config, const flatvfs_t 
 
     WriteErrorInit();
     InitMap();
-    FLAG_nolinear = should_force_nolinear_host_runtime();
+    // The no-fork runtime can keep multiple guest address spaces alive inside
+    // one host process. Linear mappings would collide across pseudo-processes,
+    // so force non-linear mappings for every no-fork run.
+    FLAG_nolinear = (g_nofork_context != NULL) || should_force_nolinear_host_runtime();
 
 #ifndef DISABLE_VFS
     if (config->host_mount_count > 0 && !config->vfs_prefix) {
@@ -2153,28 +2284,183 @@ static int prot_from_pte(u64 entry) {
     return prot;
 }
 
+static int load_file_backed_page_bytes(struct Machine *child, const struct FileMap *fm,
+                                       i64 virt, u8 page[4096]) {
+    int fd;
+    ssize_t got;
+    off_t offset;
+    int saved_errno;
+    struct VfsProcess *previous_process;
+
+    if (!child || !child->system || !child->system->vfs || !fm || !fm->path) {
+        if (getenv("OMNIKIT_DEBUG_NOFORK_CLONE_PAGES")) {
+            fprintf(stderr,
+                    "[nofork-wait] clone-file-page missing-filemap virt=%#" PRIx64
+                    " child=%p fm=%p path=%s\n",
+                    virt, (void *)child, (void *)fm,
+                    (fm && fm->path) ? fm->path : "<null>");
+            fflush(stderr);
+        }
+        errno = ENOENT;
+        return -1;
+    }
+
+    memset(page, 0, 4096);
+    offset = fm->offset + (virt - fm->virt);
+    previous_process = VfsGetCurrentProcess();
+    VfsSetCurrentProcess(child->system->vfs);
+    fd = VfsOpen(AT_FDCWD, fm->path, O_RDONLY, 0);
+    if (fd == -1) {
+        saved_errno = errno;
+        if (getenv("OMNIKIT_DEBUG_NOFORK_CLONE_PAGES")) {
+            fprintf(stderr,
+                    "[nofork-wait] clone-file-page open-failed virt=%#" PRIx64
+                    " path=%s errno=%d\n",
+                    virt, fm->path, saved_errno);
+            fflush(stderr);
+        }
+        VfsSetCurrentProcess(previous_process);
+        errno = saved_errno;
+        return -1;
+    }
+
+    got = VfsPread(fd, page, 4096, offset);
+    saved_errno = errno;
+    VfsClose(fd);
+    VfsSetCurrentProcess(previous_process);
+    if (got == -1) {
+        if (getenv("OMNIKIT_DEBUG_NOFORK_CLONE_PAGES")) {
+            fprintf(stderr,
+                    "[nofork-wait] clone-file-page read-failed virt=%#" PRIx64
+                    " path=%s off=%#" PRIx64 " errno=%d\n",
+                    virt, fm->path, (u64)offset, saved_errno);
+            fflush(stderr);
+        }
+        errno = saved_errno;
+        return -1;
+    }
+    return 0;
+}
+
 static int clone_single_guest_page(struct Machine *parent, struct Machine *child,
                                    i64 virt, u64 entry) {
     u64 flags;
     u8 page[4096];
+    struct FileMap *fm;
+    bool debug = getenv("OMNIKIT_DEBUG_NOFORK_CLONE_PAGES") != NULL;
 
     flags = reserve_flags_from_pte(entry);
+    if (entry & PAGE_FILE) {
+        if (debug) {
+            fprintf(stderr,
+                    "[nofork-wait] clone-file-page reserve virt=%#" PRIx64
+                    " entry=%#" PRIx64 " flags=%#" PRIx64 "\n",
+                    virt, entry, flags | PAGE_FILE | PAGE_RW);
+            fflush(stderr);
+        }
+        if (ReserveVirtual(child->system, virt, 4096, flags | PAGE_FILE | PAGE_RW, -1,
+                           0, false, false) == -1) {
+            if (debug) {
+                fprintf(stderr,
+                        "[nofork-wait] clone-file-page reserve-failed virt=%#" PRIx64
+                        " errno=%d\n",
+                        virt, errno);
+                fflush(stderr);
+            }
+            return -1;
+        }
+        if (entry & PAGE_RSRV) {
+            fm = GetFileMap(parent->system, virt);
+            if (fm && fm->path && fm->path[0] == '/') {
+                if (load_file_backed_page_bytes(child, fm, virt, page) == -1) {
+                    if (debug) {
+                        fprintf(stderr,
+                                "[nofork-wait] clone-file-page load-failed virt=%#" PRIx64
+                                " path=%s errno=%d\n",
+                                virt, fm->path, errno);
+                        fflush(stderr);
+                    }
+                    return -1;
+                }
+            } else {
+                memset(page, 0, sizeof(page));
+            }
+        } else {
+            if (CopyFromUserRead(parent, page, virt, sizeof(page)) == -1) {
+                if (debug) {
+                    fprintf(stderr,
+                            "[nofork-wait] clone-file-page copy-parent-failed virt=%#" PRIx64
+                            " errno=%d\n",
+                            virt, errno);
+                    fflush(stderr);
+                }
+                return -1;
+            }
+        }
+        if (CopyToUserWrite(child, virt, page, sizeof(page)) == -1) {
+            if (debug) {
+                fprintf(stderr,
+                        "[nofork-wait] clone-file-page copy-child-failed virt=%#" PRIx64
+                        " errno=%d\n",
+                        virt, errno);
+                fflush(stderr);
+            }
+            return -1;
+        }
+        if (~entry & PAGE_RW) {
+            if (ProtectVirtual(child->system, virt, 4096, prot_from_pte(entry), false) ==
+                -1) {
+                if (debug) {
+                    fprintf(stderr,
+                            "[nofork-wait] clone-file-page protect-failed virt=%#" PRIx64
+                            " errno=%d\n",
+                            virt, errno);
+                    fflush(stderr);
+                }
+                return -1;
+            }
+        }
+        return 0;
+    }
+    if (debug) {
+        fprintf(stderr,
+                "[nofork-wait] clone-page reserve virt=%#" PRIx64 " entry=%#" PRIx64
+                " flags=%#" PRIx64 "\n",
+                virt, entry, flags | PAGE_RW);
+        fflush(stderr);
+    }
     if (ReserveVirtual(child->system, virt, 4096, flags | PAGE_RW, -1, 0, false,
                        false) == -1) {
         return -1;
+    }
+    if (debug) {
+        fprintf(stderr, "[nofork-wait] clone-page reserve-ok virt=%#" PRIx64 "\n", virt);
+        fflush(stderr);
     }
     if (!(entry & PAGE_RSRV)) {
         if (CopyFromUserRead(parent, page, virt, sizeof(page)) == -1) {
             return -1;
         }
+        if (debug) {
+            fprintf(stderr, "[nofork-wait] clone-page read-ok virt=%#" PRIx64 "\n", virt);
+            fflush(stderr);
+        }
         if (CopyToUserWrite(child, virt, page, sizeof(page)) == -1) {
             return -1;
+        }
+        if (debug) {
+            fprintf(stderr, "[nofork-wait] clone-page write-ok virt=%#" PRIx64 "\n", virt);
+            fflush(stderr);
         }
     }
     if (~entry & PAGE_RW) {
         if (ProtectVirtual(child->system, virt, 4096, prot_from_pte(entry), false) ==
             -1) {
             return -1;
+        }
+        if (debug) {
+            fprintf(stderr, "[nofork-wait] clone-page protect-ok virt=%#" PRIx64 "\n", virt);
+            fflush(stderr);
         }
     }
     return 0;
@@ -2240,6 +2526,7 @@ static int clone_system_state(struct Machine *parent, struct Machine *child,
                               int child_pid) {
     struct System *src = parent->system;
     struct System *dst = child->system;
+    bool debug = getenv("OMNIKIT_DEBUG_NOFORK_WAIT") != NULL;
 
     dst->dlab = src->dlab;
     dst->isfork = true;
@@ -2264,20 +2551,65 @@ static int clone_system_state(struct Machine *parent, struct Machine *child,
     dst->codestart = src->codestart;
     dst->codesize = src->codesize;
     dst->blinksigs = src->blinksigs;
+    dst->onfilemap = src->onfilemap;
+    dst->onsymbols = src->onsymbols;
+    dst->onbinbase = src->onbinbase;
+    dst->onlongbranch = src->onlongbranch;
+    dst->onromwriteattempt = src->onromwriteattempt;
+    dst->exec = src->exec;
+    dst->redraw = src->redraw;
     memcpy(&dst->exec_sigmask, &src->exec_sigmask, sizeof(dst->exec_sigmask));
     memcpy(dst->hands, src->hands, sizeof(dst->hands));
     memcpy(dst->rlim, src->rlim, sizeof(dst->rlim));
+    if (debug) {
+        fprintf(stderr, "[nofork-wait] clone-system elf begin child=%d\n", child_pid);
+        fflush(stderr);
+    }
     if (clone_system_elf_state(dst, src) == -1) {
         return -1;
+    }
+    if (debug) {
+        fprintf(stderr, "[nofork-wait] clone-system fd begin child=%d\n", child_pid);
+        fflush(stderr);
     }
     if (clone_system_fd_state(dst, src) == -1) {
         return -1;
     }
+    if ((dst->cr3 = AllocatePageTable(dst)) == -1) {
+        errno = ENOMEM;
+        return -1;
+    }
+    if (debug) {
+        fprintf(stderr,
+                "[nofork-wait] clone-system address-space begin child=%d cr3=%#" PRIx64 "\n",
+                child_pid, dst->cr3);
+        fflush(stderr);
+    }
     if (clone_guest_address_space(parent, child) == -1) {
         return -1;
     }
+    if (debug) {
+        fprintf(stderr, "[nofork-wait] clone-system filemaps begin child=%d\n",
+                child_pid);
+        fflush(stderr);
+    }
     if (clone_system_filemaps(dst, src) == -1) {
         return -1;
+    }
+    if (debug) {
+        fprintf(stderr, "[nofork-wait] clone-system vfs begin child=%d\n", child_pid);
+        fflush(stderr);
+    }
+    if (dst->vfs) {
+        VfsFreeProcess(dst->vfs);
+        dst->vfs = NULL;
+    }
+    if (VfsCloneProcess(&dst->vfs, src->vfs) == -1) {
+        return -1;
+    }
+    if (debug) {
+        fprintf(stderr, "[nofork-wait] clone-system done child=%d\n", child_pid);
+        fflush(stderr);
     }
     return 0;
 }
@@ -2294,7 +2626,17 @@ static void clone_machine_state(struct Machine *dst, struct Machine *src,
     memset(&dst->path, 0, sizeof(dst->path));
     memset(&dst->freelist, 0, sizeof(dst->freelist));
     memset(&dst->pagelocks, 0, sizeof(dst->pagelocks));
+    dst->xedd = NULL;
+    dst->oplen = 0;
+    ResetTlb(dst);
     ResetInstructionCache(dst);
+    dst->faultaddr = 0;
+    dst->opcache->stashsize = 0;
+    dst->stashaddr = 0;
+    dst->writeaddr = 0;
+    dst->readaddr = 0;
+    dst->writesize = 0;
+    dst->readsize = 0;
     dst->insyscall = false;
     dst->nofault = false;
     dst->sysdepth = 0;
@@ -2304,6 +2646,12 @@ static void clone_machine_state(struct Machine *dst, struct Machine *src,
     dst->killed = false;
     dst->attention = false;
     dst->invalidated = false;
+    dst->restored = false;
+    dst->selfmodifying = false;
+    dst->interrupted = false;
+    dst->issigsuspend = false;
+    dst->trapno = 0;
+    dst->segvcode = 0;
     dll_init(&dst->elem);
     if (stack) {
         Put64(dst->sp, stack);
@@ -2313,10 +2661,14 @@ static void clone_machine_state(struct Machine *dst, struct Machine *src,
 
 static int run_machine_nofork(struct Machine *machine) {
     int rc;
+    sigset_t unblock;
     struct OmniNoForkContext *context = g_nofork_context;
 
     unassert(context);
     machine->system->trapexit = true;
+    sigemptyset(&unblock);
+    sigaddset(&unblock, SIGSYS);
+    unassert(!pthread_sigmask(SIG_UNBLOCK, &unblock, 0));
 
     for (g_machine = machine, m = machine;;) {
         nofork_context_set_current_machine(context, machine);
@@ -2342,8 +2694,42 @@ static int run_machine_nofork(struct Machine *machine) {
             continue;
         }
 
+        if (machine->system->exited) {
+            int exit_code = machine->system->exitcode;
+            struct OmniNoForkProcess *process;
+
+            pthread_mutex_lock(&context->lock);
+            process = nofork_find_process_by_machine_locked(context, machine);
+            if (process && process->group_exit_requested) {
+                exit_code = process->requested_exit_code;
+            }
+            pthread_mutex_unlock(&context->lock);
+
+            nofork_context_detach_current_machine(context, machine);
+            FreeMachine(machine);
+#ifdef HAVE_JIT
+            ShutdownJit();
+#endif
+            g_machine = NULL;
+            m = NULL;
+
+            if (context->timed_out) {
+                exit_code = 128 + SIGKILL;
+            }
+            context->exit_code = exit_code;
+            siglongjmp(context->escape, 1);
+        }
+
         if (rc == kMachineExitTrap && machine->system->exited) {
             int exit_code = machine->system->exitcode;
+            struct OmniNoForkProcess *process;
+
+            pthread_mutex_lock(&context->lock);
+            process = nofork_find_process_by_machine_locked(context, machine);
+            if (process && process->group_exit_requested) {
+                exit_code = process->requested_exit_code;
+            }
+            pthread_mutex_unlock(&context->lock);
 
             nofork_context_detach_current_machine(context, machine);
             FreeMachine(machine);
@@ -2368,9 +2754,17 @@ static int run_machine_nofork(struct Machine *machine) {
 
 static void nofork_finish_process(struct OmniNoForkProcess *process, int exit_code) {
     struct OmniNoForkContext *context;
+    bool debug = getenv("OMNIKIT_DEBUG_NOFORK_WAIT") != NULL;
 
     if (!process) return;
     context = process->context;
+    if (debug) {
+        fprintf(stderr,
+                "[nofork-wait] finish pid=%d ppid=%d exit=%d thread=%d root=%d\n",
+                process->pid, process->ppid, exit_code, process->is_thread ? 1 : 0,
+                process->is_root ? 1 : 0);
+        fflush(stderr);
+    }
     pthread_mutex_lock(&context->lock);
     process->finished = true;
     process->stopped = false;
@@ -2424,11 +2818,13 @@ static void nofork_process_wait_if_stopped(struct OmniNoForkProcess *process) {
 static int run_machine_nofork_pseudo_process(struct OmniNoForkProcess *process) {
     int rc;
     int exit_code;
+    bool debug;
     struct Machine *machine;
     struct OmniNoForkContext *context;
 
     context = process->context;
     machine = process->machine;
+    debug = getenv("OMNIKIT_DEBUG_NOFORK_WAIT") != NULL;
     unassert(context);
     unassert(machine);
     machine->system->trapexit = true;
@@ -2458,8 +2854,58 @@ static int run_machine_nofork_pseudo_process(struct OmniNoForkProcess *process) 
             continue;
         }
 
+        if (machine->system->exited) {
+            pthread_mutex_lock(&context->lock);
+            exit_code = process->group_exit_requested ? process->requested_exit_code
+                                                      : machine->system->exitcode;
+            if (debug) {
+                fprintf(stderr,
+                        "[nofork-wait] pseudo-exit pid=%d root=%d thread=%d group=%d requested=%d system=%d chosen=%d rc=%d\n",
+                        process->pid, process->is_root ? 1 : 0,
+                        process->is_thread ? 1 : 0,
+                        process->group_exit_requested ? 1 : 0,
+                        process->requested_exit_code, machine->system->exitcode,
+                        exit_code, rc);
+                fflush(stderr);
+            }
+            pthread_mutex_unlock(&context->lock);
+            if (getenv("OMNIKIT_DEBUG_PROCESS_FDS")) {
+                fprintf(stderr, "[process-fds] exiting pid=%d\n", process->pid);
+                debug_dump_system_fds("process-exit", machine->system);
+                VfsDebugDumpProcessFds("process-exit", machine->system->vfs);
+            }
+            nofork_context_detach_current_machine(context, machine);
+            FreeMachine(machine);
+#ifdef HAVE_JIT
+            ShutdownJit();
+#endif
+            g_machine = NULL;
+            m = NULL;
+            VfsSetCurrentProcess(NULL);
+            nofork_finish_process(process, exit_code);
+            return kMachineExitTrap;
+        }
+
         if (rc == kMachineExitTrap && machine->system->exited) {
-            exit_code = machine->system->exitcode;
+            pthread_mutex_lock(&context->lock);
+            exit_code = process->group_exit_requested ? process->requested_exit_code
+                                                      : machine->system->exitcode;
+            if (debug) {
+                fprintf(stderr,
+                        "[nofork-wait] pseudo-exittrap pid=%d root=%d thread=%d group=%d requested=%d system=%d chosen=%d\n",
+                        process->pid, process->is_root ? 1 : 0,
+                        process->is_thread ? 1 : 0,
+                        process->group_exit_requested ? 1 : 0,
+                        process->requested_exit_code, machine->system->exitcode,
+                        exit_code);
+                fflush(stderr);
+            }
+            pthread_mutex_unlock(&context->lock);
+            if (getenv("OMNIKIT_DEBUG_PROCESS_FDS")) {
+                fprintf(stderr, "[process-fds] exiting pid=%d\n", process->pid);
+                debug_dump_system_fds("process-exit", machine->system);
+                VfsDebugDumpProcessFds("process-exit", machine->system->vfs);
+            }
             nofork_context_detach_current_machine(context, machine);
             FreeMachine(machine);
 #ifdef HAVE_JIT
@@ -2517,6 +2963,23 @@ static int run_machine_nofork_thread_task(struct OmniNoForkProcess *process) {
             continue;
         }
 
+        if (machine->system->exited) {
+            pthread_mutex_lock(&context->lock);
+            exit_code = process->exit_requested ? process->requested_exit_code
+                                               : machine->system->exitcode;
+            pthread_mutex_unlock(&context->lock);
+            nofork_context_detach_current_machine(context, machine);
+            FreeMachine(machine);
+#ifdef HAVE_JIT
+            ShutdownJit();
+#endif
+            g_machine = NULL;
+            m = NULL;
+            VfsSetCurrentProcess(NULL);
+            nofork_finish_thread_task(process, exit_code);
+            return kMachineExitTrap;
+        }
+
         if (rc == kMachineExitTrap) {
             pthread_mutex_lock(&context->lock);
             should_finish = process->exit_requested || machine->system->exited;
@@ -2563,8 +3026,20 @@ static int nofork_replace_process_machine(struct OmniNoForkProcess *process) {
 static void *nofork_process_thread_main(void *arg) {
     struct OmniNoForkProcess *process = (struct OmniNoForkProcess *)arg;
     int rc;
+    bool debug = getenv("OMNIKIT_DEBUG_NOFORK_WAIT") != NULL;
 
     g_nofork_context = process->context;
+    if (process->machine) {
+        process->machine->thread = pthread_self();
+    }
+    if (debug && process->machine) {
+        fprintf(stderr,
+                "[nofork-wait] child-thread start pid=%d ip=%#" PRIx64 " sp=%#" PRIx64
+                " ax=%#" PRIx64 "\n",
+                process->pid, process->machine->ip, Get64(process->machine->sp),
+                Get64(process->machine->ax));
+        fflush(stderr);
+    }
     for (;;) {
         rc = run_machine_nofork_pseudo_process(process);
         if (rc == kMachineExecTrap && g_exec_request.pending) {
@@ -2584,6 +3059,9 @@ static void *nofork_thread_task_main(void *arg) {
     struct OmniNoForkProcess *process = (struct OmniNoForkProcess *)arg;
 
     g_nofork_context = process->context;
+    if (process->machine) {
+        process->machine->thread = pthread_self();
+    }
     run_machine_nofork_thread_task(process);
     return NULL;
 }
@@ -2595,10 +3073,6 @@ static int ShimExecNoFork(char *execfn, char *prog, char **argv, char **envp) {
     bool debug = getenv("OMNIKIT_DEBUG_EXEC_LOOP") != NULL;
 
     for (;;) {
-        if (old) {
-            teardown_exec_source(old);
-            old = NULL;
-        }
         if (debug) {
             fprintf(stderr, "[exec-loop] nofork creating replacement machine for %s\n",
                     prog ? prog : "<null>");
@@ -2611,6 +3085,11 @@ static int ShimExecNoFork(char *execfn, char *prog, char **argv, char **envp) {
         nofork_context_set_current_machine(g_nofork_context, machine);
 
         prepare_exec_machine(machine, old, execfn, prog, argv, envp);
+        nofork_ensure_root_process(g_nofork_context, machine);
+        if (old) {
+            teardown_exec_source(old);
+            old = NULL;
+        }
 
         clear_exec_request();
         if (debug) {
@@ -2829,6 +3308,7 @@ static int blink_run_nofork_captured_impl(const blink_run_config_t *config,
     int saved_errno = 0;
     int stdout_pipe[2] = {-1, -1};
     int stderr_pipe[2] = {-1, -1};
+    int stdin_fd = -1;
     bool timeout_thread_started = false;
     bool stdout_reader_started = false;
     bool stderr_reader_started = false;
@@ -2884,11 +3364,20 @@ static int blink_run_nofork_captured_impl(const blink_run_config_t *config,
         }
         stderr_reader_started = true;
 
-        if (redirect_guest_fd(STDOUT_FILENO, stdout_pipe[1]) == -1 ||
+        stdin_fd = open("/dev/null", O_RDONLY | O_CLOEXEC);
+        if (stdin_fd == -1) {
+            saved_errno = errno;
+            goto nofork_captured_cleanup_locked;
+        }
+
+        if (redirect_guest_fd(STDIN_FILENO, stdin_fd) == -1 ||
+            redirect_guest_fd(STDOUT_FILENO, stdout_pipe[1]) == -1 ||
             redirect_guest_fd(STDERR_FILENO, stderr_pipe[1]) == -1) {
             saved_errno = errno;
             goto nofork_captured_cleanup_locked;
         }
+        close(stdin_fd);
+        stdin_fd = -1;
         close(stdout_pipe[1]);
         stdout_pipe[1] = -1;
         close(stderr_pipe[1]);
@@ -2916,6 +3405,10 @@ static int blink_run_nofork_captured_impl(const blink_run_config_t *config,
     rc = saved_errno ? -1 : 0;
 
 nofork_captured_cleanup_locked:
+    if (stdin_fd != -1) {
+        close(stdin_fd);
+        stdin_fd = -1;
+    }
     if (stdout_pipe[1] != -1) {
         close(stdout_pipe[1]);
         stdout_pipe[1] = -1;
@@ -2984,17 +3477,49 @@ static int nofork_create_child_machine(struct Machine *parent, u64 flags, u64 st
                                        struct Machine **out_machine) {
     struct Machine *child;
     _Atomic(i32) *ctid_ptr;
+    bool debug = getenv("OMNIKIT_DEBUG_NOFORK_WAIT") != NULL;
 
+    if (debug) {
+        fprintf(stderr, "[nofork-wait] create-child begin parent=%d child=%d flags=%#" PRIx64 "\n",
+                parent && parent->system ? parent->system->pid : -1, child_pid, flags);
+        fflush(stderr);
+    }
     child = NewMachine(NewSystem(XED_MACHINE_MODE_LONG), 0);
     if (!child) {
         errno = ENOMEM;
         return -1;
     }
+    if (debug) {
+        fprintf(stderr, "[nofork-wait] create-child allocated machine=%p system=%p\n",
+                (void *)child, (void *)child->system);
+        fflush(stderr);
+    }
     if (clone_system_state(parent, child, child_pid) == -1) {
+        if (debug) {
+            fprintf(stderr,
+                    "[nofork-wait] create-child clone-system-failed child=%d errno=%d\n",
+                    child_pid, errno);
+            fflush(stderr);
+        }
         FreeMachine(child);
         return -1;
     }
+    if (debug) {
+        fprintf(stderr, "[nofork-wait] create-child cloned system state pid=%d\n",
+                child->system ? child->system->pid : -1);
+        fflush(stderr);
+    }
+#ifdef HAVE_JIT
+    DisableJit(&child->system->jit);
+#endif
     clone_machine_state(child, parent, child_pid, stack);
+    if (debug) {
+        fprintf(stderr,
+                "[nofork-wait] create-child cloned machine state tid=%d ip=%#" PRIx64
+                " sp=%#" PRIx64 " ax=%#" PRIx64 "\n",
+                child->tid, child->ip, Get64(child->sp), Get64(child->ax));
+        fflush(stderr);
+    }
     if ((flags & (CLONE_CHILD_SETTID_LINUX | CLONE_CHILD_CLEARTID_LINUX)) &&
         !(ctid & (sizeof(i32) - 1)) &&
         (ctid_ptr = (_Atomic(i32) *)LookupAddress(child, ctid))) {
@@ -3042,11 +3567,20 @@ int OmniNoForkFork(struct Machine *machine, u64 flags, u64 stack, u64 ctid) {
     struct OmniNoForkProcess *child_process;
     struct Machine *child_machine;
     bool is_vfork;
+    bool debug = getenv("OMNIKIT_DEBUG_NOFORK_WAIT") != NULL;
 
     context = g_nofork_context;
     if (!context || !machine || !machine->system) {
         errno = ENOSYS;
         return -1;
+    }
+    if (debug) {
+        fprintf(stderr,
+                "[nofork-wait] fork-request parent=%d ip=%#" PRIx64
+                " oplen=%u sp=%#" PRIx64 " ax=%#" PRIx64 " flags=%#" PRIx64 "\n",
+                machine->system->pid, machine->ip, machine->oplen, Get64(machine->sp),
+                Get64(machine->ax), flags);
+        fflush(stderr);
     }
     nofork_ensure_root_process(context, machine);
     pthread_mutex_lock(&context->lock);
@@ -3090,6 +3624,13 @@ int OmniNoForkFork(struct Machine *machine, u64 flags, u64 stack, u64 ctid) {
     }
     child_process->is_vfork = is_vfork;
     child_process->parent_released = !is_vfork;
+    if (debug) {
+        fprintf(stderr,
+                "[nofork-wait] fork parent=%d child=%d child_ppid=%d sid=%d pgid=%d vfork=%d\n",
+                machine->system->pid, child_pid, child_process->ppid,
+                child_process->sid, child_process->pgid, is_vfork ? 1 : 0);
+        fflush(stderr);
+    }
     pthread_mutex_unlock(&context->lock);
 
     if ((err = pthread_create(&child_process->thread, NULL, nofork_process_thread_main,
@@ -3214,6 +3755,8 @@ int OmniNoForkWait4(struct Machine *machine, int pid, int options,
     int rc = -2;
     int wait_status = 0;
     bool should_join = false;
+    bool debug = getenv("OMNIKIT_DEBUG_NOFORK_WAIT") != NULL;
+    static _Atomic unsigned no_child_log_count;
 
     context = g_nofork_context;
     if (!context || !machine || !machine->system) {
@@ -3223,6 +3766,12 @@ int OmniNoForkWait4(struct Machine *machine, int pid, int options,
     pthread_mutex_lock(&context->lock);
     caller = nofork_find_process_by_machine_locked(context, machine);
     if (!caller) {
+        if (debug) {
+            fprintf(stderr,
+                    "[nofork-wait] caller-miss machine=%p pid=%d target=%d opts=%d\n",
+                    (void *)machine, machine->system->pid, pid, options);
+            fflush(stderr);
+        }
         pthread_mutex_unlock(&context->lock);
         errno = ESRCH;
         return -1;
@@ -3244,17 +3793,55 @@ int OmniNoForkWait4(struct Machine *machine, int pid, int options,
         }
 
         if (!matched_child) {
+            if (debug) {
+                unsigned count =
+                    atomic_fetch_add_explicit(&no_child_log_count, 1,
+                                              memory_order_relaxed) +
+                    1;
+                if (count <= 32 || !(count % 1024)) {
+                    fprintf(stderr,
+                            "[nofork-wait] no-child caller=%d target=%d opts=%d ip=%#" PRIx64
+                            " sigdepth=%d attention=%d count=%u\n",
+                            caller->pid, pid, options, machine->ip, machine->sigdepth,
+                            atomic_load_explicit(&machine->attention,
+                                                 memory_order_acquire)
+                                ? 1
+                                : 0,
+                            count);
+                    debug_dump_context_processes_locked("no-child", context);
+                    fflush(stderr);
+                }
+            }
             errno = ECHILD;
             rc = -1;
             break;
         }
 
         if (candidate) {
+            bool delivered_final_wait_status;
+
             process = candidate;
+            delivered_final_wait_status =
+                process->finished && process->has_final_wait_status &&
+                wait_status == process->final_wait_status &&
+                (!process->has_pending_wait_status ||
+                 wait_status != process->wait_status);
+            if (debug) {
+                fprintf(stderr,
+                        "[nofork-wait] deliver caller=%d child=%d status=%#x pending=%d final=%d join=%d\n",
+                        caller->pid, process->pid, wait_status,
+                        process->has_pending_wait_status ? 1 : 0,
+                        process->has_final_wait_status ? 1 : 0,
+                        process->thread_started ? 1 : 0);
+                fflush(stderr);
+            }
             if (out_pid) *out_pid = process->pid;
             if (out_wstatus) *out_wstatus = wait_status;
-            if (process->has_pending_wait_status) {
+            if (process->has_pending_wait_status && !delivered_final_wait_status) {
                 nofork_consume_wait_status_locked(process);
+            } else if ((options & WNOHANG) && process->finished &&
+                       process->has_final_wait_status) {
+                process->final_status_reported_nonblocking = true;
             } else {
                 process->waited = true;
                 should_join = process->thread_started;
@@ -3267,6 +3854,14 @@ int OmniNoForkWait4(struct Machine *machine, int pid, int options,
             rc = 0;
             break;
         }
+        if (debug) {
+            fprintf(stderr,
+                    "[nofork-wait] block caller=%d target=%d opts=%d matched=%d\n",
+                    caller->pid, pid, options, matched_child ? 1 : 0);
+            debug_dump_context_processes_locked("wait-block", context);
+            fflush(stderr);
+        }
+        debug_dump_context_process_fds_locked("wait-block", context);
         pthread_cond_wait(&context->cond, &context->lock);
     }
     pthread_mutex_unlock(&context->lock);
@@ -3916,8 +4511,7 @@ i64 OmniNoForkPtrace(struct Machine *machine, int request, int pid, i64 addr, i6
             }
             nofork_fill_user_regs_locked(target->machine, &regs);
             pthread_mutex_unlock(&context->lock);
-            if (!IsValidMemory(machine, data, sizeof(regs), PROT_WRITE) ||
-                CopyToUserWrite(machine, data, &regs, sizeof(regs)) == -1) {
+            if (CopyToUserWrite(machine, data, &regs, sizeof(regs)) == -1) {
                 return -1;
             }
             return 0;
@@ -3929,8 +4523,7 @@ i64 OmniNoForkPtrace(struct Machine *machine, int request, int pid, i64 addr, i6
                 return -1;
             }
             pthread_mutex_unlock(&context->lock);
-            if (!IsValidMemory(machine, data, sizeof(regs), PROT_READ) ||
-                CopyFromUserRead(machine, &regs, data, sizeof(regs)) == -1) {
+            if (CopyFromUserRead(machine, &regs, data, sizeof(regs)) == -1) {
                 return -1;
             }
             pthread_mutex_lock(&context->lock);
@@ -4029,6 +4622,7 @@ _Noreturn void OmniNoForkExitThreadGroup(struct Machine *machine, int rc) {
     struct OmniNoForkProcess *process;
     struct OmniNoForkProcess *caller;
     int tgid;
+    bool debug = getenv("OMNIKIT_DEBUG_NOFORK_WAIT") != NULL;
 
     context = g_nofork_context;
     if (!context || !machine || !machine->system) {
@@ -4043,10 +4637,21 @@ _Noreturn void OmniNoForkExitThreadGroup(struct Machine *machine, int rc) {
         if (process->finished || process->tgid != tgid) continue;
         process->requested_exit_code = rc & 255;
         process->group_exit_requested = true;
+        if (debug) {
+            fprintf(stderr,
+                    "[nofork-wait] exit-group target pid=%d tgid=%d root=%d thread=%d caller=%d req=%d system=%d\n",
+                    process->pid, process->tgid, process->is_root ? 1 : 0,
+                    process->is_thread ? 1 : 0, process == caller ? 1 : 0,
+                    process->requested_exit_code,
+                    process->machine && process->machine->system
+                        ? process->machine->system->exitcode
+                        : -1);
+            fflush(stderr);
+        }
         if (process != caller && process->machine) {
             process->machine->system->exitcode = rc & 255;
             process->machine->system->exited = true;
-            nofork_deliver_signal_to_process_locked(process, SIGKILL_LINUX);
+            nofork_wake_process_locked(process);
         }
     }
     if (caller) {
