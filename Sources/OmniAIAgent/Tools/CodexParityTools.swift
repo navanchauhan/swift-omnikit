@@ -871,6 +871,10 @@ private final class CodexInteractiveExecSession: @unchecked Sendable {
         await session.terminate()
     }
 
+    func finish() async {
+        await session.setEventHandler(nil)
+    }
+
     private func handle(_ event: InteractiveSessionEvent) {
         lock.lock()
         switch event {
@@ -965,7 +969,7 @@ private actor CodexInteractiveExecSessionStore {
         )
 
         if !snapshot.running {
-            await session.terminate()
+            await session.finish()
             sessions.removeValue(forKey: sessionId)
         }
 

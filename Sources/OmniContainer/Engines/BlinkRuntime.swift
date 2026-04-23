@@ -476,11 +476,7 @@ private final class BlinkInteractiveExecutionSession: InteractiveExecutionSessio
     }
 
     deinit {
-        let pointer = consumeSessionPointer()
         closeMasterFDIfNeeded()
-        if let pointer {
-            blink_pty_session_destroy(pointer)
-        }
     }
 
     func setEventHandler(_ handler: (@Sendable (InteractiveSessionEvent) -> Void)?) async {
@@ -542,13 +538,14 @@ private final class BlinkInteractiveExecutionSession: InteractiveExecutionSessio
 
     private func startReadLoop() {
         let queue = DispatchQueue(label: "omnikit.blink.pty.read.\(UUID().uuidString)")
-        queue.async { [weak self] in
-            guard let self else { return }
+        queue.async { [self] in
             var buffer = [UInt8](repeating: 0, count: 4096)
             while true {
-                let count = read(self.masterFD, &buffer, buffer.count)
+                let fd = withLockedMasterFD()
+                guard fd >= 0 else { break }
+                let count = read(fd, &buffer, buffer.count)
                 if count > 0 {
-                    self.emit(.output(Data(buffer.prefix(Int(count)))))
+                    emit(.output(Data(buffer.prefix(Int(count)))))
                     continue
                 }
                 if count == 0 {
@@ -567,9 +564,8 @@ private final class BlinkInteractiveExecutionSession: InteractiveExecutionSessio
 
     private func startWaitLoop() {
         let queue = DispatchQueue(label: "omnikit.blink.pty.wait.\(UUID().uuidString)")
-        queue.async { [weak self] in
-            guard let self else { return }
-            let pointer = self.withLockedSessionPointer()
+        queue.async { [self] in
+            let pointer = withLockedSessionPointer()
             guard let pointer else { return }
 
             var exitCode: Int32 = -1
@@ -578,9 +574,9 @@ private final class BlinkInteractiveExecutionSession: InteractiveExecutionSessio
                 exitCode = -1
             }
 
-            self.markExited(with: exitCode)
-            let consumedPointer = self.consumeSessionPointer()
-            self.closeMasterFDIfNeeded()
+            markExited(with: exitCode)
+            let consumedPointer = consumeSessionPointer()
+            closeMasterFDIfNeeded()
             if let consumedPointer {
                 blink_pty_session_destroy(consumedPointer)
             }

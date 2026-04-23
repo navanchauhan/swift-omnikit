@@ -97,6 +97,9 @@ struct BlinkExecRequest {
 
 static _Thread_local struct BlinkExecRequest g_exec_request;
 
+typedef int (*blink_runtime_setup_fn)(const blink_run_config_t *,
+                                      const flatvfs_t *);
+
 struct OmniNoForkProcess {
     int pid;
     int ppid;
@@ -160,6 +163,9 @@ struct user_regs_struct_linux_marshaled {
 
 struct blink_pty_session_impl {
     blink_run_config_t config;
+    flatvfs_t vfs;
+    bool has_vfs;
+    blink_runtime_setup_fn setup_fn;
     char *tempdir;
     pthread_t thread;
     bool thread_started;
@@ -309,6 +315,87 @@ static void free_host_mounts_copy(blink_host_mount_t *mounts, int count) {
         free((char *)mounts[i].guest_path);
     }
     free(mounts);
+}
+
+static void free_flatvfs_copy(flatvfs_t *vfs) {
+    flatvfs_entry_t *entries;
+
+    if (!vfs || !vfs->entries || vfs->entry_count <= 0) {
+        if (vfs) {
+            vfs->entries = NULL;
+            vfs->entry_count = 0;
+        }
+        return;
+    }
+
+    entries = (flatvfs_entry_t *)vfs->entries;
+    for (int i = 0; i < vfs->entry_count; ++i) {
+        free((char *)entries[i].path);
+        free((char *)entries[i].data);
+        free((char *)entries[i].symlink_target);
+    }
+    free(entries);
+    vfs->entries = NULL;
+    vfs->entry_count = 0;
+}
+
+static int copy_flatvfs(const flatvfs_t *src, flatvfs_t *dst) {
+    flatvfs_entry_t *entries = NULL;
+
+    if (!dst) {
+        errno = EINVAL;
+        return -1;
+    }
+
+    memset(dst, 0, sizeof(*dst));
+    if (!src || src->entry_count <= 0) {
+        return 0;
+    }
+    if (!src->entries) {
+        errno = EINVAL;
+        return -1;
+    }
+
+    entries = calloc((size_t)src->entry_count, sizeof(*entries));
+    if (!entries) {
+        return -1;
+    }
+
+    for (int i = 0; i < src->entry_count; ++i) {
+        const flatvfs_entry_t *entry = &src->entries[i];
+
+        entries[i].type = entry->type;
+        entries[i].mode = entry->mode;
+        entries[i].data_size = entry->data_size;
+
+        if (entry->path) {
+            entries[i].path = strdup(entry->path);
+            if (!entries[i].path) goto fail;
+        }
+        if (entry->data_size > 0) {
+            if (!entry->data) {
+                errno = EINVAL;
+                goto fail;
+            }
+            entries[i].data = malloc(entry->data_size);
+            if (!entries[i].data) goto fail;
+            memcpy((void *)entries[i].data, entry->data, entry->data_size);
+        }
+        if (entry->symlink_target) {
+            entries[i].symlink_target = strdup(entry->symlink_target);
+            if (!entries[i].symlink_target) goto fail;
+        }
+    }
+
+    dst->entries = entries;
+    dst->entry_count = src->entry_count;
+    return 0;
+
+fail:
+    dst->entries = entries;
+    dst->entry_count = src->entry_count;
+    free_flatvfs_copy(dst);
+    return -1;
 }
 
 static int copy_run_config(const blink_run_config_t *src, blink_run_config_t *dst,
@@ -2106,6 +2193,36 @@ static int ensure_guest_mountpoint(const char *guest_path) {
     return 0;
 }
 
+static const char *find_config_env_value(const blink_run_config_t *config,
+                                         const char *key) {
+    size_t keylen;
+
+    if (!config || !key || !config->envp || config->envc <= 0) {
+        return NULL;
+    }
+
+    keylen = strlen(key);
+    for (int i = 0; i < config->envc; ++i) {
+        const char *entry = config->envp[i];
+        if (!entry) continue;
+        if (!strncmp(entry, key, keylen) && entry[keylen] == '=') {
+            return entry + keylen + 1;
+        }
+    }
+
+    return NULL;
+}
+
+static int apply_guest_working_directory(const blink_run_config_t *config) {
+    const char *cwd = find_config_env_value(config, "PWD");
+
+    if (!cwd || cwd[0] != '/') {
+        cwd = "/";
+    }
+
+    return VfsChdir(cwd);
+}
+
 static int install_extra_host_mounts(const blink_run_config_t *config) {
     int i;
 
@@ -2176,6 +2293,9 @@ static int host_runtime_setup(const blink_run_config_t *config, const flatvfs_t 
     if (install_extra_host_mounts(config)) {
         return -1;
     }
+    if (apply_guest_working_directory(config)) {
+        return -1;
+    }
 #endif
 
     InitBus();
@@ -2199,6 +2319,9 @@ static int memvfs_runtime_setup(const blink_run_config_t *config, const flatvfs_
         return -1;
     }
     if (install_extra_host_mounts(config)) {
+        return -1;
+    }
+    if (apply_guest_working_directory(config)) {
         return -1;
     }
 #endif
@@ -3117,8 +3240,6 @@ static int ShimExecNoFork(char *execfn, char *prog, char **argv, char **envp) {
     }
 }
 
-typedef int (*blink_runtime_setup_fn)(const blink_run_config_t *, const flatvfs_t *);
-
 static int blink_run_nofork_interactive_impl(const blink_run_config_t *config,
                                              const flatvfs_t *vfs,
                                              blink_runtime_setup_fn setup_fn,
@@ -3229,7 +3350,8 @@ static void *blink_pty_session_thread_main(void *arg) {
             saved_errno = errno;
             goto session_cleanup;
         }
-        if (host_runtime_setup(&session->config, NULL) != 0) {
+        if (session->setup_fn(&session->config,
+                              session->has_vfs ? &session->vfs : NULL) != 0) {
             saved_errno = errno;
             goto session_cleanup;
         }
@@ -3279,6 +3401,10 @@ session_cleanup:
         }
         free(session->tempdir);
         session->tempdir = NULL;
+    }
+    if (session->has_vfs) {
+        free_flatvfs_copy(&session->vfs);
+        session->has_vfs = false;
     }
     return NULL;
 }
@@ -5044,6 +5170,7 @@ int blink_pty_session_start_memvfs(const blink_run_config_t *config,
                                    int cols,
                                    blink_pty_session_t **out_session,
                                    int *out_master_fd) {
+    bool use_nofork;
     blink_pty_session_t *handle = NULL;
     struct blink_pty_session_impl *session = NULL;
     struct winsize size;
@@ -5063,14 +5190,17 @@ int blink_pty_session_start_memvfs(const blink_run_config_t *config,
     size.ws_row = (unsigned short)(rows > 0 ? rows : 24);
     size.ws_col = (unsigned short)(cols > 0 ? cols : 80);
 
-    if (materialize_flatvfs_to_tempdir(vfs, tempdir, sizeof(tempdir)) == -1) {
+    use_nofork = should_use_nofork_runtime();
+    tempdir[0] = '\0';
+
+    if (!use_nofork &&
+        materialize_flatvfs_to_tempdir(vfs, tempdir, sizeof(tempdir)) == -1) {
         return -1;
     }
 
-    if (should_use_nofork_runtime()) {
+    if (use_nofork) {
         if (socketpair(AF_UNIX, SOCK_STREAM, 0, transport) == -1) {
             int saved_errno = errno;
-            remove_tree(tempdir);
             errno = saved_errno;
             return -1;
         }
@@ -5089,47 +5219,67 @@ int blink_pty_session_start_memvfs(const blink_run_config_t *config,
         int saved_errno = errno;
         close(master_fd);
         close(slave_fd);
-        remove_tree(tempdir);
+        if (tempdir[0]) remove_tree(tempdir);
         free(handle);
         errno = saved_errno;
         return -1;
     }
 
-    session->tempdir = strdup(tempdir);
-    if (!session->tempdir) {
-        int saved_errno = errno;
-        close(master_fd);
-        close(slave_fd);
-        remove_tree(tempdir);
-        free(handle);
-        free(session);
-        errno = saved_errno;
-        return -1;
+    if (tempdir[0]) {
+        session->tempdir = strdup(tempdir);
+        if (!session->tempdir) {
+            int saved_errno = errno;
+            close(master_fd);
+            close(slave_fd);
+            remove_tree(tempdir);
+            free(handle);
+            free(session);
+            errno = saved_errno;
+            return -1;
+        }
     }
     session->slave_fd = slave_fd;
     session->exit_code = -1;
     session->initial_rows = rows > 0 ? rows : 24;
     session->initial_cols = cols > 0 ? cols : 80;
     atomic_init(&session->terminate_requested, false);
+    session->setup_fn = use_nofork ? memvfs_runtime_setup : host_runtime_setup;
 
-    if (copy_run_config(config, &session->config, tempdir) != 0) {
+    if (copy_run_config(config, &session->config, tempdir[0] ? tempdir : NULL) != 0) {
         int saved_errno = errno ? errno : ENOMEM;
         close(master_fd);
         close(slave_fd);
-        remove_tree(tempdir);
+        if (tempdir[0]) remove_tree(tempdir);
         free(session->tempdir);
         free(session);
         errno = saved_errno;
         return -1;
     }
 
+    if (use_nofork && copy_flatvfs(vfs, &session->vfs) != 0) {
+        int saved_errno = errno ? errno : ENOMEM;
+        close(master_fd);
+        close(slave_fd);
+        free(handle);
+        free_run_config(&session->config);
+        free(session->tempdir);
+        free(session);
+        errno = saved_errno;
+        return -1;
+    }
+    session->has_vfs = use_nofork;
+
     if ((err = pthread_create(&session->thread, NULL, blink_pty_session_thread_main,
                               session)) != 0) {
         int saved_errno = err;
         close(master_fd);
         close(slave_fd);
-        remove_tree(tempdir);
+        if (tempdir[0]) remove_tree(tempdir);
         free(handle);
+        if (session->has_vfs) {
+            free_flatvfs_copy(&session->vfs);
+            session->has_vfs = false;
+        }
         free_run_config(&session->config);
         free(session->tempdir);
         free(session);
