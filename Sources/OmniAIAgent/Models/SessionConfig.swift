@@ -17,6 +17,17 @@ public struct SessionConfig: Sendable, Codable {
     public var parallelToolCalls: Bool?
     public var mcp: MCPSessionConfig
 
+    public func applyingRuntimeFallbacks(from runtimeConfig: SessionConfig) -> SessionConfig {
+        var merged = self
+        if merged.llmInactivityTimeoutSeconds == nil {
+            merged.llmInactivityTimeoutSeconds = runtimeConfig.llmInactivityTimeoutSeconds
+        }
+        if merged.parallelToolCalls == nil {
+            merged.parallelToolCalls = runtimeConfig.parallelToolCalls
+        }
+        return merged
+    }
+
     public init(
         maxTurns: Int = 0,
         maxToolRoundsPerInput: Int = 0,

@@ -1,17 +1,15 @@
 import Foundation
 import OmniAICore
 
-public final class OpenAIProfile: ProviderProfile, @unchecked Sendable {
-    public let id = "openai"
+public final class LlamaCPPProfile: ProviderProfile, @unchecked Sendable {
+    public let id = "llamacpp"
     public let model: String
     public let toolRegistry: ToolRegistry
-    private let includeNativeWebSearch: Bool
-    private let webSearchExternalWebAccess: Bool?
     private let forceCodexSystemPrompt: Bool
-    private let disablePreviousResponseId: Bool
+
     public let supportsReasoning = true
-    public let supportsStreaming: Bool
-    public let supportsPreviousResponseId: Bool
+    public let supportsStreaming = false
+    public let supportsPreviousResponseId = false
     public let supportsParallelToolCalls = true
     public let contextWindowSize = 200_000
 
@@ -22,25 +20,16 @@ public final class OpenAIProfile: ProviderProfile, @unchecked Sendable {
     }
 
     public init(
-        model: String = "gpt-5.4",
+        model: String = "qwopus-local",
         session: Session? = nil,
         shellType: ShellType = .shellCommand,
         includeApplyPatch: Bool = true,
         useUnifiedExec: Bool = true,
         includeCollabTools: Bool = false,
-        includeWebSearch: Bool = false,
-        webSearchExternalWebAccess: Bool? = true,
-        forceCodexSystemPrompt: Bool = false,
-        disablePreviousResponseId: Bool = false,
-        supportsPreviousResponseId: Bool? = nil
+        forceCodexSystemPrompt: Bool = false
     ) {
         self.model = model
-        self.includeNativeWebSearch = includeWebSearch
-        self.webSearchExternalWebAccess = webSearchExternalWebAccess
         self.forceCodexSystemPrompt = forceCodexSystemPrompt
-        self.disablePreviousResponseId = disablePreviousResponseId
-        self.supportsStreaming = Self.defaultSupportsStreaming()
-        self.supportsPreviousResponseId = (supportsPreviousResponseId ?? Self.defaultSupportsPreviousResponseId()) && !disablePreviousResponseId
 
         let registry = ToolRegistry()
         if useUnifiedExec {
@@ -87,18 +76,12 @@ public final class OpenAIProfile: ProviderProfile, @unchecked Sendable {
             basePrompt = CodexSystemPrompt.openAIPrompt(for: model)
         }
         let workingDir = environment.workingDirectory()
-        let workdirGuidance: String
-        if workingDir == "/workspace" {
-            workdirGuidance = "When using shell tools, use \".\" or \"/workspace\" for the workdir parameter."
-        } else {
-            workdirGuidance = "When using shell tools, use \".\" or \"\(workingDir)\" for the workdir parameter, not \"/workspace\""
-        }
         let envContext = """
 
 # Environment Context
 
 - Working directory: \(workingDir)
-- \(workdirGuidance)
+- When using shell tools, use "." or "\(workingDir)" for the workdir parameter, not "/workspace"
 - Platform: \(environment.platform()) \(environment.osVersion())
 """
         var sections: [String] = [basePrompt + envContext]
@@ -121,43 +104,10 @@ public final class OpenAIProfile: ProviderProfile, @unchecked Sendable {
     }
 
     public func providerOptions() -> [String: JSONValue]? {
-        var options: [String: JSONValue] = [
-            OpenAIProviderOptionKeys.responsesTransport: .string(OpenAIProviderOptionKeys.preferredResponsesTransport),
+        [
+            id: .object([
+                OpenAIProviderOptionKeys.responsesTransport: .string("sse"),
+            ]),
         ]
-
-        if includeNativeWebSearch {
-            options[OpenAIProviderOptionKeys.includeNativeWebSearch] = .bool(true)
-        }
-        if let webSearchExternalWebAccess {
-            options[OpenAIProviderOptionKeys.webSearchExternalWebAccess] = .bool(webSearchExternalWebAccess)
-        }
-        if disablePreviousResponseId {
-            options[OpenAIProviderOptionKeys.disablePreviousResponseId] = .bool(true)
-        }
-        return [id: .object(options)]
-    }
-}
-
-private extension OpenAIProfile {
-    static func defaultSupportsStreaming(environment: [String: String] = ProcessInfo.processInfo.environment) -> Bool {
-        guard let baseURL = environment["OPENAI_BASE_URL"], !baseURL.isEmpty else {
-            return true
-        }
-        guard let components = URLComponents(string: baseURL),
-              let host = components.host?.lowercased() else {
-            return false
-        }
-        return host == "api.openai.com" || host.hasSuffix(".openai.com")
-    }
-
-    static func defaultSupportsPreviousResponseId(environment: [String: String] = ProcessInfo.processInfo.environment) -> Bool {
-        guard let baseURL = environment["OPENAI_BASE_URL"], !baseURL.isEmpty else {
-            return true
-        }
-        guard let components = URLComponents(string: baseURL),
-              let host = components.host?.lowercased() else {
-            return false
-        }
-        return host == "api.openai.com" || host.hasSuffix(".openai.com")
     }
 }

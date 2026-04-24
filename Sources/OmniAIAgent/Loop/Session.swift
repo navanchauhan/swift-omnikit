@@ -232,7 +232,8 @@ public actor Session {
         }
         steeringQueue = snapshot.steeringQueue
         followupQueue = snapshot.followupQueue
-        config = snapshot.config
+        let runtimeConfig = config
+        config = snapshot.config.applyingRuntimeFallbacks(from: runtimeConfig)
         do {
             mcpServers = try config.mcp.servers.map { config in
                 try MCPServerFactory.makeServer(config: config, policy: self.config.mcp.connectionPolicy)
@@ -347,11 +348,8 @@ public actor Session {
                 gitContext: gitCtx
             )
             let toolDefs = providerProfile.tools()
+            let previousResponseId = providerProfile.id == "openai" && providerProfile.supportsPreviousResponseId
             let providerOptions = providerProfile.providerOptions()
-            let scopedProviderOptions = providerOptions?[providerProfile.id]?.objectValue
-            let disablesPreviousResponseId =
-                scopedProviderOptions?[OpenAIProviderOptionKeys.disablePreviousResponseId]?.boolValue ?? false
-            let previousResponseId = providerProfile.id == "openai" && !disablesPreviousResponseId
                 ? latestAssistantResponseId()
                 : nil
             let messages: [Message]

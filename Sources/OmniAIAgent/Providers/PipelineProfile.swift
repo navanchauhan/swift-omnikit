@@ -34,6 +34,7 @@ public final class PipelineProfile: ProviderProfile, @unchecked Sendable {
     public var toolRegistry: ToolRegistry { wrapped.toolRegistry }
     public var supportsReasoning: Bool { wrapped.supportsReasoning }
     public var supportsStreaming: Bool { wrapped.supportsStreaming }
+    public var supportsPreviousResponseId: Bool { wrapped.supportsPreviousResponseId }
     public var supportsParallelToolCalls: Bool { wrapped.supportsParallelToolCalls }
     public var contextWindowSize: Int { wrapped.contextWindowSize }
 

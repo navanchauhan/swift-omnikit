@@ -514,6 +514,7 @@ private final class FilteredToolProfile: ProviderProfile, Sendable {
     var model: String { wrapped.model }
     var supportsReasoning: Bool { wrapped.supportsReasoning }
     var supportsStreaming: Bool { wrapped.supportsStreaming }
+    var supportsPreviousResponseId: Bool { wrapped.supportsPreviousResponseId }
     var supportsParallelToolCalls: Bool { wrapped.supportsParallelToolCalls }
     var contextWindowSize: Int { wrapped.contextWindowSize }
 

@@ -12,6 +12,7 @@ public protocol ProviderProfile: Sendable {
 
     var supportsReasoning: Bool { get }
     var supportsStreaming: Bool { get }
+    var supportsPreviousResponseId: Bool { get }
     var supportsParallelToolCalls: Bool { get }
     var contextWindowSize: Int { get }
 }
@@ -19,5 +20,9 @@ public protocol ProviderProfile: Sendable {
 extension ProviderProfile {
     public func tools() -> [Tool] {
         toolRegistry.llmKitDefinitions()
+    }
+
+    public var supportsPreviousResponseId: Bool {
+        false
     }
 }
