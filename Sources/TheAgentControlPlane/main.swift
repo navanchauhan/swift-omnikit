@@ -74,6 +74,7 @@ enum TheAgentControlPlaneMain {
             conversationStore: conversationStore,
             jobStore: jobStore
         ).bootstrap()
+        try await PolicyBootstrapper.applyEnvironmentOverrides(identityStore: identityStore)
         let serverRegistry = WorkspaceSessionRegistry(
             stateRoot: stateRoot,
             identityStore: identityStore,
@@ -190,6 +191,7 @@ enum TheAgentControlPlaneMain {
             let server = HTTPIngressServer(
                 gateway: gateway,
                 runtimeRegistry: runtimeRegistry,
+                deliveryStore: deliveryStore,
                 expectedBearerToken: options.httpIngressBearerToken,
                 telegramWebhookForwarder: telegramWebhookForwarder,
                 host: options.httpIngressHost,

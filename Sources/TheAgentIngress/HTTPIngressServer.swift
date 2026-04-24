@@ -90,10 +90,42 @@ public actor HTTPIngressServer {
         public var answerText: String
     }
 
+    public struct DeliveryLogRequest: Codable, Sendable {
+        public var direction: DeliveryRecord.Direction?
+        public var status: DeliveryRecord.Status?
+        public var sessionID: String?
+        public var workspaceID: String?
+        public var channelID: String?
+        public var actorID: String?
+        public var transport: ChannelBinding.Transport?
+        public var limit: Int?
+
+        public init(
+            direction: DeliveryRecord.Direction? = nil,
+            status: DeliveryRecord.Status? = nil,
+            sessionID: String? = nil,
+            workspaceID: String? = nil,
+            channelID: String? = nil,
+            actorID: String? = nil,
+            transport: ChannelBinding.Transport? = nil,
+            limit: Int? = nil
+        ) {
+            self.direction = direction
+            self.status = status
+            self.sessionID = sessionID
+            self.workspaceID = workspaceID
+            self.channelID = channelID
+            self.actorID = actorID
+            self.transport = transport
+            self.limit = limit
+        }
+    }
+
     public typealias TelegramWebhookForwarder = @Sendable (Data, [String: String]) async -> Void
 
     private let gateway: IngressGateway
     private let runtimeRegistry: WorkspaceRuntimeRegistry
+    private let deliveryStore: any DeliveryStore
     private let expectedBearerToken: String?
     private let telegramWebhookForwarder: TelegramWebhookForwarder?
     private let host: String
@@ -108,6 +140,7 @@ public actor HTTPIngressServer {
     public init(
         gateway: IngressGateway,
         runtimeRegistry: WorkspaceRuntimeRegistry,
+        deliveryStore: any DeliveryStore,
         expectedBearerToken: String? = nil,
         telegramWebhookForwarder: TelegramWebhookForwarder? = nil,
         host: String = "127.0.0.1",
@@ -115,6 +148,7 @@ public actor HTTPIngressServer {
     ) {
         self.gateway = gateway
         self.runtimeRegistry = runtimeRegistry
+        self.deliveryStore = deliveryStore
         self.expectedBearerToken = expectedBearerToken
         self.telegramWebhookForwarder = telegramWebhookForwarder
         self.host = host
@@ -215,6 +249,10 @@ public actor HTTPIngressServer {
                     )
                 )
                 return try jsonResponse(HTTPIngressMessageResponse(result: result))
+            case "/api/v1/deliveries":
+                let request: DeliveryLogRequest = try decode(body)
+                let deliveries = try await listDeliveries(request)
+                return try jsonResponse(deliveries.map(HTTPIngressDeliveryRecord.init))
             case "/api/v1/inbox":
                 let request: ScopeRequest = try decode(body)
                 let runtime = try await resolveRuntime(for: request)
@@ -300,6 +338,37 @@ public actor HTTPIngressServer {
         return try await runtimeRegistry.runtime(for: scope)
     }
 
+    private func listDeliveries(_ request: DeliveryLogRequest) async throws -> [DeliveryRecord] {
+        let deliveries = try await deliveryStore.deliveries(
+            direction: request.direction,
+            sessionID: request.sessionID,
+            status: request.status
+        )
+        let filtered = deliveries.filter { delivery in
+            if let workspaceID = request.workspaceID,
+               delivery.workspaceID?.rawValue != workspaceID {
+                return false
+            }
+            if let channelID = request.channelID,
+               delivery.channelID?.rawValue != channelID {
+                return false
+            }
+            if let actorID = request.actorID,
+               delivery.actorID?.rawValue != actorID {
+                return false
+            }
+            if let transport = request.transport,
+               delivery.transport != transport {
+                return false
+            }
+            return true
+        }
+        guard let limit = request.limit, limit > 0 else {
+            return filtered
+        }
+        return Array(filtered.suffix(limit))
+    }
+
     private func decode<Request: Decodable>(_ body: Data?) throws -> Request {
         guard let body else {
             throw HTTPIngressServerError.missingRequestBody
@@ -359,6 +428,48 @@ private struct HTTPIngressMessageResponse: Codable {
         self.disposition = result.disposition.rawValue
         self.assistantText = result.assistantText
         self.deliveries = result.deliveries
+    }
+}
+
+private struct HTTPIngressDeliveryRecord: Codable {
+    let deliveryID: String
+    let idempotencyKey: String
+    let direction: String
+    let transport: String
+    let sessionID: String?
+    let actorID: String?
+    let actorExternalID: String?
+    let workspaceID: String?
+    let channelID: String?
+    let channelExternalID: String?
+    let channelKind: String?
+    let targetExternalID: String?
+    let messageID: String?
+    let status: String
+    let summary: String?
+    let metadata: [String: String]
+    let createdAt: Date
+    let updatedAt: Date
+
+    init(_ record: DeliveryRecord) {
+        self.deliveryID = record.deliveryID
+        self.idempotencyKey = record.idempotencyKey
+        self.direction = record.direction.rawValue
+        self.transport = record.transport.rawValue
+        self.sessionID = record.sessionID
+        self.actorID = record.actorID?.rawValue
+        self.actorExternalID = record.metadata["actor_external_id"]
+        self.workspaceID = record.workspaceID?.rawValue
+        self.channelID = record.channelID?.rawValue
+        self.channelExternalID = record.metadata["channel_external_id"] ?? record.metadata["target_external_id"]
+        self.channelKind = record.metadata["channel_kind"]
+        self.targetExternalID = record.metadata["target_external_id"]
+        self.messageID = record.messageID
+        self.status = record.status.rawValue
+        self.summary = record.summary
+        self.metadata = record.metadata
+        self.createdAt = record.createdAt
+        self.updatedAt = record.updatedAt
     }
 }
 

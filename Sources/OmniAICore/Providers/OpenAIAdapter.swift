@@ -3,7 +3,7 @@ import Foundation
 import OmniHTTP
 
 public final class OpenAIAdapter: ProviderAdapter, @unchecked Sendable {
-    public let name: String = "openai"
+    public let name: String
 
     private let apiKey: String
     private let baseURL: String
@@ -13,6 +13,7 @@ public final class OpenAIAdapter: ProviderAdapter, @unchecked Sendable {
     private let responsesWebSocketTransport: OpenAIResponsesWebSocketTransport?
 
     public init(
+        providerName: String = "openai",
         apiKey: String,
         baseURL: String? = nil,
         organizationID: String? = nil,
@@ -20,6 +21,7 @@ public final class OpenAIAdapter: ProviderAdapter, @unchecked Sendable {
         transport: HTTPTransport,
         responsesWebSocketTransport: OpenAIResponsesWebSocketTransport? = nil
     ) {
+        self.name = providerName
         self.apiKey = apiKey
         self.baseURL = baseURL ?? "https://api.openai.com/v1"
         self.organizationID = organizationID
@@ -175,6 +177,35 @@ public final class OpenAIAdapter: ProviderAdapter, @unchecked Sendable {
                             if didStartText {
                                 continuation.yield(StreamEvent(type: .standard(.textEnd), textId: textId, raw: payload))
                             }
+                        case "response.reasoning_text.delta":
+                            let delta = payload?["delta"]?.stringValue ?? ""
+                            if !delta.isEmpty {
+                                continuation.yield(StreamEvent(type: .standard(.reasoningDelta), reasoningDelta: delta, raw: payload))
+                            }
+                        case "response.output_item.added":
+                            let itemType = payload?["item"]?["type"]?.stringValue
+                            if itemType == "function_call" {
+                                let itemCallId = payload?["item"]?["call_id"]?.stringValue
+                                let itemId = payload?["item"]?["id"]?.stringValue
+                                let primaryId = itemCallId ?? itemId ?? UUID().uuidString
+                                let name = payload?["item"]?["name"]?.stringValue
+                                if toolCalls[primaryId] == nil {
+                                    let partial = PartialToolCall(id: primaryId, name: name, rawArgs: "")
+                                    toolCalls[primaryId] = partial
+                                    if let itemId, itemId != primaryId {
+                                        toolCalls[itemId] = partial
+                                    }
+                                    if let itemCallId, itemCallId != primaryId {
+                                        toolCalls[itemCallId] = partial
+                                    }
+                                    toolCallOrder.append(primaryId)
+                                    continuation.yield(StreamEvent(
+                                        type: .standard(.toolCallStart),
+                                        toolCall: ToolCall(id: primaryId, name: name ?? "", arguments: [:], rawArguments: ""),
+                                        raw: payload
+                                    ))
+                                }
+                            }
                         case "response.function_call_arguments.delta":
                             let callId = payload?["call_id"]?.stringValue
                                 ?? payload?["id"]?.stringValue
@@ -186,13 +217,18 @@ public final class OpenAIAdapter: ProviderAdapter, @unchecked Sendable {
                                 toolCalls[callId] = PartialToolCall(id: callId, name: name, rawArgs: "")
                                 toolCallOrder.append(callId)
                                 continuation.yield(StreamEvent(type: .standard(.toolCallStart), toolCall: ToolCall(id: callId, name: name ?? "", arguments: [:], rawArguments: "")))
+                            } else if let name, toolCalls[callId]?.name == nil {
+                                toolCalls[callId]?.name = name
                             }
                             toolCalls[callId]!.rawArgs += delta
-                            let partial = toolCalls[callId]!
+                            let updatedPartial = toolCalls[callId]!
+                            for (key, val) in toolCalls where val.id == updatedPartial.id && key != callId {
+                                toolCalls[key]?.rawArgs = updatedPartial.rawArgs
+                            }
                             continuation.yield(
                                 StreamEvent(
                                     type: .standard(.toolCallDelta),
-                                    toolCall: ToolCall(id: callId, name: partial.name ?? "", arguments: [:], rawArguments: partial.rawArgs),
+                                    toolCall: ToolCall(id: updatedPartial.id, name: updatedPartial.name ?? "", arguments: [:], rawArguments: updatedPartial.rawArgs),
                                     raw: payload
                                 )
                             )
@@ -211,10 +247,33 @@ public final class OpenAIAdapter: ProviderAdapter, @unchecked Sendable {
                                 continuation.yield(
                                     StreamEvent(
                                         type: .standard(.toolCallEnd),
-                                        toolCall: ToolCall(id: callId, name: partial.name ?? "", arguments: parsedArgs, rawArguments: partial.rawArgs),
+                                        toolCall: ToolCall(id: partial.id, name: partial.name ?? "", arguments: parsedArgs, rawArguments: partial.rawArgs),
                                         raw: payload
                                     )
                                 )
+                            }
+                        case "response.output_item.done":
+                            let itemType = payload?["item"]?["type"]?.stringValue
+                            if itemType == "function_call" {
+                                let callId = payload?["item"]?["call_id"]?.stringValue
+                                    ?? payload?["item"]?["id"]?.stringValue
+                                if let callId, let partial = toolCalls[callId] {
+                                    let rawArgs = payload?["item"]?["arguments"]?.stringValue ?? partial.rawArgs
+                                    let parsedArgs: [String: JSONValue] = {
+                                        guard let data = rawArgs.data(using: .utf8),
+                                              let json = try? JSONValue.parse(data),
+                                              let obj = json.objectValue
+                                        else { return [:] }
+                                        return obj
+                                    }()
+                                    continuation.yield(
+                                        StreamEvent(
+                                            type: .standard(.toolCallEnd),
+                                            toolCall: ToolCall(id: partial.id, name: payload?["item"]?["name"]?.stringValue ?? partial.name ?? "", arguments: parsedArgs, rawArguments: rawArgs),
+                                            raw: payload
+                                        )
+                                    )
+                                }
                             }
                         case "response.completed":
                             guard let payload else { break }
@@ -933,7 +992,7 @@ extension OpenAIAdapter: EmbeddingProviderAdapter {
             root["user"] = .string(user)
         }
 
-        if let options = request.providerOptions?["openai"]?.objectValue {
+        if let options = request.providerOptions?[name]?.objectValue {
             for (k, v) in options { root[k] = v }
         }
 
@@ -1054,7 +1113,7 @@ extension OpenAIAdapter: OpenAIAudioProviderAdapter {
         if let speed = request.speed {
             root["speed"] = .number(speed)
         }
-        if let options = request.providerOptions?["openai"]?.objectValue {
+        if let options = request.providerOptions?[name]?.objectValue {
             for (k, v) in options { root[k] = v }
         }
 
@@ -1087,7 +1146,7 @@ extension OpenAIAdapter: OpenAIAudioProviderAdapter {
             responseFormat: request.responseFormat,
             temperature: request.temperature,
             language: request.language,
-            providerOptions: request.providerOptions?["openai"]?.objectValue
+            providerOptions: request.providerOptions?[name]?.objectValue
         )
 
         let headers = openAIHeaders(contentType: contentType)
@@ -1113,7 +1172,7 @@ extension OpenAIAdapter: OpenAIAudioProviderAdapter {
             responseFormat: request.responseFormat,
             temperature: request.temperature,
             language: nil,
-            providerOptions: request.providerOptions?["openai"]?.objectValue
+            providerOptions: request.providerOptions?[name]?.objectValue
         )
 
         let headers = openAIHeaders(contentType: contentType)
@@ -1152,7 +1211,7 @@ extension OpenAIAdapter: OpenAIImagesProviderAdapter {
         if let user = request.user {
             root["user"] = .string(user)
         }
-        if let options = request.providerOptions?["openai"]?.objectValue {
+        if let options = request.providerOptions?[name]?.objectValue {
             for (k, v) in options { root[k] = v }
         }
 
@@ -1186,7 +1245,7 @@ extension OpenAIAdapter: OpenAIModerationsProviderAdapter {
         if let model = request.model {
             root["model"] = .string(model)
         }
-        if let options = request.providerOptions?["openai"]?.objectValue {
+        if let options = request.providerOptions?[name]?.objectValue {
             for (k, v) in options { root[k] = v }
         }
 

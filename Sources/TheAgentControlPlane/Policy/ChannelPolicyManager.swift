@@ -85,7 +85,7 @@ public actor ChannelPolicyManager {
             workspace: workspace
         )
         return ChannelPolicySnapshot(
-            directMessagePolicy: directMessagePolicy(for: workspace, transport: context.transport),
+            directMessagePolicy: try await directMessagePolicy(for: workspace, transport: context.transport),
             requireMention: requireMention,
             ambientMessagesEnabled: ambientMessagesEnabled,
             allowlisted: allowlisted,
@@ -96,12 +96,34 @@ public actor ChannelPolicyManager {
     public func directMessagePolicy(
         for workspace: WorkspaceRecord,
         transport: ChannelBinding.Transport
-    ) -> ChannelPolicySnapshot.DirectMessagePolicy {
+    ) async throws -> ChannelPolicySnapshot.DirectMessagePolicy {
         if let explicit = workspace.metadata["dm_policy"]?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased(),
            let policy = ChannelPolicySnapshot.DirectMessagePolicy(rawValue: explicit) {
             return policy
         }
+        if let globalPolicy = try await globalDirectMessagePolicy(transport: transport) {
+            return globalPolicy
+        }
         return transport == .telegram ? .pairing : .open
+    }
+
+    private func globalDirectMessagePolicy(
+        transport: ChannelBinding.Transport
+    ) async throws -> ChannelPolicySnapshot.DirectMessagePolicy? {
+        let metadata = try await globalPolicyMetadata()
+        if let transportScoped = metadata["\(transport.rawValue)_dm_policy"]?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased(),
+           let policy = ChannelPolicySnapshot.DirectMessagePolicy(rawValue: transportScoped) {
+            return policy
+        }
+        if let global = metadata["global_dm_policy"]?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased(),
+           let policy = ChannelPolicySnapshot.DirectMessagePolicy(rawValue: global) {
+            return policy
+        }
+        return nil
     }
 
     public func isActorPaired(actorID: ActorID) async throws -> Bool {
@@ -176,9 +198,15 @@ public actor ChannelPolicyManager {
             !workspaceExternalAllowlist.isEmpty ||
             !globalActorAllowlist.isEmpty ||
             !globalExternalAllowlist.isEmpty
-        let directMessageRequiresExplicitAllowlist =
-            context.channelKind == .directMessage &&
-            directMessagePolicy(for: workspace, transport: context.transport) == .allowlist
+        let directMessageRequiresExplicitAllowlist: Bool
+        if context.channelKind == .directMessage {
+            directMessageRequiresExplicitAllowlist = try await directMessagePolicy(
+                for: workspace,
+                transport: context.transport
+            ) == .allowlist
+        } else {
+            directMessageRequiresExplicitAllowlist = false
+        }
 
         if hasExplicitAllowlist || directMessageRequiresExplicitAllowlist {
             return false

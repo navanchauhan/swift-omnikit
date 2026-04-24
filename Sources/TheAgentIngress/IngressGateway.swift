@@ -532,7 +532,14 @@ public actor IngressGateway {
                 messageID: envelope.messageID,
                 status: status,
                 summary: summary,
-                metadata: envelope.metadata,
+                metadata: envelope.metadata.merging([
+                    "channel_external_id": envelope.channelExternalID,
+                    "channel_kind": envelope.channelKind.rawValue,
+                    "actor_external_id": envelope.actorExternalID,
+                    "actor_display_name": envelope.actorDisplayName ?? "",
+                ]) { current, new in
+                    current.isEmpty ? new : current
+                },
                 createdAt: envelope.receivedAt,
                 updatedAt: envelope.receivedAt
             )
@@ -556,7 +563,13 @@ public actor IngressGateway {
                 messageID: instruction.targetExternalID,
                 status: .deferred,
                 summary: instruction.chunks.joined(separator: "\n"),
-                metadata: instruction.metadata
+                metadata: instruction.metadata.merging([
+                    "target_external_id": instruction.targetExternalID,
+                    "visibility": instruction.visibility.rawValue,
+                    "channel_transport": instruction.transport.rawValue,
+                ]) { current, new in
+                    current.isEmpty ? new : current
+                }
             )
         )
     }

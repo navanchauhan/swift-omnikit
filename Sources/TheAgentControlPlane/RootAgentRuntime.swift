@@ -129,7 +129,7 @@ public final class RootAgentRuntime: @unchecked Sendable {
             storageBackend: storageBackend,
             autoRestoreFromStorage: options.autoRestoreFromStorage
         )
-        if options.effectiveEnableSubagentTools {
+        if options.effectiveEnableSubagentTools && profile.allowsDynamicToolRegistration {
             profile.toolRegistry.register(codexSpawnAgentTool(parentSession: session))
             profile.toolRegistry.register(codexSendInputTool(parentSession: session))
             profile.toolRegistry.register(codexWaitTool(parentSession: session))
@@ -197,12 +197,31 @@ public final class RootAgentRuntime: @unchecked Sendable {
             guard case .assistant(let assistant) = turn else {
                 continue
             }
-            let trimmed = assistant.content.trimmingCharacters(in: .whitespacesAndNewlines)
-            if !trimmed.isEmpty {
-                return assistant.content
+            let sanitized = sanitizeAssistantText(assistant.content)
+            if !sanitized.isEmpty {
+                return sanitized
             }
         }
         return ""
+    }
+
+    private func sanitizeAssistantText(_ text: String) -> String {
+        var candidate = text
+
+        if let thinkRange = candidate.range(of: "</think>", options: .backwards) {
+            candidate = String(candidate[thinkRange.upperBound...])
+        }
+
+        candidate = candidate
+            .replacingOccurrences(of: "<response>", with: "")
+            .replacingOccurrences(of: "</response>", with: "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+
+        if !candidate.isEmpty {
+            return candidate
+        }
+
+        return text.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     private static func safeDirectoryName(_ rawValue: String) -> String {

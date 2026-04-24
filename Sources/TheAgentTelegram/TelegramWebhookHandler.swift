@@ -144,7 +144,12 @@ public actor TelegramWebhookHandler {
         record.status = status
         record.summary = instruction.chunks.joined(separator: "\n")
         record.metadata = instruction.metadata.merging(
-            errorDescription.map { ["error": $0] } ?? [:]
+            (
+                errorDescription.map { ["error": $0] } ?? [:]
+            ).merging([
+                "target_external_id": record.metadata["target_external_id"] ?? instruction.targetExternalID,
+                "delivered_message_id": messageID ?? "",
+            ]) { _, new in new }
         ) { _, new in new }
         record.updatedAt = Date()
         _ = try await deliveryStore.saveDelivery(record)

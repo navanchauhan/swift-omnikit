@@ -86,6 +86,7 @@ public final class RootOrchestratorProfile: ProviderProfile, @unchecked Sendable
     private let contextBuffer: RootPromptContextBuffer
     private let enableNativeWebSearch: Bool
     private let enableSubagentTools: Bool
+    private let compatibilityDirectReplyMode: Bool
 
     public let toolRegistry: ToolRegistry
 
@@ -93,8 +94,10 @@ public final class RootOrchestratorProfile: ProviderProfile, @unchecked Sendable
     public var model: String { wrapped.model }
     public var supportsReasoning: Bool { wrapped.supportsReasoning }
     public var supportsStreaming: Bool { wrapped.supportsStreaming }
+    public var supportsPreviousResponseId: Bool { wrapped.supportsPreviousResponseId }
     public var supportsParallelToolCalls: Bool { wrapped.supportsParallelToolCalls }
     public var contextWindowSize: Int { wrapped.contextWindowSize }
+    var allowsDynamicToolRegistration: Bool { !compatibilityDirectReplyMode }
 
     init(
         wrapping profile: any ProviderProfile,
@@ -107,16 +110,19 @@ public final class RootOrchestratorProfile: ProviderProfile, @unchecked Sendable
         self.contextBuffer = contextBuffer
         self.enableNativeWebSearch = enableNativeWebSearch
         self.enableSubagentTools = enableSubagentTools
+        self.compatibilityDirectReplyMode = Self.shouldUseCompatibilityDirectReplyMode(for: profile)
 
         let registry = ToolRegistry()
-        for name in profile.toolRegistry.names() {
-            guard let tool = profile.toolRegistry.get(name) else {
-                continue
+        if !compatibilityDirectReplyMode {
+            for name in profile.toolRegistry.names() {
+                guard let tool = profile.toolRegistry.get(name) else {
+                    continue
+                }
+                registry.register(tool)
             }
-            registry.register(tool)
-        }
-        for tool in additionalTools {
-            registry.register(tool)
+            for tool in additionalTools {
+                registry.register(tool)
+            }
         }
         self.toolRegistry = registry
     }
@@ -156,7 +162,38 @@ public final class RootOrchestratorProfile: ProviderProfile, @unchecked Sendable
 }
 
 private extension RootOrchestratorProfile {
+    static func shouldUseCompatibilityDirectReplyMode(for profile: any ProviderProfile) -> Bool {
+        guard profile.id == "openai" else {
+            return false
+        }
+
+        let environment = ProcessInfo.processInfo.environment
+        guard let baseURL = environment["OPENAI_BASE_URL"],
+              let url = URL(string: baseURL),
+              let host = url.host?.lowercased(),
+              !host.hasSuffix("openai.com")
+        else {
+            return false
+        }
+
+        let model = profile.model.lowercased()
+        return model.contains("qwopus") || model.contains("qwen") || model.contains("llama")
+    }
+
     func buildRootInstructions() -> String {
+        if compatibilityDirectReplyMode {
+            return [
+                "# Root Assistant",
+                "",
+                "You are the user-facing assistant.",
+                "- reply directly to the user in plain text",
+                "- keep replies concise and useful",
+                "- do not emit tool calls, xml tags, wrapper text, or roleplay markup",
+                "- answer with the final user-facing message only",
+                "- if you are unsure, say so briefly instead of inventing details",
+            ].joined(separator: "\n")
+        }
+
         var lines = [
             "# Root Orchestrator",
             "",
