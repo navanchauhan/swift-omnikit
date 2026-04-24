@@ -349,9 +349,9 @@ public actor Session {
             )
             let toolDefs = providerProfile.tools()
             let previousResponseId = providerProfile.id == "openai" && providerProfile.supportsPreviousResponseId
-            let providerOptions = providerProfile.providerOptions()
                 ? latestAssistantResponseId()
                 : nil
+            let providerOptions = providerProfile.providerOptions()
             let messages: [Message]
             if let prevId = previousResponseId {
                 // When resuming via previous_response_id, only send turns added
