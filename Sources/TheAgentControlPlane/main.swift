@@ -1,6 +1,7 @@
 import Foundation
 import OmniAgentDeliveryCore
 import OmniAgentMesh
+import OmniAIAgent
 import TheAgentControlPlaneKit
 import TheAgentIngress
 import TheAgentTelegram
@@ -95,6 +96,7 @@ enum TheAgentControlPlaneMain {
                 provider: options.provider,
                 model: options.model,
                 workingDirectory: options.workingDirectory,
+                sessionConfig: SessionConfig(reasoningEffort: options.reasoningEffort),
                 yoloMode: options.yoloMode
             )
         )
@@ -215,6 +217,7 @@ enum TheAgentControlPlaneMain {
                     model: options.model,
                     workingDirectory: options.workingDirectory,
                     sessionID: rootServer.sessionID,
+                    sessionConfig: SessionConfig(reasoningEffort: options.reasoningEffort),
                     yoloMode: options.yoloMode
                 )
             )
@@ -349,6 +352,7 @@ private struct ControlPlaneCLIOptions {
     var listWorkers = false
     var provider: RootAgentProvider = .openai
     var model: String?
+    var reasoningEffort: String?
     var yoloMode = false
     var workingDirectory: String?
     var httpIngressHost = "127.0.0.1"
@@ -402,6 +406,9 @@ private struct ControlPlaneCLIOptions {
             case "--model":
                 index += 1
                 model = try Self.parseValue(arguments, index: index, flag: argument)
+            case "--reasoning-effort":
+                index += 1
+                reasoningEffort = try Self.parseValue(arguments, index: index, flag: argument)
             case "--yolo":
                 yoloMode = true
             case "--working-directory":

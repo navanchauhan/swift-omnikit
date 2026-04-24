@@ -16,9 +16,14 @@ services:
       - --provider
       - openai
       - --model
-      - qwopus-local
+      - gpt-5.5
+      - --reasoning-effort
+      - low
     env_file: .env
     environment:
+      - OPENAI_BASE_URL=https://api.openai.com/v1
+      - OPENAI_API_KEY=
+      - OPENAI_OAUTH_ID_TOKEN=${OPENAI_OAUTH_ID_TOKEN}
       - THE_AGENT_STATE_ROOT=/data/state
     extra_hosts:
       - "host.docker.internal:host-gateway"
