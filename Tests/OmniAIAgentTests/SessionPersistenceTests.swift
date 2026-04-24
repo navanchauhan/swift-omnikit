@@ -113,6 +113,55 @@ struct SessionPersistenceTests {
     }
 
     @Test
+    func restorePreservesRuntimeFallbacksForNewOptionalConfigFields() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("omnikit-session-config-fallbacks-\(UUID().uuidString)", isDirectory: true)
+        let storage = FileSessionStorageBackend(rootDirectory: root)
+        let sessionID = "restore-config-fallbacks"
+
+        let snapshot = SessionSnapshot(
+            sessionID: sessionID,
+            providerID: "openai",
+            model: "gpt-test",
+            workingDirectory: root.path,
+            state: .idle,
+            history: [],
+            steeringQueue: [],
+            followupQueue: [],
+            config: SessionConfig(),
+            abortSignaled: false
+        )
+        try await storage.save(snapshot)
+
+        let env = LocalExecutionEnvironment(workingDir: root.path)
+        try await env.initialize()
+        let client = try Client(
+            providers: [
+                "openai": MockProviderAdapter(responses: [makeResponse(text: "ok")]),
+            ],
+            defaultProvider: "openai"
+        )
+        let session = try Session(
+            profile: TestProfile(),
+            environment: env,
+            client: client,
+            config: SessionConfig(
+                llmInactivityTimeoutSeconds: 180,
+                parallelToolCalls: true
+            ),
+            sessionID: sessionID,
+            storageBackend: storage
+        )
+
+        let restored = try await session.restoreFromStorage()
+        #expect(restored)
+
+        let restoredConfig = await session.config
+        #expect(restoredConfig.llmInactivityTimeoutSeconds == 180)
+        #expect(restoredConfig.parallelToolCalls == true)
+    }
+
+    @Test
     func sessionRecoversPendingToolCallsBeforeNextInput() async throws {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("omnikit-session-pending-tools-\(UUID().uuidString)", isDirectory: true)

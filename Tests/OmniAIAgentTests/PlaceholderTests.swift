@@ -202,6 +202,26 @@ final class ToolRegistryTests {
     }
 
     @Test
+    func testOpenAIProfileKeepsStreamingButDisablesPreviousResponseIdForCustomBaseURL() {
+        setenv("OPENAI_BASE_URL", "http://100.102.19.18:1234/v1", 1)
+        defer { unsetenv("OPENAI_BASE_URL") }
+
+        let profile = OpenAIProfile()
+        XCTAssertTrue(profile.supportsStreaming)
+        XCTAssertFalse(profile.supportsPreviousResponseId)
+    }
+
+    @Test
+    func testOpenAIProfileKeepsStreamingAndPreviousResponseIdForOpenAIBaseURL() {
+        setenv("OPENAI_BASE_URL", "https://api.openai.com/v1", 1)
+        defer { unsetenv("OPENAI_BASE_URL") }
+
+        let profile = OpenAIProfile()
+        XCTAssertTrue(profile.supportsStreaming)
+        XCTAssertTrue(profile.supportsPreviousResponseId)
+    }
+
+    @Test
     func testGeminiProfileHasExpectedTools() {
         let profile = GeminiProfile()
         let names = Set(profile.toolRegistry.names())
@@ -885,4 +905,41 @@ private final class MockExecutionEnvironment: ExecutionEnvironment, @unchecked S
     func workingDirectory() -> String { "/tmp/test" }
     func platform() -> String { "darwin" }
     func osVersion() -> String { "Darwin 24.0.0" }
+}
+
+@Suite
+struct OpenAIProfileCapabilityTests {
+    @Test
+    func openAIProfileDisablesPreviousResponseResumeForCustomBaseURLs() {
+        let envVar = "OPENAI_BASE_URL"
+        let original = ProcessInfo.processInfo.environment[envVar]
+        setenv(envVar, "http://host.docker.internal:8080/v1", 1)
+        defer {
+            if let original {
+                setenv(envVar, original, 1)
+            } else {
+                unsetenv(envVar)
+            }
+        }
+
+        let profile = OpenAIProfile(model: "qwopus-local")
+        #expect(profile.supportsPreviousResponseId == false)
+    }
+
+    @Test
+    func openAIProfileKeepsPreviousResponseResumeForHostedOpenAI() {
+        let envVar = "OPENAI_BASE_URL"
+        let original = ProcessInfo.processInfo.environment[envVar]
+        setenv(envVar, "https://api.openai.com/v1", 1)
+        defer {
+            if let original {
+                setenv(envVar, original, 1)
+            } else {
+                unsetenv(envVar)
+            }
+        }
+
+        let profile = OpenAIProfile(model: "gpt-5.4")
+        #expect(profile.supportsPreviousResponseId == true)
+    }
 }

@@ -2438,6 +2438,100 @@ final class ProviderAdapterTests {
     }
 
     @Test
+    func testOpenAIAdapterStreamingMapsLlamaCppOutputItemToolCalls() async throws {
+        let completedJSON: JSONValue = .object([
+            "type": .string("response.completed"),
+            "response": .object([
+                "id": .string("resp_llama"),
+                "model": .string("qwopus-local"),
+                "output": .array([
+                    .object([
+                        "id": .string("rs_1"),
+                        "type": .string("reasoning"),
+                        "content": .array([
+                            .object([
+                                "type": .string("reasoning_text"),
+                                "text": .string("thinking"),
+                            ]),
+                        ]),
+                    ]),
+                    .object([
+                        "type": .string("function_call"),
+                        "call_id": .string("fc_1"),
+                        "name": .string("add"),
+                        "arguments": .string("{\"a\":1,\"b\":2}"),
+                    ]),
+                ]),
+                "finish_reason": .string("tool_calls"),
+                "usage": .object(["prompt_tokens": .number(1), "completion_tokens": .number(1)]),
+            ]),
+        ])
+
+        let sse = """
+        event: response.output_item.added
+        data: {\"type\":\"response.output_item.added\",\"item\":{\"id\":\"rs_1\",\"type\":\"reasoning\",\"content\":[],\"status\":\"in_progress\"}}
+
+        event: response.reasoning_text.delta
+        data: {\"type\":\"response.reasoning_text.delta\",\"delta\":\"thinking\",\"item_id\":\"rs_1\"}
+
+        event: response.output_item.added
+        data: {\"type\":\"response.output_item.added\",\"item\":{\"call_id\":\"fc_1\",\"name\":\"add\",\"type\":\"function_call\",\"status\":\"in_progress\"}}
+
+        event: response.function_call_arguments.delta
+        data: {\"type\":\"response.function_call_arguments.delta\",\"item_id\":\"fc_1\",\"delta\":\"{\\\"a\\\":1\"}
+
+        event: response.function_call_arguments.delta
+        data: {\"type\":\"response.function_call_arguments.delta\",\"item_id\":\"fc_1\",\"delta\":\",\\\"b\\\":2}\"}
+
+        event: response.output_item.done
+        data: {\"type\":\"response.output_item.done\",\"item\":{\"type\":\"function_call\",\"status\":\"completed\",\"arguments\":\"{\\\"a\\\":1,\\\"b\\\":2}\",\"call_id\":\"fc_1\",\"name\":\"add\"}}
+
+        event: response.completed
+        data: \(String(data: try completedJSON.data(), encoding: .utf8)!)
+
+        """
+
+        let transport = StubTransport(stream: { _ in
+            HTTPStreamResponse(statusCode: 200, headers: HTTPHeaders(), body: streamFromSSE(sse))
+        })
+
+        let adapter = OpenAIAdapter(apiKey: "sk-test", transport: transport)
+        let stream = try await adapter.stream(request: Request(model: "qwopus-local", messages: [.user("hi")]))
+
+        var reasoning = ""
+        var seenStart = false
+        var seenEnd = false
+        var finish: Response?
+
+        for try await ev in stream {
+            if ev.type.rawValue == StreamEventType.reasoningDelta.rawValue {
+                reasoning += ev.reasoningDelta ?? ""
+            }
+            if ev.type.rawValue == StreamEventType.toolCallStart.rawValue {
+                seenStart = true
+                XCTAssertEqual(ev.toolCall?.id, "fc_1")
+                XCTAssertEqual(ev.toolCall?.name, "add")
+            }
+            if ev.type.rawValue == StreamEventType.toolCallEnd.rawValue {
+                seenEnd = true
+                XCTAssertEqual(ev.toolCall?.id, "fc_1")
+                XCTAssertEqual(ev.toolCall?.name, "add")
+                XCTAssertEqual(ev.toolCall?.arguments["a"]?.doubleValue, 1)
+                XCTAssertEqual(ev.toolCall?.arguments["b"]?.doubleValue, 2)
+            }
+            if ev.type.rawValue == StreamEventType.finish.rawValue {
+                finish = ev.response
+            }
+        }
+
+        XCTAssertEqual(reasoning, "thinking")
+        XCTAssertTrue(seenStart)
+        XCTAssertTrue(seenEnd)
+        XCTAssertEqual(finish?.finishReason.rawValue, "tool_calls")
+        XCTAssertEqual(finish?.toolCalls.first?.name, "add")
+    }
+
+    @Test
     func testAnthropicAdapterStreamingMapsToolCallEvents() async throws {
         let sse = """
         event: message_start

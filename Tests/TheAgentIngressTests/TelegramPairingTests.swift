@@ -134,6 +134,60 @@ struct TelegramPairingTests {
     }
 
     @Test
+    func allowlistedTelegramOwnerCanBypassPairingWhenGlobalDMPolicyIsAllowlist() async throws {
+        let harness = try await makeHarness(
+            prefix: "telegram-pairing-owner-allowlist",
+            responses: [telegramIngressResponse(text: "Owner reply.")]
+        )
+
+        try await harness.identityStore.saveWorkspace(
+            WorkspaceRecord(
+                workspaceID: WorkspaceID(rawValue: "root"),
+                displayName: "TheAgent Root Workspace",
+                kind: .service,
+                metadata: [
+                    "telegram_allowlist_external_actor_ids": "7960102564",
+                    "telegram_dm_policy": "allowlist",
+                ]
+            )
+        )
+
+        let blocked = try await harness.gateway.handle(
+            IngressEnvelope(
+                transport: .telegram,
+                payloadKind: .text,
+                updateID: "pairing-owner-1",
+                messageID: "pairing-owner-message-1",
+                actorExternalID: "bob",
+                actorDisplayName: "Bob",
+                channelExternalID: "dm:bob",
+                channelKind: .directMessage,
+                text: "hello"
+            )
+        )
+        let allowed = try await harness.gateway.handle(
+            IngressEnvelope(
+                transport: .telegram,
+                payloadKind: .text,
+                updateID: "pairing-owner-2",
+                messageID: "pairing-owner-message-2",
+                actorExternalID: "7960102564",
+                actorDisplayName: "Navan",
+                channelExternalID: "dm:7960102564",
+                channelKind: .directMessage,
+                text: "hello"
+            )
+        )
+
+        #expect(blocked.assistantText == "You are not allowlisted for this workspace.")
+        #expect(allowed.assistantText == "Owner reply.")
+        #expect(await harness.pairingStore.activeRecord(transport: .telegram, actorExternalID: "7960102564") == nil)
+        #expect(await harness.adapter.state.requestCount() == 1)
+
+        await harness.runtimeRegistry.closeAll()
+    }
+
+    @Test
     func globalTelegramAllowlistBlocksUnlistedDirectMessagesBeforePairing() async throws {
         let harness = try await makeHarness(
             prefix: "telegram-pairing-global-allowlist",

@@ -38,6 +38,44 @@ struct HTTPIngressServerTests {
     }
 
     @Test
+    func deliveryLogEndpointReturnsInboundAndOutboundMessagesWithChannelMetadata() async throws {
+        let harness = try await makeHarness(
+            prefix: "http-ingress-deliveries",
+            responses: [httpIngressResponse(text: "Chief of staff reply via API.")]
+        )
+
+        _ = try await harness.postJSON(
+            path: "/api/v1/messages",
+            body: HTTPIngressServer.MessageRequest(
+                transport: .telegram,
+                actorExternalID: "7960102564",
+                actorDisplayName: "Navan",
+                channelExternalID: "dm:7960102564",
+                channelKind: .directMessage,
+                text: "Debug this message flow."
+            ),
+            expectedStatusCode: 200
+        ) as HTTPIngressMessageEnvelope
+
+        let deliveries: [HTTPIngressDeliveryEnvelope] = try await harness.postJSON(
+            path: "/api/v1/deliveries",
+            body: HTTPIngressServer.DeliveryLogRequest(transport: .telegram),
+            expectedStatusCode: 200
+        )
+
+        #expect(deliveries.count == 2)
+        #expect(deliveries.first?.direction == "inbound")
+        #expect(deliveries.first?.channelExternalID == "dm:7960102564")
+        #expect(deliveries.first?.actorExternalID == "7960102564")
+        #expect(deliveries.last?.direction == "outbound")
+        #expect(deliveries.last?.targetExternalID == "dm:7960102564")
+        #expect(deliveries.last?.channelExternalID == "dm:7960102564")
+
+        try await harness.server.stop()
+        await harness.runtimeRegistry.closeAll()
+    }
+
+    @Test
     func inboxPollingAndApprovalResponsesWorkOverAuthenticatedHTTPIngress() async throws {
         let harness = try await makeHarness(
             prefix: "http-ingress-approval",
@@ -213,6 +251,7 @@ struct HTTPIngressServerTests {
         let server = HTTPIngressServer(
             gateway: gateway,
             runtimeRegistry: runtimeRegistry,
+            deliveryStore: deliveryStore,
             expectedBearerToken: "secret-token",
             telegramWebhookForwarder: telegramWebhookForwarder,
             host: "127.0.0.1",
@@ -284,6 +323,20 @@ private struct HTTPIngressMessageEnvelope: Decodable {
     let disposition: String
     let assistantText: String?
     let deliveries: [IngressDeliveryInstruction]
+}
+
+private struct HTTPIngressDeliveryEnvelope: Decodable {
+    let direction: String
+    let actorExternalID: String?
+    let channelExternalID: String?
+    let targetExternalID: String?
+
+    private enum CodingKeys: String, CodingKey {
+        case direction
+        case actorExternalID = "actorExternalID"
+        case channelExternalID = "channelExternalID"
+        case targetExternalID = "targetExternalID"
+    }
 }
 
 private actor TelegramWebhookRecorder {

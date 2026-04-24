@@ -16,7 +16,7 @@ services:
       - --provider
       - openai
       - --model
-      - huihui-qwopus3.5-9b-v3-abliterated
+      - qwopus-local
     env_file: .env
     environment:
       - THE_AGENT_STATE_ROOT=/data/state
