@@ -215,13 +215,17 @@ public final class Client: @unchecked Sendable {
         streamMiddleware: [StreamMiddleware] = [],
         allowEmptyProviders: Bool = false
     ) throws -> Client {
-        // Synchronous overload — skips OAuth token exchange (which requires async networking).
-        // If OPENAI_API_KEY is set directly, this works fine. If only OPENAI_OAUTH_ID_TOKEN
-        // is set, callers must use the async fromEnvAsync() variant instead.
+        // Synchronous overload now resolves OAuth-based API keys as well.
         let env = environment
         let resolvedTransport = transport ?? defaultHTTPTransport()
         let ownsTransport = transport == nil
-        let providers = try _buildProviders(env: env, transport: resolvedTransport, oauthApiKey: nil, allowEmpty: allowEmptyProviders)
+        let oauthApiKey = try _resolveOpenAIApiKeySync(environment: env)
+        let providers = try _buildProviders(
+            env: env,
+            transport: resolvedTransport,
+            oauthApiKey: oauthApiKey,
+            allowEmpty: allowEmptyProviders
+        )
         return try Client(
             providers: providers,
             defaultProvider: providers.first?.key,
@@ -231,6 +235,94 @@ public final class Client: @unchecked Sendable {
             modelCatalog: modelCatalog,
             ownedTransport: ownsTransport ? resolvedTransport : nil
         )
+    }
+
+    private static func _resolveOpenAIApiKeySync(
+        environment: [String: String],
+    ) throws -> String? {
+        func firstNonEmpty(_ keys: [String]) -> String? {
+            for key in keys {
+                if let value = environment[key], !value.isEmpty {
+                    return value
+                }
+            }
+            return nil
+        }
+
+        if let explicit = firstNonEmpty(["OPENAI_API_KEY", "DR_OPENAI_API_KEY"]) {
+            return explicit
+        }
+
+        guard let idToken = firstNonEmpty(["OPENAI_OAUTH_ID_TOKEN", "DR_OPENAI_OAUTH_ID_TOKEN"]) else {
+            return nil
+        }
+
+        let issuer = firstNonEmpty(["OPENAI_OAUTH_ISSUER", "DR_OPENAI_OAUTH_ISSUER"])
+            ?? "https://auth.openai.com"
+        let clientID = firstNonEmpty(["OPENAI_OAUTH_CLIENT_ID", "DR_OPENAI_OAUTH_CLIENT_ID"])
+            ?? "app_EMoamEEZ73f0CkXaXp7hrann"
+        return try _exchangeCodexOAuthIDTokenForOpenAISync(
+            idToken: idToken,
+            issuer: issuer,
+            clientID: clientID
+        )
+    }
+
+    private static func _exchangeCodexOAuthIDTokenForOpenAISync(
+        idToken: String,
+        issuer: String,
+        clientID: String
+    ) throws -> String {
+        let normalizedIssuer = issuer
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        guard let url = URL(string: "\(normalizedIssuer)/oauth/token") else {
+            throw ConfigurationError(message: "Invalid OPENAI_OAUTH_ISSUER URL: \(issuer)")
+        }
+
+        let body = [
+            ("grant_type", "urn:ietf:params:oauth:grant-type:token-exchange"),
+            ("client_id", clientID),
+            ("requested_token", "openai-api-key"),
+            ("subject_token", idToken),
+            ("subject_token_type", "urn:ietf:params:oauth:token-type:id_token"),
+        ]
+        .map { "\(formURLEncode($0.0))=\(formURLEncode($0.1))" }
+        .joined(separator: "&")
+
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.httpBody = Data(body.utf8)
+        request.setValue("application/x-www-form-urlencoded", forHTTPHeaderField: "content-type")
+        request.timeoutInterval = 30
+
+        let completion = DispatchSemaphore(value: 0)
+        var capturedError: Error?
+        var capturedData: Data?
+        var capturedStatusCode: Int?
+
+        URLSession.shared.dataTask(with: request) { data, response, error in
+            capturedData = data
+            capturedStatusCode = (response as? HTTPURLResponse)?.statusCode
+            capturedError = error
+            completion.signal()
+        }.resume()
+        completion.wait()
+
+        if let capturedError {
+            throw capturedError
+        }
+        guard let statusCode = capturedStatusCode, (200..<300).contains(statusCode) else {
+            let bodyString = String(decoding: capturedData ?? Data(), as: UTF8.self)
+            throw ConfigurationError(
+                message: "OpenAI OAuth token exchange failed with status \(capturedStatusCode ?? -1): \(bodyString)"
+            )
+        }
+        let parsed = try JSONSerialization.jsonObject(with: Data(capturedData ?? Data()), options: [])
+        guard let object = parsed as? [String: Any], let accessToken = object["access_token"] as? String, !accessToken.isEmpty else {
+            throw ConfigurationError(message: "OpenAI OAuth token exchange response missing access_token")
+        }
+        return accessToken
     }
 
     public static func fromEnvAsync(
