@@ -63,10 +63,14 @@ exchange_codex_id_token() {
 
     if [[ "${status}" != 2* ]]; then
         local code
+        local message
         code="$(jq -r '.error.code // empty' "$response_file" 2>/dev/null || true)"
+        message="$(jq -r '.error.message // .error_description // .message // empty' "$response_file" 2>/dev/null || true)"
         rm -f "$response_file"
         if [[ "$code" == "invalid_id_token" || "$code" == "token_expired" ]]; then
             printf 'OAuth exchange failed (%s). Attempting refresh flow.\n' "$code" >&2
+        elif [[ -n "$code" ]]; then
+            printf 'OAuth exchange failed (%s): %s\n' "$code" "${message:-n/a}" >&2
         else
             printf 'OAuth exchange failed with status %s while contacting %s\n' "$status" "$endpoint" >&2
         fi
@@ -97,10 +101,17 @@ EOF
 
     if [[ "${status}" != 2* ]]; then
         local code
+        local message
         code="$(jq -r '.error.code // empty' "$response_file" 2>/dev/null || true)"
+        message="$(jq -r '.error.message // .error_description // .message // empty' "$response_file" 2>/dev/null || true)"
         rm -f "$response_file"
         if [[ -n "$code" ]]; then
-            printf 'OAuth refresh failed (%s).\n' "$code" >&2
+            if [[ "$code" == "refresh_token_reused" || "$code" == "invalid_grant" ]]; then
+                printf 'OAuth refresh failed (%s): %s\n' "$code" "${message:-n/a}" >&2
+                printf 'Run: codex login\n' >&2
+            else
+                printf 'OAuth refresh failed (%s): %s\n' "$code" "${message:-n/a}" >&2
+            fi
         else
             printf 'OAuth refresh failed with status %s while contacting %s\n' "$status" "$endpoint" >&2
         fi
