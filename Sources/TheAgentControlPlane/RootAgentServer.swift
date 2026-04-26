@@ -681,6 +681,63 @@ public actor RootAgentServer {
         return RootArtifactReadResult(record: record, text: text, truncated: truncated)
     }
 
+    public func storeArtifact(
+        name: String,
+        contentType: String,
+        data: Data
+    ) async throws -> ArtifactRecord {
+        guard let artifactStore else {
+            throw RootAgentServerError.artifactSupportUnavailable(sessionID: sessionID)
+        }
+        return try await artifactStore.put(
+            ArtifactPayload(
+                workspaceID: scope.workspaceID,
+                channelID: scope.channelID,
+                name: name,
+                contentType: contentType,
+                data: data
+            )
+        )
+    }
+
+    public func artifactRecord(
+        artifactID: String,
+        currentRootOnly: Bool = true
+    ) async throws -> ArtifactRecord {
+        guard let artifactStore else {
+            throw RootAgentServerError.artifactSupportUnavailable(sessionID: sessionID)
+        }
+        guard let record = try await artifactStore.record(artifactID: artifactID) else {
+            throw RootAgentServerError.artifactNotFound(artifactID)
+        }
+        try await ensureArtifactVisible(record, currentRootOnly: currentRootOnly)
+        return record
+    }
+
+    public func artifactData(
+        artifactID: String,
+        currentRootOnly: Bool = true
+    ) async throws -> Data {
+        guard let artifactStore else {
+            throw RootAgentServerError.artifactSupportUnavailable(sessionID: sessionID)
+        }
+        let record = try await artifactRecord(artifactID: artifactID, currentRootOnly: currentRootOnly)
+        _ = record
+        return try await artifactStore.data(for: artifactID) ?? Data()
+    }
+
+    public func artifactLocalFilePath(
+        artifactID: String,
+        currentRootOnly: Bool = true
+    ) async throws -> String? {
+        guard let artifactStore else {
+            throw RootAgentServerError.artifactSupportUnavailable(sessionID: sessionID)
+        }
+        let record = try await artifactRecord(artifactID: artifactID, currentRootOnly: currentRootOnly)
+        _ = record
+        return try await artifactStore.localFilePath(for: artifactID)
+    }
+
     public func latestTask(currentRootOnly: Bool = true) async throws -> TaskRecord? {
         let tasks = try await listTasks(statuses: nil, limit: 1, currentRootOnly: currentRootOnly)
         return tasks.first

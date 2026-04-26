@@ -21,6 +21,7 @@ public actor HTTPIngressServer {
         public var actorDisplayName: String?
         public var channelExternalID: String
         public var channelKind: IngressEnvelope.ChannelKind
+        public var eventKind: IngressEnvelope.EventKind
         public var text: String
         public var mentionTriggerActive: Bool
         public var replyContextActive: Bool
@@ -32,6 +33,7 @@ public actor HTTPIngressServer {
             actorDisplayName: String? = nil,
             channelExternalID: String,
             channelKind: IngressEnvelope.ChannelKind = .api,
+            eventKind: IngressEnvelope.EventKind = .humanMessage,
             text: String,
             mentionTriggerActive: Bool = false,
             replyContextActive: Bool = false,
@@ -42,6 +44,7 @@ public actor HTTPIngressServer {
             self.actorDisplayName = actorDisplayName
             self.channelExternalID = channelExternalID
             self.channelKind = channelKind
+            self.eventKind = eventKind
             self.text = text
             self.mentionTriggerActive = mentionTriggerActive
             self.replyContextActive = replyContextActive
@@ -242,6 +245,7 @@ public actor HTTPIngressServer {
                         actorDisplayName: request.actorDisplayName,
                         channelExternalID: request.channelExternalID,
                         channelKind: request.channelKind,
+                        eventKind: request.eventKind,
                         text: request.text,
                         mentionTriggerActive: request.mentionTriggerActive,
                         replyContextActive: request.replyContextActive,

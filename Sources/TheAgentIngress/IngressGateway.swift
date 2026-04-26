@@ -10,6 +10,7 @@ public actor IngressGateway {
     private let policyManager: ChannelPolicyManager?
     private let onboardingWizard: OnboardingWizard?
     private let attachmentStager: AttachmentStager?
+    private let mediaDescriptionProvider: (any MediaDescriptionProviding)?
 
     public init(
         identityStore: any IdentityStore,
@@ -18,7 +19,8 @@ public actor IngressGateway {
         runtimeRegistry: WorkspaceRuntimeRegistry,
         policyManager: ChannelPolicyManager? = nil,
         onboardingWizard: OnboardingWizard? = nil,
-        attachmentStager: AttachmentStager? = nil
+        attachmentStager: AttachmentStager? = nil,
+        mediaDescriptionProvider: (any MediaDescriptionProviding)? = nil
     ) {
         self.identityStore = identityStore
         self.deliveryStore = deliveryStore
@@ -27,6 +29,7 @@ public actor IngressGateway {
         self.policyManager = policyManager
         self.onboardingWizard = onboardingWizard
         self.attachmentStager = attachmentStager
+        self.mediaDescriptionProvider = mediaDescriptionProvider
     }
 
     public func handle(_ envelope: IngressEnvelope) async throws -> IngressGatewayResult {
@@ -194,7 +197,7 @@ public actor IngressGateway {
             )
         case .text:
             let trimmed = envelope.text?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-            guard !trimmed.isEmpty else {
+            guard !trimmed.isEmpty || !envelope.attachments.isEmpty else {
                 return try await unsupportedResult(
                     envelope: envelope,
                     route: route,
@@ -208,34 +211,91 @@ public actor IngressGateway {
                 channelID: route.runtimeScope.channelID
             ) ?? AttachmentStageResult()
             let runtime = try await runtimeRegistry.runtime(for: route.runtimeScope)
-            let turn = try await runtime.submitUserText(
-                trimmed,
-                actorID: route.messageActorID,
-                metadata: route.messageMetadata(
-                    merging: envelope.metadata.merging(stagedAttachments.metadata) { _, new in new },
-                    envelope: envelope
-                )
-            )
-            let deferredInstructions = try await collectDeferredInteractionDeliveries(
-                route: route,
-                envelope: envelope
-            )
-
-            let chunks = IngressDeliveryFormatter.chunkText(turn.assistantText)
-            let replyInstructions = chunks.enumerated().map { index, chunk in
-                IngressDeliveryInstruction(
-                    idempotencyKey: "\(envelope.idempotencyKey).reply.\(index)",
-                    kind: .message,
+            await ChannelActionRegistry.shared.updateCurrentContext(
+                ChannelActionContext(
+                    sessionID: route.runtimeScope.sessionID,
                     transport: envelope.transport,
-                    visibility: .sameChannel,
+                    targetExternalID: envelope.channelExternalID,
+                    sourceMessageID: envelope.messageID,
                     workspaceID: route.runtimeScope.workspaceID,
                     channelID: route.runtimeScope.channelID,
                     actorID: route.messageActorID,
-                    targetExternalID: envelope.channelExternalID,
-                    chunks: [chunk]
+                    actorExternalID: envelope.actorExternalID,
+                    actorDisplayName: envelope.actorDisplayName,
+                    channelKind: envelope.channelKind.rawValue,
+                    inboundEventKind: envelope.eventKind.rawValue
+                )
+            )
+            let enrichedAttachments = await describeMediaAttachments(stagedAttachments.attachments)
+            let rootInputText = rootInputText(
+                for: envelope,
+                trimmedText: trimmed,
+                stagedAttachments: enrichedAttachments
+            )
+            _ = try await runtime.submitUserText(
+                rootInputText,
+                actorID: route.messageActorID,
+                metadata: route.messageMetadata(
+                    merging: envelope.metadata.merging(attachmentMetadata(stagedAttachments.metadata, enrichedAttachments)) { _, new in new },
+                    envelope: envelope
+                ),
+                recordAssistantText: false
+            )
+            var actionOutcome = try await collectChannelActionOutcome(
+                sessionID: route.runtimeScope.sessionID,
+                route: route,
+                envelope: envelope
+            )
+            if actionOutcome.requiresProtocolRetry {
+                print("[IngressGateway] protocol violation: no typed channel action for \(envelope.idempotencyKey); retrying once.")
+                _ = try await runtime.submitUserText(
+                    protocolCorrectionText(for: envelope),
+                    actorID: route.messageActorID,
+                    metadata: route.messageMetadata(
+                        merging: envelope.metadata.merging([
+                            "protocol_retry": "true",
+                            "protocol_retry_reason": "missing_typed_channel_action",
+                        ]) { _, new in new },
+                        envelope: envelope
+                    ),
+                    recordAssistantText: false
+                )
+                actionOutcome = try await collectChannelActionOutcome(
+                    sessionID: route.runtimeScope.sessionID,
+                    route: route,
+                    envelope: envelope
                 )
             }
-            let instructions = deferredInstructions + replyInstructions
+            if actionOutcome.isProtocolViolation {
+                let summary = "Protocol violation: root agent produced no typed channel action."
+                print("[IngressGateway] \(summary) idempotency_key=\(envelope.idempotencyKey)")
+                try await saveInboundDelivery(
+                    envelope: envelope,
+                    route: route,
+                    status: .failed,
+                    summary: summary
+                )
+                return IngressGatewayResult(
+                    disposition: .failed,
+                    runtimeScope: route.runtimeScope,
+                    actorID: route.messageActorID,
+                    assistantText: nil,
+                    deliveries: []
+                )
+            }
+
+            let assistantText = actionOutcome.assistantText
+            let instructions = actionOutcome.instructions
+            if !assistantText.isEmpty {
+                _ = try await runtime.server.recordAssistantText(
+                    assistantText,
+                    metadata: [
+                        "source": "channel_send_message",
+                        "ingress_transport": envelope.transport.rawValue,
+                        "ingress_event_kind": envelope.eventKind.rawValue,
+                    ]
+                )
+            }
 
             try await saveInboundDelivery(
                 envelope: envelope,
@@ -251,8 +311,265 @@ public actor IngressGateway {
                 disposition: .processed,
                 runtimeScope: route.runtimeScope,
                 actorID: route.messageActorID,
-                assistantText: turn.assistantText,
+                assistantText: assistantText.isEmpty ? nil : assistantText,
                 deliveries: instructions
+            )
+        }
+    }
+
+    private func collectChannelActionOutcome(
+        sessionID: String,
+        route: ResolvedIngressRoute,
+        envelope: IngressEnvelope
+    ) async throws -> ChannelActionOutcome {
+        let waitEffect = await ChannelActionRegistry.shared.consumeWait(sessionID: sessionID)
+        let deferredInstructions = try await collectDeferredInteractionDeliveries(
+            route: route,
+            envelope: envelope
+        )
+        let pendingMessageSends = await ChannelActionRegistry.shared.consumePendingMessageSends(
+            sessionID: sessionID
+        )
+        let pendingArtifactSends = await ChannelActionRegistry.shared.consumePendingArtifactSends(
+            sessionID: sessionID
+        )
+
+        let pendingMessageInstructions = messageSendInstructions(
+            for: pendingMessageSends,
+            route: route,
+            envelope: envelope
+        )
+        let pendingArtifactInstructions = artifactSendInstructions(
+            for: pendingArtifactSends,
+            route: route,
+            envelope: envelope,
+            fallbackCaptionChunks: []
+        )
+        let channelSendInstructions = (pendingMessageInstructions + pendingArtifactInstructions).sorted {
+            channelActionSequence($0) < channelActionSequence($1)
+        }
+        let instructions = deferredInstructions + channelSendInstructions
+        return ChannelActionOutcome(
+            waitEffect: waitEffect,
+            instructions: instructions,
+            assistantText: explicitAssistantText(from: channelSendInstructions)
+        )
+    }
+
+    private func protocolCorrectionText(for envelope: IngressEnvelope) -> String {
+        """
+        Protocol violation: your previous turn produced no typed channel side effect.
+        You must now choose exactly one outcome for the current \(envelope.eventKind.rawValue) event:
+        - call `channel_send_message` for any user-visible text reply
+        - call `channel_send_artifact` or an image tool with `send=true` when sending media
+        - call `no_response` only when silence is intentional
+        Do not return raw final assistant text.
+        """
+    }
+
+    private func rootInputText(
+        for envelope: IngressEnvelope,
+        trimmedText: String,
+        stagedAttachments: [StagedAttachment]
+    ) -> String {
+        let body = trimmedText.isEmpty ? "(no text body)" : trimmedText
+        let attachmentContext = attachmentContextText(stagedAttachments)
+        if envelope.transport == .imessage, envelope.eventKind == .humanMessage {
+            return """
+            Inbound human_message over imessage.
+            To reply, call `channel_send_message`; raw final assistant text is internal only and is not delivered to the user.
+            Reply style for `channel_send_message`: one short message bubble under 160 characters by default; one sentence when possible; no bullets, no implementation recap, no tool/process narration unless explicitly requested.
+            \(attachmentContext)
+
+            \(body)
+            """
+        }
+        guard envelope.eventKind != .humanMessage else {
+            return [attachmentContext, body]
+                .filter { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+                .joined(separator: "\n\n")
+        }
+        return """
+        Inbound \(envelope.eventKind.rawValue) event from \(envelope.transport.rawValue).
+        Treat this as an event, not as direct human intent. Use `no_response` if no user-visible response is needed, or `channel_send_message` if the event should notify the user.
+        Raw final assistant text is internal only and is not delivered to the user.
+        \(attachmentContext)
+
+        \(body)
+        """
+    }
+
+    private func attachmentContextText(_ attachments: [StagedAttachment]) -> String {
+        guard !attachments.isEmpty else {
+            return ""
+        }
+        let lines = attachments.enumerated().map { index, attachment in
+            let localPath = attachment.localPath.map { ", local_path=\($0)" } ?? ""
+            let description = attachment.metadata["generated_media_description"].map { ", description=\($0)" } ?? ""
+            return "- \(index + 1). artifact_id=\(attachment.artifactID), name=\(attachment.name), content_type=\(attachment.contentType), bytes=\(attachment.byteCount)\(localPath)\(description)"
+        }
+        return """
+
+        Attached artifacts:
+        \(lines.joined(separator: "\n"))
+        Uploaded images are editable artifacts. For follow-up edits like "make this black and white", use the most recent relevant image `artifact_id` as the `image_edit.artifact_id` base and set `send=true` when the user asked for the image back in-channel. Do not call `view_image` unless it is actually available as a registered tool.
+        """
+    }
+
+    private func describeMediaAttachments(_ attachments: [StagedAttachment]) async -> [StagedAttachment] {
+        guard let mediaDescriptionProvider else {
+            return attachments
+        }
+        var described: [StagedAttachment] = []
+        described.reserveCapacity(attachments.count)
+        for attachment in attachments {
+            guard isImageAttachment(attachment) else {
+                described.append(attachment)
+                continue
+            }
+            var enriched = attachment
+            do {
+                if let description = try await mediaDescriptionProvider.describeImageAttachment(attachment),
+                   !description.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    enriched.metadata["generated_media_description"] = description
+                }
+            } catch {
+                enriched.metadata["generated_media_description_error"] = String(describing: error)
+                print("[IngressGateway] image description failed for artifact \(attachment.artifactID): \(error)")
+            }
+            described.append(enriched)
+        }
+        return described
+    }
+
+    private func attachmentMetadata(
+        _ baseMetadata: [String: String],
+        _ attachments: [StagedAttachment]
+    ) -> [String: String] {
+        var metadata = baseMetadata
+        for (index, attachment) in attachments.enumerated() {
+            let prefix = "staged_attachment_\(index + 1)"
+            metadata["\(prefix)_artifact_id"] = attachment.artifactID
+            metadata["\(prefix)_content_type"] = attachment.contentType
+            metadata["\(prefix)_name"] = attachment.name
+            if let localPath = attachment.localPath {
+                metadata["\(prefix)_local_path"] = localPath
+            }
+            if let description = attachment.metadata["generated_media_description"] {
+                metadata["\(prefix)_description"] = description
+            }
+        }
+        return metadata
+    }
+
+    private func isImageAttachment(_ attachment: StagedAttachment) -> Bool {
+        attachment.contentType.lowercased().hasPrefix("image/")
+    }
+
+    private func messageSendInstructions(
+        for sends: [PendingChannelMessageSend],
+        route: ResolvedIngressRoute,
+        envelope: IngressEnvelope
+    ) -> [IngressDeliveryInstruction] {
+        sends.map { send in
+            IngressDeliveryInstruction(
+                idempotencyKey: "\(envelope.idempotencyKey).channel_send_message.\(send.sequence)",
+                kind: .message,
+                transport: send.transport,
+                visibility: .sameChannel,
+                workspaceID: send.workspaceID,
+                channelID: send.channelID,
+                actorID: send.actorID ?? route.messageActorID,
+                targetExternalID: send.targetExternalID,
+                chunks: IngressDeliveryFormatter.chunkText(send.text),
+                metadata: send.metadata.merging([
+                    "side_effect": ChannelSideEffectKind.sendMessage.rawValue,
+                    "inbound_event_kind": envelope.eventKind.rawValue,
+                    "channel_action_sequence": String(send.sequence),
+                ]) { _, new in new }
+            )
+        }
+    }
+
+    private func artifactSendInstructions(
+        for sends: [PendingChannelArtifactSend],
+        route: ResolvedIngressRoute,
+        envelope: IngressEnvelope,
+        fallbackCaptionChunks: [String]
+    ) -> [IngressDeliveryInstruction] {
+        sends.map { send in
+            let captionChunks = send.caption.map { IngressDeliveryFormatter.chunkText($0) } ?? fallbackCaptionChunks
+            return IngressDeliveryInstruction(
+                idempotencyKey: "\(envelope.idempotencyKey).artifact_send.\(send.sequence)",
+                kind: .message,
+                transport: send.transport,
+                visibility: .sameChannel,
+                workspaceID: send.workspaceID,
+                channelID: send.channelID,
+                actorID: send.actorID ?? route.messageActorID,
+                targetExternalID: send.targetExternalID,
+                chunks: captionChunks,
+                attachments: [
+                    IngressDeliveryAttachment(
+                        artifactID: send.artifactID,
+                        metadata: send.metadata
+                    ),
+                ],
+                metadata: send.metadata.merging([
+                    "side_effect": ChannelSideEffectKind.sendMessage.rawValue,
+                    "artifact_id": send.artifactID,
+                    "inbound_event_kind": envelope.eventKind.rawValue,
+                    "channel_action_sequence": String(send.sequence),
+                ]) { _, new in new }
+            )
+        }
+    }
+
+    private func channelActionSequence(_ instruction: IngressDeliveryInstruction) -> Int {
+        instruction.metadata["channel_action_sequence"].flatMap(Int.init) ?? Int.max
+    }
+
+    private func explicitAssistantText(from instructions: [IngressDeliveryInstruction]) -> String {
+        instructions
+            .flatMap(\.chunks)
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+            .joined(separator: "\n\n")
+    }
+
+    private func generatedImageInstructions(
+        for artifacts: [ArtifactRecord],
+        route: ResolvedIngressRoute,
+        envelope: IngressEnvelope,
+        captionChunks: [String]
+    ) -> [IngressDeliveryInstruction] {
+        artifacts.enumerated().map { index, artifact in
+            IngressDeliveryInstruction(
+                idempotencyKey: "\(envelope.idempotencyKey).generated_image.\(index)",
+                kind: .message,
+                transport: envelope.transport,
+                visibility: .sameChannel,
+                workspaceID: route.runtimeScope.workspaceID,
+                channelID: route.runtimeScope.channelID,
+                actorID: route.messageActorID,
+                targetExternalID: envelope.channelExternalID,
+                chunks: index == 0 ? captionChunks : [],
+                attachments: [
+                    IngressDeliveryAttachment(
+                        artifactID: artifact.artifactID,
+                        name: artifact.name,
+                        contentType: artifact.contentType,
+                        metadata: [
+                            "generated_by": "image_generation",
+                        ]
+                    ),
+                ],
+                metadata: [
+                    "side_effect": ChannelSideEffectKind.sendMessage.rawValue,
+                    "generated_by": "image_generation",
+                    "artifact_id": artifact.artifactID,
+                    "inbound_event_kind": envelope.eventKind.rawValue,
+                ]
             )
         }
     }
@@ -535,6 +852,7 @@ public actor IngressGateway {
                 metadata: envelope.metadata.merging([
                     "channel_external_id": envelope.channelExternalID,
                     "channel_kind": envelope.channelKind.rawValue,
+                    "inbound_event_kind": envelope.eventKind.rawValue,
                     "actor_external_id": envelope.actorExternalID,
                     "actor_display_name": envelope.actorDisplayName ?? "",
                 ]) { current, new in
@@ -550,6 +868,7 @@ public actor IngressGateway {
         _ instruction: IngressDeliveryInstruction,
         route: ResolvedIngressRoute
     ) async throws {
+        let attachmentIDs = instruction.attachments.map(\.artifactID).joined(separator: ",")
         _ = try await deliveryStore.saveDelivery(
             DeliveryRecord(
                 deliveryID: instruction.deliveryID,
@@ -562,11 +881,14 @@ public actor IngressGateway {
                 channelID: instruction.channelID,
                 messageID: instruction.targetExternalID,
                 status: .deferred,
-                summary: instruction.chunks.joined(separator: "\n"),
+                summary: instruction.chunks.joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                    ? attachmentIDs
+                    : instruction.chunks.joined(separator: "\n"),
                 metadata: instruction.metadata.merging([
                     "target_external_id": instruction.targetExternalID,
                     "visibility": instruction.visibility.rawValue,
                     "channel_transport": instruction.transport.rawValue,
+                    "attachment_artifact_ids": attachmentIDs,
                 ]) { current, new in
                     current.isEmpty ? new : current
                 }
@@ -840,9 +1162,28 @@ private struct ResolvedIngressRoute: Sendable {
         merged["ingress_actor_external_id"] = envelope.actorExternalID
         merged["ingress_channel_external_id"] = envelope.channelExternalID
         merged["ingress_channel_kind"] = envelope.channelKind.rawValue
+        merged["ingress_event_kind"] = envelope.eventKind.rawValue
         merged["workspace_id"] = runtimeScope.workspaceID.rawValue
         merged["channel_id"] = runtimeScope.channelID.rawValue
         merged["message_actor_id"] = messageActorID.rawValue
         return merged
+    }
+}
+
+private struct ChannelActionOutcome: Sendable {
+    let waitEffect: ChannelActionResult?
+    let instructions: [IngressDeliveryInstruction]
+    let assistantText: String
+
+    var hasTypedSideEffect: Bool {
+        waitEffect != nil || !instructions.isEmpty
+    }
+
+    var requiresProtocolRetry: Bool {
+        !hasTypedSideEffect
+    }
+
+    var isProtocolViolation: Bool {
+        !hasTypedSideEffect
     }
 }

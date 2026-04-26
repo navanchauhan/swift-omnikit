@@ -15,6 +15,18 @@ public struct IngressEnvelope: Codable, Sendable, Equatable {
         case api
     }
 
+    public enum EventKind: String, Codable, Sendable {
+        case humanMessage = "human_message"
+        case automationEvent = "automation_event"
+        case notification
+        case workerResult = "worker_result"
+        case summary
+        case memory
+        case reaction
+        case developer
+        case system
+    }
+
     public struct Attachment: Codable, Sendable, Equatable {
         public var attachmentID: String
         public var name: String
@@ -43,6 +55,7 @@ public struct IngressEnvelope: Codable, Sendable, Equatable {
     public var actorDisplayName: String?
     public var channelExternalID: String
     public var channelKind: ChannelKind
+    public var eventKind: EventKind
     public var text: String?
     public var callbackData: String?
     public var attachments: [Attachment]
@@ -61,6 +74,7 @@ public struct IngressEnvelope: Codable, Sendable, Equatable {
         actorDisplayName: String? = nil,
         channelExternalID: String,
         channelKind: ChannelKind,
+        eventKind: EventKind = .humanMessage,
         text: String? = nil,
         callbackData: String? = nil,
         attachments: [Attachment] = [],
@@ -78,6 +92,7 @@ public struct IngressEnvelope: Codable, Sendable, Equatable {
         self.actorDisplayName = actorDisplayName
         self.channelExternalID = channelExternalID
         self.channelKind = channelKind
+        self.eventKind = eventKind
         self.text = text
         self.callbackData = callbackData
         self.attachments = attachments

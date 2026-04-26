@@ -733,6 +733,7 @@ let package = Package(
                 "RootAgentRuntime.swift",
                 "RootAgentToolbox.swift",
                 "RootOrchestratorProfile.swift",
+                "ChannelActionRegistry.swift",
                 "RootAgentServer.swift",
                 "RootConversation.swift",
                 "Scheduler",

@@ -389,6 +389,7 @@ public actor Session {
                 } else {
                     errorDetail = "\(error)"
                 }
+                _sessionWriteToStderr("[Session] LLM error: \(errorDetail)\n")
                 await eventEmitter.emit(SessionEvent(kind: .error, sessionId: id, data: ["error": errorDetail]))
                 if error is AuthenticationError || error is ContextLengthError {
                     state = .closed
@@ -723,6 +724,7 @@ public actor Session {
         let cfg = config
         let emitter = eventEmitter
         let sid = id
+        let canUseImageInputs = supportsImageInputs()
 
         if shouldParallel {
             return await withTaskGroup(of: (Int, ToolResult).self, returning: [ToolResult].self) { group in
@@ -737,7 +739,8 @@ public actor Session {
                             env: env,
                             config: cfg,
                             eventEmitter: emitter,
-                            sessionID: sid
+                            sessionID: sid,
+                            supportsImageInputs: canUseImageInputs
                         )
                         return (index, result)
                     }
@@ -763,7 +766,8 @@ public actor Session {
                 env: env,
                 config: cfg,
                 eventEmitter: emitter,
-                sessionID: sid
+                sessionID: sid,
+                supportsImageInputs: canUseImageInputs
             )
             results.append(result)
         }
@@ -780,7 +784,8 @@ public actor Session {
         env: any ExecutionEnvironment,
         config: SessionConfig,
         eventEmitter: EventEmitter,
-        sessionID: String
+        sessionID: String,
+        supportsImageInputs: Bool
     ) async -> ToolResult {
         _sessionWriteToStderr("[Session] executeSingleToolNonisolated: START \(toolCall.name) (\(toolCall.id))\n")
         await eventEmitter.emit(SessionEvent(
@@ -869,7 +874,9 @@ public actor Session {
             // Resolve image attachment inline (no actor state needed)
             var imageData: [UInt8]?
             var imageMediaType: String?
-            if toolCall.name == "view_image", let rawPath = foundationArguments["path"] as? String {
+            if supportsImageInputs,
+               toolCall.name == "view_image",
+               let rawPath = foundationArguments["path"] as? String {
                 let resolvedPath: String = rawPath.hasPrefix("/")
                     ? rawPath
                     : (env.workingDirectory() as NSString).appendingPathComponent(rawPath)
@@ -1041,15 +1048,16 @@ You are running in non-interactive (automated pipeline) mode. Complete your assi
                 for result in t.results {
                     // Look up the tool name from the preceding assistant turn's tool calls.
                     let toolName = toolCallIdToName[result.toolCallId]
+                    let imageData = supportsImageInputs() ? result.imageData : nil
                     messages.append(.toolResult(
                         toolCallId: result.toolCallId,
                         toolName: toolName,
                         content: result.content,
                         isError: result.isError,
-                        imageData: result.imageData,
-                        imageMediaType: result.imageMediaType
+                        imageData: imageData,
+                        imageMediaType: imageData == nil ? nil : result.imageMediaType
                     ))
-                    if let imageData = result.imageData {
+                    if let imageData {
                         let image = ImageData(data: imageData, mediaType: result.imageMediaType)
                         messages.append(Message(
                             role: .user,
@@ -1141,15 +1149,16 @@ You are running in non-interactive (automated pipeline) mode. Complete your assi
             case .toolResults(let t):
                 for result in t.results {
                     let toolName = toolCallIdToName[result.toolCallId]
+                    let imageData = supportsImageInputs() ? result.imageData : nil
                     messages.append(.toolResult(
                         toolCallId: result.toolCallId,
                         toolName: toolName,
                         content: result.content,
                         isError: result.isError,
-                        imageData: result.imageData,
-                        imageMediaType: result.imageMediaType
+                        imageData: imageData,
+                        imageMediaType: imageData == nil ? nil : result.imageMediaType
                     ))
-                    if let imageData = result.imageData {
+                    if let imageData {
                         let image = ImageData(data: imageData, mediaType: result.imageMediaType)
                         messages.append(Message(
                             role: .user,
@@ -1437,6 +1446,11 @@ You are running in non-interactive (automated pipeline) mode. Complete your assi
         case "heif": return "image/heif"
         default: return "application/octet-stream"
         }
+    }
+
+    private func supportsImageInputs() -> Bool {
+        let normalizedModel = providerProfile.model.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        return !normalizedModel.contains("codex-spark")
     }
 
     // MARK: - Loop Detection

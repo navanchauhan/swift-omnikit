@@ -1,12 +1,43 @@
 import Foundation
 import OmniAgentMesh
 
-public struct AttachmentStageResult: Sendable, Equatable {
-    public var artifactRefs: [String]
+public struct StagedAttachment: Sendable, Equatable {
+    public var artifactID: String
+    public var name: String
+    public var contentType: String
+    public var byteCount: Int
+    public var localPath: String?
     public var metadata: [String: String]
 
-    public init(artifactRefs: [String] = [], metadata: [String: String] = [:]) {
+    public init(
+        artifactID: String,
+        name: String,
+        contentType: String,
+        byteCount: Int,
+        localPath: String? = nil,
+        metadata: [String: String] = [:]
+    ) {
+        self.artifactID = artifactID
+        self.name = name
+        self.contentType = contentType
+        self.byteCount = byteCount
+        self.localPath = localPath
+        self.metadata = metadata
+    }
+}
+
+public struct AttachmentStageResult: Sendable, Equatable {
+    public var artifactRefs: [String]
+    public var attachments: [StagedAttachment]
+    public var metadata: [String: String]
+
+    public init(
+        artifactRefs: [String] = [],
+        attachments: [StagedAttachment] = [],
+        metadata: [String: String] = [:]
+    ) {
         self.artifactRefs = artifactRefs
+        self.attachments = attachments
         self.metadata = metadata
     }
 }
@@ -24,6 +55,7 @@ public actor AttachmentStager {
         channelID: ChannelID
     ) async throws -> AttachmentStageResult {
         var artifactRefs: [String] = []
+        var stagedAttachments: [StagedAttachment] = []
         var metadata: [String: String] = [:]
 
         for attachment in attachments {
@@ -38,6 +70,7 @@ public actor AttachmentStager {
                     )
                 )
                 artifactRefs.append(record.artifactID)
+                stagedAttachments.append(try await stagedAttachment(record: record, sourceMetadata: attachment.metadata))
                 continue
             }
             if let inlineBase64 = attachment.metadata["inline_base64"],
@@ -52,12 +85,32 @@ public actor AttachmentStager {
                     )
                 )
                 artifactRefs.append(record.artifactID)
+                stagedAttachments.append(try await stagedAttachment(record: record, sourceMetadata: attachment.metadata))
             }
         }
 
         if !artifactRefs.isEmpty {
             metadata["staged_artifact_refs"] = artifactRefs.joined(separator: ",")
+            metadata["staged_attachment_count"] = String(stagedAttachments.count)
         }
-        return AttachmentStageResult(artifactRefs: artifactRefs, metadata: metadata)
+        return AttachmentStageResult(
+            artifactRefs: artifactRefs,
+            attachments: stagedAttachments,
+            metadata: metadata
+        )
+    }
+
+    private func stagedAttachment(
+        record: ArtifactRecord,
+        sourceMetadata: [String: String]
+    ) async throws -> StagedAttachment {
+        StagedAttachment(
+            artifactID: record.artifactID,
+            name: record.name,
+            contentType: record.contentType,
+            byteCount: record.byteCount,
+            localPath: try await artifactStore.localFilePath(for: record.artifactID),
+            metadata: sourceMetadata
+        )
     }
 }

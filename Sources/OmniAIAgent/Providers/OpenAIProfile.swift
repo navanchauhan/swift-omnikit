@@ -40,7 +40,7 @@ public final class OpenAIProfile: ProviderProfile, @unchecked Sendable {
         self.forceCodexSystemPrompt = forceCodexSystemPrompt
         self.disablePreviousResponseId = disablePreviousResponseId
         self.supportsStreaming = Self.defaultSupportsStreaming()
-        self.supportsPreviousResponseId = (supportsPreviousResponseId ?? Self.defaultSupportsPreviousResponseId()) && !disablePreviousResponseId
+        self.supportsPreviousResponseId = (supportsPreviousResponseId ?? Self.defaultSupportsPreviousResponseId(model: model)) && !disablePreviousResponseId
 
         let registry = ToolRegistry()
         if useUnifiedExec {
@@ -62,7 +62,9 @@ public final class OpenAIProfile: ProviderProfile, @unchecked Sendable {
         registry.register(globTool())
         registry.register(codexListDirTool())
         registry.register(updatePlanTool())
-        registry.register(viewImageTool())
+        if Self.supportsImageInputs(model: model) {
+            registry.register(viewImageTool())
+        }
         if includeApplyPatch {
             registry.register(applyPatchTool())
         }
@@ -140,6 +142,9 @@ public final class OpenAIProfile: ProviderProfile, @unchecked Sendable {
 
 private extension OpenAIProfile {
     static func defaultSupportsStreaming(environment: [String: String] = ProcessInfo.processInfo.environment) -> Bool {
+        if Self.isCodexChatGPTAuthEnabled(environment: environment) {
+            return true
+        }
         guard let baseURL = environment["OPENAI_BASE_URL"], !baseURL.isEmpty else {
             return true
         }
@@ -150,7 +155,10 @@ private extension OpenAIProfile {
         return host == "api.openai.com" || host.hasSuffix(".openai.com")
     }
 
-    static func defaultSupportsPreviousResponseId(environment: [String: String] = ProcessInfo.processInfo.environment) -> Bool {
+    static func defaultSupportsPreviousResponseId(model: String, environment: [String: String] = ProcessInfo.processInfo.environment) -> Bool {
+        if model.lowercased().contains("codex") {
+            return false
+        }
         guard let baseURL = environment["OPENAI_BASE_URL"], !baseURL.isEmpty else {
             return true
         }
@@ -159,5 +167,20 @@ private extension OpenAIProfile {
             return false
         }
         return host == "api.openai.com" || host.hasSuffix(".openai.com")
+    }
+
+    static func isCodexChatGPTAuthEnabled(environment: [String: String]) -> Bool {
+        for key in ["OMNIKIT_USE_CODEX_CHATGPT_AUTH", "THE_AGENT_USE_CODEX_CHATGPT_AUTH"] {
+            let normalized = environment[key]?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+            if ["1", "true", "yes", "on"].contains(normalized) {
+                return true
+            }
+        }
+        return false
+    }
+
+    static func supportsImageInputs(model: String) -> Bool {
+        let normalized = model.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        return !normalized.contains("codex-spark")
     }
 }

@@ -1,6 +1,25 @@
 import Foundation
 import OmniAgentMesh
 
+public struct IngressDeliveryAttachment: Codable, Sendable, Equatable {
+    public var artifactID: String
+    public var name: String?
+    public var contentType: String?
+    public var metadata: [String: String]
+
+    public init(
+        artifactID: String,
+        name: String? = nil,
+        contentType: String? = nil,
+        metadata: [String: String] = [:]
+    ) {
+        self.artifactID = artifactID
+        self.name = name
+        self.contentType = contentType
+        self.metadata = metadata
+    }
+}
+
 public struct IngressDeliveryInstruction: Codable, Sendable, Equatable {
     public enum Kind: String, Codable, Sendable {
         case message
@@ -22,6 +41,7 @@ public struct IngressDeliveryInstruction: Codable, Sendable, Equatable {
     public var actorID: ActorID?
     public var targetExternalID: String
     public var chunks: [String]
+    public var attachments: [IngressDeliveryAttachment]
     public var metadata: [String: String]
 
     public init(
@@ -35,6 +55,7 @@ public struct IngressDeliveryInstruction: Codable, Sendable, Equatable {
         actorID: ActorID? = nil,
         targetExternalID: String,
         chunks: [String],
+        attachments: [IngressDeliveryAttachment] = [],
         metadata: [String: String] = [:]
     ) {
         self.deliveryID = deliveryID
@@ -47,6 +68,7 @@ public struct IngressDeliveryInstruction: Codable, Sendable, Equatable {
         self.actorID = actorID
         self.targetExternalID = targetExternalID
         self.chunks = chunks
+        self.attachments = attachments
         self.metadata = metadata
     }
 }
@@ -56,6 +78,7 @@ public enum IngressDisposition: String, Codable, Sendable {
     case duplicate
     case ignored
     case unsupported
+    case failed
 }
 
 public struct IngressGatewayResult: Sendable, Equatable {
@@ -81,8 +104,12 @@ public struct IngressGatewayResult: Sendable, Equatable {
 }
 
 public enum IngressDeliveryFormatter {
+    public static func userVisibleText(_ text: String) -> String {
+        text.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
     public static func chunkText(_ text: String, maxCharacters: Int = 3_500) -> [String] {
-        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmed = userVisibleText(text)
         guard !trimmed.isEmpty else {
             return []
         }

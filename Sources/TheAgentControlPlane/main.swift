@@ -10,12 +10,26 @@ import TheAgentImessage
 /// Concurrency-safe stderr writer for use in Sendable closures and Tasks.
 private struct StderrWriter: Sendable {
     func write(_ message: String) {
-        var standardError = FileHandle.standardError
+        let standardError = FileHandle.standardError
         standardError.write(Data(message.utf8))
     }
 }
 
 private let stderrWriter = StderrWriter()
+
+private actor CodexMediaDescriptionProvider: MediaDescriptionProviding {
+    func describeImageAttachment(_ attachment: StagedAttachment) async throws -> String? {
+        guard let localPath = attachment.localPath else {
+            return nil
+        }
+        let data = try Data(contentsOf: URL(fileURLWithPath: localPath))
+        return try await RootAgentToolbox.describeImage(
+            data: data,
+            contentType: attachment.contentType,
+            name: attachment.name
+        )
+    }
+}
 
 @main
 enum TheAgentControlPlaneMain {
@@ -38,7 +52,13 @@ enum TheAgentControlPlaneMain {
         let skillStore = try SQLiteSkillStore(fileURL: stateRoot.skillsDatabaseURL)
         let deliveryStore = try SQLiteDeliveryStore(fileURL: stateRoot.deliveriesDatabaseURL)
         let deploymentStore = try SQLiteDeploymentStore(fileURL: stateRoot.deploymentDatabaseURL)
-        let artifactStore = try FileArtifactStore(rootDirectory: stateRoot.artifactsDirectoryURL)
+        let scheduledPromptStore = FileScheduledPromptStore(
+            fileURL: stateRoot.runtimeDirectoryURL.appending(path: "scheduled-prompts.json")
+        )
+        let artifactStore = try FileArtifactStore(
+            rootDirectory: stateRoot.artifactsDirectoryURL,
+            maximumArtifactBytes: 50 * 1_024 * 1_024
+        )
         let releaseBundleStore = try FileReleaseBundleStore(
             rootDirectory: stateRoot.releasesDirectoryURL.appending(path: "bundles", directoryHint: .isDirectory)
         )
@@ -98,6 +118,7 @@ enum TheAgentControlPlaneMain {
                 model: options.model,
                 workingDirectory: options.workingDirectory,
                 sessionConfig: SessionConfig(reasoningEffort: options.reasoningEffort),
+                enableNativeWebSearch: true,
                 yoloMode: options.yoloMode
             )
         )
@@ -108,7 +129,8 @@ enum TheAgentControlPlaneMain {
             runtimeRegistry: runtimeRegistry,
             policyManager: channelPolicyManager,
             onboardingWizard: onboardingWizard,
-            attachmentStager: attachmentStager
+            attachmentStager: attachmentStager,
+            mediaDescriptionProvider: CodexMediaDescriptionProvider()
         )
         let rootServer = await serverRegistry.server(sessionID: "root")
         let interactionBridge = MeshInteractionBridgeService(
@@ -116,6 +138,7 @@ enum TheAgentControlPlaneMain {
             missionStore: missionStore
         )
         var supervisorTask: Task<Void, Never>?
+        var scheduledPromptTask: Task<Void, Never>?
 
         var meshServer: HTTPMeshServer?
         if let meshPort = options.meshPort {
@@ -195,6 +218,7 @@ enum TheAgentControlPlaneMain {
                 let handler = try await ImessageIngressHandler.make(
                     gateway: gateway,
                     deliveryStore: deliveryStore,
+                    artifactStore: artifactStore,
                     projectID: photonProjectID,
                     projectSecret: photonProjectSecret
                 )
@@ -242,6 +266,55 @@ enum TheAgentControlPlaneMain {
             print("TheAgentControlPlane ingress listening on \(listeningAddress.host):\(listeningAddress.port)")
         }
 
+        let scheduledTelegramHandler = telegramWebhookHandler
+        let scheduledImessageHandler = imessageIngressHandler
+        let scheduledRunner = ScheduledPromptRunner(
+            store: scheduledPromptStore,
+            gateway: gateway,
+            deliverySink: { instructions in
+                let grouped = Dictionary(grouping: instructions, by: \.transport)
+                for (transport, transportInstructions) in grouped {
+                    switch transport {
+                    case .telegram:
+                        if let scheduledTelegramHandler {
+                            try await scheduledTelegramHandler.deliver(transportInstructions)
+                        } else {
+                            try await markScheduledDeliveriesUndeliverable(
+                                transportInstructions,
+                                deliveryStore: deliveryStore,
+                                reason: "telegram delivery handler is not configured"
+                            )
+                        }
+                    case .imessage:
+                        if let scheduledImessageHandler {
+                            try await scheduledImessageHandler.deliver(transportInstructions)
+                        } else {
+                            try await markScheduledDeliveriesUndeliverable(
+                                transportInstructions,
+                                deliveryStore: deliveryStore,
+                                reason: "imessage delivery handler is not configured"
+                            )
+                        }
+                    default:
+                        try await markScheduledDeliveriesUndeliverable(
+                            transportInstructions,
+                            deliveryStore: deliveryStore,
+                            reason: "no scheduled delivery handler for \(transport.rawValue)"
+                        )
+                    }
+                }
+            }
+        )
+        scheduledPromptTask = Task {
+            do {
+                try await scheduledRunner.run()
+            } catch is CancellationError {
+            } catch {
+                stderrWriter.write("Scheduled prompt loop stopped: \(error)\n")
+            }
+        }
+        print("TheAgentControlPlane scheduled prompt runner enabled.")
+
         if options.listWorkers {
             try await printWorkers(jobStore: jobStore)
         }
@@ -256,6 +329,7 @@ enum TheAgentControlPlaneMain {
                     workingDirectory: options.workingDirectory,
                     sessionID: rootServer.sessionID,
                     sessionConfig: SessionConfig(reasoningEffort: options.reasoningEffort),
+                    enableNativeWebSearch: true,
                     yoloMode: options.yoloMode
                 )
             )
@@ -276,6 +350,7 @@ enum TheAgentControlPlaneMain {
             telegramPollingTask?.cancel()
             imessageIngressTask?.cancel()
             await imessageIngressHandler?.close()
+            scheduledPromptTask?.cancel()
             supervisorTask?.cancel()
             await runtimeRegistry.closeAll()
             return
@@ -301,12 +376,13 @@ enum TheAgentControlPlaneMain {
             telegramPollingTask?.cancel()
             imessageIngressTask?.cancel()
             await imessageIngressHandler?.close()
+            scheduledPromptTask?.cancel()
             supervisorTask?.cancel()
             await runtimeRegistry.closeAll()
             return
         }
 
-        if meshServer != nil || ingressServer != nil || telegramPollingTask != nil {
+        if meshServer != nil || ingressServer != nil || telegramPollingTask != nil || imessageIngressTask != nil {
             supervisorTask = Task {
                 do {
                     while !Task.isCancelled {
@@ -332,6 +408,7 @@ enum TheAgentControlPlaneMain {
                 telegramPollingTask?.cancel()
                 imessageIngressTask?.cancel()
                 await imessageIngressHandler?.close()
+                scheduledPromptTask?.cancel()
                 supervisorTask?.cancel()
             }
             await runtimeRegistry.closeAll()
@@ -340,6 +417,7 @@ enum TheAgentControlPlaneMain {
 
         let snapshot = try await rootServer.restoreState()
         print("TheAgentControlPlane ready with \(snapshot.hotContext.count) hot items and \(snapshot.unresolvedNotifications.count) unresolved notifications.")
+        scheduledPromptTask?.cancel()
     }
 
     private static func printWorkers(jobStore: any JobStore) async throws {
@@ -354,6 +432,31 @@ enum TheAgentControlPlaneMain {
                 "\(worker.workerID) \(worker.displayName) " +
                 "state=\(worker.state.rawValue) " +
                 "capabilities=\(worker.capabilities.joined(separator: ","))"
+            )
+        }
+    }
+
+    private static func markScheduledDeliveriesUndeliverable(
+        _ instructions: [IngressDeliveryInstruction],
+        deliveryStore: any DeliveryStore,
+        reason: String
+    ) async throws {
+        for instruction in instructions {
+            var metadata = instruction.metadata
+            metadata["target_external_id"] = instruction.targetExternalID
+            metadata["error"] = reason
+            _ = try await deliveryStore.saveDelivery(
+                DeliveryRecord(
+                    idempotencyKey: instruction.idempotencyKey,
+                    direction: .outbound,
+                    transport: instruction.transport,
+                    actorID: instruction.actorID,
+                    workspaceID: instruction.workspaceID,
+                    channelID: instruction.channelID,
+                    status: .failed,
+                    summary: instruction.chunks.joined(separator: "\n"),
+                    metadata: metadata
+                )
             )
         }
     }

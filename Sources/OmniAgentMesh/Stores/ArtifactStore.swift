@@ -43,6 +43,7 @@ public protocol ArtifactStore: Sendable {
     func put(_ payload: ArtifactPayload) async throws -> ArtifactRecord
     func record(artifactID: String) async throws -> ArtifactRecord?
     func data(for artifactID: String) async throws -> Data?
+    func localFilePath(for artifactID: String) async throws -> String?
     func list(
         taskID: String?,
         missionID: String?,
@@ -51,6 +52,10 @@ public protocol ArtifactStore: Sendable {
 }
 
 public extension ArtifactStore {
+    func localFilePath(for artifactID: String) async throws -> String? {
+        nil
+    }
+
     func list(taskID: String? = nil) async throws -> [ArtifactRecord] {
         try await list(taskID: taskID, missionID: nil, workspaceID: nil)
     }
@@ -120,6 +125,17 @@ public actor FileArtifactStore: ArtifactStore {
             return nil
         }
         return try Data(contentsOf: fileURL)
+    }
+
+    public func localFilePath(for artifactID: String) async throws -> String? {
+        guard let record = try loadRecord(artifactID: artifactID) else {
+            return nil
+        }
+        let fileURL = filesDirectory.appending(path: record.relativePath)
+        guard FileManager.default.fileExists(atPath: fileURL.path()) else {
+            return nil
+        }
+        return fileURL.path()
     }
 
     public func list(

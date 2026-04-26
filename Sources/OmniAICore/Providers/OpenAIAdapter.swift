@@ -7,8 +7,14 @@ public final class OpenAIAdapter: ProviderAdapter, @unchecked Sendable {
 
     private let apiKey: String
     private let baseURL: String
+    private let responsesPath: String
     private let organizationID: String?
     private let projectID: String?
+    private let authorizationHeaderValue: String
+    private let additionalHeaders: [String: String]
+    private let defaultRequestBodyFields: [String: JSONValue]
+    private let turnStateLock = NSLock()
+    private var codexTurnState: String?
     private let transport: HTTPTransport
     private let responsesWebSocketTransport: OpenAIResponsesWebSocketTransport?
 
@@ -16,16 +22,24 @@ public final class OpenAIAdapter: ProviderAdapter, @unchecked Sendable {
         providerName: String = "openai",
         apiKey: String,
         baseURL: String? = nil,
+        responsesPath: String = "/responses",
         organizationID: String? = nil,
         projectID: String? = nil,
+        authorizationHeaderValue: String? = nil,
+        additionalHeaders: [String: String] = [:],
+        defaultRequestBodyFields: [String: JSONValue] = [:],
         transport: HTTPTransport,
         responsesWebSocketTransport: OpenAIResponsesWebSocketTransport? = nil
     ) {
         self.name = providerName
         self.apiKey = apiKey
         self.baseURL = baseURL ?? "https://api.openai.com/v1"
+        self.responsesPath = responsesPath
         self.organizationID = organizationID
         self.projectID = projectID
+        self.authorizationHeaderValue = authorizationHeaderValue ?? "Bearer \(apiKey)"
+        self.additionalHeaders = additionalHeaders
+        self.defaultRequestBodyFields = defaultRequestBodyFields
         self.transport = transport
         self.responsesWebSocketTransport = responsesWebSocketTransport
     }
@@ -33,17 +47,9 @@ public final class OpenAIAdapter: ProviderAdapter, @unchecked Sendable {
     public func complete(request: Request) async throws -> Response {
         try await request.abortSignal?.check()
 
-        let url = try _ProviderHTTP.makeURL(baseURL: baseURL, path: "/responses")
+        let url = try responsesURL()
         let body = try buildRequestBody(request: request, stream: false)
-        var headers = HTTPHeaders()
-        headers.set(name: "authorization", value: "Bearer \(apiKey)")
-        headers.set(name: "content-type", value: "application/json")
-        if let organizationID {
-            headers.set(name: "openai-organization", value: organizationID)
-        }
-        if let projectID {
-            headers.set(name: "openai-project", value: projectID)
-        }
+        let headers = makeHeaders(accept: nil)
 
         let timeout = request.timeout?.asConfig.total
         let http = try await transport.send(
@@ -66,6 +72,7 @@ public final class OpenAIAdapter: ProviderAdapter, @unchecked Sendable {
             throw err
         }
 
+        updateCodexTurnState(from: http.headers)
         let json = _ProviderHTTP.parseJSONBody(http)
         return try parseResponse(json: json, headers: http.headers, requestedModel: request.model)
     }
@@ -73,19 +80,10 @@ public final class OpenAIAdapter: ProviderAdapter, @unchecked Sendable {
     public func stream(request: Request) async throws -> AsyncThrowingStream<StreamEvent, Error> {
         try await request.abortSignal?.check()
 
-        let url = try _ProviderHTTP.makeURL(baseURL: baseURL, path: "/responses")
+        let url = try responsesURL()
         let providerOptions = request.optionsObject(for: name)
         let body = try buildRequestBody(request: request, stream: true)
-        var headers = HTTPHeaders()
-        headers.set(name: "authorization", value: "Bearer \(apiKey)")
-        headers.set(name: "content-type", value: "application/json")
-        headers.set(name: "accept", value: "text/event-stream")
-        if let organizationID {
-            headers.set(name: "openai-organization", value: organizationID)
-        }
-        if let projectID {
-            headers.set(name: "openai-project", value: projectID)
-        }
+        let headers = makeHeaders(accept: "text/event-stream")
 
         let timeout = request.timeout?.asConfig.total
         let streamTransportMode = providerOptions[OpenAIProviderOptionKeys.responsesTransport]?.stringValue?.lowercased() ?? "sse"
@@ -126,6 +124,7 @@ public final class OpenAIAdapter: ProviderAdapter, @unchecked Sendable {
             throw err
         }
 
+        updateCodexTurnState(from: res.headers)
         let sse = SSE.parse(res.body)
 
         return AsyncThrowingStream { continuation in
@@ -554,6 +553,50 @@ public final class OpenAIAdapter: ProviderAdapter, @unchecked Sendable {
 
     // MARK: - Request/Response Translation
 
+    private func responsesURL() throws -> URL {
+        try _ProviderHTTP.makeURL(baseURL: baseURL, path: responsesPath)
+    }
+
+    private func makeHeaders(accept: String?) -> HTTPHeaders {
+        var headers = HTTPHeaders()
+        headers.set(name: "authorization", value: authorizationHeaderValue)
+        headers.set(name: "content-type", value: "application/json")
+        if let accept {
+            headers.set(name: "accept", value: accept)
+        }
+        if let organizationID {
+            headers.set(name: "openai-organization", value: organizationID)
+        }
+        if let projectID {
+            headers.set(name: "openai-project", value: projectID)
+        }
+        for (name, value) in additionalHeaders where !value.isEmpty {
+            headers.set(name: name, value: value)
+        }
+        if let turnState = currentCodexTurnState() {
+            headers.set(name: "x-codex-turn-state", value: turnState)
+        }
+        return headers
+    }
+
+    private func currentCodexTurnState() -> String? {
+        turnStateLock.lock()
+        defer { turnStateLock.unlock() }
+        return codexTurnState
+    }
+
+    private func updateCodexTurnState(from headers: HTTPHeaders) {
+        guard let turnState = headers.firstValue(for: "x-codex-turn-state")?
+            .trimmingCharacters(in: .whitespacesAndNewlines),
+            !turnState.isEmpty
+        else {
+            return
+        }
+        turnStateLock.lock()
+        codexTurnState = turnState
+        turnStateLock.unlock()
+    }
+
     private func buildRequestBody(request: Request, stream: Bool) throws -> [UInt8] {
         let providerOptions = request.optionsObject(for: name)
         let includeNativeWebSearch = providerOptions[OpenAIProviderOptionKeys.includeNativeWebSearch]?.boolValue ?? false
@@ -693,6 +736,9 @@ public final class OpenAIAdapter: ProviderAdapter, @unchecked Sendable {
             "model": .string(request.model),
             "input": .array(inputItems),
         ]
+        for (key, value) in defaultRequestBodyFields {
+            root[key] = value
+        }
 
         if let previousResponseId = request.previousResponseId,
            !previousResponseId.isEmpty {
@@ -813,7 +859,7 @@ public final class OpenAIAdapter: ProviderAdapter, @unchecked Sendable {
 
     private func makeWebSocketURL(providerOptions: [String: JSONValue]) throws -> URL {
         let websocketBase = providerOptions[OpenAIProviderOptionKeys.websocketBaseURL]?.stringValue ?? baseURL
-        let httpURL = try _ProviderHTTP.makeURL(baseURL: websocketBase, path: "/responses")
+        let httpURL = try _ProviderHTTP.makeURL(baseURL: websocketBase, path: responsesPath)
         guard var components = URLComponents(url: httpURL, resolvingAgainstBaseURL: false) else {
             throw OmniHTTPError.invalidURL(httpURL.absoluteString)
         }
@@ -869,6 +915,10 @@ public final class OpenAIAdapter: ProviderAdapter, @unchecked Sendable {
             case "reasoning":
                 // Reasoning models can emit top-level reasoning items in `output`. When tool calling,
                 // these must be round-tripped by including them in subsequent `input` arrays.
+                parts.append(ContentPart(kind: .custom("openai_input_item"), data: item))
+            case "image_generation_call":
+                // Hosted image generation calls are top-level Responses items. Preserve them for
+                // previous_response_id round-tripping and for callers that save generated outputs.
                 parts.append(ContentPart(kind: .custom("openai_input_item"), data: item))
             case "function_call":
                 let itemId = item["id"]?.stringValue
@@ -1320,13 +1370,19 @@ private struct OpenAIMultipartPart {
 private extension OpenAIAdapter {
     func openAIHeaders(contentType: String) -> HTTPHeaders {
         var headers = HTTPHeaders()
-        headers.set(name: "authorization", value: "Bearer \(apiKey)")
+        headers.set(name: "authorization", value: authorizationHeaderValue)
         headers.set(name: "content-type", value: contentType)
         if let organizationID {
             headers.set(name: "openai-organization", value: organizationID)
         }
         if let projectID {
             headers.set(name: "openai-project", value: projectID)
+        }
+        for (name, value) in additionalHeaders where !value.isEmpty {
+            headers.set(name: name, value: value)
+        }
+        if let turnState = currentCodexTurnState() {
+            headers.set(name: "x-codex-turn-state", value: turnState)
         }
         return headers
     }

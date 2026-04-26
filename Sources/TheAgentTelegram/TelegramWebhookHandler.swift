@@ -72,7 +72,7 @@ public actor TelegramWebhookHandler {
         }
     }
 
-    private func deliver(_ instructions: [IngressDeliveryInstruction]) async throws {
+    public func deliver(_ instructions: [IngressDeliveryInstruction]) async throws {
         for instruction in instructions {
             do {
                 switch instruction.kind {
@@ -91,6 +91,9 @@ public actor TelegramWebhookHandler {
                         messageID: instruction.metadata["callback_query_id"]
                     )
                 case .message:
+                    guard instruction.attachments.isEmpty else {
+                        throw TelegramWebhookHandlerError.unsupportedAttachments
+                    }
                     var sentMessageIDs: [String] = []
                     for request in TelegramDeliveryFormatter.sendRequests(for: instruction) {
                         let response = try await client.sendMessage(request)
@@ -274,11 +277,14 @@ public actor TelegramWebhookHandler {
 
 public enum TelegramWebhookHandlerError: Error, CustomStringConvertible, Sendable {
     case invalidSecretToken
+    case unsupportedAttachments
 
     public var description: String {
         switch self {
         case .invalidSecretToken:
             return "Telegram webhook secret token did not match the configured value."
+        case .unsupportedAttachments:
+            return "Telegram delivery does not support artifact attachments yet."
         }
     }
 }

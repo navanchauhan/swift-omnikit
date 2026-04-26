@@ -91,6 +91,57 @@ private func formURLEncode(_ value: String) -> String {
     return value.addingPercentEncoding(withAllowedCharacters: allowed) ?? value
 }
 
+private struct CodexChatGPTAuth: Sendable {
+    var accessToken: String
+    var accountID: String?
+    var installationID: String?
+}
+
+private func resolveCodexHome(env: [String: String]) -> URL {
+    if let configured = env["CODEX_HOME"]?.trimmingCharacters(in: .whitespacesAndNewlines),
+       !configured.isEmpty {
+        return URL(fileURLWithPath: NSString(string: configured).expandingTildeInPath, isDirectory: true)
+    }
+    return FileManager.default.homeDirectoryForCurrentUser
+        .appending(path: ".codex", directoryHint: .isDirectory)
+}
+
+private func loadCodexChatGPTAuth(env: [String: String]) -> CodexChatGPTAuth? {
+    let codexHome = resolveCodexHome(env: env)
+    let authURL = codexHome.appending(path: "auth.json", directoryHint: .notDirectory)
+    guard let data = try? Data(contentsOf: authURL),
+          let raw = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+          let authMode = raw["auth_mode"] as? String,
+          authMode == "chatgpt",
+          let tokens = raw["tokens"] as? [String: Any],
+          let accessToken = tokens["access_token"] as? String,
+          !accessToken.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    else {
+        return nil
+    }
+
+    let installationIDURL = codexHome.appending(path: "installation_id", directoryHint: .notDirectory)
+    let installationID = (try? String(contentsOf: installationIDURL, encoding: .utf8))?
+        .trimmingCharacters(in: .whitespacesAndNewlines)
+    let accountID = (tokens["account_id"] as? String)?
+        .trimmingCharacters(in: .whitespacesAndNewlines)
+
+    return CodexChatGPTAuth(
+        accessToken: accessToken.trimmingCharacters(in: .whitespacesAndNewlines),
+        accountID: accountID?.isEmpty == false ? accountID : nil,
+        installationID: installationID?.isEmpty == false ? installationID : nil
+    )
+}
+
+private func envBool(_ value: String?) -> Bool {
+    guard let normalized = value?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased(),
+          !normalized.isEmpty
+    else {
+        return false
+    }
+    return ["1", "true", "yes", "on"].contains(normalized)
+}
+
 extension ProviderAdapter {
     public func close() async {}
     public func initialize() throws {}
@@ -425,8 +476,42 @@ public final class Client: @unchecked Sendable {
 
         var providers: [String: ProviderAdapter] = [:]
 
-        let openaiKey = firstNonEmpty(["OPENAI_API_KEY", "DR_OPENAI_API_KEY"]) ?? oauthApiKey
-        if let key = openaiKey {
+        let explicitOpenAIKey = firstNonEmpty(["OPENAI_API_KEY", "DR_OPENAI_API_KEY"]) ?? oauthApiKey
+        let shouldUseCodexChatGPTAuth = envBool(env["OMNIKIT_USE_CODEX_CHATGPT_AUTH"])
+            || envBool(env["THE_AGENT_USE_CODEX_CHATGPT_AUTH"])
+            || explicitOpenAIKey == nil
+        if shouldUseCodexChatGPTAuth, let codexAuth = loadCodexChatGPTAuth(env: env) {
+            var headers: [String: String] = [
+                "originator": firstNonEmpty(["CODEX_INTERNAL_ORIGINATOR_OVERRIDE", "OMNIKIT_CODEX_ORIGINATOR"])
+                    ?? "swift_omnikit",
+                "session_id": firstNonEmpty(["OMNIKIT_CODEX_SESSION_ID", "THE_AGENT_SESSION_ID"])
+                    ?? "swift-omnikit-\(UUID().uuidString)",
+            ]
+            if let accountID = codexAuth.accountID {
+                headers["ChatGPT-Account-ID"] = accountID
+            }
+
+            var defaultBodyFields: [String: JSONValue] = [
+                "store": .bool(false),
+            ]
+            if let installationID = codexAuth.installationID {
+                defaultBodyFields["client_metadata"] = .object([
+                    "x-codex-installation-id": .string(installationID),
+                ])
+            }
+
+            providers["openai"] = OpenAIAdapter(
+                apiKey: codexAuth.accessToken,
+                baseURL: firstNonEmpty(["OMNIKIT_CODEX_BASE_URL", "CODEX_CHATGPT_BASE_URL"])
+                    ?? "https://chatgpt.com/backend-api/codex",
+                responsesPath: firstNonEmpty(["OMNIKIT_CODEX_RESPONSES_PATH", "CODEX_CHATGPT_RESPONSES_PATH"])
+                    ?? "/responses",
+                authorizationHeaderValue: "Bearer \(codexAuth.accessToken)",
+                additionalHeaders: headers,
+                defaultRequestBodyFields: defaultBodyFields,
+                transport: transport
+            )
+        } else if let key = explicitOpenAIKey {
             providers["openai"] = OpenAIAdapter(
                 apiKey: key,
                 baseURL: env["OPENAI_BASE_URL"],

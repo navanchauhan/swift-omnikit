@@ -1,13 +1,18 @@
 import Foundation
+#if canImport(FoundationNetworking)
+import FoundationNetworking
+#endif
 import OmniAIAgent
 import OmniAgentMesh
 import OmniSkills
 
 public actor RootAgentToolbox {
     private let server: RootAgentServer
+    private let scheduledPromptStore: (any ScheduledPromptStore)?
 
-    public init(server: RootAgentServer) {
+    public init(server: RootAgentServer, scheduledPromptStore: (any ScheduledPromptStore)? = nil) {
         self.server = server
+        self.scheduledPromptStore = scheduledPromptStore
     }
 
     static func testingSerializeDeliveryMetadata(_ metadata: [String: String]) -> [String: Any] {
@@ -41,6 +46,18 @@ public actor RootAgentToolbox {
             waitForTaskTool(),
             listArtifactsTool(),
             getArtifactTool(),
+            channelSendMessageTool(),
+            channelSendArtifactTool(),
+            imageGenerateTool(),
+            imageEditTool(),
+            imageDownloadTool(),
+            noResponseTool(),
+            channelReactTool(),
+            channelSetReplyEffectTool(),
+            displayDraftTool(),
+            schedulePromptTool(),
+            listScheduledPromptsTool(),
+            cancelScheduledPromptTool(),
             listNotificationsTool(),
             resolveNotificationTool(),
         ]
@@ -932,6 +949,684 @@ public actor RootAgentToolbox {
         )
     }
 
+    private func channelSendMessageTool() -> RegisteredTool {
+        RegisteredTool(
+            definition: AgentToolDefinition(
+                name: "channel_send_message",
+                description: "Send user-visible text through the current channel as a typed SendMessage side effect. Use this for every text reply to the user; final assistant text alone is not delivered by ingress.",
+                parameters: [
+                    "type": "object",
+                    "properties": [
+                        "text": [
+                            "type": "string",
+                            "description": "User-visible message text to send.",
+                        ],
+                        "transport": [
+                            "type": "string",
+                            "description": "Optional transport override such as imessage, telegram, api, or custom.",
+                        ],
+                        "target_external_id": [
+                            "type": "string",
+                            "description": "Optional channel-native target ID. Defaults to the current channel target.",
+                        ],
+                    ],
+                    "required": ["text"],
+                    "additionalProperties": false,
+                ]
+            ),
+            executor: { [server] arguments, _ in
+                let text = try Self.requiredString("text", in: arguments)
+                let transport = try Self.transportValue("transport", in: arguments)
+                let targetExternalID = try Self.optionalString("target_external_id", in: arguments)
+                let result = try await ChannelActionRegistry.shared.sendMessage(
+                    sessionID: server.sessionID,
+                    transport: transport,
+                    targetExternalID: targetExternalID,
+                    text: text,
+                    metadata: [
+                        "side_effect": ChannelSideEffectKind.sendMessage.rawValue,
+                    ]
+                )
+                return try Self.renderJSON(Self.serialize(channelActionResult: result))
+            }
+        )
+    }
+
+    private func channelSendArtifactTool() -> RegisteredTool {
+        RegisteredTool(
+            definition: AgentToolDefinition(
+                name: "channel_send_artifact",
+                description: "Send a stored artifact, such as an image, through the current channel as a typed channel side effect.",
+                parameters: [
+                    "type": "object",
+                    "properties": [
+                        "artifact_id": [
+                            "type": "string",
+                            "description": "Artifact ID to send.",
+                        ],
+                        "caption": [
+                            "type": "string",
+                            "description": "Optional short caption to send with the artifact.",
+                        ],
+                        "transport": [
+                            "type": "string",
+                            "description": "Optional transport override such as imessage.",
+                        ],
+                        "target_external_id": [
+                            "type": "string",
+                            "description": "Optional channel-native target ID. Defaults to the current channel target.",
+                        ],
+                    ],
+                    "required": ["artifact_id"],
+                    "additionalProperties": false,
+                ]
+            ),
+            executor: { [server] arguments, _ in
+                let artifactID = try Self.requiredString("artifact_id", in: arguments)
+                let caption = try Self.optionalString("caption", in: arguments)
+                let transport = try Self.transportValue("transport", in: arguments)
+                let targetExternalID = try Self.optionalString("target_external_id", in: arguments)
+                let artifact = try await server.artifactRecord(artifactID: artifactID)
+                let result = try await ChannelActionRegistry.shared.sendArtifact(
+                    sessionID: server.sessionID,
+                    transport: transport,
+                    targetExternalID: targetExternalID,
+                    artifactID: artifactID,
+                    caption: caption,
+                    metadata: [
+                        "artifact_name": artifact.name,
+                        "artifact_content_type": artifact.contentType,
+                    ]
+                )
+                return try Self.renderJSON([
+                    "side_effect": Self.serialize(channelActionResult: result),
+                    "artifact": Self.serialize(artifact: artifact),
+                ])
+            }
+        )
+    }
+
+    private func imageGenerateTool() -> RegisteredTool {
+        RegisteredTool(
+            definition: AgentToolDefinition(
+                name: "image_generate",
+                description: "Generate an image from a text prompt using the configured OpenAI Image API, store it as an artifact, and optionally send it through the current channel.",
+                parameters: [
+                    "type": "object",
+                    "properties": [
+                        "prompt": [
+                            "type": "string",
+                            "description": "Image generation prompt.",
+                        ],
+                        "model": [
+                            "type": "string",
+                            "description": "Optional image model. Defaults to gpt-image-1.",
+                        ],
+                        "size": [
+                            "type": "string",
+                            "description": "Optional size such as 1024x1024, 1024x1536, or 1536x1024.",
+                        ],
+                        "quality": [
+                            "type": "string",
+                            "description": "Optional quality such as low, medium, or high.",
+                        ],
+                        "send": [
+                            "type": "boolean",
+                            "description": "Whether to send the generated image through the current channel. Defaults false.",
+                        ],
+                        "caption": [
+                            "type": "string",
+                            "description": "Optional caption to send with the image when send=true.",
+                        ],
+                    ],
+                    "required": ["prompt"],
+                    "additionalProperties": false,
+                ]
+            ),
+            executor: { [server] arguments, _ in
+                let prompt = try Self.requiredString("prompt", in: arguments)
+                let model = try Self.optionalString("model", in: arguments) ?? "gpt-image-1"
+                let size = try Self.optionalString("size", in: arguments)
+                let quality = try Self.optionalString("quality", in: arguments)
+                let shouldSend = try Self.boolValue("send", in: arguments) ?? false
+                let caption = try Self.optionalString("caption", in: arguments)
+                let generated = try await Self.generateImage(
+                    prompt: prompt,
+                    model: model,
+                    size: size,
+                    quality: quality
+                )
+                let artifact = try await server.storeArtifact(
+                    name: generated.fileName,
+                    contentType: generated.contentType,
+                    data: generated.data
+                )
+
+                let sendResult: ChannelActionResult?
+                if shouldSend {
+                    sendResult = try await ChannelActionRegistry.shared.sendArtifact(
+                        sessionID: server.sessionID,
+                        transport: nil,
+                        targetExternalID: nil,
+                        artifactID: artifact.artifactID,
+                        caption: caption,
+                        metadata: [
+                            "generated_by": "image_generate",
+                            "artifact_name": artifact.name,
+                            "artifact_content_type": artifact.contentType,
+                        ]
+                    )
+                } else {
+                    sendResult = nil
+                }
+
+                return try Self.renderJSON([
+                    "artifact": Self.serialize(artifact: artifact),
+                    "revised_prompt": generated.revisedPrompt ?? NSNull(),
+                    "sent": sendResult.map(Self.serialize(channelActionResult:)) ?? NSNull(),
+                ])
+            }
+        )
+    }
+
+    private func imageEditTool() -> RegisteredTool {
+        RegisteredTool(
+            definition: AgentToolDefinition(
+                name: "image_edit",
+                description: "Edit an existing image artifact using the configured OpenAI Image API, store the result as a new artifact, and optionally send it through the current channel.",
+                parameters: [
+                    "type": "object",
+                    "properties": [
+                        "artifact_id": [
+                            "type": "string",
+                            "description": "Image artifact ID to edit.",
+                        ],
+                        "prompt": [
+                            "type": "string",
+                            "description": "Edit instruction for the image.",
+                        ],
+                        "model": [
+                            "type": "string",
+                            "description": "Optional image model. Defaults to gpt-image-1.",
+                        ],
+                        "size": [
+                            "type": "string",
+                            "description": "Optional output size such as 1024x1024, 1024x1536, or 1536x1024.",
+                        ],
+                        "quality": [
+                            "type": "string",
+                            "description": "Optional quality such as low, medium, or high.",
+                        ],
+                        "send": [
+                            "type": "boolean",
+                            "description": "Whether to send the edited image through the current channel. Defaults false.",
+                        ],
+                        "caption": [
+                            "type": "string",
+                            "description": "Optional caption to send with the image when send=true.",
+                        ],
+                    ],
+                    "required": ["artifact_id", "prompt"],
+                    "additionalProperties": false,
+                ]
+            ),
+            executor: { [server] arguments, _ in
+                let artifactID = try Self.requiredString("artifact_id", in: arguments)
+                let prompt = try Self.requiredString("prompt", in: arguments)
+                let model = try Self.optionalString("model", in: arguments) ?? "gpt-image-1"
+                let size = try Self.optionalString("size", in: arguments)
+                let quality = try Self.optionalString("quality", in: arguments)
+                let shouldSend = try Self.boolValue("send", in: arguments) ?? false
+                let caption = try Self.optionalString("caption", in: arguments)
+                let sourceRecord = try await server.artifactRecord(artifactID: artifactID)
+                let sourceData = try await server.artifactData(artifactID: artifactID)
+                let generated = try await Self.editImage(
+                    prompt: prompt,
+                    model: model,
+                    sourceName: sourceRecord.name,
+                    sourceContentType: sourceRecord.contentType,
+                    sourceData: sourceData,
+                    size: size,
+                    quality: quality
+                )
+                let artifact = try await server.storeArtifact(
+                    name: generated.fileName,
+                    contentType: generated.contentType,
+                    data: generated.data
+                )
+
+                let sendResult: ChannelActionResult?
+                if shouldSend {
+                    sendResult = try await ChannelActionRegistry.shared.sendArtifact(
+                        sessionID: server.sessionID,
+                        transport: nil,
+                        targetExternalID: nil,
+                        artifactID: artifact.artifactID,
+                        caption: caption,
+                        metadata: [
+                            "generated_by": "image_edit",
+                            "source_artifact_id": artifactID,
+                            "artifact_name": artifact.name,
+                            "artifact_content_type": artifact.contentType,
+                        ]
+                    )
+                } else {
+                    sendResult = nil
+                }
+
+                return try Self.renderJSON([
+                    "artifact": Self.serialize(artifact: artifact),
+                    "source_artifact": Self.serialize(artifact: sourceRecord),
+                    "revised_prompt": generated.revisedPrompt ?? NSNull(),
+                    "sent": sendResult.map(Self.serialize(channelActionResult:)) ?? NSNull(),
+                ])
+            }
+        )
+    }
+
+    private func imageDownloadTool() -> RegisteredTool {
+        RegisteredTool(
+            definition: AgentToolDefinition(
+                name: "image_download",
+                description: "Download an image from an http(s) URL, store it as an artifact, and optionally send it through the current channel.",
+                parameters: [
+                    "type": "object",
+                    "properties": [
+                        "url": [
+                            "type": "string",
+                            "description": "Direct http(s) URL for the image to download.",
+                        ],
+                        "name": [
+                            "type": "string",
+                            "description": "Optional artifact filename. Defaults to the URL or server-suggested filename.",
+                        ],
+                        "send": [
+                            "type": "boolean",
+                            "description": "Whether to send the downloaded image through the current channel after storing it. Defaults false.",
+                        ],
+                        "caption": [
+                            "type": "string",
+                            "description": "Optional caption to send with the image when send=true.",
+                        ],
+                        "transport": [
+                            "type": "string",
+                            "description": "Optional transport override such as imessage.",
+                        ],
+                        "target_external_id": [
+                            "type": "string",
+                            "description": "Optional channel-native target ID. Defaults to the current channel target.",
+                        ],
+                    ],
+                    "required": ["url"],
+                    "additionalProperties": false,
+                ]
+            ),
+            executor: { [server] arguments, _ in
+                let urlString = try Self.requiredString("url", in: arguments)
+                let requestedName = try Self.optionalString("name", in: arguments)
+                let shouldSend = try Self.boolValue("send", in: arguments) ?? false
+                let caption = try Self.optionalString("caption", in: arguments)
+                let transport = try Self.transportValue("transport", in: arguments)
+                let targetExternalID = try Self.optionalString("target_external_id", in: arguments)
+                let downloaded = try await Self.downloadImage(urlString: urlString)
+                let artifact = try await server.storeArtifact(
+                    name: requestedName ?? downloaded.fileName,
+                    contentType: downloaded.contentType,
+                    data: downloaded.data
+                )
+
+                let sendResult: ChannelActionResult?
+                if shouldSend {
+                    sendResult = try await ChannelActionRegistry.shared.sendArtifact(
+                        sessionID: server.sessionID,
+                        transport: transport,
+                        targetExternalID: targetExternalID,
+                        artifactID: artifact.artifactID,
+                        caption: caption,
+                        metadata: [
+                            "source_url": urlString,
+                            "artifact_name": artifact.name,
+                            "artifact_content_type": artifact.contentType,
+                        ]
+                    )
+                } else {
+                    sendResult = nil
+                }
+
+                return try Self.renderJSON([
+                    "artifact": Self.serialize(artifact: artifact),
+                    "source_url": urlString,
+                    "sent": sendResult.map(Self.serialize(channelActionResult:)) ?? NSNull(),
+                ])
+            }
+        )
+    }
+
+    private func noResponseTool() -> RegisteredTool {
+        RegisteredTool(
+            definition: AgentToolDefinition(
+                name: "no_response",
+                description: "Mark the current inbound event as handled silently with no user-visible response. Use for irrelevant automation events, noisy notifications, or cases where silence is intentional.",
+                parameters: [
+                    "type": "object",
+                    "properties": [
+                        "reason": [
+                            "type": "string",
+                            "description": "Short internal reason for not replying.",
+                        ],
+                    ],
+                    "additionalProperties": false,
+                ]
+            ),
+            executor: { [server] arguments, _ in
+                let reason = try Self.optionalString("reason", in: arguments)
+                let result = try await ChannelActionRegistry.shared.noResponse(
+                    sessionID: server.sessionID,
+                    reason: reason
+                )
+                return try Self.renderJSON(Self.serialize(channelActionResult: result))
+            }
+        )
+    }
+
+    private func channelReactTool() -> RegisteredTool {
+        RegisteredTool(
+            definition: AgentToolDefinition(
+                name: "channel_react",
+                description: "Send an explicit reaction through the current channel when the transport supports reactions. Defaults target/message to the current inbound event.",
+                parameters: [
+                    "type": "object",
+                    "properties": [
+                        "transport": [
+                            "type": "string",
+                            "description": "Optional transport override such as imessage, telegram, api, or custom.",
+                        ],
+                        "target_external_id": [
+                            "type": "string",
+                            "description": "Channel-native target ID. Defaults to the current channel target.",
+                        ],
+                        "message_id": [
+                            "type": "string",
+                            "description": "Channel-native message ID to react to. Defaults to the current inbound message.",
+                        ],
+                        "reaction": [
+                            "type": "string",
+                            "description": "Reaction such as love, like, dislike, laugh, emphasize, question, or a transport-supported custom reaction.",
+                        ],
+                        "part_index": [
+                            "type": "integer",
+                            "description": "Message part index, default 0.",
+                        ],
+                        "emoji": [
+                            "type": "string",
+                            "description": "Optional emoji for custom reactions when the transport supports it.",
+                        ],
+                    ],
+                    "required": ["reaction"],
+                    "additionalProperties": false,
+                ]
+            ),
+            executor: { [server] arguments, _ in
+                let transport = try Self.transportValue("transport", in: arguments)
+                let targetExternalID = try Self.optionalString("target_external_id", in: arguments)
+                let messageID = try Self.optionalString("message_id", in: arguments)
+                let reaction = try Self.requiredString("reaction", in: arguments)
+                let partIndex = try Self.intValue("part_index", in: arguments) ?? 0
+                let emoji = try Self.optionalString("emoji", in: arguments)
+                let result = try await ChannelActionRegistry.shared.react(
+                    sessionID: server.sessionID,
+                    transport: transport,
+                    targetExternalID: targetExternalID,
+                    messageID: messageID,
+                    reaction: reaction,
+                    partIndex: partIndex,
+                    emoji: emoji
+                )
+                return try Self.renderJSON(Self.serialize(channelActionResult: result))
+            }
+        )
+    }
+
+    private func channelSetReplyEffectTool() -> RegisteredTool {
+        RegisteredTool(
+            definition: AgentToolDefinition(
+                name: "channel_set_reply_effect",
+                description: "Apply an explicit channel-native effect to the next normal reply in the current channel when supported. If the user only asks to set an effect, call no_response after this so the confirmation text does not consume the effect.",
+                parameters: [
+                    "type": "object",
+                    "properties": [
+                        "transport": [
+                            "type": "string",
+                            "description": "Optional transport override such as imessage.",
+                        ],
+                        "target_external_id": [
+                            "type": "string",
+                            "description": "Channel-native target ID. Defaults to the current channel target.",
+                        ],
+                        "effect_id": [
+                            "type": "string",
+                            "description": "Channel-native effect identifier. For iMessage, use com.apple.messages.effect.CKSpotlightEffect for screen/spotlight effects and com.apple.MobileSMS.effect.impact for impact effects.",
+                        ],
+                    ],
+                    "required": ["effect_id"],
+                    "additionalProperties": false,
+                ]
+            ),
+            executor: { [server] arguments, _ in
+                let transport = try Self.transportValue("transport", in: arguments)
+                let targetExternalID = try Self.optionalString("target_external_id", in: arguments)
+                let effectID = try Self.requiredString("effect_id", in: arguments)
+                let result = try await ChannelActionRegistry.shared.setPendingReplyEffect(
+                    sessionID: server.sessionID,
+                    transport: transport,
+                    targetExternalID: targetExternalID,
+                    effectID: effectID
+                )
+                return try Self.renderJSON(Self.serialize(channelActionResult: result))
+            }
+        )
+    }
+
+    private func displayDraftTool() -> RegisteredTool {
+        RegisteredTool(
+            definition: AgentToolDefinition(
+                name: "display_draft",
+                description: "Create durable draft-and-consent state before an external or irreversible action. The draft is shown to the user and must be approved before execution.",
+                parameters: [
+                    "type": "object",
+                    "properties": [
+                        "title": ["type": "string"],
+                        "draft_body": [
+                            "type": "string",
+                            "description": "Draft content or action plan to show the user.",
+                        ],
+                        "action_kind": [
+                            "type": "string",
+                            "description": "Action class, e.g. email, calendar, file, payment, deploy, message, custom.",
+                        ],
+                        "target_description": [
+                            "type": "string",
+                            "description": "Human-readable target or integration this draft would affect.",
+                        ],
+                        "sensitive": [
+                            "type": "boolean",
+                            "description": "Whether approval should use sensitive-action delivery policy. Defaults true.",
+                        ],
+                    ],
+                    "required": ["title", "draft_body", "action_kind"],
+                    "additionalProperties": true,
+                ]
+            ),
+            executor: { [server] arguments, _ in
+                let title = try Self.requiredString("title", in: arguments)
+                let draftBody = try Self.requiredString("draft_body", in: arguments)
+                let actionKind = try Self.requiredString("action_kind", in: arguments)
+                let targetDescription = try Self.optionalString("target_description", in: arguments)
+                let sensitive = try Self.boolValue("sensitive", in: arguments) ?? true
+                var metadata = try Self.stringDictionary(excluding: [
+                    "title",
+                    "draft_body",
+                    "action_kind",
+                    "target_description",
+                    "sensitive",
+                ], in: arguments)
+                metadata.merge([
+                    "side_effect": ChannelSideEffectKind.displayDraft.rawValue,
+                    "consent_state": "draft_shown",
+                    "action_kind": actionKind,
+                    "draft_body": draftBody,
+                    "target_description": targetDescription ?? "",
+                ]) { _, new in new }
+                let approval = try await server.requestApprovalPrompt(
+                    title: title,
+                    prompt: draftBody,
+                    sensitive: sensitive,
+                    metadata: metadata
+                )
+                return try Self.renderJSON([
+                    "side_effect": ChannelSideEffectKind.displayDraft.rawValue,
+                    "consent_state": "draft_shown",
+                    "approval": Self.serialize(approval: approval),
+                ])
+            }
+        )
+    }
+
+    private func schedulePromptTool() -> RegisteredTool {
+        RegisteredTool(
+            definition: AgentToolDefinition(
+                name: "schedule_prompt",
+                description: "Create a durable reminder or recurring scheduled task that will later re-enter this same channel as a typed synthetic event.",
+                parameters: [
+                    "type": "object",
+                    "properties": [
+                        "title": [
+                            "type": "string",
+                            "description": "Short user-facing label for the reminder or scheduled task.",
+                        ],
+                        "prompt": [
+                            "type": "string",
+                            "description": "Detailed instruction to run when the schedule fires. Include enough context for a future agent turn to act unambiguously.",
+                        ],
+                        "first_fire_at": [
+                            "type": "string",
+                            "description": "First fire time as an absolute ISO-8601 timestamp with timezone offset.",
+                        ],
+                        "timezone": [
+                            "type": "string",
+                            "description": "IANA timezone for recurrence calculations, e.g. America/Los_Angeles.",
+                        ],
+                        "recurrence": [
+                            "type": "string",
+                            "description": "none, daily, weekdays, weekly, or monthly.",
+                        ],
+                        "kind": [
+                            "type": "string",
+                            "description": "reminder for notify-only reminders, or scheduled_task for checks/work that may use tools before replying.",
+                        ],
+                    ],
+                    "required": ["title", "prompt", "first_fire_at"],
+                    "additionalProperties": false,
+                ]
+            ),
+            executor: { [server, scheduledPromptStore] arguments, _ in
+                guard let scheduledPromptStore else {
+                    throw RootToolboxError.invalidArgument(key: "schedule_prompt", expected: "scheduled prompt store to be configured")
+                }
+                guard let context = await ChannelActionRegistry.shared.currentContext(sessionID: server.sessionID) else {
+                    throw ChannelActionRegistryError.missingCurrentContext(sessionID: server.sessionID)
+                }
+
+                let title = try Self.requiredString("title", in: arguments)
+                let prompt = try Self.requiredString("prompt", in: arguments)
+                let firstFireAt = try Self.dateValue("first_fire_at", in: arguments)
+                let timezone = try Self.optionalString("timezone", in: arguments) ?? TimeZone.current.identifier
+                let recurrence = try Self.scheduledRecurrence("recurrence", in: arguments) ?? .none
+                let kind = try Self.optionalString("kind", in: arguments)?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() ?? "reminder"
+                let eventKind = kind == "scheduled_task" ? "automation_event" : "notification"
+                let rawActorExternalID = context.actorExternalID?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+                let fallbackActorExternalID = context.actorID?.rawValue ?? "unknown"
+                let record = ScheduledPromptRecord(
+                    scheduleID: "schedule.\(UUID().uuidString)",
+                    createdBySessionID: server.sessionID,
+                    transport: context.transport,
+                    actorExternalID: rawActorExternalID.isEmpty ? fallbackActorExternalID : rawActorExternalID,
+                    actorDisplayName: context.actorDisplayName,
+                    channelExternalID: context.targetExternalID,
+                    channelKind: context.channelKind,
+                    title: title,
+                    prompt: prompt,
+                    eventKind: eventKind,
+                    recurrence: recurrence,
+                    timezoneIdentifier: timezone,
+                    nextFireAt: firstFireAt,
+                    metadata: [
+                        "kind": kind,
+                        "created_from_inbound_event_kind": context.inboundEventKind,
+                    ]
+                )
+                let stored = try await scheduledPromptStore.save(record)
+                return try Self.renderJSON(Self.serialize(scheduledPrompt: stored))
+            }
+        )
+    }
+
+    private func listScheduledPromptsTool() -> RegisteredTool {
+        RegisteredTool(
+            definition: AgentToolDefinition(
+                name: "list_scheduled_prompts",
+                description: "List durable reminders and scheduled tasks for this agent.",
+                parameters: [
+                    "type": "object",
+                    "properties": [
+                        "status": [
+                            "type": "string",
+                            "description": "Optional status filter: active, completed, or cancelled.",
+                        ],
+                    ],
+                    "additionalProperties": false,
+                ]
+            ),
+            executor: { [scheduledPromptStore] arguments, _ in
+                guard let scheduledPromptStore else {
+                    throw RootToolboxError.invalidArgument(key: "list_scheduled_prompts", expected: "scheduled prompt store to be configured")
+                }
+                let status = try Self.scheduledStatus("status", in: arguments)
+                let prompts = try await scheduledPromptStore.prompts(status: status)
+                return try Self.renderJSON([
+                    "scheduled_prompts": prompts.map(Self.serialize(scheduledPrompt:)),
+                ])
+            }
+        )
+    }
+
+    private func cancelScheduledPromptTool() -> RegisteredTool {
+        RegisteredTool(
+            definition: AgentToolDefinition(
+                name: "cancel_scheduled_prompt",
+                description: "Cancel a durable reminder or scheduled task by schedule_id.",
+                parameters: [
+                    "type": "object",
+                    "properties": [
+                        "schedule_id": ["type": "string"],
+                    ],
+                    "required": ["schedule_id"],
+                    "additionalProperties": false,
+                ]
+            ),
+            executor: { [scheduledPromptStore] arguments, _ in
+                guard let scheduledPromptStore else {
+                    throw RootToolboxError.invalidArgument(key: "cancel_scheduled_prompt", expected: "scheduled prompt store to be configured")
+                }
+                let scheduleID = try Self.requiredString("schedule_id", in: arguments)
+                guard let record = try await scheduledPromptStore.cancel(scheduleID: scheduleID, at: Date()) else {
+                    throw RootToolboxError.invalidArgument(key: "schedule_id", expected: "existing schedule_id")
+                }
+                return try Self.renderJSON(Self.serialize(scheduledPrompt: record))
+            }
+        )
+    }
+
     private func listNotificationsTool() -> RegisteredTool {
         RegisteredTool(
             definition: AgentToolDefinition(
@@ -995,7 +1690,590 @@ public actor RootAgentToolbox {
     }
 }
 
-private extension RootAgentToolbox {
+extension RootAgentToolbox {
+    struct GeneratedImage: Sendable {
+        var data: Data
+        var contentType: String
+        var fileName: String
+        var revisedPrompt: String?
+    }
+
+    struct DownloadedImage: Sendable {
+        var data: Data
+        var contentType: String
+        var fileName: String
+    }
+
+    struct MultipartPart: Sendable {
+        var name: String
+        var fileName: String?
+        var contentType: String?
+        var data: Data
+    }
+
+    struct CodexImageAuth: Sendable {
+        var accessToken: String
+        var accountID: String?
+        var installationID: String?
+    }
+
+    static func generateImage(
+        prompt: String,
+        model: String,
+        size: String?,
+        quality: String?
+    ) async throws -> GeneratedImage {
+        if let auth = try? loadCodexImageAuth() {
+            do {
+                return try await generateImageWithCodexAuth(
+                    prompt: prompt,
+                    sourceImage: nil,
+                    requestedModel: model,
+                    size: size,
+                    quality: quality,
+                    auth: auth,
+                    fallbackName: "generated-image.png"
+                )
+            } catch {
+                if !hasUsableImageAPIKey() {
+                    throw error
+                }
+            }
+        }
+
+        var body: [String: Any] = [
+            "model": model,
+            "prompt": prompt,
+            "output_format": "png",
+            "n": 1,
+        ]
+        if let size {
+            body["size"] = size
+        }
+        if let quality {
+            body["quality"] = quality
+        }
+        let response = try await postImageAPIJSON(path: "/images/generations", body: body)
+        return try await generatedImage(from: response, fallbackName: "generated-image.png")
+    }
+
+    static func editImage(
+        prompt: String,
+        model: String,
+        sourceName: String,
+        sourceContentType: String,
+        sourceData: Data,
+        size: String?,
+        quality: String?
+    ) async throws -> GeneratedImage {
+        guard isImageContentType(sourceContentType) else {
+            throw RootToolboxError.invalidArgument(key: "artifact_id", expected: "image artifact")
+        }
+        if let auth = try? loadCodexImageAuth() {
+            do {
+                return try await generateImageWithCodexAuth(
+                    prompt: prompt,
+                    sourceImage: (data: sourceData, contentType: sourceContentType),
+                    requestedModel: model,
+                    size: size,
+                    quality: quality,
+                    auth: auth,
+                    fallbackName: "edited-image.png"
+                )
+            } catch {
+                if !hasUsableImageAPIKey() {
+                    throw error
+                }
+            }
+        }
+
+        var parts: [MultipartPart] = [
+            MultipartPart(name: "model", fileName: nil, contentType: nil, data: Data(model.utf8)),
+            MultipartPart(name: "prompt", fileName: nil, contentType: nil, data: Data(prompt.utf8)),
+            MultipartPart(name: "output_format", fileName: nil, contentType: nil, data: Data("png".utf8)),
+            MultipartPart(
+                name: "image",
+                fileName: safeFileName(sourceName),
+                contentType: sourceContentType,
+                data: sourceData
+            ),
+        ]
+        if let size {
+            parts.append(MultipartPart(name: "size", fileName: nil, contentType: nil, data: Data(size.utf8)))
+        }
+        if let quality {
+            parts.append(MultipartPart(name: "quality", fileName: nil, contentType: nil, data: Data(quality.utf8)))
+        }
+        let response = try await postImageAPIMultipart(path: "/images/edits", parts: parts)
+        return try await generatedImage(from: response, fallbackName: "edited-image.png")
+    }
+
+    public static func describeImage(
+        data: Data,
+        contentType: String,
+        name: String? = nil
+    ) async throws -> String {
+        guard isImageContentType(contentType) else {
+            throw RootToolboxError.invalidArgument(key: "content_type", expected: "image content type")
+        }
+        let auth = try loadCodexImageAuth()
+        let descriptionModel = ProcessInfo.processInfo.environment["OMNIKIT_IMAGE_DESCRIPTION_CODEX_MODEL"]?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let resolvedModel = descriptionModel?.isEmpty == false ? descriptionModel! : "gpt-5.4-mini"
+        let body: [String: Any] = [
+            "model": resolvedModel,
+            "instructions": """
+            Describe the supplied image for a non-vision orchestrator that may need to answer questions or edit it later.
+            Include visible text/OCR, layout, key objects, style, and whether it appears to be a meme, screenshot, photo, or diagram.
+            Be concise and factual. Return only the description.
+            """,
+            "input": [
+                [
+                    "role": "user",
+                    "content": [
+                        [
+                            "type": "input_text",
+                            "text": "Describe this image\(name.map { " named \($0)" } ?? "").",
+                        ],
+                        [
+                            "type": "input_image",
+                            "image_url": "data:\(contentType);base64,\(data.base64EncodedString())",
+                            "detail": "high",
+                        ],
+                    ],
+                ],
+            ],
+            "store": false,
+            "stream": true,
+        ]
+        let response = try await postCodexImageResponse(body: body, auth: auth)
+        let description = try textFromCodexSSE(response)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !description.isEmpty else {
+            throw RootToolboxError.imageAPI("Codex image description completed without text.")
+        }
+        return description
+    }
+
+    static func generateImageWithCodexAuth(
+        prompt: String,
+        sourceImage: (data: Data, contentType: String)?,
+        requestedModel: String,
+        size: String?,
+        quality: String?,
+        auth: CodexImageAuth,
+        fallbackName: String
+    ) async throws -> GeneratedImage {
+        let imageModel = ProcessInfo.processInfo.environment["OMNIKIT_IMAGE_CODEX_MODEL"]?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let resolvedModel = imageModel?.isEmpty == false ? imageModel! : "gpt-5.3-codex"
+        let sizeText = size.map { " Size: \($0)." } ?? ""
+        let qualityText = quality.map { " Quality: \($0)." } ?? ""
+        var content: [[String: Any]] = [
+            [
+                "type": "input_text",
+                "text": "\(prompt)\(sizeText)\(qualityText)",
+            ],
+        ]
+        if let sourceImage {
+            content.append([
+                "type": "input_image",
+                "image_url": "data:\(sourceImage.contentType);base64,\(sourceImage.data.base64EncodedString())",
+                "detail": "high",
+            ])
+        }
+        var body: [String: Any] = [
+            "model": resolvedModel,
+            "instructions": sourceImage == nil
+                ? "Use the image_generation tool to generate exactly one image. Return no extra prose."
+                : "Use the image_generation tool to edit the provided image according to the prompt. Return no extra prose.",
+            "input": [
+                [
+                    "role": "user",
+                    "content": content,
+                ],
+            ],
+            "tools": [
+                [
+                    "type": "image_generation",
+                    "output_format": "png",
+                ],
+            ],
+            "tool_choice": "auto",
+            "store": false,
+            "stream": true,
+        ]
+        if let installationID = auth.installationID {
+            body["client_metadata"] = [
+                "x-codex-installation-id": installationID,
+            ]
+        }
+        _ = requestedModel
+        let response = try await postCodexImageResponse(body: body, auth: auth)
+        return try generatedImageFromCodexSSE(response, fallbackName: fallbackName)
+    }
+
+    static func postCodexImageResponse(
+        body: [String: Any],
+        auth: CodexImageAuth
+    ) async throws -> String {
+        let base = ProcessInfo.processInfo.environment["OMNIKIT_CODEX_BASE_URL"]?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let resolvedBase = base?.isEmpty == false ? base! : "https://chatgpt.com/backend-api/codex"
+        let normalizedBase = resolvedBase.hasSuffix("/") ? String(resolvedBase.dropLast()) : resolvedBase
+        guard let url = URL(string: normalizedBase + "/responses") else {
+            throw RootToolboxError.imageAPI("Invalid Codex image generation URL.")
+        }
+        let bodyData = try JSONSerialization.data(withJSONObject: body, options: [])
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("Bearer \(auth.accessToken)", forHTTPHeaderField: "Authorization")
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue("text/event-stream", forHTTPHeaderField: "Accept")
+        request.setValue("swift_omnikit", forHTTPHeaderField: "originator")
+        request.setValue("swift-omnikit-image-\(UUID().uuidString)", forHTTPHeaderField: "session_id")
+        if let accountID = auth.accountID {
+            request.setValue(accountID, forHTTPHeaderField: "ChatGPT-Account-ID")
+        }
+        request.httpBody = bodyData
+        let (data, response) = try await URLSession.shared.data(for: request)
+        let statusCode = (response as? HTTPURLResponse)?.statusCode ?? 0
+        let text = String(data: data, encoding: .utf8) ?? ""
+        guard (200..<300).contains(statusCode) else {
+            throw RootToolboxError.imageAPI(text.isEmpty ? "Codex image generation failed with status \(statusCode)." : text)
+        }
+        return text
+    }
+
+    static func generatedImageFromCodexSSE(
+        _ text: String,
+        fallbackName: String
+    ) throws -> GeneratedImage {
+        var latestImageItem: [String: Any]?
+        for line in text.split(separator: "\n", omittingEmptySubsequences: false) {
+            guard line.hasPrefix("data: ") else {
+                continue
+            }
+            let payload = String(line.dropFirst(6))
+            guard payload != "[DONE]",
+                  let data = payload.data(using: .utf8),
+                  let event = (try? JSONSerialization.jsonObject(with: data, options: [])) as? [String: Any] else {
+                continue
+            }
+            if let item = event["item"] as? [String: Any],
+               item["type"] as? String == "image_generation_call",
+               item["result"] is String {
+                latestImageItem = item
+            }
+            if let response = event["response"] as? [String: Any],
+               let output = response["output"] as? [[String: Any]] {
+                for item in output where item["type"] as? String == "image_generation_call" && item["result"] is String {
+                    latestImageItem = item
+                }
+            }
+        }
+        guard let latestImageItem,
+              let base64 = latestImageItem["result"] as? String,
+              let imageData = Data(base64Encoded: base64) else {
+            throw RootToolboxError.imageAPI("Codex image generation completed without image bytes.")
+        }
+        return GeneratedImage(
+            data: imageData,
+            contentType: "image/png",
+            fileName: fallbackName,
+            revisedPrompt: latestImageItem["revised_prompt"] as? String
+        )
+    }
+
+    static func textFromCodexSSE(_ text: String) throws -> String {
+        var streamedText = ""
+        var finalTexts: [String] = []
+        for line in text.split(separator: "\n", omittingEmptySubsequences: false) {
+            guard line.hasPrefix("data: ") else {
+                continue
+            }
+            let payload = String(line.dropFirst(6))
+            guard payload != "[DONE]",
+                  let data = payload.data(using: .utf8),
+                  let event = (try? JSONSerialization.jsonObject(with: data, options: [])) as? [String: Any] else {
+                continue
+            }
+            if let delta = event["delta"] as? String {
+                streamedText += delta
+            }
+            if let item = event["item"] as? [String: Any] {
+                finalTexts.append(contentsOf: outputTexts(from: item))
+            }
+            if let response = event["response"] as? [String: Any],
+               let output = response["output"] as? [[String: Any]] {
+                let texts = output.flatMap(outputTexts(from:))
+                if !texts.isEmpty {
+                    finalTexts = texts
+                }
+            }
+        }
+        if let final = finalTexts.last, !final.isEmpty {
+            return final
+        }
+        return streamedText
+    }
+
+    static func outputTexts(from item: [String: Any]) -> [String] {
+        guard let content = item["content"] as? [[String: Any]] else {
+            return []
+        }
+        return content.compactMap { part in
+            guard let type = part["type"] as? String,
+                  type == "output_text" || type == "text" else {
+                return nil
+            }
+            return part["text"] as? String
+        }
+    }
+
+    static func loadCodexImageAuth(
+        environment: [String: String] = ProcessInfo.processInfo.environment
+    ) throws -> CodexImageAuth {
+        let codexHome = environment["CODEX_HOME"].map(URL.init(fileURLWithPath:))
+            ?? FileManager.default.homeDirectoryForCurrentUser.appending(path: ".codex", directoryHint: .isDirectory)
+        let authURL = codexHome.appending(path: "auth.json", directoryHint: .notDirectory)
+        let data = try Data(contentsOf: authURL)
+        guard let json = try JSONSerialization.jsonObject(with: data, options: []) as? [String: Any],
+              let tokens = json["tokens"] as? [String: Any],
+              let accessToken = tokens["access_token"] as? String,
+              !accessToken.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            throw RootToolboxError.imageAPI("Codex auth.json does not contain a ChatGPT access token.")
+        }
+        let installationIDURL = codexHome.appending(path: "installation_id", directoryHint: .notDirectory)
+        let installationID = (try? String(contentsOf: installationIDURL, encoding: .utf8))?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        return CodexImageAuth(
+            accessToken: accessToken,
+            accountID: tokens["account_id"] as? String,
+            installationID: installationID?.isEmpty == false ? installationID : nil
+        )
+    }
+
+    static func hasUsableImageAPIKey(
+        environment: [String: String] = ProcessInfo.processInfo.environment
+    ) -> Bool {
+        guard let key = try? imageAPIKey(environment: environment) else {
+            return false
+        }
+        return key.hasPrefix("sk-") || key.hasPrefix("sess-")
+    }
+
+    static func postImageAPIJSON(path: String, body: [String: Any]) async throws -> [String: Any] {
+        let apiKey = try imageAPIKey()
+        let url = try imageAPIURL(path: path)
+        let bodyData = try JSONSerialization.data(withJSONObject: body, options: [])
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = bodyData
+        return try await sendImageAPIRequest(request)
+    }
+
+    static func postImageAPIMultipart(path: String, parts: [MultipartPart]) async throws -> [String: Any] {
+        let apiKey = try imageAPIKey()
+        let url = try imageAPIURL(path: path)
+        let boundary = "omnikit-\(UUID().uuidString)"
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+        request.setValue("multipart/form-data; boundary=\(boundary)", forHTTPHeaderField: "Content-Type")
+        request.httpBody = multipartBody(parts: parts, boundary: boundary)
+        return try await sendImageAPIRequest(request)
+    }
+
+    static func sendImageAPIRequest(_ request: URLRequest) async throws -> [String: Any] {
+        let (data, response) = try await URLSession.shared.data(for: request)
+        let statusCode = (response as? HTTPURLResponse)?.statusCode ?? 0
+        let json = (try? JSONSerialization.jsonObject(with: data, options: [])) as? [String: Any]
+        guard (200..<300).contains(statusCode) else {
+            let message = ((json?["error"] as? [String: Any])?["message"] as? String)
+                ?? String(data: data, encoding: .utf8)
+                ?? "OpenAI Image API request failed with status \(statusCode)"
+            throw RootToolboxError.imageAPI(message)
+        }
+        guard let json else {
+            throw RootToolboxError.imageAPI("OpenAI Image API returned a non-JSON response.")
+        }
+        return json
+    }
+
+    static func generatedImage(
+        from response: [String: Any],
+        fallbackName: String
+    ) async throws -> GeneratedImage {
+        guard let dataItems = response["data"] as? [[String: Any]],
+              let first = dataItems.first else {
+            throw RootToolboxError.imageAPI("OpenAI Image API response did not include image data.")
+        }
+        let revisedPrompt = first["revised_prompt"] as? String
+        if let base64 = first["b64_json"] as? String,
+           let data = Data(base64Encoded: base64) {
+            return GeneratedImage(
+                data: data,
+                contentType: "image/png",
+                fileName: fallbackName,
+                revisedPrompt: revisedPrompt
+            )
+        }
+        if let urlString = first["url"] as? String {
+            let downloaded = try await downloadImage(urlString: urlString)
+            return GeneratedImage(
+                data: downloaded.data,
+                contentType: downloaded.contentType,
+                fileName: downloaded.fileName,
+                revisedPrompt: revisedPrompt
+            )
+        }
+        throw RootToolboxError.imageAPI("OpenAI Image API response did not include b64_json or url.")
+    }
+
+    static func imageAPIKey(environment: [String: String] = ProcessInfo.processInfo.environment) throws -> String {
+        for key in ["OMNIKIT_IMAGE_OPENAI_API_KEY", "THE_AGENT_IMAGE_OPENAI_API_KEY", "OPENAI_API_KEY", "DR_OPENAI_API_KEY"] {
+            if let value = environment[key]?.trimmingCharacters(in: .whitespacesAndNewlines), !value.isEmpty {
+                return value
+            }
+        }
+        throw RootToolboxError.invalidArgument(key: "OPENAI_API_KEY", expected: "configured OpenAI API key for image tools")
+    }
+
+    static func imageAPIURL(
+        path: String,
+        environment: [String: String] = ProcessInfo.processInfo.environment
+    ) throws -> URL {
+        let configuredBase = environment["OMNIKIT_IMAGE_OPENAI_BASE_URL"]?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let base = configuredBase?.isEmpty == false ? configuredBase! : "https://api.openai.com/v1"
+        let normalizedBase = base.hasSuffix("/") ? String(base.dropLast()) : base
+        guard let url = URL(string: normalizedBase + path) else {
+            throw RootToolboxError.invalidArgument(key: "OMNIKIT_IMAGE_OPENAI_BASE_URL", expected: "valid URL")
+        }
+        return url
+    }
+
+    static func multipartBody(parts: [MultipartPart], boundary: String) -> Data {
+        var body = Data()
+        let lineBreak = "\r\n"
+        func append(_ string: String) {
+            body.append(Data(string.utf8))
+        }
+        for part in parts {
+            append("--\(boundary)\(lineBreak)")
+            var disposition = "Content-Disposition: form-data; name=\"\(part.name)\""
+            if let fileName = part.fileName {
+                disposition += "; filename=\"\(fileName)\""
+            }
+            append(disposition + lineBreak)
+            if let contentType = part.contentType {
+                append("Content-Type: \(contentType)\(lineBreak)")
+            }
+            append(lineBreak)
+            body.append(part.data)
+            append(lineBreak)
+        }
+        append("--\(boundary)--\(lineBreak)")
+        return body
+    }
+
+    static func downloadImage(urlString: String) async throws -> DownloadedImage {
+        guard let url = URL(string: urlString),
+              let scheme = url.scheme?.lowercased(),
+              scheme == "http" || scheme == "https" else {
+            throw RootToolboxError.invalidArgument(key: "url", expected: "http(s) image URL")
+        }
+
+        let (data, response) = try await URLSession.shared.data(from: url)
+        guard data.count <= 50 * 1_024 * 1_024 else {
+            throw RootToolboxError.invalidArgument(key: "url", expected: "image payload at or below 50MB")
+        }
+        if let httpResponse = response as? HTTPURLResponse,
+           !(200..<300).contains(httpResponse.statusCode) {
+            throw RootToolboxError.invalidArgument(key: "url", expected: "successful 2xx image response")
+        }
+
+        let responseContentType = (response as? HTTPURLResponse)?
+            .value(forHTTPHeaderField: "Content-Type")?
+            .split(separator: ";", maxSplits: 1)
+            .first
+            .map { String($0).trimmingCharacters(in: .whitespacesAndNewlines).lowercased() }
+        let inferredContentType = contentType(forPathExtension: url.pathExtension)
+        let contentType = responseContentType ?? inferredContentType ?? "application/octet-stream"
+        guard isImageContentType(contentType) || inferredContentType != nil else {
+            throw RootToolboxError.invalidArgument(key: "url", expected: "image content type")
+        }
+
+        let suggestedName = response.suggestedFilename?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let urlName = url.lastPathComponent.trimmingCharacters(in: .whitespacesAndNewlines)
+        let fallbackExtension = fileExtension(forContentType: contentType) ?? "img"
+        let fileName = [suggestedName, urlName]
+            .compactMap { $0 }
+            .first(where: { !$0.isEmpty }) ?? "downloaded-image.\(fallbackExtension)"
+        return DownloadedImage(
+            data: data,
+            contentType: contentType,
+            fileName: fileName
+        )
+    }
+
+    static func isImageContentType(_ contentType: String) -> Bool {
+        contentType.lowercased().hasPrefix("image/")
+    }
+
+    static func safeFileName(_ rawValue: String) -> String {
+        let trimmed = rawValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        let fallback = trimmed.isEmpty ? "image.png" : trimmed
+        let allowed = Set("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_.")
+        let sanitized = String(fallback.map { allowed.contains($0) ? $0 : "_" })
+        return sanitized.isEmpty ? "image.png" : sanitized
+    }
+
+    static func contentType(forPathExtension pathExtension: String) -> String? {
+        switch pathExtension.lowercased() {
+        case "png":
+            return "image/png"
+        case "jpg", "jpeg":
+            return "image/jpeg"
+        case "gif":
+            return "image/gif"
+        case "webp":
+            return "image/webp"
+        case "heic":
+            return "image/heic"
+        case "heif":
+            return "image/heif"
+        case "tif", "tiff":
+            return "image/tiff"
+        default:
+            return nil
+        }
+    }
+
+    static func fileExtension(forContentType contentType: String) -> String? {
+        switch contentType.lowercased() {
+        case "image/png":
+            return "png"
+        case "image/jpeg", "image/jpg":
+            return "jpg"
+        case "image/gif":
+            return "gif"
+        case "image/webp":
+            return "webp"
+        case "image/heic":
+            return "heic"
+        case "image/heif":
+            return "heif"
+        case "image/tiff":
+            return "tiff"
+        default:
+            return nil
+        }
+    }
+
     static func requiredString(_ key: String, in arguments: [String: Any]) throws -> String {
         guard let value = try optionalString(key, in: arguments), !value.isEmpty else {
             throw RootToolboxError.missingRequiredArgument(key)
@@ -1141,6 +2419,52 @@ private extension RootAgentToolbox {
             )
         }
         return operation
+    }
+
+    static func transportValue(_ key: String, in arguments: [String: Any]) throws -> ChannelBinding.Transport? {
+        guard let rawValue = try optionalString(key, in: arguments) else {
+            return nil
+        }
+        guard let transport = ChannelBinding.Transport(rawValue: rawValue.lowercased()) else {
+            throw RootToolboxError.invalidArgument(key: key, expected: "local, telegram, imessage, http, api, test, or custom")
+        }
+        return transport
+    }
+
+    static func scheduledRecurrence(_ key: String, in arguments: [String: Any]) throws -> ScheduledPromptRecurrence? {
+        guard let rawValue = try optionalString(key, in: arguments) else {
+            return nil
+        }
+        guard let recurrence = ScheduledPromptRecurrence(rawValue: rawValue.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()) else {
+            throw RootToolboxError.invalidArgument(key: key, expected: "none, daily, weekdays, weekly, or monthly")
+        }
+        return recurrence
+    }
+
+    static func scheduledStatus(_ key: String, in arguments: [String: Any]) throws -> ScheduledPromptStatus? {
+        guard let rawValue = try optionalString(key, in: arguments) else {
+            return nil
+        }
+        guard let status = ScheduledPromptStatus(rawValue: rawValue.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()) else {
+            throw RootToolboxError.invalidArgument(key: key, expected: "active, completed, or cancelled")
+        }
+        return status
+    }
+
+    static func dateValue(_ key: String, in arguments: [String: Any]) throws -> Date {
+        let rawValue = try requiredString(key, in: arguments)
+        let trimmed = rawValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        let fractionalFormatter = ISO8601DateFormatter()
+        fractionalFormatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        if let date = fractionalFormatter.date(from: trimmed) {
+            return date
+        }
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime]
+        if let date = formatter.date(from: trimmed) {
+            return date
+        }
+        throw RootToolboxError.invalidArgument(key: key, expected: "absolute ISO-8601 timestamp with timezone")
     }
 
     static func installationScope(_ key: String, in arguments: [String: Any]) throws -> SkillInstallationRecord.Scope? {
@@ -1499,6 +2823,39 @@ private extension RootAgentToolbox {
         ]
     }
 
+    static func serialize(channelActionResult result: ChannelActionResult) -> [String: Any] {
+        [
+            "side_effect": result.sideEffect.rawValue,
+            "transport": result.transport.rawValue,
+            "target_external_id": result.targetExternalID,
+            "message_id": result.messageID ?? NSNull(),
+            "metadata": result.metadata,
+        ]
+    }
+
+    static func serialize(scheduledPrompt record: ScheduledPromptRecord) -> [String: Any] {
+        [
+            "schedule_id": record.scheduleID,
+            "created_by_session_id": record.createdBySessionID,
+            "transport": record.transport.rawValue,
+            "actor_external_id": record.actorExternalID,
+            "channel_external_id": record.channelExternalID,
+            "channel_kind": record.channelKind,
+            "title": record.title,
+            "prompt": record.prompt,
+            "event_kind": record.eventKind,
+            "recurrence": record.recurrence.rawValue,
+            "timezone": record.timezoneIdentifier,
+            "status": record.status.rawValue,
+            "next_fire_at": record.nextFireAt.map(Self.iso8601String) ?? NSNull(),
+            "last_fired_at": record.lastFiredAt.map(Self.iso8601String) ?? NSNull(),
+            "fire_count": record.fireCount,
+            "metadata": record.metadata,
+            "created_at": iso8601String(record.createdAt),
+            "updated_at": iso8601String(record.updatedAt),
+        ]
+    }
+
     static func serialize(deliveryMetadata metadata: [String: String]) -> [String: Any] {
         let service = metadata["delivery_service"] ?? metadata["service"]
         return [
@@ -1539,6 +2896,7 @@ private enum RootToolboxError: Error, CustomStringConvertible {
     case invalidStatus(String)
     case invalidMissionStatus(String)
     case invalidMissionExecutionMode(String)
+    case imageAPI(String)
 
     var description: String {
         switch self {
@@ -1552,6 +2910,8 @@ private enum RootToolboxError: Error, CustomStringConvertible {
             return "Unknown mission status '\(rawValue)'."
         case .invalidMissionExecutionMode(let rawValue):
             return "Unknown mission execution mode '\(rawValue)'."
+        case .imageAPI(let message):
+            return "Image API error: \(message)"
         }
     }
 }

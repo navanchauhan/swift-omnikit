@@ -45,10 +45,16 @@ public struct RootAgentRuntimeOptions: Sendable {
 
 public struct RootAgentTurnResult: Sendable, Equatable {
     public var assistantText: String
+    public var generatedImageArtifacts: [ArtifactRecord]
     public var snapshot: RootConversationSnapshot
 
-    public init(assistantText: String, snapshot: RootConversationSnapshot) {
+    public init(
+        assistantText: String,
+        generatedImageArtifacts: [ArtifactRecord] = [],
+        snapshot: RootConversationSnapshot
+    ) {
         self.assistantText = assistantText
+        self.generatedImageArtifacts = generatedImageArtifacts
         self.snapshot = snapshot
     }
 }
@@ -83,7 +89,10 @@ public final class RootAgentRuntime: @unchecked Sendable {
         baseProfile: (any ProviderProfile)? = nil
     ) async throws -> RootAgentRuntime {
         let contextBuffer = RootPromptContextBuffer()
-        let toolbox = RootAgentToolbox(server: server)
+        let scheduledPromptStore = FileScheduledPromptStore(
+            fileURL: stateRoot.runtimeDirectoryURL.appending(path: "scheduled-prompts.json")
+        )
+        let toolbox = RootAgentToolbox(server: server, scheduledPromptStore: scheduledPromptStore)
         let additionalTools = await toolbox.registeredTools()
         let wrappedProfile = baseProfile ?? options.provider.makeProfile(
             model: options.model,
@@ -155,7 +164,8 @@ public final class RootAgentRuntime: @unchecked Sendable {
     public func submitUserText(
         _ text: String,
         actorID: ActorID? = nil,
-        metadata: [String: String] = [:]
+        metadata: [String: String] = [:],
+        recordAssistantText: Bool = true
     ) async throws -> RootAgentTurnResult {
         _ = try await server.refreshTaskNotifications()
         _ = try await server.handleUserText(text, actorID: actorID, metadata: metadata)
@@ -167,15 +177,23 @@ public final class RootAgentRuntime: @unchecked Sendable {
 
         let historyAfter = await session.getHistory()
         let assistantText = newestAssistantText(from: historyAfter, afterTurnCount: historyBefore.count)
+        let generatedImageArtifacts = try await saveGeneratedImages(
+            from: historyAfter,
+            afterTurnCount: historyBefore.count
+        )
 
-        if !assistantText.isEmpty {
+        if recordAssistantText && !assistantText.isEmpty {
             _ = try await server.recordAssistantText(assistantText)
         }
 
         _ = try await server.refreshTaskNotifications()
         let snapshot = try await server.restoreState()
         contextBuffer.update(snapshot: snapshot)
-        return RootAgentTurnResult(assistantText: assistantText, snapshot: snapshot)
+        return RootAgentTurnResult(
+            assistantText: assistantText,
+            generatedImageArtifacts: generatedImageArtifacts,
+            snapshot: snapshot
+        )
     }
 
     public func close() async {
@@ -203,6 +221,47 @@ public final class RootAgentRuntime: @unchecked Sendable {
             }
         }
         return ""
+    }
+
+    private func saveGeneratedImages(
+        from history: [Turn],
+        afterTurnCount: Int
+    ) async throws -> [ArtifactRecord] {
+        let newTurns = history.dropFirst(afterTurnCount)
+        var artifacts: [ArtifactRecord] = []
+        for turn in newTurns {
+            guard case .assistant(let assistant) = turn,
+                  let rawParts = assistant.rawContentParts else {
+                continue
+            }
+            for part in rawParts {
+                guard let item = part.data,
+                      item["type"]?.stringValue == "image_generation_call",
+                      item["status"]?.stringValue != "failed",
+                      let rawResult = item["result"]?.stringValue,
+                      let imageData = Self.decodeImageGenerationResult(rawResult) else {
+                    continue
+                }
+                let callID = item["id"]?.stringValue ?? UUID().uuidString
+                let safeCallID = Self.safeDirectoryName(callID)
+                let record = try await server.storeArtifact(
+                    name: "\(safeCallID).png",
+                    contentType: "image/png",
+                    data: imageData
+                )
+                artifacts.append(record)
+            }
+        }
+        return artifacts
+    }
+
+    private static func decodeImageGenerationResult(_ rawResult: String) -> Data? {
+        let trimmed = rawResult.trimmingCharacters(in: .whitespacesAndNewlines)
+        if let commaIndex = trimmed.firstIndex(of: ","),
+           trimmed[..<commaIndex].lowercased().contains("base64") {
+            return Data(base64Encoded: String(trimmed[trimmed.index(after: commaIndex)...]))
+        }
+        return Data(base64Encoded: trimmed)
     }
 
     private func sanitizeAssistantText(_ text: String) -> String {
