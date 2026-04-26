@@ -23,6 +23,8 @@ services:
     environment:
       - OPENAI_BASE_URL=https://api.openai.com/v1
       - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - PHOTON_PROJECT_ID=${PHOTON_PROJECT_ID}
+      - PHOTON_PROJECT_SECRET=${PHOTON_PROJECT_SECRET}
       - THE_AGENT_STATE_ROOT=/data/state
     extra_hosts:
       - "host.docker.internal:host-gateway"
