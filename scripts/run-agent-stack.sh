@@ -39,7 +39,7 @@ require_commands() {
 }
 
 url_encode() {
-    printf '%s' "$1" | jq -sR @uri
+    printf '%s' "$1" | jq -Rr @uri
 }
 
 exchange_codex_id_token() {
