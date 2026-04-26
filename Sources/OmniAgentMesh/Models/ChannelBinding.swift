@@ -4,6 +4,7 @@ public struct ChannelBinding: Codable, Sendable, Equatable {
     public enum Transport: String, Codable, Sendable {
         case local
         case telegram
+        case imessage
         case http
         case api
         case test

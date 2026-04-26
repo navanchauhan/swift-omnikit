@@ -5,6 +5,7 @@ import OmniAIAgent
 import TheAgentControlPlaneKit
 import TheAgentIngress
 import TheAgentTelegram
+import TheAgentImessage
 
 /// Concurrency-safe stderr writer for use in Sendable closures and Tasks.
 private struct StderrWriter: Sendable {
@@ -177,6 +178,43 @@ enum TheAgentControlPlaneMain {
             }
         }
 
+        let photonProjectID = options.photonProjectID
+            ?? ProcessInfo.processInfo.environment["PHOTON_PROJECT_ID"]
+        let photonProjectSecret = options.photonProjectSecret
+            ?? ProcessInfo.processInfo.environment["PHOTON_PROJECT_SECRET"]
+            ?? ProcessInfo.processInfo.environment["PHOTON_SECRET_KEY"]
+            ?? ProcessInfo.processInfo.environment["PHOTON_PROJECT_SECRET_KEY"]
+        var imessageIngressHandler: ImessageIngressHandler?
+        var imessageIngressTask: Task<Void, Never>?
+
+        if let photonProjectID,
+           let photonProjectSecret,
+           !photonProjectID.isEmpty,
+           !photonProjectSecret.isEmpty {
+            do {
+                let handler = try await ImessageIngressHandler.make(
+                    gateway: gateway,
+                    deliveryStore: deliveryStore,
+                    projectID: photonProjectID,
+                    projectSecret: photonProjectSecret
+                )
+                imessageIngressHandler = handler
+                imessageIngressTask = Task {
+                    do {
+                        try await handler.run()
+                    } catch is CancellationError {
+                    } catch {
+                        stderrWriter.write("iMessage stream failed: \(error)\n")
+                    }
+                }
+                print("TheAgentControlPlane iMessage listener connected for project \(photonProjectID).")
+            } catch {
+                stderrWriter.write("TheAgentControlPlane iMessage listener failed: \(error)\n")
+            }
+        } else if options.photonProjectID != nil || options.photonProjectSecret != nil {
+            stderrWriter.write("TheAgentControlPlane iMessage listener not started: both project ID and secret are required.\n")
+        }
+
         var ingressServer: HTTPIngressServer?
         if let ingressPort = options.httpIngressPort {
             let telegramWebhookForwarder: HTTPIngressServer.TelegramWebhookForwarder?
@@ -236,6 +274,8 @@ enum TheAgentControlPlaneMain {
                 try await ingressServer.stop()
             }
             telegramPollingTask?.cancel()
+            imessageIngressTask?.cancel()
+            await imessageIngressHandler?.close()
             supervisorTask?.cancel()
             await runtimeRegistry.closeAll()
             return
@@ -259,6 +299,8 @@ enum TheAgentControlPlaneMain {
                 try await ingressServer.stop()
             }
             telegramPollingTask?.cancel()
+            imessageIngressTask?.cancel()
+            await imessageIngressHandler?.close()
             supervisorTask?.cancel()
             await runtimeRegistry.closeAll()
             return
@@ -288,6 +330,8 @@ enum TheAgentControlPlaneMain {
                     try? await ingressServer.stop()
                 }
                 telegramPollingTask?.cancel()
+                imessageIngressTask?.cancel()
+                await imessageIngressHandler?.close()
                 supervisorTask?.cancel()
             }
             await runtimeRegistry.closeAll()
@@ -364,6 +408,8 @@ private struct ControlPlaneCLIOptions {
     var telegramPollingEnabled = false
     var telegramPollTimeoutSeconds = 1
     var telegramPollLimit = 100
+    var photonProjectID: String?
+    var photonProjectSecret: String?
 
     init(arguments: [String]) throws {
         var index = 0
@@ -452,6 +498,12 @@ private struct ControlPlaneCLIOptions {
                     throw ControlPlaneCLIError.invalidValue(flag: argument, value: value)
                 }
                 telegramPollLimit = limit
+            case "--photon-project-id":
+                index += 1
+                photonProjectID = try Self.parseValue(arguments, index: index, flag: argument)
+            case "--photon-project-secret":
+                index += 1
+                photonProjectSecret = try Self.parseValue(arguments, index: index, flag: argument)
             case "--list-workers":
                 listWorkers = true
             default:
