@@ -706,7 +706,7 @@ let package = Package(
             dependencies: [
                 "TheAgentIngress",
                 "OmniAgentMesh",
-                .product(name: "PhotonImessage", package: "swift-photon"),
+                .byName(name: "PhotonImessage", package: "swift-photon"),
             ],
             path: "Sources/TheAgentImessage",
             swiftSettings: swift6CommonSwiftSettings
