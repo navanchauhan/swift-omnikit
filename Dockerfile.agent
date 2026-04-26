@@ -11,6 +11,7 @@ WORKDIR /app
 COPY Package.swift Package.resolved ./
 COPY Sources/ Sources/
 COPY Tests/ Tests/
+COPY External/ External/
 
 RUN swift build -c release --product TheAgentControlPlane && \
     swift build -c release --product TheAgentWorker && \
