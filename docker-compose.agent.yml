@@ -16,7 +16,7 @@ services:
       - --provider
       - openai
       - --model
-      - gpt-5.5
+      - gpt-5.3-codex-spark
       - --reasoning-effort
       - low
     env_file: .env
@@ -44,7 +44,7 @@ services:
       - --acp-profile
       - codex
       - --acp-model
-      - gpt-5.3-codex
+      - gpt-5.3-codex-spark
     env_file: .env
     environment:
       - THE_AGENT_STATE_ROOT=/data/state

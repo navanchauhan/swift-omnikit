@@ -109,6 +109,19 @@ public enum KnownModels {
             aliases: ["codex", "gpt-5-codex", "latest-openai-codex"]
         ),
         ModelInfo(
+            id: "gpt-5.3-codex-spark",
+            provider: "openai",
+            displayName: "GPT-5.3 Codex Spark",
+            contextWindow: 400_000,
+            maxOutput: 128_000,
+            supportsTools: true,
+            supportsVision: true,
+            supportsReasoning: true,
+            inputCostPerMillion: nil,
+            outputCostPerMillion: nil,
+            aliases: ["codex-spark", "gpt-5.3-codex-spark", "gpt53-codex-spark", "latest-openai-codex-spark"]
+        ),
+        ModelInfo(
             id: "gpt-5.2",
             provider: "openai",
             displayName: "GPT-5.2",
