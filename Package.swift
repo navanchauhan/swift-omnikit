@@ -40,6 +40,12 @@ let swift6CommonSwiftSettings: [SwiftSetting] = [
     .swiftLanguageMode(.v6),
 ] + commonSwiftSettings
 
+let imessageTargetDependencies: [Target.Dependency] = [
+    "TheAgentIngress",
+    "OmniAgentMesh",
+    .product(name: "PhotonImessage", package: "swift-photon"),
+]
+
 #if os(macOS)
 let zlibPkgConfig: String? = nil
 let zlibProviders: [SystemPackageProvider]? = nil
@@ -229,7 +235,7 @@ let package = Package(
         .package(url: "https://github.com/apple/swift-nio-transport-services.git", from: "1.0.0"),
         .package(url: "https://github.com/vapor/websocket-kit.git", from: "2.15.0"),
         .package(url: "https://github.com/navanchauhan/swift-gopher.git", from: "1.1.8"),
-        .package(url: "https://github.com/navanchauhan/swift-photon.git", branch: "master"),
+        .package(path: "External/swift-photon"),
         // For Swift macro stubs (SwiftData compatibility).
         .package(url: "https://github.com/swiftlang/swift-syntax.git", from: "602.0.0"),
         // Swift-native testing DSL (`import Testing`, `@Test`, `#expect`).
@@ -703,11 +709,7 @@ let package = Package(
         ),
         .target(
             name: "TheAgentImessage",
-            dependencies: [
-                "TheAgentIngress",
-                "OmniAgentMesh",
-                .byName(name: "PhotonImessage", package: "swift-photon"),
-            ],
+            dependencies: imessageTargetDependencies,
             path: "Sources/TheAgentImessage",
             swiftSettings: swift6CommonSwiftSettings
         ),
