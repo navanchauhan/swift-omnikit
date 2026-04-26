@@ -1,4 +1,7 @@
 import Foundation
+#if canImport(FoundationNetworking)
+import FoundationNetworking
+#endif
 import GRPC
 import NIOPosix
 import NIO
@@ -20,6 +23,8 @@ public enum PhotonImessageError: Error, LocalizedError {
     }
   }
 }
+
+extension PhotonImessage.Session: @unchecked Sendable {}
 
 public struct PhotonImessage {
   public struct Credentials: Sendable {

@@ -1,4 +1,7 @@
 import Foundation
+#if canImport(FoundationNetworking)
+import FoundationNetworking
+#endif
 import OmniHTTP
 import OmniHTTPNIO
 
@@ -296,29 +299,34 @@ public final class Client: @unchecked Sendable {
         request.setValue("application/x-www-form-urlencoded", forHTTPHeaderField: "content-type")
         request.timeoutInterval = 30
 
-        let completion = DispatchSemaphore(value: 0)
-        var capturedError: Error?
-        var capturedData: Data?
-        var capturedStatusCode: Int?
+        final class OAuthTokenExchangeState: @unchecked Sendable {
+            var data: Data?
+            var response: URLResponse?
+            var error: Error?
+        }
 
+        let state = OAuthTokenExchangeState()
+
+        let completion = DispatchSemaphore(value: 0)
         URLSession.shared.dataTask(with: request) { data, response, error in
-            capturedData = data
-            capturedStatusCode = (response as? HTTPURLResponse)?.statusCode
-            capturedError = error
+            state.data = data
+            state.response = response
+            state.error = error
             completion.signal()
         }.resume()
         completion.wait()
 
-        if let capturedError {
+        if let capturedError = state.error {
             throw capturedError
         }
-        guard let statusCode = capturedStatusCode, (200..<300).contains(statusCode) else {
-            let bodyString = String(decoding: capturedData ?? Data(), as: UTF8.self)
+        let statusCode = (state.response as? HTTPURLResponse)?.statusCode
+        guard let statusCode, (200..<300).contains(statusCode) else {
+            let bodyString = String(decoding: state.data ?? Data(), as: UTF8.self)
             throw ConfigurationError(
-                message: "OpenAI OAuth token exchange failed with status \(capturedStatusCode ?? -1): \(bodyString)"
+                message: "OpenAI OAuth token exchange failed with status \(statusCode ?? -1): \(bodyString)"
             )
         }
-        let parsed = try JSONSerialization.jsonObject(with: Data(capturedData ?? Data()), options: [])
+        let parsed = try JSONSerialization.jsonObject(with: Data(state.data ?? Data()), options: [])
         guard let object = parsed as? [String: Any], let accessToken = object["access_token"] as? String, !accessToken.isEmpty else {
             throw ConfigurationError(message: "OpenAI OAuth token exchange response missing access_token")
         }

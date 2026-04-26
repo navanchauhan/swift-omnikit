@@ -68,14 +68,16 @@ public actor ImessageIngressHandler {
                     }
                 }
                 try await Task.sleep(for: .seconds(1))
-            } catch is CancellationError {
-                throw
-            } catch {
-                print("[iMessage] inbound message event failed: \(error)")
-                try await Task.sleep(for: .seconds(1))
+                } catch {
+                    if error is CancellationError {
+                        throw error
+                    }
+
+                    print("[iMessage] inbound message event failed: \(error)")
+                    try await Task.sleep(for: .seconds(1))
+                }
             }
         }
-    }
 
     public func close() async {
         await session.close()
@@ -261,15 +263,13 @@ public actor ImessageIngressHandler {
         record.messageID = messageID
         record.status = status
         record.summary = instruction.chunks.joined(separator: "\n")
-        record.metadata = instruction.metadata.merging(
-            (errorDescription.map { ["error": $0] } ?? [:]).merging(
-                [
-                    "target_external_id": instruction.targetExternalID,
-                    "delivered_message_id": messageID ?? "",
-                ],
-                uniquingKeysWith: { _, new in new }
-            ) { current, new in new }
-        )
+        var metadata = instruction.metadata
+        metadata["target_external_id"] = instruction.targetExternalID
+        metadata["delivered_message_id"] = messageID ?? ""
+        if let errorDescription {
+            metadata["error"] = errorDescription
+        }
+        record.metadata = metadata
         record.updatedAt = Date()
         _ = try await deliveryStore.saveDelivery(record)
     }
