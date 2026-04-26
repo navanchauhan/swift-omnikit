@@ -66,7 +66,7 @@ exchange_codex_id_token() {
         code="$(jq -r '.error.code // empty' "$response_file" 2>/dev/null || true)"
         rm -f "$response_file"
         if [[ "$code" == "invalid_id_token" || "$code" == "token_expired" ]]; then
-            printf 'OAuth exchange failed (%s). Re-run `codex login` on the host and retry.\n' "$code" >&2
+            printf 'OAuth exchange failed (%s). Attempting refresh flow.\n' "$code" >&2
         else
             printf 'OAuth exchange failed with status %s while contacting %s\n' "$status" "$endpoint" >&2
         fi
@@ -77,6 +77,136 @@ exchange_codex_id_token() {
     rm -f "$response_file"
 }
 
+exchange_codex_refresh_token() {
+    local refresh_token="$1"
+    local response_file status
+    local endpoint="${OPENAI_OAUTH_ISSUER%/}/oauth/token"
+    local body
+
+    body="$(cat <<EOF
+{"client_id":"${OPENAI_OAUTH_CLIENT_ID}","grant_type":"refresh_token","refresh_token":"${refresh_token}"}
+EOF
+)"
+
+    response_file="$(mktemp)"
+    status=$(curl -sS -X POST "$endpoint" \
+        -H 'content-type: application/json' \
+        --data "$body" \
+        -o "$response_file" \
+        -w '%{http_code}')
+
+    if [[ "${status}" != 2* ]]; then
+        local code
+        code="$(jq -r '.error.code // empty' "$response_file" 2>/dev/null || true)"
+        rm -f "$response_file"
+        if [[ -n "$code" ]]; then
+            printf 'OAuth refresh failed (%s).\n' "$code" >&2
+        else
+            printf 'OAuth refresh failed with status %s while contacting %s\n' "$status" "$endpoint" >&2
+        fi
+        return 1
+    fi
+
+    if ! jq -e . "$response_file" >/dev/null 2>&1; then
+        rm -f "$response_file"
+        return 1
+    fi
+    cat "$response_file"
+    rm -f "$response_file"
+}
+
+refresh_codex_tokens() {
+    local refresh_token="$1"
+    local auth_json="$2"
+    local response
+    local new_id_token new_access_token new_refresh_token
+
+    response="$(exchange_codex_refresh_token "$refresh_token")"
+    if [[ -z "$response" ]]; then
+        return 1
+    fi
+
+    new_id_token="$(jq -r '.id_token // empty' <<<"$response")"
+    new_access_token="$(jq -r '.access_token // empty' <<<"$response")"
+    new_refresh_token="$(jq -r '.refresh_token // empty' <<<"$response")"
+
+    if [[ -z "$new_id_token" && -z "$new_access_token" && -z "$new_refresh_token" ]]; then
+        return 1
+    fi
+
+    if [[ -z "$new_id_token" ]]; then
+        if [[ -n "$new_access_token" ]]; then
+            new_id_token="$new_access_token"
+        fi
+    fi
+
+    local now
+    now="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    local temp_file
+    temp_file="$(mktemp)"
+
+    local update_expr='.'
+    if [[ -n "$new_id_token" ]]; then
+        update_expr="$update_expr | .tokens.id_token = \"$new_id_token\""
+    fi
+    if [[ -n "$new_access_token" ]]; then
+        update_expr="$update_expr | .tokens.access_token = \"$new_access_token\""
+    fi
+    if [[ -n "$new_refresh_token" ]]; then
+        update_expr="$update_expr | .tokens.refresh_token = \"$new_refresh_token\""
+    fi
+    update_expr="$update_expr | .last_refresh = \"$now\""
+
+    if ! jq "$update_expr" "$auth_json" > "$temp_file"; then
+        rm -f "$temp_file"
+        return 1
+    fi
+    mv "$temp_file" "$auth_json"
+}
+
+resolve_openai_api_key_from_auth_json() {
+    local auth_json="$1"
+    local api_key id_token refresh_token payload
+
+    api_key="$(jq -r '.OPENAI_API_KEY // empty' "$auth_json" 2>/dev/null || true)"
+    if [[ -n "$api_key" && "$api_key" != "null" ]]; then
+        printf '%s' "$api_key"
+        return 0
+    fi
+
+    id_token="${OPENAI_OAUTH_ID_TOKEN:-}"
+    if [[ -z "$id_token" ]]; then
+        id_token="$(jq -r '.tokens.id_token // empty' "$auth_json" 2>/dev/null || true)"
+    fi
+    if [[ -z "$id_token" && -z "${OPENAI_OAUTH_REFRESH_TOKEN:-}" ]]; then
+        refresh_token="$(jq -r '.tokens.refresh_token // empty' "$auth_json" 2>/dev/null || true)"
+    else
+        refresh_token="${OPENAI_OAUTH_REFRESH_TOKEN:-$(jq -r '.tokens.refresh_token // empty' "$auth_json" 2>/dev/null || true)}"
+    fi
+
+    if [[ -n "$id_token" ]]; then
+        if payload="$(exchange_codex_id_token "$id_token")"; then
+            printf '%s' "$payload"
+            return 0
+        fi
+    fi
+
+    if [[ -n "$refresh_token" ]]; then
+        if refresh_codex_tokens "$refresh_token" "$auth_json"; then
+            local refreshed_id_token
+            refreshed_id_token="$(jq -r '.tokens.id_token // empty' "$auth_json" 2>/dev/null || true)"
+            if [[ -n "$refreshed_id_token" ]]; then
+                if payload="$(exchange_codex_id_token "$refreshed_id_token")"; then
+                    printf '%s' "$payload"
+                    return 0
+                fi
+            fi
+        fi
+    fi
+
+    return 1
+}
+
 resolve_openai_api_key() {
     if [[ -n "${OPENAI_API_KEY:-}" ]]; then
         printf '%s' "$OPENAI_API_KEY"
@@ -84,25 +214,12 @@ resolve_openai_api_key() {
     fi
 
     if [[ -f "$CODEX_AUTH_JSON" ]]; then
-        local api_key
-        api_key="$(jq -r '.OPENAI_API_KEY // empty' "$CODEX_AUTH_JSON")"
-        if [[ -n "$api_key" ]]; then
-            printf '%s' "$api_key"
+        local resolved
+        resolved="$(resolve_openai_api_key_from_auth_json "$CODEX_AUTH_JSON")"
+        if [[ -n "$resolved" ]]; then
+            printf '%s' "$resolved"
             return 0
         fi
-
-        local id_token
-        if [[ -n "${OPENAI_OAUTH_ID_TOKEN:-}" ]]; then
-            id_token="$OPENAI_OAUTH_ID_TOKEN"
-        else
-            id_token="$(jq -r '.tokens.id_token // empty' "$CODEX_AUTH_JSON")"
-        fi
-        if [[ -z "$id_token" ]]; then
-            return 1
-        fi
-
-        exchange_codex_id_token "$id_token"
-        return $?
     fi
 
     return 1
@@ -115,6 +232,8 @@ main() {
     fi
 
     require_commands
+
+    export CODEX_AUTH_JSON
 
     local api_key
     api_key="$(resolve_openai_api_key)"

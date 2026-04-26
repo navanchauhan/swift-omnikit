@@ -23,6 +23,7 @@ services:
     environment:
       - OPENAI_BASE_URL=https://api.openai.com/v1
       - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - CODEX_AUTH_JSON=/root/.codex/auth.json
       - PHOTON_PROJECT_ID=${PHOTON_PROJECT_ID}
       - PHOTON_PROJECT_SECRET=${PHOTON_PROJECT_SECRET}
       - THE_AGENT_STATE_ROOT=/data/state
@@ -31,6 +32,7 @@ services:
     volumes:
       - ./.agent-data/state:/data/state
       - ./.agent-data/home:/root
+      - "${CODEX_AUTH_JSON:-$HOME/.codex/auth.json}:/root/.codex/auth.json:ro"
       - .:/workspace
     ports:
       - "8180:8080"
@@ -50,9 +52,11 @@ services:
     env_file: .env
     environment:
       - THE_AGENT_STATE_ROOT=/data/state
+      - CODEX_AUTH_JSON=/root/.codex/auth.json
     volumes:
       - ./.agent-data/state:/data/state
       - ./.agent-data/home:/root
+      - "${CODEX_AUTH_JSON:-$HOME/.codex/auth.json}:/root/.codex/auth.json:ro"
       - .:/workspace
     depends_on:
       - control-plane

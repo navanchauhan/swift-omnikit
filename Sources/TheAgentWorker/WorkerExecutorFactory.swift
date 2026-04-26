@@ -27,7 +27,7 @@ public enum WorkerACPProfile: String, CaseIterable, Sendable {
     fileprivate var defaultModel: String {
         switch self {
         case .codex:
-            return "gpt-5.4"
+            return "gpt-5.3-codex-spark"
         case .claude:
             return "claude-opus-4-6"
         case .gemini:
