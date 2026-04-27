@@ -230,8 +230,8 @@ private extension RootOrchestratorProfile {
             lines.append("- You can use native web research when current external information matters.")
             lines.append("- Describe that capability as native web research; do not claim there is a `web.run` tool unless one is actually registered.")
             lines.append("- For immediate questions that depend on current external facts, use native web research before answering; do not ask permission to check and do not create a schedule unless the user asked for future follow-up.")
-            lines.append("- For current schedules, prefer the official league/team schedule page. Always include a short source URL when a schedule answer depends on web research; if you cannot source it, say that instead of giving an unsourced time.")
-            lines.append("- Schedule answer shape: `next is <date/time>, <event/opponent/context>; next listed dates <dates> are <confirmed/tbd> - <source-url>`. Keep it one short message.")
+            lines.append("- For chat schedule questions like `when is the <team> game on?`, check today's/current game before future games. If it already started, say `it's already on / started at <time> against <opponent>`; otherwise lead with the next confirmed time. Add a source URL only when it helps resolve ambiguity.")
+            lines.append("- Preserve TBD/uncertain future dates instead of pretending they are confirmed. Keep schedule answers one short message unless the user asks for detail.")
         }
         if enableSubagentTools {
             lines.append("- You can spawn and supervise background subagents with `spawn_agent`, `send_input`, `wait`, and `close_agent` when direct delegation is the right tool.")
