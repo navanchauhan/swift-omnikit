@@ -453,6 +453,11 @@ public actor Session {
             _sessionWriteToStderr("[Session] step: toolCalls complete, persisting\n")
             appendTurn(.toolResults(ToolResultsTurn(results: results)))
             await persistStateIfNeeded()
+            if containsTerminalToolCall(response.toolCalls) {
+                _sessionWriteToStderr("[Session] terminal tool call executed; ending input turn\n")
+                finalizeTimelineEntry(responseId: resolvedResponseId)
+                break
+            }
             _sessionWriteToStderr("[Session] step: persisted, draining steering\n")
 
             // 7. Drain steering
@@ -487,6 +492,16 @@ public actor Session {
         state = .idle
         await persistStateIfNeeded()
         await eventEmitter.emit(SessionEvent(kind: .sessionEnd, sessionId: id))
+    }
+
+    private func containsTerminalToolCall(_ toolCalls: [ToolCall]) -> Bool {
+        let terminalNames = Set(config.terminalToolNames.map {
+            $0.trimmingCharacters(in: .whitespacesAndNewlines)
+        }.filter { !$0.isEmpty })
+        guard !terminalNames.isEmpty else {
+            return false
+        }
+        return toolCalls.contains { terminalNames.contains($0.name) }
     }
 
     private func recoverPendingToolCallsIfNeeded() async {

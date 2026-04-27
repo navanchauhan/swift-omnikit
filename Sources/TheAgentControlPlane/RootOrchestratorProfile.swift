@@ -229,6 +229,7 @@ private extension RootOrchestratorProfile {
         if enableNativeWebSearch {
             lines.append("- You can use native web research when current external information matters.")
             lines.append("- Describe that capability as native web research; do not claim there is a `web.run` tool unless one is actually registered.")
+            lines.append("- For immediate questions that depend on current external facts, use native web research before answering; do not ask permission to check and do not create a schedule unless the user asked for future follow-up.")
         }
         if enableSubagentTools {
             lines.append("- You can spawn and supervise background subagents with `spawn_agent`, `send_input`, `wait`, and `close_agent` when direct delegation is the right tool.")

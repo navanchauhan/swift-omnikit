@@ -23,7 +23,7 @@ public struct RootAgentRuntimeOptions: Sendable {
         sessionID: String = "root",
         sessionConfig: SessionConfig = SessionConfig(),
         autoRestoreFromStorage: Bool = true,
-        enableNativeWebSearch: Bool = false,
+        enableNativeWebSearch: Bool = true,
         nativeWebSearchExternalWebAccess: Bool? = true,
         enableSubagentTools: Bool = true,
         forceCodexSystemPrompt: Bool = false,
@@ -316,6 +316,13 @@ private extension RootAgentRuntimeOptions {
         var resolved = sessionConfig
         if resolved.llmInactivityTimeoutSeconds == nil {
             resolved.llmInactivityTimeoutSeconds = resolveLLMInactivityTimeoutSeconds()
+        }
+        if resolved.terminalToolNames.isEmpty {
+            resolved.terminalToolNames = [
+                "channel_send_message",
+                "channel_send_artifact",
+                "no_response",
+            ]
         }
         if yoloMode {
             if resolved.reasoningEffort == nil {

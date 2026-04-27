@@ -15,6 +15,7 @@ public struct SessionConfig: Sendable, Codable {
     public var userInstructions: String?
     public var llmInactivityTimeoutSeconds: Double?
     public var parallelToolCalls: Bool?
+    public var terminalToolNames: [String]
     public var mcp: MCPSessionConfig
 
     public func applyingRuntimeFallbacks(from runtimeConfig: SessionConfig) -> SessionConfig {
@@ -24,6 +25,9 @@ public struct SessionConfig: Sendable, Codable {
         }
         if merged.parallelToolCalls == nil {
             merged.parallelToolCalls = runtimeConfig.parallelToolCalls
+        }
+        if merged.terminalToolNames.isEmpty {
+            merged.terminalToolNames = runtimeConfig.terminalToolNames
         }
         return merged
     }
@@ -43,6 +47,7 @@ public struct SessionConfig: Sendable, Codable {
         userInstructions: String? = nil,
         llmInactivityTimeoutSeconds: Double? = nil,
         parallelToolCalls: Bool? = nil,
+        terminalToolNames: [String] = [],
         mcp: MCPSessionConfig = MCPSessionConfig()
     ) {
         self.maxTurns = maxTurns
@@ -59,6 +64,66 @@ public struct SessionConfig: Sendable, Codable {
         self.userInstructions = userInstructions
         self.llmInactivityTimeoutSeconds = llmInactivityTimeoutSeconds
         self.parallelToolCalls = parallelToolCalls
+        self.terminalToolNames = terminalToolNames
         self.mcp = mcp
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case maxTurns
+        case maxToolRoundsPerInput
+        case interactiveMode
+        case defaultCommandTimeoutMs
+        case maxCommandTimeoutMs
+        case reasoningEffort
+        case toolOutputLimits
+        case toolLineLimits
+        case enableLoopDetection
+        case loopDetectionWindow
+        case maxSubagentDepth
+        case userInstructions
+        case llmInactivityTimeoutSeconds
+        case parallelToolCalls
+        case terminalToolNames
+        case mcp
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        maxTurns = try container.decodeIfPresent(Int.self, forKey: .maxTurns) ?? 0
+        maxToolRoundsPerInput = try container.decodeIfPresent(Int.self, forKey: .maxToolRoundsPerInput) ?? 0
+        interactiveMode = try container.decodeIfPresent(Bool.self, forKey: .interactiveMode) ?? false
+        defaultCommandTimeoutMs = try container.decodeIfPresent(Int.self, forKey: .defaultCommandTimeoutMs) ?? 10_000
+        maxCommandTimeoutMs = try container.decodeIfPresent(Int.self, forKey: .maxCommandTimeoutMs) ?? 600_000
+        reasoningEffort = try container.decodeIfPresent(String.self, forKey: .reasoningEffort)
+        toolOutputLimits = try container.decodeIfPresent([String: Int].self, forKey: .toolOutputLimits) ?? [:]
+        toolLineLimits = try container.decodeIfPresent([String: Int].self, forKey: .toolLineLimits) ?? [:]
+        enableLoopDetection = try container.decodeIfPresent(Bool.self, forKey: .enableLoopDetection) ?? true
+        loopDetectionWindow = try container.decodeIfPresent(Int.self, forKey: .loopDetectionWindow) ?? 10
+        maxSubagentDepth = try container.decodeIfPresent(Int.self, forKey: .maxSubagentDepth) ?? 1
+        userInstructions = try container.decodeIfPresent(String.self, forKey: .userInstructions)
+        llmInactivityTimeoutSeconds = try container.decodeIfPresent(Double.self, forKey: .llmInactivityTimeoutSeconds)
+        parallelToolCalls = try container.decodeIfPresent(Bool.self, forKey: .parallelToolCalls)
+        terminalToolNames = try container.decodeIfPresent([String].self, forKey: .terminalToolNames) ?? []
+        mcp = try container.decodeIfPresent(MCPSessionConfig.self, forKey: .mcp) ?? MCPSessionConfig()
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(maxTurns, forKey: .maxTurns)
+        try container.encode(maxToolRoundsPerInput, forKey: .maxToolRoundsPerInput)
+        try container.encode(interactiveMode, forKey: .interactiveMode)
+        try container.encode(defaultCommandTimeoutMs, forKey: .defaultCommandTimeoutMs)
+        try container.encode(maxCommandTimeoutMs, forKey: .maxCommandTimeoutMs)
+        try container.encodeIfPresent(reasoningEffort, forKey: .reasoningEffort)
+        try container.encode(toolOutputLimits, forKey: .toolOutputLimits)
+        try container.encode(toolLineLimits, forKey: .toolLineLimits)
+        try container.encode(enableLoopDetection, forKey: .enableLoopDetection)
+        try container.encode(loopDetectionWindow, forKey: .loopDetectionWindow)
+        try container.encode(maxSubagentDepth, forKey: .maxSubagentDepth)
+        try container.encodeIfPresent(userInstructions, forKey: .userInstructions)
+        try container.encodeIfPresent(llmInactivityTimeoutSeconds, forKey: .llmInactivityTimeoutSeconds)
+        try container.encodeIfPresent(parallelToolCalls, forKey: .parallelToolCalls)
+        try container.encode(terminalToolNames, forKey: .terminalToolNames)
+        try container.encode(mcp, forKey: .mcp)
     }
 }
