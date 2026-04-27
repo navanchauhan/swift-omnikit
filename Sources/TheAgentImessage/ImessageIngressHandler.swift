@@ -289,7 +289,7 @@ public actor ImessageIngressHandler {
             channelExternalID: chatGuid,
             channelKind: channelKind,
             eventKind: isReaction ? .reaction : (hasText ? .humanMessage : .memory),
-            text: isReaction ? reactionEventText(from: message) : (hasText ? message.text : nil),
+            text: isReaction ? reactionEventText(from: message) : (hasText ? meaningfulText : nil),
             attachments: attachments,
             mentionTriggerActive: false,
             replyContextActive: false,

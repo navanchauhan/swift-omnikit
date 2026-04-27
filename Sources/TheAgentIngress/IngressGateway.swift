@@ -230,7 +230,8 @@ public actor IngressGateway {
             let rootInputText = rootInputText(
                 for: envelope,
                 trimmedText: trimmed,
-                stagedAttachments: enrichedAttachments
+                stagedAttachments: enrichedAttachments,
+                attachmentStageMetadata: stagedAttachments.metadata
             )
             _ = try await runtime.submitUserText(
                 rootInputText,
@@ -373,10 +374,16 @@ public actor IngressGateway {
     private func rootInputText(
         for envelope: IngressEnvelope,
         trimmedText: String,
-        stagedAttachments: [StagedAttachment]
+        stagedAttachments: [StagedAttachment],
+        attachmentStageMetadata: [String: String]
     ) -> String {
         let body = trimmedText.isEmpty ? "(no text body)" : trimmedText
-        let attachmentContext = attachmentContextText(stagedAttachments)
+        let attachmentContext = [
+            attachmentContextText(stagedAttachments),
+            unavailableAttachmentContextText(attachmentStageMetadata),
+        ]
+        .filter { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+        .joined(separator: "\n")
         if envelope.transport == .imessage, envelope.eventKind == .humanMessage {
             return """
             Inbound human_message over imessage.
@@ -416,6 +423,28 @@ public actor IngressGateway {
         Attached artifacts:
         \(lines.joined(separator: "\n"))
         Uploaded images are editable artifacts. For follow-up edits like "make this black and white", use the most recent relevant image `artifact_id` as the `image_edit.artifact_id` base and set `send=true` when the user asked for the image back in-channel. Do not call `view_image` unless it is actually available as a registered tool.
+        """
+    }
+
+    private func unavailableAttachmentContextText(_ metadata: [String: String]) -> String {
+        guard let countValue = metadata["unstaged_attachment_count"],
+              let count = Int(countValue),
+              count > 0
+        else {
+            return ""
+        }
+        let lines = (1...count).map { index in
+            let prefix = "unstaged_attachment_\(index)"
+            let name = metadata["\(prefix)_name"] ?? "unknown"
+            let contentType = metadata["\(prefix)_content_type"] ?? "application/octet-stream"
+            let reason = metadata["\(prefix)_reason"] ?? "attachment data was not available"
+            return "- \(index). name=\(name), content_type=\(contentType), unavailable_reason=\(reason)"
+        }
+        return """
+
+        Unavailable attachments:
+        \(lines.joined(separator: "\n"))
+        The user sent media, but it could not be staged as an editable artifact. Do not guess what it shows; ask the user to resend it or retry once the attachment is available.
         """
     }
 

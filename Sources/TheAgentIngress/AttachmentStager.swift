@@ -58,6 +58,7 @@ public actor AttachmentStager {
         var stagedAttachments: [StagedAttachment] = []
         var metadata: [String: String] = [:]
 
+        var unstagedIndex = 0
         for attachment in attachments {
             if let inlineText = attachment.metadata["inline_text"] {
                 let record = try await artifactStore.put(
@@ -86,12 +87,26 @@ public actor AttachmentStager {
                 )
                 artifactRefs.append(record.artifactID)
                 stagedAttachments.append(try await stagedAttachment(record: record, sourceMetadata: attachment.metadata))
+                continue
+            }
+
+            unstagedIndex += 1
+            let prefix = "unstaged_attachment_\(unstagedIndex)"
+            metadata["\(prefix)_name"] = attachment.name
+            metadata["\(prefix)_content_type"] = attachment.contentType
+            metadata["\(prefix)_attachment_id"] = attachment.attachmentID
+            metadata["\(prefix)_reason"] = attachment.metadata["photon_attachment_download_error"] ?? "attachment data was not available inline"
+            for (key, value) in attachment.metadata where key.hasPrefix("photon_attachment_") {
+                metadata["\(prefix)_\(key)"] = value
             }
         }
 
         if !artifactRefs.isEmpty {
             metadata["staged_artifact_refs"] = artifactRefs.joined(separator: ",")
             metadata["staged_attachment_count"] = String(stagedAttachments.count)
+        }
+        if unstagedIndex > 0 {
+            metadata["unstaged_attachment_count"] = String(unstagedIndex)
         }
         return AttachmentStageResult(
             artifactRefs: artifactRefs,
