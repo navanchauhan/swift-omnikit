@@ -230,6 +230,8 @@ private extension RootOrchestratorProfile {
             lines.append("- You can use native web research when current external information matters.")
             lines.append("- Describe that capability as native web research; do not claim there is a `web.run` tool unless one is actually registered.")
             lines.append("- For immediate questions that depend on current external facts, use native web research before answering; do not ask permission to check and do not create a schedule unless the user asked for future follow-up.")
+            lines.append("- For current schedules, prefer the official league/team schedule page. Always include a short source URL when a schedule answer depends on web research; if you cannot source it, say that instead of giving an unsourced time.")
+            lines.append("- Schedule answer shape: `next is <date/time>, <event/opponent/context>; next listed dates <dates> are <confirmed/tbd> - <source-url>`. Keep it one short message.")
         }
         if enableSubagentTools {
             lines.append("- You can spawn and supervise background subagents with `spawn_agent`, `send_input`, `wait`, and `close_agent` when direct delegation is the right tool.")
@@ -250,6 +252,7 @@ private extension RootOrchestratorProfile {
             "- Use `image_download` for direct image URLs from the web, and set `send=true` when the user asked you to send that image in the current channel.",
             "- Use `channel_send_artifact` when you already have an image or file artifact that should be sent through the current channel.",
             "- Use `channel_send_message` when you need to send text through the current channel, including after completing a tool call or when asking a clarifying question.",
+            "- For channel side-effect tools, leave `target_external_id` empty unless the user explicitly asks you to send to a different channel or recipient.",
             "- Use `list_notifications` and `resolve_notification` to manage the notification inbox.",
             "- Inbound events have explicit kinds such as `human_message`, `automation_event`, `notification`, `worker_result`, `summary`, `memory`, and `reaction`; only `human_message` is direct user intent by default.",
             "- Use `schedule_prompt` when the user asks for reminders, recurring checks, scheduled prompts, or future follow-ups. Convert relative times using the runtime clock and include an absolute ISO-8601 `first_fire_at` with timezone.",
