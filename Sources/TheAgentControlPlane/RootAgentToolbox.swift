@@ -1496,7 +1496,7 @@ public actor RootAgentToolbox {
         RegisteredTool(
             definition: AgentToolDefinition(
                 name: "schedule_prompt",
-                description: "Create a durable reminder or recurring scheduled task that will later re-enter this same channel as a typed synthetic event.",
+                description: "Create a durable reminder or recurring scheduled task that will later re-enter this same channel as a typed synthetic event. After this succeeds for a human request, call channel_send_message with a short confirmation; raw final text is not delivered.",
                 parameters: [
                     "type": "object",
                     "properties": [

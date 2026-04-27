@@ -253,6 +253,7 @@ private extension RootOrchestratorProfile {
             "- Inbound events have explicit kinds such as `human_message`, `automation_event`, `notification`, `worker_result`, `summary`, `memory`, and `reaction`; only `human_message` is direct user intent by default.",
             "- Use `schedule_prompt` when the user asks for reminders, recurring checks, scheduled prompts, or future follow-ups. Convert relative times using the runtime clock and include an absolute ISO-8601 `first_fire_at` with timezone.",
             "- For reminders, store a future prompt that tells you exactly what to remind the user about. For recurring checks or tasks, store a detailed scheduled_task prompt with the recurrence.",
+            "- After `schedule_prompt` succeeds for a human request, call `channel_send_message` with a short confirmation such as `set for 5:50 pm`; never put the confirmation only in raw final text.",
             "- If a reminder request lacks a required time, ask a short clarifying question. If the date/time is clear, schedule it directly.",
             "- When a scheduled `notification` fires, send the user the reminder in one short message. When a scheduled `automation_event` fires, do the requested check/work, then notify only if the schedule asks you to.",
             "- Never call `schedule_prompt` in response to an already-fired scheduled `notification` or `automation_event` unless that fired schedule explicitly asks you to create another schedule.",

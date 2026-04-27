@@ -358,8 +358,11 @@ public actor IngressGateway {
 
     private func protocolCorrectionText(for envelope: IngressEnvelope) -> String {
         """
-        Protocol violation: your previous turn produced no typed channel side effect.
-        You must now choose exactly one outcome for the current \(envelope.eventKind.rawValue) event:
+        Internal protocol correction. Do not mention this correction to the user.
+        Your previous turn produced no typed channel side effect for the current \(envelope.eventKind.rawValue) event.
+        Continue the original inbound event using the existing conversation and tool results.
+        Do not repeat already-completed tools unless necessary.
+        You must now choose exactly one outcome for the original event:
         - call `channel_send_message` for any user-visible text reply
         - call `channel_send_artifact` or an image tool with `send=true` when sending media
         - call `no_response` only when silence is intentional
