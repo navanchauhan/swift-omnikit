@@ -1496,7 +1496,7 @@ public actor RootAgentToolbox {
         RegisteredTool(
             definition: AgentToolDefinition(
                 name: "schedule_prompt",
-                description: "Create a durable reminder or recurring scheduled task that will later re-enter this same channel as a typed synthetic event. After this succeeds for a human request, call channel_send_message with a short confirmation; raw final text is not delivered.",
+                description: "Create a durable future turn in this same channel. Use reminder only when the future turn should notify the user with stored text. Use scheduled_task when the future turn must perform work with tools before replying. After this succeeds for a human request, call channel_send_message with a short confirmation; raw final text is not delivered.",
                 parameters: [
                     "type": "object",
                     "properties": [
@@ -1506,7 +1506,7 @@ public actor RootAgentToolbox {
                         ],
                         "prompt": [
                             "type": "string",
-                            "description": "Detailed instruction to run when the schedule fires. Include enough context for a future agent turn to act unambiguously.",
+                            "description": "Detailed instruction to run when the schedule fires. For scheduled_task, write executable instructions: what to check/search/fetch/do, what tools may be needed, and what result to send back. Do not phrase executable work as a reminder.",
                         ],
                         "first_fire_at": [
                             "type": "string",
@@ -1522,7 +1522,7 @@ public actor RootAgentToolbox {
                         ],
                         "kind": [
                             "type": "string",
-                            "description": "reminder for notify-only reminders, or scheduled_task for checks/work that may use tools before replying.",
+                            "description": "reminder means notify-only with no work; scheduled_task means perform work/checks/searches/tool calls before deciding what to send.",
                         ],
                     ],
                     "required": ["title", "prompt", "first_fire_at"],

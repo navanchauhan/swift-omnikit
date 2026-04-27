@@ -86,7 +86,7 @@ public actor ScheduledPromptRunner {
         Scheduled \(record.eventKind) fired. This is an already-created schedule firing now.
         Do not call `schedule_prompt`, `list_scheduled_prompts`, or `cancel_scheduled_prompt` for this event unless the scheduled instructions explicitly ask you to modify schedules.
         For a scheduled notification/reminder, send the user the reminder now in one short message.
-        For a scheduled automation_event, do the requested check/work, then notify the user only if the schedule asks for notification.
+        For a scheduled automation_event, perform the scheduled work now using tools as needed, then send the requested result. Do not merely restate, summarize, or remind the user of the scheduled instructions.
 
         schedule_id: \(record.scheduleID)
         title: \(record.title)
