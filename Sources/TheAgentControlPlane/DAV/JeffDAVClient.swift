@@ -71,6 +71,32 @@ struct JeffDAVClient {
         }
     }
 
+    struct FreeTimeSlot: Sendable {
+        var start: Date
+        var end: Date
+        var timezoneIdentifier: String
+
+        func json() -> [String: Any] {
+            let timezone = TimeZone(identifier: timezoneIdentifier) ?? .current
+            return [
+                "start": isoString(start),
+                "end": isoString(end),
+                "local_start": localDisplayString(start, timezone: timezone),
+                "local_end": localDisplayString(end, timezone: timezone),
+                "timezone": timezoneIdentifier,
+                "duration_minutes": Int(end.timeIntervalSince(start) / 60),
+            ]
+        }
+    }
+
+    private struct BusyInterval: Sendable {
+        var start: Date
+        var end: Date
+        var summary: String?
+        var accountID: String
+        var calendarName: String
+    }
+
     struct ToolErrorResult: Sendable {
         var target: String
         var error: String
@@ -228,6 +254,73 @@ struct JeffDAVClient {
             ],
             "accounts": results.map { $0.json() },
         ]
+    }
+
+    static func findFreeTime(
+        accountID: String?,
+        calendarURL: String?,
+        windowStart: String,
+        windowEnd: String,
+        durationMinutes: Int,
+        timezoneIdentifier: String?,
+        dayStartHour: Int,
+        dayEndHour: Int,
+        limit: Int
+    ) async -> [String: Any] {
+        let timezone = timezoneIdentifier.flatMap(TimeZone.init(identifier:)) ?? TimeZone.current
+        do {
+            let start = try parseDate(windowStart)
+            let end = try parseDate(windowEnd)
+            guard start < end else {
+                throw DAVError.invalidDate("window_start must be before window_end")
+            }
+
+            let accounts = resolveAccounts(accountID: accountID)
+            let busy = await busyIntervals(
+                accounts: accounts,
+                calendarURL: calendarURL,
+                start: start,
+                end: end,
+                timezone: timezone
+            )
+            let slots = freeTimeSlots(
+                windowStart: start,
+                windowEnd: end,
+                busyIntervals: busy.intervals,
+                durationMinutes: max(5, min(durationMinutes, 24 * 60)),
+                timezone: timezone,
+                dayStartHour: max(0, min(dayStartHour, 23)),
+                dayEndHour: max(1, min(dayEndHour, 24)),
+                limit: max(1, min(limit, 50))
+            )
+            return [
+                "window": [
+                    "start": isoString(start),
+                    "end": isoString(end),
+                    "timezone": timezone.identifier,
+                ],
+                "duration_minutes": max(5, min(durationMinutes, 24 * 60)),
+                "working_hours": [
+                    "start_hour": max(0, min(dayStartHour, 23)),
+                    "end_hour": max(1, min(dayEndHour, 24)),
+                ],
+                "slots": slots.map { $0.json() },
+                "busy_count": busy.intervals.count,
+                "errors": busy.errors.map { $0.json() },
+            ]
+        } catch {
+            return [
+                "window": [
+                    "start": windowStart,
+                    "end": windowEnd,
+                    "timezone": timezone.identifier,
+                ],
+                "slots": [],
+                "errors": [
+                    ["target": accountID ?? "calendar", "error": String(describing: error)],
+                ],
+            ]
+        }
     }
 
     static func createEvent(
@@ -480,6 +573,138 @@ struct JeffDAVClient {
                 )
             }
         }
+    }
+
+    private static func busyIntervals(
+        accounts: [Account],
+        calendarURL: String?,
+        start: Date,
+        end: Date,
+        timezone: TimeZone
+    ) async -> (intervals: [BusyInterval], errors: [ToolErrorResult]) {
+        await withTaskGroup(of: ([BusyInterval], [ToolErrorResult]).self) { group in
+            for account in accounts {
+                group.addTask {
+                    do {
+                        let collections: [CalendarCollection]
+                        if let calendarURL, let url = URL(string: calendarURL) {
+                            collections = [CalendarCollection(accountID: account.accountID, name: calendarURL, url: url)]
+                        } else {
+                            collections = try await calendarCollections(account: account)
+                        }
+
+                        var intervals: [BusyInterval] = []
+                        var errors: [ToolErrorResult] = []
+                        for collection in collections.prefix(8) {
+                            do {
+                                let events = try await queryEvents(account: account, collection: collection, start: start, end: end)
+                                intervals.append(contentsOf: events.compactMap { event in
+                                    guard let eventStart = event.start.flatMap({ parseICSDateValue($0, timezone: timezone) }) else {
+                                        return nil
+                                    }
+                                    let eventEnd = event.end.flatMap { parseICSDateValue($0, timezone: timezone) }
+                                        ?? Calendar.current.date(byAdding: .hour, value: 1, to: eventStart)
+                                        ?? eventStart
+                                    guard eventEnd > start, eventStart < end else {
+                                        return nil
+                                    }
+                                    return BusyInterval(
+                                        start: max(eventStart, start),
+                                        end: min(eventEnd, end),
+                                        summary: event.summary,
+                                        accountID: event.accountID,
+                                        calendarName: event.calendarName
+                                    )
+                                })
+                            } catch {
+                                errors.append(ToolErrorResult(target: collection.url.absoluteString, error: String(describing: error)))
+                            }
+                        }
+                        return (intervals, errors)
+                    } catch {
+                        return ([], [ToolErrorResult(target: account.accountID, error: String(describing: error))])
+                    }
+                }
+            }
+
+            var intervals: [BusyInterval] = []
+            var errors: [ToolErrorResult] = []
+            for await result in group {
+                intervals.append(contentsOf: result.0)
+                errors.append(contentsOf: result.1)
+            }
+            return (intervals, errors)
+        }
+    }
+
+    private static func freeTimeSlots(
+        windowStart: Date,
+        windowEnd: Date,
+        busyIntervals: [BusyInterval],
+        durationMinutes: Int,
+        timezone: TimeZone,
+        dayStartHour: Int,
+        dayEndHour: Int,
+        limit: Int
+    ) -> [FreeTimeSlot] {
+        guard dayStartHour < dayEndHour else {
+            return []
+        }
+        let minimumDuration = TimeInterval(durationMinutes * 60)
+        let calendar = Calendar(identifier: .gregorian).withTimeZone(timezone)
+        let mergedBusy = mergeBusyIntervals(busyIntervals)
+        var slots: [FreeTimeSlot] = []
+        var day = calendar.startOfDay(for: windowStart)
+        let lastDay = calendar.startOfDay(for: windowEnd)
+
+        while day <= lastDay, slots.count < limit {
+            guard let dayWindowStart = calendar.date(bySettingHour: dayStartHour, minute: 0, second: 0, of: day),
+                  let dayWindowEnd = calendar.date(bySettingHour: dayEndHour == 24 ? 23 : dayEndHour, minute: dayEndHour == 24 ? 59 : 0, second: dayEndHour == 24 ? 59 : 0, of: day) else {
+                day = calendar.date(byAdding: .day, value: 1, to: day) ?? windowEnd
+                continue
+            }
+            var cursor = max(dayWindowStart, windowStart)
+            let clippedDayEnd = min(dayWindowEnd, windowEnd)
+            for busy in mergedBusy where busy.end > cursor && busy.start < clippedDayEnd {
+                let freeEnd = min(busy.start, clippedDayEnd)
+                if freeEnd.timeIntervalSince(cursor) >= minimumDuration {
+                    slots.append(FreeTimeSlot(start: cursor, end: freeEnd, timezoneIdentifier: timezone.identifier))
+                    if slots.count >= limit {
+                        return slots
+                    }
+                }
+                cursor = max(cursor, busy.end)
+                if cursor >= clippedDayEnd {
+                    break
+                }
+            }
+            if clippedDayEnd.timeIntervalSince(cursor) >= minimumDuration, slots.count < limit {
+                slots.append(FreeTimeSlot(start: cursor, end: clippedDayEnd, timezoneIdentifier: timezone.identifier))
+            }
+            day = calendar.date(byAdding: .day, value: 1, to: day) ?? windowEnd
+        }
+        return slots
+    }
+
+    private static func mergeBusyIntervals(_ intervals: [BusyInterval]) -> [BusyInterval] {
+        let sorted = intervals
+            .filter { $0.end > $0.start }
+            .sorted { $0.start < $1.start }
+        var merged: [BusyInterval] = []
+        for interval in sorted {
+            guard var last = merged.popLast() else {
+                merged.append(interval)
+                continue
+            }
+            if interval.start <= last.end {
+                last.end = max(last.end, interval.end)
+                merged.append(last)
+            } else {
+                merged.append(last)
+                merged.append(interval)
+            }
+        }
+        return merged
     }
 
     private static func discoverAddressbooks(account: Account) async throws -> [URL] {
@@ -870,6 +1095,15 @@ private func isoString(_ date: Date) -> String {
     ISO8601DateFormatter().string(from: date)
 }
 
+private func localDisplayString(_ date: Date, timezone: TimeZone) -> String {
+    let formatter = DateFormatter()
+    formatter.calendar = Calendar(identifier: .gregorian)
+    formatter.locale = Locale(identifier: "en_US_POSIX")
+    formatter.timeZone = timezone
+    formatter.dateFormat = "EEEE, MMMM d, yyyy 'at' h:mm a zzz"
+    return formatter.string(from: date)
+}
+
 private func parseDate(_ value: String) throws -> Date {
     let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
     let fractional = ISO8601DateFormatter()
@@ -882,6 +1116,26 @@ private func parseDate(_ value: String) throws -> Date {
         return date
     }
     throw DAVError.invalidDate(value)
+}
+
+private func parseICSDateValue(_ value: String, timezone: TimeZone) -> Date? {
+    let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+    let formats: [(String, TimeZone)] = [
+        ("yyyyMMdd'T'HHmmss'Z'", TimeZone(secondsFromGMT: 0) ?? timezone),
+        ("yyyyMMdd'T'HHmmss", timezone),
+        ("yyyyMMdd", timezone),
+    ]
+    for (format, formatterTimezone) in formats {
+        let formatter = DateFormatter()
+        formatter.calendar = Calendar(identifier: .gregorian)
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.timeZone = formatterTimezone
+        formatter.dateFormat = format
+        if let date = formatter.date(from: trimmed) {
+            return date
+        }
+    }
+    return try? parseDate(trimmed)
 }
 
 private func buildICS(uid: String, title: String, start: Date, end: Date, location: String?, notes: String?) -> String {
@@ -991,6 +1245,14 @@ private func unescapeICSText(_ value: String) -> String {
 private extension Array {
     func ifEmpty(_ fallback: [Element]) -> [Element] {
         isEmpty ? fallback : self
+    }
+}
+
+private extension Calendar {
+    func withTimeZone(_ timezone: TimeZone) -> Calendar {
+        var copy = self
+        copy.timeZone = timezone
+        return copy
     }
 }
 

@@ -304,6 +304,7 @@ private extension RootOrchestratorProfile {
             "- For outbound email review, use `display_draft`. Only use `email_create_draft`, `email_send`, or `email_reply` after explicit confirmation of the exact account, recipients/thread, subject when relevant, and body.",
             "- When writing email as Jeff, write as Navan's executive assistant unless the user explicitly asks you to ghostwrite as Navan. Do not add a `best, navan` sign-off; the email system appends Jeff's assistant signature.",
             "- Use `dav_accounts_list`, `calendar_list`, and `calendar_list_events` for calendar checks, availability, and proactive schedule awareness.",
+            "- Use `calendar_find_free_time` before proposing meeting times, rescheduling, or answering availability questions. When reporting slots, copy `local_start`/`local_end` from the tool result rather than recalculating weekdays yourself.",
             "- Use `contacts_search` before sending to ambiguous people; resolve identity from CardDAV/contact data when available instead of guessing an address.",
             "- Use `memory_search` when durable user context, preferences, active projects, mood signals, relationships, or routines may materially change the answer.",
             "- Relevant Vault memories may be pre-injected into Durable Root State; treat them as context with source-linked confidence, not as infallible ground truth.",

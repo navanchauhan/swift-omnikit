@@ -64,6 +64,7 @@ public actor RootAgentToolbox {
             davAccountsListTool(),
             calendarListTool(),
             calendarListEventsTool(),
+            calendarFindFreeTimeTool(),
             calendarCreateEventTool(),
             calendarDeleteEventTool(),
             contactsSearchTool(),
@@ -1294,6 +1295,55 @@ public actor RootAgentToolbox {
                         calendarURL: calendarURL,
                         daysBack: daysBack,
                         daysForward: daysForward,
+                        limit: limit
+                    )
+                )
+            }
+        )
+    }
+
+    private func calendarFindFreeTimeTool() -> RegisteredTool {
+        RegisteredTool(
+            definition: AgentToolDefinition(
+                name: "calendar_find_free_time",
+                description: "Find available calendar slots by subtracting CalDAV busy events from a requested time window. Use before proposing meeting times or checking availability.",
+                parameters: [
+                    "type": "object",
+                    "properties": [
+                        "account_id": ["type": "string", "description": "Optional DAV account ID. Defaults to all calendar-capable accounts."],
+                        "calendar_url": ["type": "string", "description": "Optional explicit CalDAV calendar collection URL."],
+                        "window_start": ["type": "string", "description": "ISO-8601 start of the search window."],
+                        "window_end": ["type": "string", "description": "ISO-8601 end of the search window."],
+                        "duration_minutes": ["type": "integer", "description": "Minimum slot length. Defaults to 30."],
+                        "timezone": ["type": "string", "description": "IANA timezone, defaults to the runtime timezone."],
+                        "day_start_hour": ["type": "integer", "description": "Local hour to start considering availability, default 9."],
+                        "day_end_hour": ["type": "integer", "description": "Local hour to stop considering availability, default 17."],
+                        "limit": ["type": "integer", "description": "Maximum slots to return, capped at 50."],
+                    ],
+                    "required": ["window_start", "window_end"],
+                    "additionalProperties": false,
+                ]
+            ),
+            executor: { arguments, _ in
+                let accountID = try Self.optionalString("account_id", in: arguments)
+                let calendarURL = try Self.optionalString("calendar_url", in: arguments)
+                let windowStart = try Self.requiredString("window_start", in: arguments)
+                let windowEnd = try Self.requiredString("window_end", in: arguments)
+                let durationMinutes = try Self.intValue("duration_minutes", in: arguments) ?? 30
+                let timezone = try Self.optionalString("timezone", in: arguments)
+                let dayStartHour = try Self.intValue("day_start_hour", in: arguments) ?? 9
+                let dayEndHour = try Self.intValue("day_end_hour", in: arguments) ?? 17
+                let limit = try Self.intValue("limit", in: arguments) ?? 8
+                return try Self.renderJSON(
+                    await JeffDAVClient.findFreeTime(
+                        accountID: accountID,
+                        calendarURL: calendarURL,
+                        windowStart: windowStart,
+                        windowEnd: windowEnd,
+                        durationMinutes: durationMinutes,
+                        timezoneIdentifier: timezone,
+                        dayStartHour: dayStartHour,
+                        dayEndHour: dayEndHour,
                         limit: limit
                     )
                 )
