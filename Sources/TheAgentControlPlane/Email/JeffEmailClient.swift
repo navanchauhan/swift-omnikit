@@ -100,12 +100,46 @@ struct JeffEmailClient {
                    (first == "\"" && last == "\"") || (first == "'" && last == "'") {
                     value.removeFirst()
                     value.removeLast()
+                    if first == "\"" {
+                        value = decodeDotEnvDoubleQuotedEscapes(value)
+                    }
                 }
                 if !key.isEmpty {
                     values[key] = value
                 }
             }
             return values
+        }
+
+        private static func decodeDotEnvDoubleQuotedEscapes(_ rawValue: String) -> String {
+            var decoded = ""
+            var iterator = rawValue.makeIterator()
+            while let character = iterator.next() {
+                guard character == "\\" else {
+                    decoded.append(character)
+                    continue
+                }
+                guard let escaped = iterator.next() else {
+                    decoded.append(character)
+                    break
+                }
+                switch escaped {
+                case "n":
+                    decoded.append("\n")
+                case "r":
+                    decoded.append("\r")
+                case "t":
+                    decoded.append("\t")
+                case "\\":
+                    decoded.append("\\")
+                case "\"":
+                    decoded.append("\"")
+                default:
+                    decoded.append("\\")
+                    decoded.append(escaped)
+                }
+            }
+            return decoded
         }
     }
 
