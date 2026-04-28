@@ -617,8 +617,18 @@ struct JeffDAVClient {
         return splitResponses(response.body).flatMap { block -> [CalendarEvent] in
             guard let calendarData = xmlText("calendar-data", in: block) else { return [] }
             let eventURL = resolveURL(extractFirst("href", from: block) ?? "", relativeTo: collection.url)?.absoluteString
-            return parseICSEvents(calendarData).map { parsed in
-                CalendarEvent(
+            return parseICSEvents(calendarData).compactMap { parsed in
+                let timezone = TimeZone.current
+                guard let parsedStart = parsed["DTSTART"].flatMap({ parseICSDateValue($0, timezone: timezone) }) else {
+                    return nil
+                }
+                let parsedEnd = parsed["DTEND"].flatMap { parseICSDateValue($0, timezone: timezone) }
+                    ?? Calendar.current.date(byAdding: .hour, value: 1, to: parsedStart)
+                    ?? parsedStart
+                guard parsedEnd > start, parsedStart < end else {
+                    return nil
+                }
+                return CalendarEvent(
                     accountID: account.accountID,
                     calendarName: collection.name,
                     eventURL: eventURL,
