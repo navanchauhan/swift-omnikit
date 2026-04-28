@@ -487,6 +487,7 @@ let package = Package(
                 "OmniAICore",
                 "OmniMCP",
                 "OmniExecution",
+                "OmniSkills",
                 "CSQLite",
                 .product(name: "BashInterpreter", package: "SwiftBash"),
                 .product(name: "BashCommandKit", package: "SwiftBash"),

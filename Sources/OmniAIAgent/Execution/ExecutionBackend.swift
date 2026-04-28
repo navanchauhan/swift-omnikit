@@ -15,21 +15,39 @@ public enum ExecutionBackend: Sendable {
 
 /// Configuration for the SwiftBash execution backend.
 public struct SwiftBashBackendConfig: Sendable {
+    /// Filesystem model used by the in-process shell.
+    public enum FileSystemMode: Sendable, Equatable {
+        /// Use the host filesystem directly.
+        case realFileSystem
+        /// Mount the working directory as a copy-on-write sandbox at the shell working directory.
+        case sandboxedWorkspace
+        /// Use an empty in-memory filesystem.
+        case inMemory
+    }
+
+    /// Filesystem model used by the in-process shell.
+    public var fileSystemMode: FileSystemMode
     /// Whether to expose the real host identity and inherited environment to shell commands.
     public var useHostEnvironment: Bool
     /// Whether network access is allowed for SwiftBash commands such as curl.
     public var networkEnabled: Bool
-    /// URL prefixes allowed when network access is enabled. Empty means full internet access.
+    /// URL prefixes allowed when network access is enabled.
     public var allowedURLPrefixes: [String]
+    /// Explicit escape hatch for unrestricted public internet access.
+    public var allowFullInternetAccess: Bool
 
     public init(
+        fileSystemMode: FileSystemMode = .sandboxedWorkspace,
         useHostEnvironment: Bool = false,
         networkEnabled: Bool = false,
-        allowedURLPrefixes: [String] = []
+        allowedURLPrefixes: [String] = [],
+        allowFullInternetAccess: Bool = false
     ) {
+        self.fileSystemMode = fileSystemMode
         self.useHostEnvironment = useHostEnvironment
         self.networkEnabled = networkEnabled
         self.allowedURLPrefixes = allowedURLPrefixes
+        self.allowFullInternetAccess = allowFullInternetAccess
     }
 }
 
