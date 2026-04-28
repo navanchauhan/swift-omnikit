@@ -3,10 +3,20 @@ import BashInterpreter
 import Foundation
 import OmniExecution
 
+public protocol CommandConsoleSession: Sendable {
+    /// Run one command to completion. This is command-at-a-time execution, not a PTY.
+    func run(_ command: String, timeoutMs: Int) async throws -> ExecResult
+    func workingDirectory() async -> String
+    func reset() async
+}
+
 public final class SwiftBashExecutionEnvironment: ExecutionEnvironment, @unchecked Sendable {
     private let local: LocalExecutionEnvironment
     private let workingDir: String
     private let config: SwiftBashBackendConfig
+    private let shellLock = NSLock()
+    private var persistentShell: Shell?
+    private var persistentWorkingDirectory: String?
 
     public init(
         workingDir: String? = nil,
@@ -40,13 +50,65 @@ public final class SwiftBashExecutionEnvironment: ExecutionEnvironment, @uncheck
         envVars: [String: String]?
     ) async throws -> ExecResult {
         let resolvedWorkingDir = resolvePath(workingDir ?? self.workingDir)
-        let startTime = Date()
-        let shell = makeShell(workingDirectory: resolvedWorkingDir, envVars: envVars)
+        let shell: Shell
+        if config.persistentSession {
+            shell = shellLock.withLock {
+                if let persistentShell {
+                    return persistentShell
+                }
+                let shell = makeShell(workingDirectory: resolvedWorkingDir, envVars: envVars)
+                persistentShell = shell
+                persistentWorkingDirectory = resolvedWorkingDir
+                return shell
+            }
+        } else {
+            shell = makeShell(workingDirectory: resolvedWorkingDir, envVars: envVars)
+        }
 
+        let result = try await Self.runCommand(command, timeoutMs: timeoutMs, shell: shell)
+        if config.persistentSession {
+            shellLock.withLock {
+                if result.timedOut {
+                    persistentShell = nil
+                    persistentWorkingDirectory = nil
+                } else {
+                    persistentWorkingDirectory = shell.environment.workingDirectory
+                }
+            }
+        }
+        return result
+    }
+
+    public func startCommandConsole(
+        workingDir: String?,
+        envVars: [String: String]?
+    ) async throws -> any CommandConsoleSession {
+        let resolvedWorkingDir = resolvePath(workingDir ?? self.workingDir)
+        let shell = makeShell(workingDirectory: resolvedWorkingDir, envVars: envVars)
+        return SwiftBashCommandConsoleSession(
+            initialWorkingDirectory: resolvedWorkingDir,
+            shell: shell,
+            makeShell: { [config, baseWorkingDir = self.workingDir] workingDirectory, envVars in
+                SwiftBashExecutionEnvironment.makeShell(
+                    workingDirectory: workingDirectory,
+                    envVars: envVars,
+                    baseWorkingDir: baseWorkingDir,
+                    config: config
+                )
+            },
+            envVars: envVars
+        )
+    }
+
+    fileprivate static func runCommand(
+        _ command: String,
+        timeoutMs: Int,
+        shell: Shell
+    ) async throws -> ExecResult {
+        let startTime = Date()
         let runTask = Task {
             try await shell.runCapturing(command)
         }
-
         let outcome = try await withCheckedThrowingContinuation { continuation in
             let box = SwiftBashCommandContinuationBox(continuation)
             Task {
@@ -103,7 +165,11 @@ public final class SwiftBashExecutionEnvironment: ExecutionEnvironment, @uncheck
     }
 
     public func workingDirectory() -> String {
-        workingDir
+        if config.persistentSession,
+           let persistentWorkingDirectory = shellLock.withLock({ persistentWorkingDirectory }) {
+            return persistentWorkingDirectory
+        }
+        return workingDir
     }
 
     public func platform() -> String {
@@ -115,6 +181,20 @@ public final class SwiftBashExecutionEnvironment: ExecutionEnvironment, @uncheck
     }
 
     private func makeShell(workingDirectory: String, envVars: [String: String]?) -> Shell {
+        Self.makeShell(
+            workingDirectory: workingDirectory,
+            envVars: envVars,
+            baseWorkingDir: workingDir,
+            config: config
+        )
+    }
+
+    private static func makeShell(
+        workingDirectory: String,
+        envVars: [String: String]?,
+        baseWorkingDir: String,
+        config: SwiftBashBackendConfig
+    ) -> Shell {
         var environment = config.useHostEnvironment
             ? Environment.current()
             : Environment.synthetic(workingDirectory: workingDirectory)
@@ -126,21 +206,32 @@ public final class SwiftBashExecutionEnvironment: ExecutionEnvironment, @uncheck
             }
         }
 
-        let shell = Shell(environment: environment, fileSystem: makeFileSystem(workingDirectory: workingDirectory))
+        let shell = Shell(
+            environment: environment,
+            fileSystem: makeFileSystem(
+                workingDirectory: workingDirectory,
+                baseWorkingDir: baseWorkingDir,
+                config: config
+            )
+        )
         shell.hostInfo = config.useHostEnvironment ? .real() : .synthetic
         shell.registerStandardCommands()
-        shell.networkConfig = networkConfig()
+        shell.networkConfig = networkConfig(config: config)
         return shell
     }
 
-    private func makeFileSystem(workingDirectory: String) -> any FileSystem {
+    private static func makeFileSystem(
+        workingDirectory: String,
+        baseWorkingDir: String,
+        config: SwiftBashBackendConfig
+    ) -> any FileSystem {
         switch config.fileSystemMode {
         case .realFileSystem:
             return RealFileSystem()
         case .sandboxedWorkspace:
             do {
                 return try SandboxedOverlayFileSystem(.init(
-                    root: self.workingDir,
+                    root: baseWorkingDir,
                     mountPoint: workingDirectory
                 ))
             } catch {
@@ -151,7 +242,7 @@ public final class SwiftBashExecutionEnvironment: ExecutionEnvironment, @uncheck
         }
     }
 
-    private func networkConfig() -> NetworkConfig? {
+    private static func networkConfig(config: SwiftBashBackendConfig) -> NetworkConfig? {
         guard config.networkEnabled else { return nil }
         if config.allowFullInternetAccess {
             return NetworkConfig(dangerouslyAllowFullInternetAccess: true)
@@ -168,8 +259,39 @@ public final class SwiftBashExecutionEnvironment: ExecutionEnvironment, @uncheck
         return (workingDir as NSString).appendingPathComponent(path)
     }
 
-    private func durationMs(since startTime: Date) -> Int {
+    fileprivate static func durationMs(since startTime: Date) -> Int {
         Int(Date().timeIntervalSince(startTime) * 1000)
+    }
+}
+
+private actor SwiftBashCommandConsoleSession: CommandConsoleSession {
+    private let initialWorkingDirectory: String
+    private let makeShell: @Sendable (String, [String: String]?) -> Shell
+    private let envVars: [String: String]?
+    private var shell: Shell
+
+    init(
+        initialWorkingDirectory: String,
+        shell: Shell,
+        makeShell: @Sendable @escaping (String, [String: String]?) -> Shell,
+        envVars: [String: String]?
+    ) {
+        self.initialWorkingDirectory = initialWorkingDirectory
+        self.shell = shell
+        self.makeShell = makeShell
+        self.envVars = envVars
+    }
+
+    func run(_ command: String, timeoutMs: Int) async throws -> ExecResult {
+        try await SwiftBashExecutionEnvironment.runCommand(command, timeoutMs: timeoutMs, shell: shell)
+    }
+
+    func workingDirectory() async -> String {
+        shell.environment.workingDirectory
+    }
+
+    func reset() async {
+        shell = makeShell(initialWorkingDirectory, envVars)
     }
 }
 

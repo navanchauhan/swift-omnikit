@@ -19,6 +19,7 @@ public enum OmniSkillInstallerError: Error, CustomStringConvertible {
     }
 }
 
+#if !os(iOS) && !os(tvOS) && !os(watchOS) && !os(visionOS)
 private final class _OmniSkillInstallerExitBox: @unchecked Sendable {
     private let lock = NSLock()
     private var resumed = false
@@ -36,6 +37,7 @@ private final class _OmniSkillInstallerExitBox: @unchecked Sendable {
         continuation.resume()
     }
 }
+#endif
 
 public struct OmniSkillInstaller: Sendable {
     public let installsRootDirectory: URL
@@ -103,6 +105,9 @@ public struct OmniSkillInstaller: Sendable {
         let extractionRoot = URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
             .appending(path: "omniskill-\(UUID().uuidString)", directoryHint: .isDirectory)
         try FileManager.default.createDirectory(at: extractionRoot, withIntermediateDirectories: true)
+        #if os(iOS) || os(tvOS) || os(watchOS) || os(visionOS)
+        throw OmniSkillInstallerError.unsupportedArchive(sourceURL)
+        #else
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
         process.arguments = ["unzip", "-q", sourceURL.path(), "-d", extractionRoot.path()]
@@ -111,6 +116,7 @@ public struct OmniSkillInstaller: Sendable {
         guard process.terminationStatus == 0 else {
             throw OmniSkillInstallerError.unzipFailed(sourceURL)
         }
+        #endif
 
         let contents = try FileManager.default.contentsOfDirectory(
             at: extractionRoot,
@@ -128,6 +134,7 @@ public struct OmniSkillInstaller: Sendable {
         throw OmniSkillInstallerError.manifestNotFound(extractionRoot)
     }
 
+    #if !os(iOS) && !os(tvOS) && !os(watchOS) && !os(visionOS)
     private static func waitForExit(of process: Process) async {
         guard process.isRunning else { return }
 
@@ -144,6 +151,7 @@ public struct OmniSkillInstaller: Sendable {
         }
         process.terminationHandler = nil
     }
+    #endif
 
     private func contentDigest(for directory: URL) throws -> String {
         let enumerator = FileManager.default.enumerator(

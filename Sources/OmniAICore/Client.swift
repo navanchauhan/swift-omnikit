@@ -102,7 +102,7 @@ private func resolveCodexHome(env: [String: String]) -> URL {
        !configured.isEmpty {
         return URL(fileURLWithPath: NSString(string: configured).expandingTildeInPath, isDirectory: true)
     }
-    return FileManager.default.homeDirectoryForCurrentUser
+    return URL(fileURLWithPath: NSHomeDirectory(), isDirectory: true)
         .appending(path: ".codex", directoryHint: .isDirectory)
 }
 

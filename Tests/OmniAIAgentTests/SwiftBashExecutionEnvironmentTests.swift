@@ -104,6 +104,132 @@ final class SwiftBashExecutionEnvironmentTests {
     }
 
     @Test
+    func persistentSessionPreservesWorkingDirectory() async throws {
+        let tempDir = try Self.makeTempDir()
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+        try FileManager.default.createDirectory(at: tempDir.appendingPathComponent("subdir"), withIntermediateDirectories: true)
+
+        let env = SwiftBashExecutionEnvironment(
+            workingDir: tempDir.path,
+            config: SwiftBashBackendConfig(fileSystemMode: .realFileSystem, persistentSession: true)
+        )
+        try await env.initialize()
+
+        let cdResult = try await env.execCommand(command: "cd subdir", timeoutMs: 10_000, workingDir: nil, envVars: nil)
+        let pwdResult = try await env.execCommand(command: "pwd", timeoutMs: 10_000, workingDir: nil, envVars: nil)
+
+        #expect(cdResult.exitCode == 0)
+        #expect(pwdResult.exitCode == 0)
+        #expect(pwdResult.stdout == "\(tempDir.appendingPathComponent("subdir").path)\n")
+    }
+
+    @Test
+    func persistentSessionPreservesExports() async throws {
+        let tempDir = try Self.makeTempDir()
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+
+        let env = SwiftBashExecutionEnvironment(
+            workingDir: tempDir.path,
+            config: SwiftBashBackendConfig(persistentSession: true)
+        )
+        try await env.initialize()
+
+        let exportResult = try await env.execCommand(command: "export FOO=bar", timeoutMs: 10_000, workingDir: nil, envVars: nil)
+        let echoResult = try await env.execCommand(command: "echo $FOO", timeoutMs: 10_000, workingDir: nil, envVars: nil)
+
+        #expect(exportResult.exitCode == 0)
+        #expect(echoResult.exitCode == 0)
+        #expect(echoResult.stdout == "bar\n")
+    }
+
+    @Test
+    func persistentSessionWritesFilesWithRealFilesystem() async throws {
+        let tempDir = try Self.makeTempDir()
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+
+        let env = SwiftBashExecutionEnvironment(
+            workingDir: tempDir.path,
+            config: SwiftBashBackendConfig(fileSystemMode: .realFileSystem, persistentSession: true)
+        )
+        try await env.initialize()
+
+        let writeResult = try await env.execCommand(
+            command: "printf persisted > out.txt",
+            timeoutMs: 10_000,
+            workingDir: nil,
+            envVars: nil
+        )
+
+        #expect(writeResult.exitCode == 0)
+        #expect(FileManager.default.contents(atPath: tempDir.appendingPathComponent("out.txt").path) == Data("persisted".utf8))
+    }
+
+    @Test
+    func defaultSessionDoesNotPreserveShellState() async throws {
+        let tempDir = try Self.makeTempDir()
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+        try FileManager.default.createDirectory(at: tempDir.appendingPathComponent("subdir"), withIntermediateDirectories: true)
+
+        let env = SwiftBashExecutionEnvironment(
+            workingDir: tempDir.path,
+            config: SwiftBashBackendConfig(fileSystemMode: .realFileSystem)
+        )
+        try await env.initialize()
+
+        _ = try await env.execCommand(command: "cd subdir; export FOO=bar", timeoutMs: 10_000, workingDir: nil, envVars: nil)
+        let result = try await env.execCommand(command: "pwd; echo ${FOO:-unset}", timeoutMs: 10_000, workingDir: nil, envVars: nil)
+
+        #expect(result.exitCode == 0)
+        #expect(result.stdout == "\(tempDir.path)\nunset\n")
+    }
+
+    @Test
+    func timeoutDoesNotPoisonPersistentSession() async throws {
+        let tempDir = try Self.makeTempDir()
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+
+        let env = SwiftBashExecutionEnvironment(
+            workingDir: tempDir.path,
+            config: SwiftBashBackendConfig(fileSystemMode: .realFileSystem, persistentSession: true)
+        )
+        try await env.initialize()
+
+        let timeoutResult = try await env.execCommand(
+            command: "export FOO=before; while true; do :; done",
+            timeoutMs: 100,
+            workingDir: nil,
+            envVars: nil
+        )
+        let afterResult = try await env.execCommand(command: "echo ${FOO:-unset}", timeoutMs: 10_000, workingDir: nil, envVars: nil)
+
+        #expect(timeoutResult.timedOut)
+        #expect(timeoutResult.exitCode == 124)
+        #expect(afterResult.exitCode == 0)
+        #expect(afterResult.stdout == "unset\n")
+    }
+
+    @Test
+    func commandConsoleRunsCommandAtATimeAndResets() async throws {
+        let tempDir = try Self.makeTempDir()
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+
+        let env = SwiftBashExecutionEnvironment(
+            workingDir: tempDir.path,
+            config: SwiftBashBackendConfig(fileSystemMode: .realFileSystem)
+        )
+        let console = try await env.startCommandConsole(workingDir: nil, envVars: nil)
+
+        _ = try await console.run("export FOO=bar", timeoutMs: 10_000)
+        let beforeReset = try await console.run("echo $FOO", timeoutMs: 10_000)
+        await console.reset()
+        let afterReset = try await console.run("echo ${FOO:-unset}", timeoutMs: 10_000)
+
+        #expect(await console.workingDirectory() == tempDir.path)
+        #expect(beforeReset.stdout == "bar\n")
+        #expect(afterReset.stdout == "unset\n")
+    }
+
+    @Test
     func factoryCreatesSwiftBashBackend() async throws {
         let tempDir = try Self.makeTempDir()
         defer { try? FileManager.default.removeItem(at: tempDir) }

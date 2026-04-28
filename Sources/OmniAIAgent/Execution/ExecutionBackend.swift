@@ -35,19 +35,23 @@ public struct SwiftBashBackendConfig: Sendable {
     public var allowedURLPrefixes: [String]
     /// Explicit escape hatch for unrestricted public internet access.
     public var allowFullInternetAccess: Bool
+    /// Reuse one SwiftBash shell across execCommand calls.
+    public var persistentSession: Bool
 
     public init(
         fileSystemMode: FileSystemMode = .sandboxedWorkspace,
         useHostEnvironment: Bool = false,
         networkEnabled: Bool = false,
         allowedURLPrefixes: [String] = [],
-        allowFullInternetAccess: Bool = false
+        allowFullInternetAccess: Bool = false,
+        persistentSession: Bool = false
     ) {
         self.fileSystemMode = fileSystemMode
         self.useHostEnvironment = useHostEnvironment
         self.networkEnabled = networkEnabled
         self.allowedURLPrefixes = allowedURLPrefixes
         self.allowFullInternetAccess = allowFullInternetAccess
+        self.persistentSession = persistentSession
     }
 }
 
