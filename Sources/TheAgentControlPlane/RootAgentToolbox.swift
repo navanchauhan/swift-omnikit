@@ -1642,22 +1642,30 @@ public actor RootAgentToolbox {
                 ]
 
                 if includeCalendar {
-                    snapshot["calendar"] = await JeffDAVClient.listEvents(
+                    let calendar = await JeffDAVClient.listEvents(
                         accountID: nil,
                         calendarURL: nil,
                         daysBack: 0,
                         daysForward: max(1, min(daysForward, 14)),
                         limit: 30
                     )
+                    snapshot["calendar"] = calendar
+                    var summaryHints = snapshot["summary_hints"] as? [String: Any] ?? [:]
+                    summaryHints["calendar_events"] = Self.briefingCalendarHints(from: calendar, limit: 5)
+                    snapshot["summary_hints"] = summaryHints
                 }
 
                 if includeEmail {
                     do {
-                        snapshot["email_needs_reply"] = try await JeffEmailClient.triageNeedsReply(
+                        let email = try await JeffEmailClient.triageNeedsReply(
                             accountIDs: nil,
                             mailbox: "INBOX",
                             limitPerAccount: max(1, min(emailLimit, 25))
                         )
+                        snapshot["email_needs_reply"] = email
+                        var summaryHints = snapshot["summary_hints"] as? [String: Any] ?? [:]
+                        summaryHints["email_followups"] = Self.briefingEmailHints(from: email, limit: 5)
+                        snapshot["summary_hints"] = summaryHints
                     } catch {
                         snapshot["email_error"] = String(describing: error)
                     }
@@ -1700,6 +1708,97 @@ public actor RootAgentToolbox {
                 return try Self.renderJSON(snapshot)
             }
         )
+    }
+
+    private static func briefingCalendarHints(from calendar: [String: Any], limit: Int) -> [[String: Any]] {
+        guard let accounts = calendar["accounts"] as? [[String: Any]] else {
+            return []
+        }
+        var events: [[String: Any]] = []
+        for account in accounts {
+            let accountID = account["account_id"] as? String
+            for event in account["events"] as? [[String: Any]] ?? [] {
+                let summary = event["summary"] as? String
+                let start = event["start"] as? String
+                let calendarName = event["calendar"] as? String
+                let eventAccountID = event["account_id"] as? String
+                var hint: [String: Any] = [:]
+                hint["summary"] = summary ?? NSNull()
+                hint["start"] = start ?? NSNull()
+                hint["display_time"] = start.flatMap(Self.briefingDisplayTime) ?? NSNull()
+                hint["calendar"] = calendarName ?? NSNull()
+                hint["account_id"] = accountID ?? eventAccountID ?? NSNull()
+                events.append(hint)
+            }
+        }
+        return events
+            .sorted { String(describing: $0["start"] ?? "") < String(describing: $1["start"] ?? "") }
+            .prefix(max(1, limit))
+            .map { $0 }
+    }
+
+    private static func briefingEmailHints(from email: [String: Any], limit: Int) -> [[String: Any]] {
+        guard let accounts = email["accounts"] as? [[String: Any]] else {
+            return []
+        }
+        var candidates: [[String: Any]] = []
+        for account in accounts {
+            let accountID = account["account_id"] as? String
+            let accountEmail = account["email"] as? String
+            for candidate in account["candidates"] as? [[String: Any]] ?? [] {
+                let candidateAccountID = candidate["account_id"] as? String
+                var hint: [String: Any] = [:]
+                hint["from"] = candidate["from"] as? String ?? NSNull()
+                hint["subject"] = candidate["subject"] as? String ?? NSNull()
+                hint["date"] = candidate["date"] as? String ?? NSNull()
+                hint["why"] = candidate["why_might_need_reply"] as? String ?? NSNull()
+                hint["account_id"] = accountID ?? candidateAccountID ?? NSNull()
+                hint["account_email"] = accountEmail ?? NSNull()
+                candidates.append(hint)
+            }
+        }
+        return candidates
+            .sorted { String(describing: $0["date"] ?? "") > String(describing: $1["date"] ?? "") }
+            .prefix(max(1, limit))
+            .map { $0 }
+    }
+
+    private static func briefingDisplayTime(_ value: String) -> String? {
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        let localTimezone = Self.defaultUserTimeZone()
+        let formats: [(String, TimeZone)] = [
+            ("yyyyMMdd'T'HHmmss'Z'", TimeZone(secondsFromGMT: 0) ?? localTimezone),
+            ("yyyyMMdd'T'HHmmss", localTimezone),
+            ("yyyyMMdd", localTimezone),
+        ]
+        for (format, timezone) in formats {
+            let parser = DateFormatter()
+            parser.calendar = Calendar(identifier: .gregorian)
+            parser.locale = Locale(identifier: "en_US_POSIX")
+            parser.timeZone = timezone
+            parser.dateFormat = format
+            guard let date = parser.date(from: trimmed) else {
+                continue
+            }
+            let display = DateFormatter()
+            display.calendar = Calendar(identifier: .gregorian)
+            display.locale = Locale(identifier: "en_US_POSIX")
+            display.timeZone = localTimezone
+            display.dateFormat = trimmed.count == 8 ? "EEE, MMM d" : "h:mm a"
+            return display.string(from: date).lowercased()
+        }
+        return nil
+    }
+
+    private static func defaultUserTimeZone() -> TimeZone {
+        let environment = ProcessInfo.processInfo.environment
+        for key in ["OMNIKIT_LOCAL_TIMEZONE", "TZ"] {
+            if let value = environment[key],
+               let timezone = TimeZone(identifier: value) {
+                return timezone
+            }
+        }
+        return TimeZone.current
     }
 
     private func channelSendMessageTool() -> RegisteredTool {
