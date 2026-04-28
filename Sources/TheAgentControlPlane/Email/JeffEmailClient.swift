@@ -74,7 +74,8 @@ struct JeffEmailClient {
         }
 
         private static func optional(_ key: String, env: [String: String]) -> String? {
-            let value = env[key]?.trimmingCharacters(in: .whitespacesAndNewlines)
+            let value = env[key].map(decodeDotEnvDoubleQuotedEscapes)?
+                .trimmingCharacters(in: .whitespacesAndNewlines)
             return value?.isEmpty == false ? value : nil
         }
 
