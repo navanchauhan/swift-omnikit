@@ -54,6 +54,14 @@ public actor RootAgentToolbox {
             emailCreateDraftTool(),
             emailSendTool(),
             emailReplyTool(),
+            davAccountsListTool(),
+            calendarListTool(),
+            calendarListEventsTool(),
+            calendarCreateEventTool(),
+            calendarDeleteEventTool(),
+            contactsSearchTool(),
+            webDAVListFilesTool(),
+            webDAVPutTextFileTool(),
             channelSendMessageTool(),
             channelSendArtifactTool(),
             imageGenerateTool(),
@@ -1201,6 +1209,242 @@ public actor RootAgentToolbox {
                 return try Self.renderJSON(
                     try await JeffEmailClient.reply(accountID: accountID, mailbox: mailbox, uid: uid, body: body, cc: cc, bcc: bcc, replyAll: replyAll)
                 )
+            }
+        )
+    }
+
+    private func davAccountsListTool() -> RegisteredTool {
+        RegisteredTool(
+            definition: AgentToolDefinition(
+                name: "dav_accounts_list",
+                description: "List configured CalDAV/CardDAV/WebDAV capabilities derived from Jeff's email accounts. Secrets are never returned.",
+                parameters: [
+                    "type": "object",
+                    "properties": [:],
+                    "additionalProperties": false,
+                ]
+            ),
+            executor: { _, _ in
+                try Self.renderJSON(JeffDAVClient.listAccounts())
+            }
+        )
+    }
+
+    private func calendarListTool() -> RegisteredTool {
+        RegisteredTool(
+            definition: AgentToolDefinition(
+                name: "calendar_list",
+                description: "Discover available calendars for a configured DAV account. Use before calendar event creation if the user did not specify a calendar.",
+                parameters: [
+                    "type": "object",
+                    "properties": [
+                        "account_id": ["type": "string", "description": "Optional account ID such as jeff, boulderwala, migadu, or icloud."],
+                    ],
+                    "additionalProperties": false,
+                ]
+            ),
+            executor: { arguments, _ in
+                let accountID = try Self.optionalString("account_id", in: arguments)
+                return try Self.renderJSON(await JeffDAVClient.listCalendars(accountID: accountID))
+            }
+        )
+    }
+
+    private func calendarListEventsTool() -> RegisteredTool {
+        RegisteredTool(
+            definition: AgentToolDefinition(
+                name: "calendar_list_events",
+                description: "List upcoming/past calendar events through CalDAV. Use for schedule checks, conflict checks, and proactive planning.",
+                parameters: [
+                    "type": "object",
+                    "properties": [
+                        "account_id": ["type": "string", "description": "Optional DAV account ID. Defaults to all DAV-capable accounts."],
+                        "calendar_url": ["type": "string", "description": "Optional explicit CalDAV calendar collection URL."],
+                        "days_back": ["type": "integer", "description": "Days before now to include. Defaults to 0."],
+                        "days_forward": ["type": "integer", "description": "Days after now to include, capped at 90. Defaults to 14."],
+                        "limit": ["type": "integer", "description": "Maximum events to return, capped at 100."],
+                    ],
+                    "additionalProperties": false,
+                ]
+            ),
+            executor: { arguments, _ in
+                let accountID = try Self.optionalString("account_id", in: arguments)
+                let calendarURL = try Self.optionalString("calendar_url", in: arguments)
+                let daysBack = try Self.intValue("days_back", in: arguments) ?? 0
+                let daysForward = try Self.intValue("days_forward", in: arguments) ?? 14
+                let limit = try Self.intValue("limit", in: arguments) ?? 25
+                return try Self.renderJSON(
+                    await JeffDAVClient.listEvents(
+                        accountID: accountID,
+                        calendarURL: calendarURL,
+                        daysBack: daysBack,
+                        daysForward: daysForward,
+                        limit: limit
+                    )
+                )
+            }
+        )
+    }
+
+    private func calendarCreateEventTool() -> RegisteredTool {
+        RegisteredTool(
+            definition: AgentToolDefinition(
+                name: "calendar_create_event",
+                description: "Create a calendar event through CalDAV. Only call after explicit confirmation of the calendar/account, title, start, end, location, and notes.",
+                parameters: [
+                    "type": "object",
+                    "properties": [
+                        "account_id": ["type": "string", "description": "Optional DAV account ID."],
+                        "calendar_url": ["type": "string", "description": "Optional explicit CalDAV calendar collection URL."],
+                        "title": ["type": "string"],
+                        "start": ["type": "string", "description": "ISO-8601 start date/time."],
+                        "end": ["type": "string", "description": "ISO-8601 end date/time."],
+                        "location": ["type": "string"],
+                        "notes": ["type": "string"],
+                        "confirmed": ["type": "boolean", "description": "Must be true only after explicit user confirmation."],
+                    ],
+                    "required": ["title", "start", "end", "confirmed"],
+                    "additionalProperties": false,
+                ]
+            ),
+            executor: { arguments, _ in
+                guard try Self.boolValue("confirmed", in: arguments) == true else {
+                    throw RootToolboxError.invalidArgument(key: "confirmed", expected: "true after explicit user confirmation")
+                }
+                let accountID = try Self.optionalString("account_id", in: arguments)
+                let calendarURL = try Self.optionalString("calendar_url", in: arguments)
+                let title = try Self.requiredString("title", in: arguments)
+                let start = try Self.requiredString("start", in: arguments)
+                let end = try Self.requiredString("end", in: arguments)
+                let location = try Self.optionalString("location", in: arguments)
+                let notes = try Self.optionalString("notes", in: arguments)
+                return try Self.renderJSON(
+                    try await JeffDAVClient.createEvent(
+                        accountID: accountID,
+                        calendarURL: calendarURL,
+                        title: title,
+                        start: start,
+                        end: end,
+                        location: location,
+                        notes: notes
+                    )
+                )
+            }
+        )
+    }
+
+    private func calendarDeleteEventTool() -> RegisteredTool {
+        RegisteredTool(
+            definition: AgentToolDefinition(
+                name: "calendar_delete_event",
+                description: "Delete a calendar event by CalDAV event URL. Only call after explicit user confirmation.",
+                parameters: [
+                    "type": "object",
+                    "properties": [
+                        "account_id": ["type": "string", "description": "Optional DAV account ID."],
+                        "event_url": ["type": "string"],
+                        "confirmed": ["type": "boolean", "description": "Must be true only after explicit user confirmation."],
+                    ],
+                    "required": ["event_url", "confirmed"],
+                    "additionalProperties": false,
+                ]
+            ),
+            executor: { arguments, _ in
+                guard try Self.boolValue("confirmed", in: arguments) == true else {
+                    throw RootToolboxError.invalidArgument(key: "confirmed", expected: "true after explicit user confirmation")
+                }
+                let accountID = try Self.optionalString("account_id", in: arguments)
+                let eventURL = try Self.requiredString("event_url", in: arguments)
+                return try Self.renderJSON(try await JeffDAVClient.deleteEvent(accountID: accountID, eventURL: eventURL))
+            }
+        )
+    }
+
+    private func contactsSearchTool() -> RegisteredTool {
+        RegisteredTool(
+            definition: AgentToolDefinition(
+                name: "contacts_search",
+                description: "Search configured CardDAV address books for people, emails, and phone numbers. Use this for identity/contact resolution before sending messages or emails.",
+                parameters: [
+                    "type": "object",
+                    "properties": [
+                        "account_id": ["type": "string", "description": "Optional DAV account ID. Defaults to all CardDAV-capable accounts."],
+                        "addressbook_url": ["type": "string", "description": "Optional explicit CardDAV address book URL."],
+                        "query": ["type": "string", "description": "Search text. Empty string lists a bounded set from address books."],
+                        "limit": ["type": "integer", "description": "Maximum contacts to return, capped at 50."],
+                    ],
+                    "required": ["query"],
+                    "additionalProperties": false,
+                ]
+            ),
+            executor: { arguments, _ in
+                let accountID = try Self.optionalString("account_id", in: arguments)
+                let addressbookURL = try Self.optionalString("addressbook_url", in: arguments)
+                let query = try Self.requiredString("query", in: arguments)
+                let limit = try Self.intValue("limit", in: arguments) ?? 10
+                return try Self.renderJSON(
+                    await JeffDAVClient.searchContacts(
+                        accountID: accountID,
+                        addressbookURL: addressbookURL,
+                        query: query,
+                        limit: limit
+                    )
+                )
+            }
+        )
+    }
+
+    private func webDAVListFilesTool() -> RegisteredTool {
+        RegisteredTool(
+            definition: AgentToolDefinition(
+                name: "webdav_list_files",
+                description: "List files/folders from a configured WebDAV account, useful for lightweight notes/files storage.",
+                parameters: [
+                    "type": "object",
+                    "properties": [
+                        "account_id": ["type": "string", "description": "Optional DAV account ID."],
+                        "path": ["type": "string", "description": "Optional relative path."],
+                        "limit": ["type": "integer", "description": "Maximum entries to return, capped at 100."],
+                    ],
+                    "additionalProperties": false,
+                ]
+            ),
+            executor: { arguments, _ in
+                let accountID = try Self.optionalString("account_id", in: arguments)
+                let path = try Self.optionalString("path", in: arguments)
+                let limit = try Self.intValue("limit", in: arguments) ?? 25
+                return try Self.renderJSON(try await JeffDAVClient.listFiles(accountID: accountID, path: path, limit: limit))
+            }
+        )
+    }
+
+    private func webDAVPutTextFileTool() -> RegisteredTool {
+        RegisteredTool(
+            definition: AgentToolDefinition(
+                name: "webdav_put_text_file",
+                description: "Write a text/markdown note or file to a configured WebDAV account. Only call after explicit user confirmation.",
+                parameters: [
+                    "type": "object",
+                    "properties": [
+                        "account_id": ["type": "string", "description": "Optional DAV account ID."],
+                        "path": ["type": "string", "description": "Relative file path such as notes/2026-04-28.md."],
+                        "text": ["type": "string"],
+                        "content_type": ["type": "string", "description": "Defaults to text/markdown; charset=utf-8."],
+                        "confirmed": ["type": "boolean", "description": "Must be true only after explicit user confirmation."],
+                    ],
+                    "required": ["path", "text", "confirmed"],
+                    "additionalProperties": false,
+                ]
+            ),
+            executor: { arguments, _ in
+                guard try Self.boolValue("confirmed", in: arguments) == true else {
+                    throw RootToolboxError.invalidArgument(key: "confirmed", expected: "true after explicit user confirmation")
+                }
+                let accountID = try Self.optionalString("account_id", in: arguments)
+                let path = try Self.requiredString("path", in: arguments)
+                let text = try Self.requiredString("text", in: arguments)
+                let contentType = try Self.optionalString("content_type", in: arguments) ?? "text/markdown; charset=utf-8"
+                return try Self.renderJSON(try await JeffDAVClient.putTextFile(accountID: accountID, path: path, text: text, contentType: contentType))
             }
         )
     }
