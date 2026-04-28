@@ -35,6 +35,7 @@ struct JeffEmailClient {
         var smtpPassword: String
         var fromName: String?
         var fromAddress: String
+        var signature: String?
 
         static func load() throws -> Config {
             let env = ProcessInfo.processInfo.environment.merging(loadDotEnv()) { current, _ in current }
@@ -60,7 +61,8 @@ struct JeffEmailClient {
                 smtpUsername: smtpUsername,
                 smtpPassword: smtpPassword,
                 fromName: optional("EMAIL_FROM_NAME", env: env),
-                fromAddress: fromAddress
+                fromAddress: fromAddress,
+                signature: optional("EMAIL_SIGNATURE", env: env)
             )
         }
 
@@ -210,7 +212,7 @@ struct JeffEmailClient {
                 ccRecipients: cc.map { EmailAddress(name: nil, address: $0) },
                 bccRecipients: bcc.map { EmailAddress(name: nil, address: $0) },
                 subject: subject,
-                textBody: body
+                textBody: signedBody(body, signature: config.signature)
             )
             let result = try await server.createDraft(from: email)
             return [
@@ -236,7 +238,7 @@ struct JeffEmailClient {
             ccRecipients: cc.map { EmailAddress(name: nil, address: $0) },
             bccRecipients: bcc.map { EmailAddress(name: nil, address: $0) },
             subject: subject,
-            textBody: body
+            textBody: signedBody(body, signature: config.signature)
         )
         try await server.sendEmail(email)
         try? await server.disconnect()
@@ -280,6 +282,19 @@ struct JeffEmailClient {
             preview: message.preview(maxLength: 500),
             hasAttachments: !message.attachments.isEmpty
         )
+    }
+
+    private static func signedBody(_ body: String, signature: String?) -> String {
+        let trimmedBody = body.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let signature = signature?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !signature.isEmpty
+        else {
+            return trimmedBody
+        }
+        if trimmedBody.localizedCaseInsensitiveContains(signature) {
+            return trimmedBody
+        }
+        return "\(trimmedBody)\n\n\(signature)"
     }
 }
 
