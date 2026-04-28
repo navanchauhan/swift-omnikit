@@ -47,14 +47,27 @@ public final class SwiftBashExecutionEnvironment: ExecutionEnvironment, @uncheck
             try await shell.runCapturing(command)
         }
 
-        let timeoutTask = Task {
-            try await Task.sleep(nanoseconds: UInt64(timeoutMs) * 1_000_000)
-            runTask.cancel()
+        let outcome = try await withCheckedThrowingContinuation { continuation in
+            let box = SwiftBashCommandContinuationBox(continuation)
+            Task {
+                do {
+                    let captured = try await runTask.value
+                    box.resume(.success(.completed(captured)))
+                } catch is CancellationError {
+                    box.resume(.success(.timedOut))
+                } catch {
+                    box.resume(.failure(error))
+                }
+            }
+            Task {
+                try? await Task.sleep(nanoseconds: UInt64(timeoutMs) * 1_000_000)
+                runTask.cancel()
+                box.resume(.success(.timedOut))
+            }
         }
 
-        do {
-            let captured = try await runTask.value
-            timeoutTask.cancel()
+        switch outcome {
+        case .completed(let captured):
             return ExecResult(
                 stdout: captured.stdout,
                 stderr: captured.stderr,
@@ -62,8 +75,7 @@ public final class SwiftBashExecutionEnvironment: ExecutionEnvironment, @uncheck
                 timedOut: false,
                 durationMs: durationMs(since: startTime)
             )
-        } catch is CancellationError {
-            timeoutTask.cancel()
+        case .timedOut:
             return ExecResult(
                 stdout: "",
                 stderr: "",
@@ -71,9 +83,6 @@ public final class SwiftBashExecutionEnvironment: ExecutionEnvironment, @uncheck
                 timedOut: true,
                 durationMs: durationMs(since: startTime)
             )
-        } catch {
-            timeoutTask.cancel()
-            throw error
         }
     }
 
@@ -117,16 +126,34 @@ public final class SwiftBashExecutionEnvironment: ExecutionEnvironment, @uncheck
             }
         }
 
-        let shell = Shell(environment: environment, fileSystem: RealFileSystem())
+        let shell = Shell(environment: environment, fileSystem: makeFileSystem(workingDirectory: workingDirectory))
         shell.hostInfo = config.useHostEnvironment ? .real() : .synthetic
         shell.registerStandardCommands()
         shell.networkConfig = networkConfig()
         return shell
     }
 
+    private func makeFileSystem(workingDirectory: String) -> any FileSystem {
+        switch config.fileSystemMode {
+        case .realFileSystem:
+            return RealFileSystem()
+        case .sandboxedWorkspace:
+            do {
+                return try SandboxedOverlayFileSystem(.init(
+                    root: self.workingDir,
+                    mountPoint: workingDirectory
+                ))
+            } catch {
+                return InMemoryFileSystem()
+            }
+        case .inMemory:
+            return InMemoryFileSystem()
+        }
+    }
+
     private func networkConfig() -> NetworkConfig? {
         guard config.networkEnabled else { return nil }
-        if config.allowedURLPrefixes.isEmpty {
+        if config.allowFullInternetAccess {
             return NetworkConfig(dangerouslyAllowFullInternetAccess: true)
         }
         return NetworkConfig(
@@ -143,5 +170,38 @@ public final class SwiftBashExecutionEnvironment: ExecutionEnvironment, @uncheck
 
     private func durationMs(since startTime: Date) -> Int {
         Int(Date().timeIntervalSince(startTime) * 1000)
+    }
+}
+
+private enum SwiftBashCommandOutcome {
+    case completed(CapturedRun)
+    case timedOut
+}
+
+private final class SwiftBashCommandContinuationBox: @unchecked Sendable {
+    private let lock = NSLock()
+    private var didResume = false
+    private let continuation: CheckedContinuation<SwiftBashCommandOutcome, Error>
+
+    init(_ continuation: CheckedContinuation<SwiftBashCommandOutcome, Error>) {
+        self.continuation = continuation
+    }
+
+    func resume(_ result: Result<SwiftBashCommandOutcome, Error>) {
+        let shouldResume = lock.withLock {
+            if didResume {
+                return false
+            }
+            didResume = true
+            return true
+        }
+        guard shouldResume else { return }
+
+        switch result {
+        case .success(let outcome):
+            continuation.resume(returning: outcome)
+        case .failure(let error):
+            continuation.resume(throwing: error)
+        }
     }
 }

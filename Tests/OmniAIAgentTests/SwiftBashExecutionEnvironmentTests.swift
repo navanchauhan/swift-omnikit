@@ -9,7 +9,10 @@ final class SwiftBashExecutionEnvironmentTests {
         let tempDir = try Self.makeTempDir()
         defer { try? FileManager.default.removeItem(at: tempDir) }
 
-        let env = SwiftBashExecutionEnvironment(workingDir: tempDir.path)
+        let env = SwiftBashExecutionEnvironment(
+            workingDir: tempDir.path,
+            config: SwiftBashBackendConfig(fileSystemMode: .realFileSystem)
+        )
         try await env.initialize()
 
         let result = try await env.execCommand(
@@ -26,11 +29,14 @@ final class SwiftBashExecutionEnvironmentTests {
     }
 
     @Test
-    func usesRequestedWorkingDirectoryAndRealFilesystem() async throws {
+    func canUseRequestedWorkingDirectoryWithRealFilesystem() async throws {
         let tempDir = try Self.makeTempDir()
         defer { try? FileManager.default.removeItem(at: tempDir) }
 
-        let env = SwiftBashExecutionEnvironment(workingDir: tempDir.path)
+        let env = SwiftBashExecutionEnvironment(
+            workingDir: tempDir.path,
+            config: SwiftBashBackendConfig(fileSystemMode: .realFileSystem)
+        )
         try await env.initialize()
 
         let result = try await env.execCommand(
@@ -43,6 +49,58 @@ final class SwiftBashExecutionEnvironmentTests {
         #expect(result.exitCode == 0)
         #expect(result.stdout == "\(tempDir.path)\nabc")
         #expect(FileManager.default.contents(atPath: tempDir.appendingPathComponent("out.txt").path) == Data("abc".utf8))
+    }
+
+    @Test
+    func defaultsToSandboxedWorkspace() async throws {
+        let tempDir = try Self.makeTempDir()
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+        try Data("host\n".utf8).write(to: tempDir.appendingPathComponent("input.txt"))
+
+        let env = SwiftBashExecutionEnvironment(workingDir: tempDir.path)
+        try await env.initialize()
+
+        let result = try await env.execCommand(
+            command: "cat input.txt; printf overlay > out.txt",
+            timeoutMs: 10_000,
+            workingDir: nil,
+            envVars: nil
+        )
+
+        #expect(result.exitCode == 0)
+        #expect(result.stdout == "host\n")
+        #expect(!FileManager.default.fileExists(atPath: tempDir.appendingPathComponent("out.txt").path))
+    }
+
+    @Test(arguments: [
+        "while true; do :; done",
+        "sleep 10",
+        "yes",
+    ])
+    func commandsThatDoNotFinishTimeOut(command: String) async throws {
+        let tempDir = try Self.makeTempDir()
+        defer { try? FileManager.default.removeItem(at: tempDir) }
+
+        let env = SwiftBashExecutionEnvironment(workingDir: tempDir.path)
+        try await env.initialize()
+
+        let result = try await env.execCommand(
+            command: command,
+            timeoutMs: 100,
+            workingDir: nil,
+            envVars: nil
+        )
+
+        #expect(result.timedOut)
+        #expect(result.exitCode == 124)
+        #expect(result.durationMs < 5_000)
+    }
+
+    @Test
+    func emptyNetworkAllowlistDoesNotAllowFullInternetAccess() async throws {
+        let config = SwiftBashBackendConfig(networkEnabled: true)
+        #expect(config.allowedURLPrefixes.isEmpty)
+        #expect(config.allowFullInternetAccess == false)
     }
 
     @Test
