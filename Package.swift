@@ -242,6 +242,8 @@ let package = Package(
         .package(url: "https://github.com/swiftlang/swift-testing.git", from: "6.2.0"),
         // WASI execution engine.
         .package(url: "https://github.com/swiftwasm/WasmKit.git", from: "0.2.0"),
+        // Mail access for Jeff's email inbox and outbound drafts.
+        .package(url: "https://github.com/Cocoanetics/SwiftMail.git", branch: "main"),
     ],
     targets: [
         // Targets are the basic building blocks of a package, defining a module or a test suite.
@@ -681,6 +683,7 @@ let package = Package(
                 "OmniAgentDeliveryCore",
                 "OmniSkills",
                 "TheAgentWorkerKit",
+                "SwiftMail",
             ],
             path: "Sources/TheAgentControlPlane",
             exclude: ["main.swift"],
@@ -720,6 +723,7 @@ let package = Package(
             exclude: [
                 "Changes",
                 "Diagnostics",
+                "Email",
                 "Experiments",
                 "Interaction",
                 "Memory",

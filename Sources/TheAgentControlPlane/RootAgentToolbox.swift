@@ -46,6 +46,11 @@ public actor RootAgentToolbox {
             waitForTaskTool(),
             listArtifactsTool(),
             getArtifactTool(),
+            emailListRecentTool(),
+            emailSearchTool(),
+            emailGetMessageTool(),
+            emailCreateDraftTool(),
+            emailSendTool(),
             channelSendMessageTool(),
             channelSendArtifactTool(),
             imageGenerateTool(),
@@ -945,6 +950,157 @@ public actor RootAgentToolbox {
                 return try Self.renderJSON([
                     "artifact": Self.serialize(artifactRead: result),
                 ])
+            }
+        )
+    }
+
+    private func emailListRecentTool() -> RegisteredTool {
+        RegisteredTool(
+            definition: AgentToolDefinition(
+                name: "email_list_recent",
+                description: "List recent messages from Jeff's configured IMAP mailbox using IMAP_HOST, IMAP_USERNAME, and IMAP_PASSWORD from .env or process env.",
+                parameters: [
+                    "type": "object",
+                    "properties": [
+                        "mailbox": ["type": "string", "description": "Mailbox name, defaults to INBOX."],
+                        "limit": ["type": "integer", "description": "Number of recent messages to return, capped at 50."],
+                    ],
+                    "additionalProperties": false,
+                ]
+            ),
+            executor: { arguments, _ in
+                let mailbox = try Self.optionalString("mailbox", in: arguments) ?? "INBOX"
+                let limit = try Self.intValue("limit", in: arguments) ?? 10
+                return try Self.renderJSON(try await JeffEmailClient.listRecent(mailbox: mailbox, limit: limit))
+            }
+        )
+    }
+
+    private func emailSearchTool() -> RegisteredTool {
+        RegisteredTool(
+            definition: AgentToolDefinition(
+                name: "email_search",
+                description: "Search Jeff's recent IMAP mail by local text match over sender, recipients, subject, and preview. Use for vibe checks, recruiter emails, and finding recent messages.",
+                parameters: [
+                    "type": "object",
+                    "properties": [
+                        "query": ["type": "string"],
+                        "mailbox": ["type": "string", "description": "Mailbox name, defaults to INBOX."],
+                        "limit": ["type": "integer", "description": "Number of matches to return, capped at 50."],
+                        "recent_window": ["type": "integer", "description": "How many recent messages to scan, capped at 250."],
+                    ],
+                    "required": ["query"],
+                    "additionalProperties": false,
+                ]
+            ),
+            executor: { arguments, _ in
+                let query = try Self.requiredString("query", in: arguments)
+                let mailbox = try Self.optionalString("mailbox", in: arguments) ?? "INBOX"
+                let limit = try Self.intValue("limit", in: arguments) ?? 10
+                let recentWindow = try Self.intValue("recent_window", in: arguments) ?? 100
+                return try Self.renderJSON(
+                    try await JeffEmailClient.search(
+                        mailbox: mailbox,
+                        query: query,
+                        limit: limit,
+                        recentWindow: recentWindow
+                    )
+                )
+            }
+        )
+    }
+
+    private func emailGetMessageTool() -> RegisteredTool {
+        RegisteredTool(
+            definition: AgentToolDefinition(
+                name: "email_get_message",
+                description: "Fetch one email by IMAP UID, including body preview/content and attachment metadata.",
+                parameters: [
+                    "type": "object",
+                    "properties": [
+                        "uid": ["type": "string"],
+                        "mailbox": ["type": "string", "description": "Mailbox name, defaults to INBOX."],
+                    ],
+                    "required": ["uid"],
+                    "additionalProperties": false,
+                ]
+            ),
+            executor: { arguments, _ in
+                let uid = try Self.requiredString("uid", in: arguments)
+                let mailbox = try Self.optionalString("mailbox", in: arguments) ?? "INBOX"
+                return try Self.renderJSON(try await JeffEmailClient.getMessage(mailbox: mailbox, uid: uid))
+            }
+        )
+    }
+
+    private func emailCreateDraftTool() -> RegisteredTool {
+        RegisteredTool(
+            definition: AgentToolDefinition(
+                name: "email_create_draft",
+                description: "Create an email draft in Jeff's IMAP Drafts mailbox. Prefer this for user-facing email composition unless the user explicitly confirms sending.",
+                parameters: [
+                    "type": "object",
+                    "properties": [
+                        "to": ["type": "array", "items": ["type": "string"]],
+                        "cc": ["type": "array", "items": ["type": "string"]],
+                        "bcc": ["type": "array", "items": ["type": "string"]],
+                        "subject": ["type": "string"],
+                        "body": ["type": "string"],
+                    ],
+                    "required": ["to", "subject", "body"],
+                    "additionalProperties": false,
+                ]
+            ),
+            executor: { arguments, _ in
+                let to = try Self.stringArray("to", in: arguments)
+                let cc = try Self.stringArray("cc", in: arguments)
+                let bcc = try Self.stringArray("bcc", in: arguments)
+                let subject = try Self.requiredString("subject", in: arguments)
+                let body = try Self.requiredString("body", in: arguments)
+                guard !to.isEmpty else {
+                    throw RootToolboxError.invalidArgument(key: "to", expected: "at least one recipient")
+                }
+                return try Self.renderJSON(
+                    try await JeffEmailClient.createDraft(to: to, cc: cc, bcc: bcc, subject: subject, body: body)
+                )
+            }
+        )
+    }
+
+    private func emailSendTool() -> RegisteredTool {
+        RegisteredTool(
+            definition: AgentToolDefinition(
+                name: "email_send",
+                description: "Send an email through Jeff's configured SMTP account. Only call after explicit user confirmation for the exact recipients, subject, and body.",
+                parameters: [
+                    "type": "object",
+                    "properties": [
+                        "to": ["type": "array", "items": ["type": "string"]],
+                        "cc": ["type": "array", "items": ["type": "string"]],
+                        "bcc": ["type": "array", "items": ["type": "string"]],
+                        "subject": ["type": "string"],
+                        "body": ["type": "string"],
+                        "confirmed": ["type": "boolean", "description": "Must be true only after explicit user confirmation."],
+                    ],
+                    "required": ["to", "subject", "body", "confirmed"],
+                    "additionalProperties": false,
+                ]
+            ),
+            executor: { arguments, _ in
+                guard try Self.boolValue("confirmed", in: arguments) == true else {
+                    throw RootToolboxError.invalidArgument(key: "confirmed", expected: "true after explicit user confirmation")
+                }
+                let to = try Self.stringArray("to", in: arguments)
+                let cc = try Self.stringArray("cc", in: arguments)
+                let bcc = try Self.stringArray("bcc", in: arguments)
+                let subject = try Self.requiredString("subject", in: arguments)
+                let body = try Self.requiredString("body", in: arguments)
+                guard !to.isEmpty else {
+                    throw RootToolboxError.invalidArgument(key: "to", expected: "at least one recipient")
+                }
+                return try Self.renderJSON(
+                    try await JeffEmailClient.send(to: to, cc: cc, bcc: bcc, subject: subject, body: body)
+                )
             }
         )
     }

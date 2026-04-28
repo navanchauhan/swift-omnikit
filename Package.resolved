@@ -1,5 +1,5 @@
 {
-  "originHash" : "d6143d53ceb9b0b47e122b64776de31bed6e53026a1159bf545d60c0ddc0f098",
+  "originHash" : "0414e7c216fd319db9a8170a1fe250a87b17c08f8a87e0d6b3bc4115880a6332",
   "pins" : [
     {
       "identity" : "async-http-client",
@@ -101,6 +101,15 @@
       }
     },
     {
+      "identity" : "swift-dotenv",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/thebarndog/swift-dotenv",
+      "state" : {
+        "revision" : "d13062940a3cdb2b13efa22ecc83b07b21c2e8dc",
+        "version" : "2.1.0"
+      }
+    },
+    {
       "identity" : "swift-gopher",
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/navanchauhan/swift-gopher.git",
@@ -164,6 +173,15 @@
       }
     },
     {
+      "identity" : "swift-nio-imap",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/apple/swift-nio-imap",
+      "state" : {
+        "branch" : "main",
+        "revision" : "9c56edfa19397712b5d9f088cf674a5f5dcec4c4"
+      }
+    },
+    {
       "identity" : "swift-nio-ssl",
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/apple/swift-nio-ssl.git",
@@ -197,6 +215,15 @@
       "state" : {
         "revision" : "81558271e243f8f47dfe8e9fdd55f3c2b5413f68",
         "version" : "1.37.0"
+      }
+    },
+    {
+      "identity" : "swift-se0270-range-set",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/apple/swift-se0270-range-set.git",
+      "state" : {
+        "revision" : "7d6d7531d40e95f4e1e26f6565265be6df228911",
+        "version" : "1.0.1"
       }
     },
     {
@@ -242,6 +269,15 @@
       "state" : {
         "revision" : "48a471ab313e858258ab0b9b0bf2cea55a50cefb",
         "version" : "6.2.3"
+      }
+    },
+    {
+      "identity" : "swiftmail",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/Cocoanetics/SwiftMail.git",
+      "state" : {
+        "branch" : "main",
+        "revision" : "4d89fcbb1848510797cbeecef228a53a080327b1"
       }
     },
     {

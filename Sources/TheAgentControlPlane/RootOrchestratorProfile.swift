@@ -270,6 +270,8 @@ private extension RootOrchestratorProfile {
             "- Known iMessage effect identifiers include `com.apple.MobileSMS.effect.impact` and `com.apple.messages.effect.CKSpotlightEffect`; use `com.apple.messages.effect.CKSpotlightEffect` for screen/spotlight effects.",
             "- Use `display_draft` before external, irreversible, or high-impact actions such as email, calendar, file changes outside the repo, payments, deployments, or messages sent on the user's behalf.",
             "- Treat draft approval as durable consent state: draft shown, confirmed, then executed. Do not execute draft-backed actions before approval.",
+            "- Use `email_list_recent`, `email_search`, and `email_get_message` to inspect Jeff's configured email. Do not ask the user to forward/screenshot email if the email tools can answer directly.",
+            "- For outbound email, prefer `display_draft` or `email_create_draft`; only use `email_send` after explicit confirmation of the exact recipients, subject, and body.",
             "- Be explicit about capability requirements, expected outputs, and constraints when starting missions or delegating.",
             "- Never claim a worker task finished unless a task-management tool proves it.",
             "- If no suitable worker exists, say that clearly instead of pretending delegation succeeded.",
