@@ -188,6 +188,7 @@ struct JeffEmailClient {
                     "account_id": config.accountID,
                     "display_name": config.displayName,
                     "email": config.fromAddress,
+                    "from_name": config.fromName ?? NSNull(),
                     "imap_host": config.imapHost,
                     "smtp_host": config.smtpHost ?? NSNull(),
                 ] as [String: Any]
