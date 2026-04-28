@@ -306,6 +306,7 @@ private extension RootOrchestratorProfile {
             "- Use `dav_accounts_list`, `calendar_list`, and `calendar_list_events` for calendar checks, availability, and proactive schedule awareness.",
             "- Use `calendar_find_free_time` before proposing meeting times, rescheduling, or answering availability questions. When reporting slots, copy `local_start`/`local_end` from the tool result rather than recalculating weekdays yourself.",
             "- Use `contacts_search` before sending to ambiguous people; resolve identity from CardDAV/contact data when available instead of guessing an address.",
+            "- Use `contacts_create` only after showing a draft and receiving explicit confirmation; contact writes are external side effects.",
             "- Use `memory_search` when durable user context, preferences, active projects, mood signals, relationships, or routines may materially change the answer.",
             "- Relevant Vault memories may be pre-injected into Durable Root State; treat them as context with source-linked confidence, not as infallible ground truth.",
             "- Use `calendar_create_event`, `calendar_delete_event`, or `webdav_put_text_file` only after showing a draft/plan and receiving explicit confirmation. Calendar writes and note/file writes are external side effects.",

@@ -68,6 +68,7 @@ public actor RootAgentToolbox {
             calendarCreateEventTool(),
             calendarDeleteEventTool(),
             contactsSearchTool(),
+            contactsCreateTool(),
             webDAVListFilesTool(),
             webDAVPutTextFileTool(),
             memorySearchTool(),
@@ -1459,6 +1460,56 @@ public actor RootAgentToolbox {
         )
     }
 
+    private func contactsCreateTool() -> RegisteredTool {
+        RegisteredTool(
+            definition: AgentToolDefinition(
+                name: "contacts_create",
+                description: "Create a CardDAV contact. Only call after explicit confirmation of the account/address book, name, email addresses, phone numbers, and notes.",
+                parameters: [
+                    "type": "object",
+                    "properties": [
+                        "account_id": ["type": "string", "description": "Optional DAV account ID."],
+                        "addressbook_url": ["type": "string", "description": "Optional explicit CardDAV address book URL."],
+                        "full_name": ["type": "string"],
+                        "emails": ["type": "array", "items": ["type": "string"]],
+                        "phones": ["type": "array", "items": ["type": "string"]],
+                        "organization": ["type": "string"],
+                        "title": ["type": "string"],
+                        "notes": ["type": "string"],
+                        "confirmed": ["type": "boolean", "description": "Must be true only after explicit user confirmation."],
+                    ],
+                    "required": ["full_name", "confirmed"],
+                    "additionalProperties": false,
+                ]
+            ),
+            executor: { arguments, _ in
+                guard try Self.boolValue("confirmed", in: arguments) == true else {
+                    throw RootToolboxError.invalidArgument(key: "confirmed", expected: "true after explicit user confirmation")
+                }
+                let accountID = try Self.optionalString("account_id", in: arguments)
+                let addressbookURL = try Self.optionalString("addressbook_url", in: arguments)
+                let fullName = try Self.requiredString("full_name", in: arguments)
+                let emails = try Self.stringArray("emails", in: arguments)
+                let phones = try Self.stringArray("phones", in: arguments)
+                let organization = try Self.optionalString("organization", in: arguments)
+                let title = try Self.optionalString("title", in: arguments)
+                let notes = try Self.optionalString("notes", in: arguments)
+                return try Self.renderJSON(
+                    try await JeffDAVClient.createContact(
+                        accountID: accountID,
+                        addressbookURL: addressbookURL,
+                        fullName: fullName,
+                        emails: emails,
+                        phones: phones,
+                        organization: organization,
+                        title: title,
+                        notes: notes
+                    )
+                )
+            }
+        )
+    }
+
     private func webDAVListFilesTool() -> RegisteredTool {
         RegisteredTool(
             definition: AgentToolDefinition(
@@ -2051,7 +2102,7 @@ public actor RootAgentToolbox {
                         ],
                         "action_type": [
                             "type": "string",
-                            "description": "Optional executable action type such as email_send, email_reply, calendar_create_event, calendar_delete_event, or webdav_put_text_file.",
+                            "description": "Optional executable action type such as email_send, email_reply, calendar_create_event, calendar_delete_event, contacts_create, or webdav_put_text_file.",
                         ],
                         "action_payload": [
                             "type": "object",
@@ -2190,7 +2241,7 @@ public actor RootAgentToolbox {
         RegisteredTool(
             definition: AgentToolDefinition(
                 name: "draft_action_execute",
-                description: "Execute a pending durable draft action after explicit user confirmation. Supports email_send, email_reply, calendar_create_event, calendar_delete_event, and webdav_put_text_file payloads.",
+                description: "Execute a pending durable draft action after explicit user confirmation. Supports email_send, email_reply, calendar_create_event, calendar_delete_event, contacts_create, and webdav_put_text_file payloads.",
                 parameters: [
                     "type": "object",
                     "properties": [
@@ -3331,6 +3382,17 @@ extension RootAgentToolbox {
                 accountID: try payloadOptionalString("account_id", in: payload),
                 eventURL: try payloadRequiredString("event_url", in: payload)
             )
+        case "contacts_create":
+            return try await JeffDAVClient.createContact(
+                accountID: try payloadOptionalString("account_id", in: payload),
+                addressbookURL: try payloadOptionalString("addressbook_url", in: payload),
+                fullName: try payloadRequiredString("full_name", in: payload),
+                emails: try payloadStringArray("emails", in: payload),
+                phones: try payloadStringArray("phones", in: payload),
+                organization: try payloadOptionalString("organization", in: payload),
+                title: try payloadOptionalString("title", in: payload),
+                notes: try payloadOptionalString("notes", in: payload)
+            )
         case "webdav_put_text_file":
             return try await JeffDAVClient.putTextFile(
                 accountID: try payloadOptionalString("account_id", in: payload),
@@ -3341,7 +3403,7 @@ extension RootAgentToolbox {
         default:
             throw RootToolboxError.invalidArgument(
                 key: "action_type",
-                expected: "email_send, email_reply, calendar_create_event, calendar_delete_event, or webdav_put_text_file"
+                expected: "email_send, email_reply, calendar_create_event, calendar_delete_event, contacts_create, or webdav_put_text_file"
             )
         }
     }
@@ -3361,6 +3423,8 @@ extension RootAgentToolbox {
             return "calendar_create_event"
         case "delete_calendar_event":
             return "calendar_delete_event"
+        case "create_contact", "contact_create", "carddav_create_contact":
+            return "contacts_create"
         case "note", "notes", "file", "webdav_note":
             return "webdav_put_text_file"
         default:

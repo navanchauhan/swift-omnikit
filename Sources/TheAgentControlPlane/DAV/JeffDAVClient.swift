@@ -381,6 +381,64 @@ struct JeffDAVClient {
         ]
     }
 
+    static func createContact(
+        accountID: String?,
+        addressbookURL: String?,
+        fullName: String,
+        emails: [String],
+        phones: [String],
+        organization: String?,
+        title: String?,
+        notes: String?
+    ) async throws -> [String: Any] {
+        guard let account = resolveAccounts(accountID: accountID).first else {
+            throw DAVError.noDAVAccount(accountID ?? "default")
+        }
+        guard account.carddavBaseURL != nil else {
+            throw DAVError.unsupportedCapability(account.accountID, "carddav")
+        }
+        let trimmedName = fullName.trimmingCharacters(in: .whitespacesAndNewlines)
+        let cleanEmails = emails.map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }.filter { !$0.isEmpty }
+        let cleanPhones = phones.map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }.filter { !$0.isEmpty }
+        guard !trimmedName.isEmpty || !cleanEmails.isEmpty || !cleanPhones.isEmpty else {
+            throw DAVError.invalidContact("full_name, emails, or phones is required")
+        }
+
+        let addressbook: URL
+        if let addressbookURL, let url = URL(string: addressbookURL) {
+            addressbook = url
+        } else if let first = try await discoverAddressbooks(account: account).first {
+            addressbook = first
+        } else {
+            throw DAVError.noAddressbookCollection(account.accountID)
+        }
+
+        let uid = "\(UUID().uuidString)@jeff.local"
+        let contactURL = addressbook.appendingPathComponent("\(uid).vcf")
+        let vcard = buildVCard(
+            uid: uid,
+            fullName: trimmedName.isEmpty ? cleanEmails.first ?? cleanPhones.first ?? uid : trimmedName,
+            emails: cleanEmails,
+            phones: cleanPhones,
+            organization: organization,
+            title: title,
+            notes: notes
+        )
+        let response = try await request(account: account, url: contactURL, method: "PUT", contentType: "text/vcard; charset=utf-8", body: vcard)
+        guard [200, 201, 204].contains(response.statusCode) else {
+            throw DAVError.httpStatus(response.statusCode, response.bodyPreview)
+        }
+        return [
+            "status": response.statusCode == 201 ? "created" : "saved",
+            "account_id": account.accountID,
+            "contact_url": contactURL.absoluteString,
+            "uid": uid,
+            "full_name": trimmedName,
+            "emails": cleanEmails,
+            "phones": cleanPhones,
+        ]
+    }
+
     static func searchContacts(accountID: String?, addressbookURL: String?, query: String, limit: Int) async -> [String: Any] {
         let accounts = resolveAccounts(accountID: accountID)
         let maxContacts = max(1, min(limit, 50))
@@ -976,8 +1034,10 @@ enum DAVError: Error, CustomStringConvertible {
     case noDAVAccount(String)
     case unsupportedCapability(String, String)
     case noCalendarCollection(String)
+    case noAddressbookCollection(String)
     case invalidURL(String)
     case invalidDate(String)
+    case invalidContact(String)
     case httpStatus(Int, String)
     case discoveryFailed(String, String)
 
@@ -989,10 +1049,14 @@ enum DAVError: Error, CustomStringConvertible {
             return "Account '\(accountID)' is not configured for \(capability)."
         case .noCalendarCollection(let accountID):
             return "No calendar collection found for account '\(accountID)'."
+        case .noAddressbookCollection(let accountID):
+            return "No address book collection found for account '\(accountID)'."
         case .invalidURL(let rawURL):
             return "Invalid URL '\(rawURL)'."
         case .invalidDate(let value):
             return "Invalid date '\(value)'. Use ISO-8601."
+        case .invalidContact(let message):
+            return "Invalid contact: \(message)"
         case .httpStatus(let status, let body):
             return "DAV request failed with HTTP \(status): \(body)"
         case .discoveryFailed(let accountID, let property):
@@ -1157,6 +1221,41 @@ private func buildICS(uid: String, title: String, start: Date, end: Date, locati
     """
 }
 
+private func buildVCard(
+    uid: String,
+    fullName: String,
+    emails: [String],
+    phones: [String],
+    organization: String?,
+    title: String?,
+    notes: String?
+) -> String {
+    var lines = [
+        "BEGIN:VCARD",
+        "VERSION:3.0",
+        "PRODID:-//OmniKit Jeff//EA Contacts//EN",
+        "UID:\(escapeVCardText(uid))",
+        "FN:\(escapeVCardText(fullName))",
+    ]
+    for email in emails {
+        lines.append("EMAIL;TYPE=INTERNET:\(escapeVCardText(email))")
+    }
+    for phone in phones {
+        lines.append("TEL:\(escapeVCardText(phone))")
+    }
+    if let organization = organization?.trimmingCharacters(in: .whitespacesAndNewlines), !organization.isEmpty {
+        lines.append("ORG:\(escapeVCardText(organization))")
+    }
+    if let title = title?.trimmingCharacters(in: .whitespacesAndNewlines), !title.isEmpty {
+        lines.append("TITLE:\(escapeVCardText(title))")
+    }
+    if let notes = notes?.trimmingCharacters(in: .whitespacesAndNewlines), !notes.isEmpty {
+        lines.append("NOTE:\(escapeVCardText(notes))")
+    }
+    lines.append("END:VCARD")
+    return lines.joined(separator: "\r\n") + "\r\n"
+}
+
 private func line(_ key: String, _ value: String?) -> String {
     guard let value = value?.trimmingCharacters(in: .whitespacesAndNewlines), !value.isEmpty else {
         return ""
@@ -1170,6 +1269,10 @@ private func escapeICSText(_ value: String) -> String {
         .replacingOccurrences(of: "\n", with: "\\n")
         .replacingOccurrences(of: ",", with: "\\,")
         .replacingOccurrences(of: ";", with: "\\;")
+}
+
+private func escapeVCardText(_ value: String) -> String {
+    escapeICSText(value)
 }
 
 private func parseICSEvents(_ ics: String) -> [[String: String]] {
