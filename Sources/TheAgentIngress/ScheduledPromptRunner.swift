@@ -35,14 +35,11 @@ public actor ScheduledPromptRunner {
         for record in duePrompts {
             do {
                 let result = try await gateway.handle(envelope(for: record, now: now))
+                if !result.deliveries.isEmpty {
+                    try await deliverySink(result.deliveries)
+                }
                 _ = try await store.recordFire(scheduleID: record.scheduleID, firedAt: now)
                 firedIDs.append(record.scheduleID)
-
-                do {
-                    try await deliverySink(result.deliveries)
-                } catch {
-                    print("[ScheduledPromptRunner] delivery failed after schedule fire was recorded: \(error)")
-                }
             } catch {
                 _ = try await store.recordFailure(
                     scheduleID: record.scheduleID,
