@@ -309,6 +309,7 @@ private extension RootOrchestratorProfile {
             "- Use `contacts_create` only after showing a draft and receiving explicit confirmation; contact writes are external side effects.",
             "- Use `memory_search` when durable user context, preferences, active projects, mood signals, relationships, or routines may materially change the answer.",
             "- Relevant Vault memories may be pre-injected into Durable Root State; treat them as context with source-linked confidence, not as infallible ground truth.",
+            "- Use `daily_briefing_snapshot` for morning briefings, status sweeps, or broad `what should I know today?` requests before composing a concise user-facing summary.",
             "- Use `calendar_create_event`, `calendar_delete_event`, or `webdav_put_text_file` only after showing a draft/plan and receiving explicit confirmation. Calendar writes and note/file writes are external side effects.",
             "- Use `webdav_list_files` and `webdav_put_text_file` for lightweight notes/files on configured WebDAV accounts; do not imply this is Apple Notes unless the account actually exposes that backend.",
             "- Be explicit about capability requirements, expected outputs, and constraints when starting missions or delegating.",

@@ -72,6 +72,7 @@ public actor RootAgentToolbox {
             webDAVListFilesTool(),
             webDAVPutTextFileTool(),
             memorySearchTool(),
+            dailyBriefingSnapshotTool(),
             channelSendMessageTool(),
             channelSendArtifactTool(),
             imageGenerateTool(),
@@ -1601,6 +1602,102 @@ public actor RootAgentToolbox {
                         limit: limit
                     )
                 )
+            }
+        )
+    }
+
+    private func dailyBriefingSnapshotTool() -> RegisteredTool {
+        RegisteredTool(
+            definition: AgentToolDefinition(
+                name: "daily_briefing_snapshot",
+                description: "Collect a bounded EA briefing snapshot: upcoming calendar events, recent human email candidates, pending draft actions, active scheduled prompts, and optional Vault memory context.",
+                parameters: [
+                    "type": "object",
+                    "properties": [
+                        "days_forward": ["type": "integer", "description": "Calendar lookahead in days, capped at 14. Defaults to 2."],
+                        "include_calendar": ["type": "boolean"],
+                        "include_email": ["type": "boolean"],
+                        "email_limit_per_account": ["type": "integer", "description": "Recent messages to scan per account, capped at 25. Defaults to 8."],
+                        "include_pending_drafts": ["type": "boolean"],
+                        "include_schedules": ["type": "boolean"],
+                        "include_memory": ["type": "boolean"],
+                        "memory_query": ["type": "string", "description": "Optional Vault memory query for current priorities/preferences."],
+                    ],
+                    "additionalProperties": false,
+                ]
+            ),
+            executor: { [scheduledPromptStore, draftActionStore] arguments, _ in
+                let daysForward = try Self.intValue("days_forward", in: arguments) ?? 2
+                let includeCalendar = try Self.boolValue("include_calendar", in: arguments) ?? true
+                let includeEmail = try Self.boolValue("include_email", in: arguments) ?? true
+                let emailLimit = try Self.intValue("email_limit_per_account", in: arguments) ?? 8
+                let includePendingDrafts = try Self.boolValue("include_pending_drafts", in: arguments) ?? true
+                let includeSchedules = try Self.boolValue("include_schedules", in: arguments) ?? true
+                let includeMemory = try Self.boolValue("include_memory", in: arguments) ?? true
+                let memoryQuery = try Self.optionalString("memory_query", in: arguments)
+                    ?? "Navan active projects current priorities preferences mood routines relationships"
+
+                var snapshot: [String: Any] = [
+                    "generated_at": Self.iso8601String(Date()),
+                ]
+
+                if includeCalendar {
+                    snapshot["calendar"] = await JeffDAVClient.listEvents(
+                        accountID: nil,
+                        calendarURL: nil,
+                        daysBack: 0,
+                        daysForward: max(1, min(daysForward, 14)),
+                        limit: 30
+                    )
+                }
+
+                if includeEmail {
+                    do {
+                        snapshot["email_needs_reply"] = try await JeffEmailClient.triageNeedsReply(
+                            accountIDs: nil,
+                            mailbox: "INBOX",
+                            limitPerAccount: max(1, min(emailLimit, 25))
+                        )
+                    } catch {
+                        snapshot["email_error"] = String(describing: error)
+                    }
+                }
+
+                if includePendingDrafts, let draftActionStore {
+                    do {
+                        snapshot["pending_draft_actions"] = try await draftActionStore
+                            .list(status: .pendingConfirmation, limit: 10)
+                            .map(Self.serialize(draftAction:))
+                    } catch {
+                        snapshot["pending_draft_actions_error"] = String(describing: error)
+                    }
+                }
+
+                if includeSchedules, let scheduledPromptStore {
+                    do {
+                        snapshot["active_scheduled_prompts"] = try await scheduledPromptStore
+                            .prompts(status: .active)
+                            .prefix(20)
+                            .map(Self.serialize(scheduledPrompt:))
+                    } catch {
+                        snapshot["active_scheduled_prompts_error"] = String(describing: error)
+                    }
+                }
+
+                if includeMemory {
+                    do {
+                        snapshot["vault_memory"] = try await VaultMemoryClient.search(
+                            query: memoryQuery,
+                            kinds: [],
+                            entities: [],
+                            limit: 8
+                        )
+                    } catch {
+                        snapshot["vault_memory_error"] = String(describing: error)
+                    }
+                }
+
+                return try Self.renderJSON(snapshot)
             }
         )
     }
