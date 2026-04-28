@@ -16,6 +16,10 @@ public struct SessionConfig: Sendable, Codable {
     public var llmInactivityTimeoutSeconds: Double?
     public var parallelToolCalls: Bool?
     public var terminalToolNames: [String]
+    public var compactOldToolResults: Bool
+    public var toolResultCompactionRecentUserTurns: Int
+    public var toolResultCompactionMaxChars: Int
+    public var toolResultCompactionPreviewChars: Int
     public var mcp: MCPSessionConfig
 
     public func applyingRuntimeFallbacks(from runtimeConfig: SessionConfig) -> SessionConfig {
@@ -28,6 +32,18 @@ public struct SessionConfig: Sendable, Codable {
         }
         if merged.terminalToolNames.isEmpty {
             merged.terminalToolNames = runtimeConfig.terminalToolNames
+        }
+        if !merged.compactOldToolResults {
+            merged.compactOldToolResults = runtimeConfig.compactOldToolResults
+        }
+        if merged.toolResultCompactionRecentUserTurns <= 0 {
+            merged.toolResultCompactionRecentUserTurns = runtimeConfig.toolResultCompactionRecentUserTurns
+        }
+        if merged.toolResultCompactionMaxChars <= 0 {
+            merged.toolResultCompactionMaxChars = runtimeConfig.toolResultCompactionMaxChars
+        }
+        if merged.toolResultCompactionPreviewChars < 0 {
+            merged.toolResultCompactionPreviewChars = runtimeConfig.toolResultCompactionPreviewChars
         }
         return merged
     }
@@ -48,6 +64,10 @@ public struct SessionConfig: Sendable, Codable {
         llmInactivityTimeoutSeconds: Double? = nil,
         parallelToolCalls: Bool? = nil,
         terminalToolNames: [String] = [],
+        compactOldToolResults: Bool = false,
+        toolResultCompactionRecentUserTurns: Int = 2,
+        toolResultCompactionMaxChars: Int = 4_000,
+        toolResultCompactionPreviewChars: Int = 700,
         mcp: MCPSessionConfig = MCPSessionConfig()
     ) {
         self.maxTurns = maxTurns
@@ -65,6 +85,10 @@ public struct SessionConfig: Sendable, Codable {
         self.llmInactivityTimeoutSeconds = llmInactivityTimeoutSeconds
         self.parallelToolCalls = parallelToolCalls
         self.terminalToolNames = terminalToolNames
+        self.compactOldToolResults = compactOldToolResults
+        self.toolResultCompactionRecentUserTurns = toolResultCompactionRecentUserTurns
+        self.toolResultCompactionMaxChars = toolResultCompactionMaxChars
+        self.toolResultCompactionPreviewChars = toolResultCompactionPreviewChars
         self.mcp = mcp
     }
 
@@ -84,6 +108,10 @@ public struct SessionConfig: Sendable, Codable {
         case llmInactivityTimeoutSeconds
         case parallelToolCalls
         case terminalToolNames
+        case compactOldToolResults
+        case toolResultCompactionRecentUserTurns
+        case toolResultCompactionMaxChars
+        case toolResultCompactionPreviewChars
         case mcp
     }
 
@@ -104,6 +132,10 @@ public struct SessionConfig: Sendable, Codable {
         llmInactivityTimeoutSeconds = try container.decodeIfPresent(Double.self, forKey: .llmInactivityTimeoutSeconds)
         parallelToolCalls = try container.decodeIfPresent(Bool.self, forKey: .parallelToolCalls)
         terminalToolNames = try container.decodeIfPresent([String].self, forKey: .terminalToolNames) ?? []
+        compactOldToolResults = try container.decodeIfPresent(Bool.self, forKey: .compactOldToolResults) ?? false
+        toolResultCompactionRecentUserTurns = try container.decodeIfPresent(Int.self, forKey: .toolResultCompactionRecentUserTurns) ?? 2
+        toolResultCompactionMaxChars = try container.decodeIfPresent(Int.self, forKey: .toolResultCompactionMaxChars) ?? 4_000
+        toolResultCompactionPreviewChars = try container.decodeIfPresent(Int.self, forKey: .toolResultCompactionPreviewChars) ?? 700
         mcp = try container.decodeIfPresent(MCPSessionConfig.self, forKey: .mcp) ?? MCPSessionConfig()
     }
 
@@ -124,6 +156,10 @@ public struct SessionConfig: Sendable, Codable {
         try container.encodeIfPresent(llmInactivityTimeoutSeconds, forKey: .llmInactivityTimeoutSeconds)
         try container.encodeIfPresent(parallelToolCalls, forKey: .parallelToolCalls)
         try container.encode(terminalToolNames, forKey: .terminalToolNames)
+        try container.encode(compactOldToolResults, forKey: .compactOldToolResults)
+        try container.encode(toolResultCompactionRecentUserTurns, forKey: .toolResultCompactionRecentUserTurns)
+        try container.encode(toolResultCompactionMaxChars, forKey: .toolResultCompactionMaxChars)
+        try container.encode(toolResultCompactionPreviewChars, forKey: .toolResultCompactionPreviewChars)
         try container.encode(mcp, forKey: .mcp)
     }
 }

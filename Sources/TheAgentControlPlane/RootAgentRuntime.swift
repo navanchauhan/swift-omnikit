@@ -324,6 +324,10 @@ private extension RootAgentRuntimeOptions {
                 "no_response",
             ]
         }
+        resolved.compactOldToolResults = true
+        resolved.toolResultCompactionRecentUserTurns = max(resolved.toolResultCompactionRecentUserTurns, 2)
+        resolved.toolResultCompactionMaxChars = min(max(resolved.toolResultCompactionMaxChars, 1_500), 4_000)
+        resolved.toolResultCompactionPreviewChars = min(max(resolved.toolResultCompactionPreviewChars, 200), 900)
         if yoloMode {
             if resolved.reasoningEffort == nil {
                 resolved.reasoningEffort = "high"

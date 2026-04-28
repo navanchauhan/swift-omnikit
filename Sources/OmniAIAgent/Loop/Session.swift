@@ -352,6 +352,7 @@ public actor Session {
                 ? latestAssistantResponseId()
                 : nil
             let providerOptions = providerProfile.providerOptions()
+            let modelHistory = historyForModelRequest()
             let messages: [Message]
             if let prevId = previousResponseId {
                 // When resuming via previous_response_id, only send turns added
@@ -359,10 +360,11 @@ public actor Session {
                 // already has everything up to and including that response.
                 messages = convertIncrementalMessages(
                     systemPrompt: systemPrompt,
-                    afterResponseId: prevId
+                    afterResponseId: prevId,
+                    sourceHistory: modelHistory
                 )
             } else {
-                messages = convertHistoryToMessages(systemPrompt: systemPrompt)
+                messages = convertHistoryToMessages(systemPrompt: systemPrompt, sourceHistory: modelHistory)
             }
 
             let request = Request(
@@ -1011,7 +1013,88 @@ public actor Session {
 
     // MARK: - History Conversion
 
-    private func convertHistoryToMessages(systemPrompt: String) -> [Message] {
+    private func historyForModelRequest() -> [Turn] {
+        guard config.compactOldToolResults else {
+            return history
+        }
+        let boundary = oldToolResultCompactionBoundary(in: history)
+        guard boundary > 0 else {
+            return history
+        }
+        let toolCallIdToName = buildToolCallIdToNameLookup(from: history)
+        let maxChars = max(1, config.toolResultCompactionMaxChars)
+        let previewChars = max(0, config.toolResultCompactionPreviewChars)
+        var compactedCount = 0
+        var savedChars = 0
+        let compacted = history.enumerated().map { index, turn -> Turn in
+            guard index < boundary,
+                  case .toolResults(let toolResults) = turn
+            else {
+                return turn
+            }
+            let results = toolResults.results.map { result -> ToolResult in
+                guard result.imageData == nil else {
+                    return result
+                }
+                let output = stringifyJSONValue(result.content)
+                guard output.count > maxChars else {
+                    return result
+                }
+                let toolName = toolCallIdToName[result.toolCallId] ?? "unknown_tool"
+                let preview = String(output.prefix(previewChars))
+                let summary = """
+                [Compacted old tool output: \(toolName) result \(output.count) chars; retained \(previewChars)-char preview. Ask the user to rerun or inspect stored artifacts if exact old output is needed.]
+                \(preview)\(output.count > preview.count ? "..." : "")
+                """
+                guard summary.count < output.count else {
+                    return result
+                }
+                compactedCount += 1
+                savedChars += output.count - summary.count
+                return ToolResult(
+                    toolCallId: result.toolCallId,
+                    content: .string(summary),
+                    isError: result.isError,
+                    imageData: nil,
+                    imageMediaType: nil
+                )
+            }
+            return .toolResults(ToolResultsTurn(results: results, timestamp: toolResults.timestamp))
+        }
+        if compactedCount > 0 {
+            _sessionWriteToStderr("[Session] compacted \(compactedCount) old tool result(s), saved ~\(savedChars) chars for model input\n")
+        }
+        return compacted
+    }
+
+    private func oldToolResultCompactionBoundary(in turns: [Turn]) -> Int {
+        let recentUserTurns = max(1, config.toolResultCompactionRecentUserTurns)
+        var userMessageCount = 0
+        for index in stride(from: turns.count - 1, through: 0, by: -1) {
+            if case .user = turns[index] {
+                userMessageCount += 1
+                if userMessageCount >= recentUserTurns {
+                    return index
+                }
+            }
+        }
+        return 0
+    }
+
+    private func buildToolCallIdToNameLookup(from turns: [Turn]) -> [String: String] {
+        var lookup: [String: String] = [:]
+        for turn in turns {
+            if case .assistant(let assistant) = turn {
+                for call in assistant.toolCalls where !call.name.isEmpty {
+                    lookup[call.id] = call.name
+                }
+            }
+        }
+        return lookup
+    }
+
+    private func convertHistoryToMessages(systemPrompt: String, sourceHistory: [Turn]? = nil) -> [Message] {
+        let history = sourceHistory ?? self.history
         var messages: [Message] = [.system(systemPrompt)]
         if !config.interactiveMode {
             messages.append(.user("""
@@ -1097,7 +1180,8 @@ You are running in non-interactive (automated pipeline) mode. Complete your assi
     /// AFTER the assistant turn whose `responseId` matches `afterResponseId`.
     /// This is used with OpenAI's `previous_response_id` so the server-side
     /// context supplies everything up to that response and we only send new items.
-    private func convertIncrementalMessages(systemPrompt: String, afterResponseId: String) -> [Message] {
+    private func convertIncrementalMessages(systemPrompt: String, afterResponseId: String, sourceHistory: [Turn]? = nil) -> [Message] {
+        let history = sourceHistory ?? self.history
         // Find the index of the assistant turn that produced this response.
         var cutoffIndex: Int? = nil
         for idx in stride(from: history.count - 1, through: 0, by: -1) {
@@ -1109,7 +1193,7 @@ You are running in non-interactive (automated pipeline) mode. Complete your assi
 
         // If we can't find the matching turn, fall back to full history.
         guard let cutoff = cutoffIndex, cutoff + 1 < history.count else {
-            return convertHistoryToMessages(systemPrompt: systemPrompt)
+            return convertHistoryToMessages(systemPrompt: systemPrompt, sourceHistory: history)
         }
 
         // System/developer messages are sent as `instructions` by the adapter,
