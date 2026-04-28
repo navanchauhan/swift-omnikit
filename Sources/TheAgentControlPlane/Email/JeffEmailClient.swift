@@ -25,6 +25,50 @@ struct JeffEmailMessageSummary: Sendable {
     }
 }
 
+private struct JeffEmailTriageCandidate: Sendable {
+    var accountID: String
+    var uid: String
+    var date: Date?
+    var from: String
+    var subject: String?
+    var messageID: String?
+    var whyMightNeedReply: String
+    var preview: String
+
+    func json() -> [String: Any] {
+        [
+            "account_id": accountID,
+            "uid": uid,
+            "date": date?.ISO8601Format() ?? NSNull(),
+            "from": from,
+            "subject": subject ?? NSNull(),
+            "message_id": messageID ?? NSNull(),
+            "why_might_need_reply": whyMightNeedReply,
+            "preview": preview,
+        ]
+    }
+}
+
+private struct JeffEmailTriageAccountResult: Sendable {
+    var accountID: String
+    var email: String
+    var messageCount: Int?
+    var scannedRecentCount: Int?
+    var error: String?
+    var candidates: [JeffEmailTriageCandidate]
+
+    func json() -> [String: Any] {
+        [
+            "account_id": accountID,
+            "email": email,
+            "message_count": messageCount ?? NSNull(),
+            "scanned_recent_count": scannedRecentCount ?? NSNull(),
+            "error": error ?? NSNull(),
+            "candidates": candidates.map { $0.json() },
+        ]
+    }
+}
+
 struct JeffEmailClient {
     struct Config: Sendable {
         var accountID: String
@@ -103,7 +147,7 @@ struct JeffEmailClient {
             return value
         }
 
-        private static func normalizeAccountID(_ rawValue: String) -> String {
+        static func normalizeAccountID(_ rawValue: String) -> String {
             rawValue.trimmingCharacters(in: .whitespacesAndNewlines)
                 .lowercased()
                 .replacingOccurrences(of: #"[^a-z0-9]+"#, with: "_", options: .regularExpression)
@@ -196,6 +240,44 @@ struct JeffEmailClient {
         ]
     }
 
+    static func triageNeedsReply(accountIDs: [String]?, mailbox: String, limitPerAccount: Int) async throws -> [String: Any] {
+        let requestedAccountIDs = accountIDs?.map(Config.normalizeAccountID).filter { !$0.isEmpty }
+        let configs = Config.loadAccounts().filter { config in
+            requestedAccountIDs?.isEmpty != false || requestedAccountIDs?.contains(config.accountID) == true
+        }
+        let limit = max(1, min(limitPerAccount, 25))
+        let results = await withTaskGroup(of: JeffEmailTriageAccountResult.self) { group in
+            for config in configs {
+                group.addTask {
+                    do {
+                        return try await triageAccount(config: config, mailbox: mailbox, limit: limit)
+                    } catch {
+                        return JeffEmailTriageAccountResult(
+                            accountID: config.accountID,
+                            email: config.fromAddress,
+                            messageCount: nil,
+                            scannedRecentCount: nil,
+                            error: String(describing: error),
+                            candidates: []
+                        )
+                    }
+                }
+            }
+            var accountResults: [JeffEmailTriageAccountResult] = []
+            for await result in group {
+                accountResults.append(result)
+            }
+            return accountResults.sorted { left, right in
+                left.accountID < right.accountID
+            }
+        }
+        return [
+            "mailbox": mailbox,
+            "limit_per_account": limit,
+            "accounts": results.map { $0.json() },
+        ]
+    }
+
     static func listRecent(accountID: String?, mailbox: String, limit: Int) async throws -> [String: Any] {
         let limit = max(1, min(limit, 50))
         let config = try Config.load(accountID: accountID)
@@ -221,6 +303,81 @@ struct JeffEmailClient {
                 "messages": messages.reversed().map { $0.json() },
             ]
         }
+    }
+
+    private static func triageAccount(config: Config, mailbox: String, limit: Int) async throws -> JeffEmailTriageAccountResult {
+        try await withIMAP(config: config) { server in
+            let selection = try await server.selectMailbox(mailbox)
+            guard let latest = selection.latest(limit) else {
+                return JeffEmailTriageAccountResult(
+                    accountID: config.accountID,
+                    email: config.fromAddress,
+                    messageCount: selection.messageCount,
+                    scannedRecentCount: 0,
+                    error: nil,
+                    candidates: []
+                )
+            }
+
+            let ownAddresses = Set([config.fromAddress, config.imapUsername, config.smtpUsername].map { $0.lowercased() })
+            var candidates: [JeffEmailTriageCandidate] = []
+            for try await message in server.fetchMessages(using: latest) {
+                guard let from = message.from,
+                      let fromAddress = extractEmailAddress(from),
+                      !ownAddresses.contains(fromAddress.lowercased())
+                else {
+                    continue
+                }
+                let reason = triageReason(message)
+                guard reason != nil else {
+                    continue
+                }
+                candidates.append(
+                    JeffEmailTriageCandidate(
+                        accountID: config.accountID,
+                        uid: message.uid.map { String($0.value) } ?? "",
+                        date: message.date,
+                        from: from,
+                        subject: message.subject,
+                        messageID: message.header.messageId?.description,
+                        whyMightNeedReply: reason ?? "recent human-sent message",
+                        preview: message.preview(maxLength: 360)
+                    )
+                )
+            }
+            return JeffEmailTriageAccountResult(
+                accountID: config.accountID,
+                email: config.fromAddress,
+                messageCount: selection.messageCount,
+                scannedRecentCount: limit,
+                error: nil,
+                candidates: Array(candidates.reversed().prefix(8))
+            )
+        }
+    }
+
+    private static func triageReason(_ message: Message) -> String? {
+        let from = (message.from ?? "").lowercased()
+        let subject = (message.subject ?? "").lowercased()
+        let preview = message.preview(maxLength: 1_000).lowercased()
+        let haystack = "\(from)\n\(subject)\n\(preview)"
+        let automatedSignals = [
+            "no-reply", "noreply", "donotreply", "do-not-reply", "notification",
+            "newsletter", "unsubscribe", "receipt", "invoice", "verification code",
+            "security alert", "digest", "promotion", "marketing", "automated",
+        ]
+        if automatedSignals.contains(where: { haystack.contains($0) }) {
+            return nil
+        }
+        let replySignals = [
+            "?", "let me know", "would you", "could you", "can you", "are you",
+            "available", "chat", "call", "meet", "schedule", "interested",
+            "follow up", "next step", "reply", "respond", "thoughts",
+        ]
+        if replySignals.contains(where: { haystack.contains($0) }) {
+            return "human-sent message with an apparent ask or scheduling/reply cue"
+        }
+        return "recent human-sent message; review for possible reply"
     }
 
     static func search(accountID: String?, mailbox: String, query: String, limit: Int, recentWindow: Int) async throws -> [String: Any] {

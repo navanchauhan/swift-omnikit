@@ -47,6 +47,7 @@ public actor RootAgentToolbox {
             listArtifactsTool(),
             getArtifactTool(),
             emailAccountsListTool(),
+            emailTriageNeedsReplyTool(),
             emailListRecentTool(),
             emailSearchTool(),
             emailGetMessageTool(),
@@ -1028,6 +1029,36 @@ public actor RootAgentToolbox {
                         query: query,
                         limit: limit,
                         recentWindow: recentWindow
+                    )
+                )
+            }
+        )
+    }
+
+    private func emailTriageNeedsReplyTool() -> RegisteredTool {
+        RegisteredTool(
+            definition: AgentToolDefinition(
+                name: "email_triage_needs_reply",
+                description: "One-call bounded scan across configured email accounts for recent human-sent messages that might need a reply. Prefer this over repeated email_list_recent/email_search calls for inbox triage.",
+                parameters: [
+                    "type": "object",
+                    "properties": [
+                        "account_ids": ["type": "array", "items": ["type": "string"], "description": "Optional account IDs to scan. Defaults to all configured accounts."],
+                        "mailbox": ["type": "string", "description": "Mailbox name, defaults to INBOX."],
+                        "limit_per_account": ["type": "integer", "description": "Recent messages to scan per account, capped at 25. Defaults to 12."],
+                    ],
+                    "additionalProperties": false,
+                ]
+            ),
+            executor: { arguments, _ in
+                let accountIDs = try Self.stringArray("account_ids", in: arguments)
+                let mailbox = try Self.optionalString("mailbox", in: arguments) ?? "INBOX"
+                let limit = try Self.intValue("limit_per_account", in: arguments) ?? 12
+                return try Self.renderJSON(
+                    try await JeffEmailClient.triageNeedsReply(
+                        accountIDs: accountIDs.isEmpty ? nil : accountIDs,
+                        mailbox: mailbox,
+                        limitPerAccount: limit
                     )
                 )
             }
