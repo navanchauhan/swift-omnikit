@@ -168,6 +168,11 @@ public struct CodingAgent {
         switch executionBackend {
         case .local:
             return LocalExecutionEnvironment(workingDir: workingDir)
+        case .swiftBash(let backendConfig):
+            return SwiftBashExecutionEnvironment(
+                workingDir: workingDir,
+                config: backendConfig
+            )
         case .container(let backendConfig):
             #if os(iOS) || os(tvOS) || os(watchOS) || os(visionOS)
             let hostWorkspaceDir = backendConfig.hostWorkspaceDir

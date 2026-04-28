@@ -1,6 +1,6 @@
 import Foundation
 import OmniVFS
-import CZlib
+import OmniCZlib
 
 enum GzipDecoder {
     private static let chunkSize = 64 * 1024

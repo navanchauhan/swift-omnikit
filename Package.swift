@@ -242,6 +242,8 @@ let package = Package(
         .package(url: "https://github.com/swiftlang/swift-testing.git", from: "6.2.0"),
         // WASI execution engine.
         .package(url: "https://github.com/swiftwasm/WasmKit.git", from: "0.2.0"),
+        // Pure-Swift bash interpreter for in-process command execution.
+        .package(url: "https://github.com/Cocoanetics/SwiftBash.git", branch: "main"),
         // Mail access for Jeff's email inbox and outbound drafts.
         .package(url: "https://github.com/Cocoanetics/SwiftMail.git", branch: "main"),
     ],
@@ -249,7 +251,8 @@ let package = Package(
         // Targets are the basic building blocks of a package, defining a module or a test suite.
         // Targets can depend on other targets in this package and products from dependencies.
         .systemLibrary(
-            name: "CZlib",
+            name: "OmniCZlib",
+            path: "Sources/CZlib",
             pkgConfig: zlibPkgConfig,
             providers: zlibProviders
         ),
@@ -434,7 +437,7 @@ let package = Package(
                 "OmniVFS",
                 "OmniExecution",
                 "CBlinkEmulator",
-                "CZlib",
+                "OmniCZlib",
                 .product(name: "WasmKit", package: "WasmKit"),
                 .product(name: "WasmKitWASI", package: "WasmKit"),
             ],
@@ -485,6 +488,8 @@ let package = Package(
                 "OmniMCP",
                 "OmniExecution",
                 "CSQLite",
+                .product(name: "BashInterpreter", package: "SwiftBash"),
+                .product(name: "BashCommandKit", package: "SwiftBash"),
                 .target(name: "OmniContainer", condition: .when(platforms: [.iOS, .tvOS, .watchOS, .visionOS])),
             ],
             path: "Sources/OmniAIAgent",

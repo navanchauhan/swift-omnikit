@@ -1,5 +1,5 @@
 {
-  "originHash" : "0414e7c216fd319db9a8170a1fe250a87b17c08f8a87e0d6b3bc4115880a6332",
+  "originHash" : "184eb5c6497369c09986faae873c3979e0e55c19188d123566801ba4efc600e7",
   "pins" : [
     {
       "identity" : "async-http-client",
@@ -87,8 +87,8 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/apple/swift-crypto.git",
       "state" : {
-        "revision" : "6f70fa9eab24c1fd982af18c281c4525d05e3095",
-        "version" : "4.2.0"
+        "revision" : "95ba0316a9b733e92bb6b071255ff46263bbe7dc",
+        "version" : "3.15.1"
       }
     },
     {
@@ -269,6 +269,15 @@
       "state" : {
         "revision" : "48a471ab313e858258ab0b9b0bf2cea55a50cefb",
         "version" : "6.2.3"
+      }
+    },
+    {
+      "identity" : "swiftbash",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/Cocoanetics/SwiftBash.git",
+      "state" : {
+        "branch" : "main",
+        "revision" : "6a83b6db1f0ea3a0507d471305905a07ecc86986"
       }
     },
     {
