@@ -600,7 +600,12 @@ struct JeffDAVClient {
         let body = """
         <?xml version="1.0" encoding="utf-8" ?>
         <C:calendar-query xmlns:D="DAV:" xmlns:C="urn:ietf:params:xml:ns:caldav">
-          <D:prop><D:getetag/><C:calendar-data/></D:prop>
+          <D:prop>
+            <D:getetag/>
+            <C:calendar-data>
+              <C:expand start="\(calDAVDate(start))" end="\(calDAVDate(end))"/>
+            </C:calendar-data>
+          </D:prop>
           <C:filter>
             <C:comp-filter name="VCALENDAR">
               <C:comp-filter name="VEVENT">
