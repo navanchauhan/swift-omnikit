@@ -3,16 +3,23 @@ import Foundation
 import FoundationNetworking
 #endif
 import OmniAIAgent
+import OmniAICore
 import OmniAgentMesh
 import OmniSkills
 
 public actor RootAgentToolbox {
     private let server: RootAgentServer
     private let scheduledPromptStore: (any ScheduledPromptStore)?
+    private let draftActionStore: DraftActionStore?
 
-    public init(server: RootAgentServer, scheduledPromptStore: (any ScheduledPromptStore)? = nil) {
+    public init(
+        server: RootAgentServer,
+        scheduledPromptStore: (any ScheduledPromptStore)? = nil,
+        draftActionStore: DraftActionStore? = nil
+    ) {
         self.server = server
         self.scheduledPromptStore = scheduledPromptStore
+        self.draftActionStore = draftActionStore
     }
 
     static func testingSerializeDeliveryMetadata(_ metadata: [String: String]) -> [String: Any] {
@@ -72,6 +79,9 @@ public actor RootAgentToolbox {
             channelReactTool(),
             channelSetReplyEffectTool(),
             displayDraftTool(),
+            draftActionListTool(),
+            draftActionCancelTool(),
+            draftActionExecuteTool(),
             schedulePromptTool(),
             listScheduledPromptsTool(),
             cancelScheduledPromptTool(),
@@ -1103,7 +1113,7 @@ public actor RootAgentToolbox {
         RegisteredTool(
             definition: AgentToolDefinition(
                 name: "email_create_draft",
-                description: "Create an email draft in the selected account's IMAP Drafts mailbox. Prefer this for user-facing email composition unless the user explicitly confirms sending.",
+                description: "Create an email draft in the selected account's IMAP Drafts mailbox. This writes external email state; only call after explicit user confirmation to store a mailbox draft. For review-only composition, use display_draft.",
                 parameters: [
                     "type": "object",
                     "properties": [
@@ -1113,12 +1123,16 @@ public actor RootAgentToolbox {
                         "bcc": ["type": "array", "items": ["type": "string"]],
                         "subject": ["type": "string"],
                         "body": ["type": "string"],
+                        "confirmed": ["type": "boolean", "description": "Must be true only after explicit user confirmation to write an IMAP Drafts entry."],
                     ],
-                    "required": ["to", "subject", "body"],
+                    "required": ["to", "subject", "body", "confirmed"],
                     "additionalProperties": false,
                 ]
             ),
             executor: { arguments, _ in
+                guard try Self.boolValue("confirmed", in: arguments) == true else {
+                    throw RootToolboxError.invalidArgument(key: "confirmed", expected: "true after explicit user confirmation")
+                }
                 let accountID = try Self.optionalString("account_id", in: arguments)
                 let to = try Self.stringArray("to", in: arguments)
                 let cc = try Self.stringArray("cc", in: arguments)
@@ -1985,6 +1999,15 @@ public actor RootAgentToolbox {
                             "type": "string",
                             "description": "Action class, e.g. email, calendar, file, payment, deploy, message, custom.",
                         ],
+                        "action_type": [
+                            "type": "string",
+                            "description": "Optional executable action type such as email_send, email_reply, calendar_create_event, calendar_delete_event, or webdav_put_text_file.",
+                        ],
+                        "action_payload": [
+                            "type": "object",
+                            "description": "Optional structured payload for draft_action_execute. Match the eventual tool arguments except omit confirmed.",
+                            "additionalProperties": true,
+                        ],
                         "target_description": [
                             "type": "string",
                             "description": "Human-readable target or integration this draft would affect.",
@@ -1998,23 +2021,42 @@ public actor RootAgentToolbox {
                     "additionalProperties": true,
                 ]
             ),
-            executor: { [server] arguments, _ in
+            executor: { [server, draftActionStore] arguments, _ in
                 let title = try Self.requiredString("title", in: arguments)
                 let draftBody = try Self.requiredString("draft_body", in: arguments)
                 let actionKind = try Self.requiredString("action_kind", in: arguments)
+                let actionType = try Self.optionalString("action_type", in: arguments)
+                let actionPayload = try Self.jsonObjectValue("action_payload", in: arguments)
                 let targetDescription = try Self.optionalString("target_description", in: arguments)
                 let sensitive = try Self.boolValue("sensitive", in: arguments) ?? true
                 var metadata = try Self.stringDictionary(excluding: [
                     "title",
                     "draft_body",
                     "action_kind",
+                    "action_type",
+                    "action_payload",
                     "target_description",
                     "sensitive",
                 ], in: arguments)
+                let context = await ChannelActionRegistry.shared.currentContext(sessionID: server.sessionID)
+                let draftAction = try await draftActionStore?.create(
+                    sourceSessionID: server.sessionID,
+                    title: title,
+                    draftBody: draftBody,
+                    actionKind: actionKind,
+                    actionType: actionType,
+                    targetDescription: targetDescription,
+                    payload: actionPayload,
+                    channelTransport: context?.transport.rawValue,
+                    channelTargetExternalID: context?.targetExternalID,
+                    actorExternalID: context?.actorExternalID
+                )
                 metadata.merge([
                     "side_effect": ChannelSideEffectKind.displayDraft.rawValue,
                     "consent_state": "draft_shown",
+                    "draft_id": draftAction?.draftID ?? "",
                     "action_kind": actionKind,
+                    "action_type": actionType ?? "",
                     "draft_body": draftBody,
                     "target_description": targetDescription ?? "",
                 ]) { _, new in new }
@@ -2027,8 +2069,119 @@ public actor RootAgentToolbox {
                 return try Self.renderJSON([
                     "side_effect": ChannelSideEffectKind.displayDraft.rawValue,
                     "consent_state": "draft_shown",
+                    "draft_action": draftAction.map(Self.serialize(draftAction:)) ?? NSNull(),
                     "approval": Self.serialize(approval: approval),
                 ])
+            }
+        )
+    }
+
+    private func draftActionListTool() -> RegisteredTool {
+        RegisteredTool(
+            definition: AgentToolDefinition(
+                name: "draft_action_list",
+                description: "List durable draft actions, especially pending confirmations. Use when the user says to send, execute, approve, cancel, or revise a previously shown draft.",
+                parameters: [
+                    "type": "object",
+                    "properties": [
+                        "status": [
+                            "type": "string",
+                            "enum": DraftActionStatus.allCases.map(\.rawValue),
+                        ],
+                        "limit": ["type": "integer"],
+                    ],
+                    "additionalProperties": false,
+                ]
+            ),
+            executor: { [draftActionStore] arguments, _ in
+                guard let draftActionStore else {
+                    throw RootToolboxError.invalidArgument(key: "draft_action_list", expected: "draft action store to be configured")
+                }
+                let status = try Self.draftActionStatus("status", in: arguments)
+                let limit = try Self.intValue("limit", in: arguments) ?? 20
+                let drafts = try await draftActionStore.list(status: status, limit: limit)
+                return try Self.renderJSON([
+                    "draft_actions": drafts.map(Self.serialize(draftAction:)),
+                ])
+            }
+        )
+    }
+
+    private func draftActionCancelTool() -> RegisteredTool {
+        RegisteredTool(
+            definition: AgentToolDefinition(
+                name: "draft_action_cancel",
+                description: "Cancel a pending durable draft action by draft_id after the user asks to cancel or discard it.",
+                parameters: [
+                    "type": "object",
+                    "properties": [
+                        "draft_id": ["type": "string"],
+                    ],
+                    "required": ["draft_id"],
+                    "additionalProperties": false,
+                ]
+            ),
+            executor: { [draftActionStore] arguments, _ in
+                guard let draftActionStore else {
+                    throw RootToolboxError.invalidArgument(key: "draft_action_cancel", expected: "draft action store to be configured")
+                }
+                let draftID = try Self.requiredString("draft_id", in: arguments)
+                guard let draft = try await draftActionStore.cancel(draftID) else {
+                    throw RootToolboxError.invalidArgument(key: "draft_id", expected: "existing draft_id")
+                }
+                return try Self.renderJSON([
+                    "draft_action": Self.serialize(draftAction: draft),
+                ])
+            }
+        )
+    }
+
+    private func draftActionExecuteTool() -> RegisteredTool {
+        RegisteredTool(
+            definition: AgentToolDefinition(
+                name: "draft_action_execute",
+                description: "Execute a pending durable draft action after explicit user confirmation. Supports email_send, email_reply, calendar_create_event, calendar_delete_event, and webdav_put_text_file payloads.",
+                parameters: [
+                    "type": "object",
+                    "properties": [
+                        "draft_id": ["type": "string"],
+                        "confirmed": [
+                            "type": "boolean",
+                            "description": "Must be true only after explicit user confirmation.",
+                        ],
+                    ],
+                    "required": ["draft_id", "confirmed"],
+                    "additionalProperties": false,
+                ]
+            ),
+            executor: { [draftActionStore] arguments, _ in
+                guard let draftActionStore else {
+                    throw RootToolboxError.invalidArgument(key: "draft_action_execute", expected: "draft action store to be configured")
+                }
+                guard try Self.boolValue("confirmed", in: arguments) == true else {
+                    throw RootToolboxError.invalidArgument(key: "confirmed", expected: "true after explicit user confirmation")
+                }
+                let draftID = try Self.requiredString("draft_id", in: arguments)
+                guard let draft = try await draftActionStore.get(draftID) else {
+                    throw RootToolboxError.invalidArgument(key: "draft_id", expected: "existing draft_id")
+                }
+                guard draft.status == .pendingConfirmation else {
+                    throw RootToolboxError.invalidArgument(key: "draft_id", expected: "pending_confirmation draft")
+                }
+
+                do {
+                    let result = try await Self.executeDraftAction(draft)
+                    let jsonResult = (try? JSONValue(result)) ?? .object([:])
+                    let updated = try await draftActionStore.markExecuted(draftID, result: jsonResult) ?? draft
+                    return try Self.renderJSON([
+                        "side_effect": ChannelSideEffectKind.executeDraft.rawValue,
+                        "draft_action": Self.serialize(draftAction: updated),
+                        "execution_result": result,
+                    ])
+                } catch {
+                    _ = try? await draftActionStore.recordFailure(draftID, reason: String(describing: error))
+                    throw error
+                }
             }
         )
     }
@@ -2992,6 +3145,27 @@ extension RootAgentToolbox {
         return status
     }
 
+    static func draftActionStatus(_ key: String, in arguments: [String: Any]) throws -> DraftActionStatus? {
+        guard let rawValue = try optionalString(key, in: arguments) else {
+            return nil
+        }
+        guard let status = DraftActionStatus(rawValue: rawValue.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()) else {
+            throw RootToolboxError.invalidArgument(key: key, expected: DraftActionStatus.allCases.map(\.rawValue).joined(separator: ", "))
+        }
+        return status
+    }
+
+    static func jsonObjectValue(_ key: String, in arguments: [String: Any]) throws -> JSONValue? {
+        guard let value = arguments[key] else {
+            return nil
+        }
+        let json = try JSONValue(value)
+        guard case .object = json else {
+            throw RootToolboxError.invalidArgument(key: key, expected: "JSON object")
+        }
+        return json
+    }
+
     static func dateValue(_ key: String, in arguments: [String: Any]) throws -> Date {
         let rawValue = try requiredString(key, in: arguments)
         let trimmed = rawValue.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -3062,6 +3236,202 @@ extension RootAgentToolbox {
     static func renderJSON(_ object: [String: Any]) throws -> String {
         let data = try JSONSerialization.data(withJSONObject: object, options: [.prettyPrinted, .sortedKeys])
         return String(decoding: data, as: UTF8.self)
+    }
+
+    static func executeDraftAction(_ draft: DraftActionRecord) async throws -> [String: Any] {
+        let actionType = normalizedDraftActionType(draft.actionType ?? draft.actionKind)
+        let payload = try payloadObject(for: draft)
+
+        switch actionType {
+        case "email_send":
+            let to = try payloadStringArray("to", in: payload)
+            guard !to.isEmpty else {
+                throw RootToolboxError.invalidArgument(key: "action_payload.to", expected: "at least one recipient")
+            }
+            return try await JeffEmailClient.send(
+                accountID: try payloadOptionalString("account_id", in: payload),
+                to: to,
+                cc: try payloadStringArray("cc", in: payload),
+                bcc: try payloadStringArray("bcc", in: payload),
+                subject: try payloadRequiredString("subject", in: payload),
+                body: try payloadRequiredString("body", in: payload)
+            )
+        case "email_reply":
+            return try await JeffEmailClient.reply(
+                accountID: try payloadOptionalString("account_id", in: payload),
+                mailbox: try payloadOptionalString("mailbox", in: payload) ?? "INBOX",
+                uid: try payloadRequiredString("uid", in: payload),
+                body: try payloadRequiredString("body", in: payload),
+                cc: try payloadStringArray("cc", in: payload),
+                bcc: try payloadStringArray("bcc", in: payload),
+                replyAll: try payloadBool("reply_all", in: payload) ?? false
+            )
+        case "calendar_create_event":
+            return try await JeffDAVClient.createEvent(
+                accountID: try payloadOptionalString("account_id", in: payload),
+                calendarURL: try payloadOptionalString("calendar_url", in: payload),
+                title: try payloadRequiredString("title", in: payload),
+                start: try payloadRequiredString("start", in: payload),
+                end: try payloadRequiredString("end", in: payload),
+                location: try payloadOptionalString("location", in: payload),
+                notes: try payloadOptionalString("notes", in: payload)
+            )
+        case "calendar_delete_event":
+            return try await JeffDAVClient.deleteEvent(
+                accountID: try payloadOptionalString("account_id", in: payload),
+                eventURL: try payloadRequiredString("event_url", in: payload)
+            )
+        case "webdav_put_text_file":
+            return try await JeffDAVClient.putTextFile(
+                accountID: try payloadOptionalString("account_id", in: payload),
+                path: try payloadRequiredString("path", in: payload),
+                text: try payloadRequiredString("text", in: payload),
+                contentType: try payloadOptionalString("content_type", in: payload) ?? "text/markdown; charset=utf-8"
+            )
+        default:
+            throw RootToolboxError.invalidArgument(
+                key: "action_type",
+                expected: "email_send, email_reply, calendar_create_event, calendar_delete_event, or webdav_put_text_file"
+            )
+        }
+    }
+
+    static func normalizedDraftActionType(_ rawValue: String) -> String {
+        let normalized = rawValue
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+            .replacingOccurrences(of: #"[^a-z0-9]+"#, with: "_", options: .regularExpression)
+            .trimmingCharacters(in: CharacterSet(charactersIn: "_"))
+        switch normalized {
+        case "send_email", "outbound_email":
+            return "email_send"
+        case "reply_email":
+            return "email_reply"
+        case "calendar_event", "create_calendar_event":
+            return "calendar_create_event"
+        case "delete_calendar_event":
+            return "calendar_delete_event"
+        case "note", "notes", "file", "webdav_note":
+            return "webdav_put_text_file"
+        default:
+            return normalized
+        }
+    }
+
+    static func payloadObject(for draft: DraftActionRecord) throws -> [String: JSONValue] {
+        guard let payload = draft.payload,
+              let object = payload.objectValue else {
+            throw RootToolboxError.invalidArgument(key: "action_payload", expected: "JSON object")
+        }
+        return object
+    }
+
+    static func payloadRequiredString(_ key: String, in payload: [String: JSONValue]) throws -> String {
+        guard let value = try payloadOptionalString(key, in: payload), !value.isEmpty else {
+            throw RootToolboxError.missingRequiredArgument("action_payload.\(key)")
+        }
+        return value
+    }
+
+    static func payloadOptionalString(_ key: String, in payload: [String: JSONValue]) throws -> String? {
+        guard let value = payload[key] else {
+            return nil
+        }
+        let string: String
+        switch value {
+        case .string(let raw):
+            string = raw
+        case .number(let raw):
+            string = raw.rounded() == raw ? String(Int(raw)) : String(raw)
+        case .bool(let raw):
+            string = raw ? "true" : "false"
+        case .null:
+            return nil
+        case .array, .object:
+            throw RootToolboxError.invalidArgument(key: "action_payload.\(key)", expected: "string")
+        }
+        let trimmed = string.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? nil : trimmed
+    }
+
+    static func payloadStringArray(_ key: String, in payload: [String: JSONValue]) throws -> [String] {
+        guard let value = payload[key] else {
+            return []
+        }
+        switch value {
+        case .array(let values):
+            return try values.compactMap { item in
+                guard case .string(let string) = item else {
+                    throw RootToolboxError.invalidArgument(key: "action_payload.\(key)", expected: "array of strings")
+                }
+                let trimmed = string.trimmingCharacters(in: .whitespacesAndNewlines)
+                return trimmed.isEmpty ? nil : trimmed
+            }
+        case .string(let string):
+            return string
+                .split(separator: ",")
+                .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                .filter { !$0.isEmpty }
+        case .null:
+            return []
+        case .bool, .number, .object:
+            throw RootToolboxError.invalidArgument(key: "action_payload.\(key)", expected: "array of strings")
+        }
+    }
+
+    static func payloadBool(_ key: String, in payload: [String: JSONValue]) throws -> Bool? {
+        guard let value = payload[key] else {
+            return nil
+        }
+        switch value {
+        case .bool(let bool):
+            return bool
+        case .number(let number):
+            return number != 0
+        case .string(let string):
+            switch string.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
+            case "true", "yes", "1":
+                return true
+            case "false", "no", "0":
+                return false
+            default:
+                throw RootToolboxError.invalidArgument(key: "action_payload.\(key)", expected: "boolean")
+            }
+        case .null:
+            return nil
+        case .array, .object:
+            throw RootToolboxError.invalidArgument(key: "action_payload.\(key)", expected: "boolean")
+        }
+    }
+
+    static func jsonFoundationObject(_ value: JSONValue?) -> Any {
+        guard let value else {
+            return NSNull()
+        }
+        return (try? value.asFoundationObject()) ?? NSNull()
+    }
+
+    static func serialize(draftAction: DraftActionRecord) -> [String: Any] {
+        [
+            "draft_id": draftAction.draftID,
+            "source_session_id": draftAction.sourceSessionID,
+            "title": draftAction.title,
+            "draft_body": draftAction.draftBody,
+            "action_kind": draftAction.actionKind,
+            "action_type": draftAction.actionType ?? NSNull(),
+            "target_description": draftAction.targetDescription ?? NSNull(),
+            "payload": jsonFoundationObject(draftAction.payload),
+            "status": draftAction.status.rawValue,
+            "created_at": iso8601String(draftAction.createdAt),
+            "updated_at": iso8601String(draftAction.updatedAt),
+            "executed_at": draftAction.executedAt.map(iso8601String) ?? NSNull(),
+            "cancelled_at": draftAction.cancelledAt.map(iso8601String) ?? NSNull(),
+            "failure_reason": draftAction.failureReason ?? NSNull(),
+            "execution_result": jsonFoundationObject(draftAction.executionResult),
+            "channel_transport": draftAction.channelTransport ?? NSNull(),
+            "channel_target_external_id": draftAction.channelTargetExternalID ?? NSNull(),
+            "actor_external_id": draftAction.actorExternalID ?? NSNull(),
+        ]
     }
 
     static func serialize(task: TaskRecord) -> [String: Any] {

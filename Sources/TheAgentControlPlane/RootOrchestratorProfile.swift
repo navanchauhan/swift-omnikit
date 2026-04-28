@@ -56,6 +56,7 @@ final class RootPromptContextBuffer: @unchecked Sendable {
     )
     private var skillContext: [String: String] = [:]
     private var vaultMemoryContext: String?
+    private var draftActionContext: String?
 
     func update(snapshot: RootConversationSnapshot) {
         lock.lock()
@@ -75,6 +76,12 @@ final class RootPromptContextBuffer: @unchecked Sendable {
         lock.unlock()
     }
 
+    func update(draftActionContext: String?) {
+        lock.lock()
+        self.draftActionContext = draftActionContext
+        lock.unlock()
+    }
+
     func read() -> RootConversationSnapshot {
         lock.lock()
         defer { lock.unlock() }
@@ -91,6 +98,12 @@ final class RootPromptContextBuffer: @unchecked Sendable {
         lock.lock()
         defer { lock.unlock() }
         return vaultMemoryContext
+    }
+
+    func readDraftActionContext() -> String? {
+        lock.lock()
+        defer { lock.unlock() }
+        return draftActionContext
     }
 }
 
@@ -282,11 +295,13 @@ private extension RootOrchestratorProfile {
             "- For pure channel-effect setup requests, call `channel_set_reply_effect` and then `no_response`; otherwise a confirmation message may consume the pending effect before the user's intended next reply.",
             "- Known iMessage effect identifiers include `com.apple.MobileSMS.effect.impact` and `com.apple.messages.effect.CKSpotlightEffect`; use `com.apple.messages.effect.CKSpotlightEffect` for screen/spotlight effects.",
             "- Use `display_draft` before external, irreversible, or high-impact actions such as email, calendar, file changes outside the repo, payments, deployments, or messages sent on the user's behalf.",
-            "- Treat draft approval as durable consent state: draft shown, confirmed, then executed. Do not execute draft-backed actions before approval.",
+            "- For executable draft-backed actions, call `display_draft` with `action_type` and an `action_payload` matching the eventual action tool arguments, omitting only `confirmed`.",
+            "- Treat draft approval as durable consent state: draft shown, confirmed, then executed. When the user confirms a pending draft, use `draft_action_execute`; when they ask to cancel, use `draft_action_cancel`.",
+            "- If the user says `send it`, `do it`, `approve`, `cancel that`, or similar and the target draft is not obvious from the latest tool result, call `draft_action_list` for pending confirmations before replying.",
             "- Use `email_accounts_list`, `email_list_recent`, `email_search`, and `email_get_message` to inspect configured email accounts. Do not ask the user to forward/screenshot email if the email tools can answer directly.",
             "- Use `email_triage_needs_reply` for broad inbox triage requests such as finding emails from humans that may need replies; do not perform repeated low-level searches across every account unless the triage result is insufficient.",
             "- For delegated email replies, fetch the original message, then use `email_reply` so SMTP sends real `In-Reply-To` and `References` headers.",
-            "- For outbound email, prefer `display_draft` or `email_create_draft`; only use `email_send` or `email_reply` after explicit confirmation of the exact recipients, subject/thread, and body.",
+            "- For outbound email review, use `display_draft`. Only use `email_create_draft`, `email_send`, or `email_reply` after explicit confirmation of the exact account, recipients/thread, subject when relevant, and body.",
             "- When writing email as Jeff, write as Navan's executive assistant unless the user explicitly asks you to ghostwrite as Navan. Do not add a `best, navan` sign-off; the email system appends Jeff's assistant signature.",
             "- Use `dav_accounts_list`, `calendar_list`, and `calendar_list_events` for calendar checks, availability, and proactive schedule awareness.",
             "- Use `contacts_search` before sending to ambiguous people; resolve identity from CardDAV/contact data when available instead of guessing an address.",
@@ -360,6 +375,11 @@ private extension RootOrchestratorProfile {
             Relevant Vault memories:
             \(vaultMemoryContext)
             """)
+        }
+
+        if let draftActionContext = contextBuffer.readDraftActionContext()?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !draftActionContext.isEmpty {
+            sections.append(draftActionContext)
         }
 
         guard !sections.isEmpty else {

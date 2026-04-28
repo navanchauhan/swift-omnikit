@@ -65,6 +65,7 @@ public final class RootAgentRuntime: @unchecked Sendable {
     public let profile: RootOrchestratorProfile
 
     private let contextBuffer: RootPromptContextBuffer
+    private let draftActionStore: DraftActionStore
     private let ownedClient: Client?
 
     init(
@@ -72,12 +73,14 @@ public final class RootAgentRuntime: @unchecked Sendable {
         session: Session,
         profile: RootOrchestratorProfile,
         contextBuffer: RootPromptContextBuffer,
+        draftActionStore: DraftActionStore,
         ownedClient: Client?
     ) {
         self.server = server
         self.session = session
         self.profile = profile
         self.contextBuffer = contextBuffer
+        self.draftActionStore = draftActionStore
         self.ownedClient = ownedClient
     }
 
@@ -92,7 +95,14 @@ public final class RootAgentRuntime: @unchecked Sendable {
         let scheduledPromptStore = FileScheduledPromptStore(
             fileURL: stateRoot.runtimeDirectoryURL.appending(path: "scheduled-prompts.json")
         )
-        let toolbox = RootAgentToolbox(server: server, scheduledPromptStore: scheduledPromptStore)
+        let draftActionStore = DraftActionStore(
+            fileURL: stateRoot.runtimeDirectoryURL.appending(path: "draft-actions.json")
+        )
+        let toolbox = RootAgentToolbox(
+            server: server,
+            scheduledPromptStore: scheduledPromptStore,
+            draftActionStore: draftActionStore
+        )
         let additionalTools = await toolbox.registeredTools()
         let wrappedProfile = baseProfile ?? options.provider.makeProfile(
             model: options.model,
@@ -150,6 +160,7 @@ public final class RootAgentRuntime: @unchecked Sendable {
             session: session,
             profile: profile,
             contextBuffer: contextBuffer,
+            draftActionStore: draftActionStore,
             ownedClient: ownedClient
         )
         try await runtime.refreshPromptContext()
@@ -208,6 +219,7 @@ public final class RootAgentRuntime: @unchecked Sendable {
         contextBuffer.update(snapshot: snapshot)
         contextBuffer.update(skillContext: try await server.activeSkillPromptContext())
         contextBuffer.update(vaultMemoryContext: await VaultMemoryClient.automaticContext(for: Self.memoryQuery(from: snapshot)))
+        contextBuffer.update(draftActionContext: try await draftActionStore.promptContext())
     }
 
     private static func memoryQuery(from snapshot: RootConversationSnapshot) -> String {
