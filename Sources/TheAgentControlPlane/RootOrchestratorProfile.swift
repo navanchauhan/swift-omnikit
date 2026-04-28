@@ -55,6 +55,7 @@ final class RootPromptContextBuffer: @unchecked Sendable {
         unresolvedNotifications: []
     )
     private var skillContext: [String: String] = [:]
+    private var vaultMemoryContext: String?
 
     func update(snapshot: RootConversationSnapshot) {
         lock.lock()
@@ -68,6 +69,12 @@ final class RootPromptContextBuffer: @unchecked Sendable {
         lock.unlock()
     }
 
+    func update(vaultMemoryContext: String?) {
+        lock.lock()
+        self.vaultMemoryContext = vaultMemoryContext
+        lock.unlock()
+    }
+
     func read() -> RootConversationSnapshot {
         lock.lock()
         defer { lock.unlock() }
@@ -78,6 +85,12 @@ final class RootPromptContextBuffer: @unchecked Sendable {
         lock.lock()
         defer { lock.unlock() }
         return skillContext
+    }
+
+    func readVaultMemoryContext() -> String? {
+        lock.lock()
+        defer { lock.unlock() }
+        return vaultMemoryContext
     }
 }
 
@@ -277,6 +290,8 @@ private extension RootOrchestratorProfile {
             "- When writing email as Jeff, write as Navan's executive assistant unless the user explicitly asks you to ghostwrite as Navan. Do not add a `best, navan` sign-off; the email system appends Jeff's assistant signature.",
             "- Use `dav_accounts_list`, `calendar_list`, and `calendar_list_events` for calendar checks, availability, and proactive schedule awareness.",
             "- Use `contacts_search` before sending to ambiguous people; resolve identity from CardDAV/contact data when available instead of guessing an address.",
+            "- Use `memory_search` when durable user context, preferences, active projects, mood signals, relationships, or routines may materially change the answer.",
+            "- Relevant Vault memories may be pre-injected into Durable Root State; treat them as context with source-linked confidence, not as infallible ground truth.",
             "- Use `calendar_create_event`, `calendar_delete_event`, or `webdav_put_text_file` only after showing a draft/plan and receiving explicit confirmation. Calendar writes and note/file writes are external side effects.",
             "- Use `webdav_list_files` and `webdav_put_text_file` for lightweight notes/files on configured WebDAV accounts; do not imply this is Apple Notes unless the account actually exposes that backend.",
             "- Be explicit about capability requirements, expected outputs, and constraints when starting missions or delegating.",
@@ -337,6 +352,14 @@ private extension RootOrchestratorProfile {
                 body += "\n\nSkill overlay:\n\(overlay)"
             }
             sections.append(body)
+        }
+
+        if let vaultMemoryContext = contextBuffer.readVaultMemoryContext()?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !vaultMemoryContext.isEmpty {
+            sections.append("""
+            Relevant Vault memories:
+            \(vaultMemoryContext)
+            """)
         }
 
         guard !sections.isEmpty else {

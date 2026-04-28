@@ -207,6 +207,17 @@ public final class RootAgentRuntime: @unchecked Sendable {
         let snapshot = try await server.restoreState()
         contextBuffer.update(snapshot: snapshot)
         contextBuffer.update(skillContext: try await server.activeSkillPromptContext())
+        contextBuffer.update(vaultMemoryContext: await VaultMemoryClient.automaticContext(for: Self.memoryQuery(from: snapshot)))
+    }
+
+    private static func memoryQuery(from snapshot: RootConversationSnapshot) -> String {
+        let recentHumanText = snapshot.hotContext
+            .reversed()
+            .filter { $0.role == .user }
+            .prefix(3)
+            .map(\.content)
+            .reversed()
+        return recentHumanText.joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     private func newestAssistantText(from history: [Turn], afterTurnCount: Int) -> String {

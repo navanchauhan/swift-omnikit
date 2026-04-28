@@ -722,6 +722,7 @@ let package = Package(
             path: "Sources/TheAgentControlPlane",
             exclude: [
                 "Changes",
+                "DAV",
                 "Diagnostics",
                 "Email",
                 "Experiments",

@@ -62,6 +62,7 @@ public actor RootAgentToolbox {
             contactsSearchTool(),
             webDAVListFilesTool(),
             webDAVPutTextFileTool(),
+            memorySearchTool(),
             channelSendMessageTool(),
             channelSendArtifactTool(),
             imageGenerateTool(),
@@ -1445,6 +1446,46 @@ public actor RootAgentToolbox {
                 let text = try Self.requiredString("text", in: arguments)
                 let contentType = try Self.optionalString("content_type", in: arguments) ?? "text/markdown; charset=utf-8"
                 return try Self.renderJSON(try await JeffDAVClient.putTextFile(accountID: accountID, path: path, text: text, contentType: contentType))
+            }
+        )
+    }
+
+    private func memorySearchTool() -> RegisteredTool {
+        RegisteredTool(
+            definition: AgentToolDefinition(
+                name: "memory_search",
+                description: "Search the Vault TrueMemory-backed memory layer for preferences, mood signals, active projects, interests, relationships, routines, facts, corrections, and summaries.",
+                parameters: [
+                    "type": "object",
+                    "properties": [
+                        "query": ["type": "string"],
+                        "kinds": [
+                            "type": "array",
+                            "items": [
+                                "type": "string",
+                                "enum": ["preference", "mood_signal", "active_project", "interest", "relationship", "routine", "fact", "correction", "summary"],
+                            ],
+                        ],
+                        "entities": ["type": "array", "items": ["type": "string"]],
+                        "limit": ["type": "integer", "description": "Maximum memories to return, capped at 30."],
+                    ],
+                    "required": ["query"],
+                    "additionalProperties": false,
+                ]
+            ),
+            executor: { arguments, _ in
+                let query = try Self.requiredString("query", in: arguments)
+                let kinds = try Self.stringArray("kinds", in: arguments)
+                let entities = try Self.stringArray("entities", in: arguments)
+                let limit = try Self.intValue("limit", in: arguments) ?? 8
+                return try Self.renderJSON(
+                    try await VaultMemoryClient.search(
+                        query: query,
+                        kinds: kinds,
+                        entities: entities,
+                        limit: limit
+                    )
+                )
             }
         )
     }
