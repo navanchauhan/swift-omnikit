@@ -247,7 +247,7 @@ public actor IngressGateway {
                 route: route,
                 envelope: envelope
             )
-            if actionOutcome.requiresProtocolRetry {
+            if actionOutcome.requiresProtocolRetry(for: envelope) {
                 print("[IngressGateway] protocol violation: no typed channel action for \(envelope.idempotencyKey); retrying once.")
                 _ = try await runtime.submitUserText(
                     protocolCorrectionText(for: envelope),
@@ -267,7 +267,7 @@ public actor IngressGateway {
                     envelope: envelope
                 )
             }
-            if actionOutcome.isProtocolViolation {
+            if actionOutcome.isProtocolViolation(for: envelope) {
                 let summary = "Protocol violation: root agent produced no typed channel action."
                 print("[IngressGateway] \(summary) idempotency_key=\(envelope.idempotencyKey)")
                 try await saveInboundDelivery(
@@ -1211,11 +1211,17 @@ private struct ChannelActionOutcome: Sendable {
         waitEffect != nil || !instructions.isEmpty
     }
 
-    var requiresProtocolRetry: Bool {
-        !hasTypedSideEffect
+    func requiresProtocolRetry(for envelope: IngressEnvelope) -> Bool {
+        if envelope.eventKind == .humanMessage, waitEffect != nil, instructions.isEmpty {
+            return true
+        }
+        return !hasTypedSideEffect
     }
 
-    var isProtocolViolation: Bool {
-        !hasTypedSideEffect
+    func isProtocolViolation(for envelope: IngressEnvelope) -> Bool {
+        if envelope.eventKind == .humanMessage, waitEffect != nil, instructions.isEmpty {
+            return true
+        }
+        return !hasTypedSideEffect
     }
 }

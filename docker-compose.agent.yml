@@ -22,7 +22,8 @@ services:
     env_file: .env
     environment:
       - OPENAI_BASE_URL=https://api.openai.com/v1
-      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - OPENAI_API_KEY=
+      - OMNIKIT_USE_CODEX_CHATGPT_AUTH=1
       - CODEX_AUTH_JSON=/root/.codex/auth.json
       - PHOTON_PROJECT_ID=${PHOTON_PROJECT_ID}
       - PHOTON_PROJECT_SECRET=${PHOTON_PROJECT_SECRET}
