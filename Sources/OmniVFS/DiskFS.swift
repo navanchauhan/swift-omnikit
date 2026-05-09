@@ -132,7 +132,7 @@ public final class DiskFS: @unchecked Sendable, VFSFullFS {
         return (self, path)
     }
 
-    /// Returns a stable host path for mounting this subtree directly into blink.
+    /// Returns a stable host path for mounting this subtree directly.
     public func mountSourcePath(for path: String = ".") throws -> String {
         let mapped = try hostPath(path)
         let baseURL: URL

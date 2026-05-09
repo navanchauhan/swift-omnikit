@@ -60,7 +60,6 @@ Commands:
   shell                   Open a shell inside the lab container
   wait-ready [seconds]    Wait until Ghostty is ready for control
   run-kitchensink         Build/run KitchenSink in Ghostty via sibling Docker runtime
-  run-igopher             Run iGopherTUI in Ghostty via sibling Docker runtime
   type <text>             Type text into Ghostty
   key <key...>            Send xdotool key presses
   click <x> <y> [button]  Click inside the Ghostty window
@@ -118,9 +117,6 @@ case "$command_name" in
         ;;
     run-kitchensink)
         launch_in_terminal "bash scripts/ghostty-kitchensink-run.sh"
-        ;;
-    run-igopher)
-        launch_in_terminal "bash scripts/ghostty-igopher-run.sh"
         ;;
     type)
         exec_lab ghostty-lab-control type "$*"

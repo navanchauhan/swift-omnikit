@@ -3,33 +3,6 @@
 
 import PackageDescription
 import CompilerPluginSupport
-import Foundation
-
-let packageRoot = URL(fileURLWithPath: #filePath)
-    .deletingLastPathComponent()
-    .standardizedFileURL
-let blinkSourcesRoot = packageRoot.appending(path: "Sources/CBlinkEmulator/vendor/blink/blink", directoryHint: .isDirectory)
-let excludedBlinkSources: Set<String> = ["blink.c", "blinkenlights.c", "uop.c", "sse2.c", "oneoff.c", "inotifyfd.c"]
-let requiredBlinkSourceFiles: Set<String> = [
-    "vendor/blink/blink/epollfd.c",
-    "vendor/blink/blink/eventfd.c",
-]
-let availableRequiredBlinkSourceFiles: Set<String> = Set(
-    requiredBlinkSourceFiles.filter { relativePath in
-        FileManager.default.fileExists(atPath: packageRoot.appending(path: "Sources/CBlinkEmulator/\(relativePath)").path)
-    }
-)
-// Re-evaluate vendored Blink sources from the current checkout at manifest load time.
-let blinkSourceFiles: [String] = Set(
-    ((try? FileManager.default.contentsOfDirectory(atPath: blinkSourcesRoot.path)) ?? [])
-        .filter { $0.hasSuffix(".c") && !excludedBlinkSources.contains($0) }
-        .map { "vendor/blink/blink/\($0)" }
-).union(availableRequiredBlinkSourceFiles)
-.sorted()
-let blinkWrapperFiles: [String] = blinkSourceFiles.map { relativePath in
-    let stem = URL(fileURLWithPath: relativePath).deletingPathExtension().lastPathComponent
-    return "blink_vendor_\(stem).c"
-}
 
 let commonSwiftSettings: [SwiftSetting] = [
     .unsafeFlags(["-warn-concurrency", "-strict-concurrency=complete"]),
@@ -155,14 +128,6 @@ let package = Package(
             name: "OmniVFS",
             targets: ["OmniVFS"]
         ),
-        .library(
-            name: "OmniContainer",
-            targets: ["OmniContainer"]
-        ),
-        .executable(
-            name: "OmniTerm",
-            targets: ["OmniTerm"]
-        ),
         .executable(
             name: "KitchenSink",
             targets: ["KitchenSink"]
@@ -223,10 +188,6 @@ let package = Package(
             name: "OmniAgentDeployCLI",
             targets: ["OmniAgentDeployCLI"]
         ),
-        .executable(
-            name: "iGopherTUI",
-            targets: ["iGopherTUI"]
-        ),
     ],
     dependencies: [
         // Cross-platform networking + streaming.
@@ -234,14 +195,11 @@ let package = Package(
         .package(url: "https://github.com/apple/swift-nio.git", from: "2.0.0"),
         .package(url: "https://github.com/apple/swift-nio-transport-services.git", from: "1.0.0"),
         .package(url: "https://github.com/vapor/websocket-kit.git", from: "2.15.0"),
-        .package(url: "https://github.com/navanchauhan/swift-gopher.git", from: "1.1.8"),
         .package(path: "External/swift-photon"),
         // For Swift macro stubs (SwiftData compatibility).
         .package(url: "https://github.com/swiftlang/swift-syntax.git", from: "602.0.0"),
         // Swift-native testing DSL (`import Testing`, `@Test`, `#expect`).
         .package(url: "https://github.com/swiftlang/swift-testing.git", from: "6.2.0"),
-        // WASI execution engine.
-        .package(url: "https://github.com/swiftwasm/WasmKit.git", from: "0.2.0"),
         // Pure-Swift bash interpreter for in-process command execution.
         .package(url: "https://github.com/Cocoanetics/SwiftBash.git", branch: "main"),
         // Mail access for Jeff's email inbox and outbound drafts.
@@ -299,153 +257,12 @@ let package = Package(
                 .unsafeFlags(["-module-alias", "SwiftData=OmniSwiftData"]),
             ]
         ),
-        .executableTarget(
-            name: "iGopherTUI",
-            dependencies: [
-                "OmniSwiftUI",
-                "OmniSwiftData",
-                "OmniUI",
-                "OmniUINotcursesRenderer",
-                .product(name: "SwiftGopherClient", package: "swift-gopher"),
-            ],
-            path: "Sources/iGopherTUI",
-            swiftSettings: commonSwiftSettings + [
-                .unsafeFlags(["-module-alias", "SwiftUI=OmniSwiftUI"]),
-                .unsafeFlags(["-module-alias", "SwiftData=OmniSwiftData"]),
-                .unsafeFlags(["-Xfrontend", "-solver-expression-time-threshold=300"]),
-            ]
-        ),
         .target(
             name: "OmniExecution",
             swiftSettings: commonSwiftSettings
         ),
         .target(
             name: "OmniVFS",
-            swiftSettings: commonSwiftSettings
-        ),
-        .target(
-            name: "OmniTermSupport",
-            swiftSettings: commonSwiftSettings
-        ),
-        .target(
-            name: "CBlinkUop",
-            path: "Sources/CBlinkUop",
-            cSettings: [
-                .headerSearchPath("../CBlinkEmulator/vendor/blink"),
-                .headerSearchPath("../CBlinkEmulator/config/linux", .when(platforms: [.linux])),
-                .headerSearchPath("../CBlinkEmulator/config/macos", .when(platforms: [.macOS])),
-                .headerSearchPath("../CBlinkEmulator/config/ios", .when(platforms: [.iOS, .tvOS, .watchOS, .visionOS])),
-                .define("DISABLE_JIT", .when(platforms: [.iOS, .tvOS, .watchOS, .visionOS])),
-                .define("NDEBUG"),
-                .define("_FILE_OFFSET_BITS", to: "64"),
-                .define("_DARWIN_C_SOURCE", .when(platforms: [.macOS])),
-                .define("_DARWIN_C_SOURCE", .when(platforms: [.iOS, .tvOS, .watchOS, .visionOS])),
-                .define("_DEFAULT_SOURCE"),
-                .define("_BSD_SOURCE"),
-                .define("_GNU_SOURCE"),
-                .unsafeFlags([
-                    "-fno-align-functions",
-                    "-fno-common",
-                    "-fpie",
-                    "-fno-omit-frame-pointer",
-                    "-fno-optimize-sibling-calls",
-                    "-fcf-protection=none",
-                    "-U_FORTIFY_SOURCE",
-                    "-fpatchable-function-entry=0,0",
-                    "-fno-stack-protector",
-                    "-fno-sanitize=all",
-                    "-O2",
-                    "-fomit-frame-pointer",
-                ]),
-            ]
-        ),
-        .target(
-            name: "CBlinkSse2",
-            path: "Sources/CBlinkSse2",
-            cSettings: [
-                .headerSearchPath("../CBlinkEmulator/vendor/blink"),
-                .headerSearchPath("../CBlinkEmulator/config/linux", .when(platforms: [.linux])),
-                .headerSearchPath("../CBlinkEmulator/config/macos", .when(platforms: [.macOS])),
-                .headerSearchPath("../CBlinkEmulator/config/ios", .when(platforms: [.iOS, .tvOS, .watchOS, .visionOS])),
-                .define("DISABLE_JIT", .when(platforms: [.iOS, .tvOS, .watchOS, .visionOS])),
-                .define("NDEBUG"),
-                .define("_FILE_OFFSET_BITS", to: "64"),
-                .define("_DARWIN_C_SOURCE", .when(platforms: [.macOS])),
-                .define("_DARWIN_C_SOURCE", .when(platforms: [.iOS, .tvOS, .watchOS, .visionOS])),
-                .define("_DEFAULT_SOURCE"),
-                .define("_BSD_SOURCE"),
-                .define("_GNU_SOURCE"),
-                .unsafeFlags([
-                    "-fno-align-functions",
-                    "-fno-common",
-                    "-fpie",
-                    "-fno-omit-frame-pointer",
-                    "-fno-optimize-sibling-calls",
-                    "-fcf-protection=none",
-                    "-U_FORTIFY_SOURCE",
-                    "-O3",
-                ]),
-            ]
-        ),
-        .target(
-            name: "CBlinkEmulator",
-            dependencies: ["CBlinkUop", "CBlinkSse2"],
-            path: "Sources/CBlinkEmulator",
-            sources: ["blink_shim.c", "blink_nojit_stubs.c", "memvfs.c", "omni_fdfs.c"] + blinkWrapperFiles,
-            publicHeadersPath: "include",
-            cSettings: [
-                .headerSearchPath("vendor/blink"),
-                .headerSearchPath("config/linux", .when(platforms: [.linux])),
-                .headerSearchPath("config/macos", .when(platforms: [.macOS])),
-                .headerSearchPath("config/ios", .when(platforms: [.iOS, .tvOS, .watchOS, .visionOS])),
-                // Preprocessor defines matching blink's release build.
-                .define("BLINK_VERSION", to: "\"1.1.0\""),
-                .define("BLINK_COMMITS", to: "\"1\""),
-                .define("BLINK_UNAME_V", to: "\"OmniKit\""),
-                .define("BUILD_TIMESTAMP", to: "\"2026\""),
-                // Route blink's internal exit() calls through the embedder so
-                // non-fork runtimes can unwind without terminating the app.
-                .define("exit", to: "blink_host_exit"),
-                // Apple mobile platforms cannot rely on Blink's JIT path in
-                // normal app sandboxes, so force interpreter mode there.
-                .define("DISABLE_JIT", .when(platforms: [.iOS, .tvOS, .watchOS, .visionOS])),
-                .define("NDEBUG"),
-                .define("_FILE_OFFSET_BITS", to: "64"),
-                .define("_DARWIN_C_SOURCE", .when(platforms: [.macOS])),
-                .define("_DARWIN_C_SOURCE", .when(platforms: [.iOS, .tvOS, .watchOS, .visionOS])),
-                .define("_DEFAULT_SOURCE"),
-                .define("_BSD_SOURCE"),
-                .define("_GNU_SOURCE"),
-                .unsafeFlags([
-                    "-fno-align-functions",
-                    "-fno-common",
-                    "-fpie",
-                    "-fno-omit-frame-pointer",
-                    "-fno-optimize-sibling-calls",
-                    "-fcf-protection=none",
-                    "-U_FORTIFY_SOURCE",
-                ]),
-            ],
-            linkerSettings: [
-                .linkedLibrary("z"),
-                .linkedLibrary("m"),
-            ]
-        ),
-        .target(
-            name: "OmniContainer",
-            dependencies: [
-                "OmniVFS",
-                "OmniExecution",
-                "CBlinkEmulator",
-                "OmniCZlib",
-                .product(name: "WasmKit", package: "WasmKit"),
-                .product(name: "WasmKitWASI", package: "WasmKit"),
-            ],
-            path: "Sources/OmniContainer",
-            resources: [
-                .copy("Resources/alpine-codex-ios-3.21.3-x86_64.tar.gz"),
-                .copy("Resources/alpine-minirootfs-3.21.3-x86_64.tar.gz"),
-            ],
             swiftSettings: commonSwiftSettings
         ),
         .target(
@@ -491,7 +308,6 @@ let package = Package(
                 "CSQLite",
                 .product(name: "BashInterpreter", package: "SwiftBash"),
                 .product(name: "BashCommandKit", package: "SwiftBash"),
-                .target(name: "OmniContainer", condition: .when(platforms: [.iOS, .tvOS, .watchOS, .visionOS])),
             ],
             path: "Sources/OmniAIAgent",
             resources: [
@@ -617,22 +433,9 @@ let package = Package(
             swiftSettings: commonSwiftSettings
         ),
         .executableTarget(
-            name: "OmniTerm",
-            dependencies: [
-                "OmniTermSupport",
-                "OmniVFS",
-                "OmniContainer",
-                "OmniExecution",
-                "CBlinkEmulator",
-            ],
-            path: "Sources/OmniTerm",
-            swiftSettings: commonSwiftSettings
-        ),
-        .executableTarget(
             name: "OmniAICode",
             dependencies: [
                 "OmniAIAgent", "OmniAICore", "OmniMCP",
-                .target(name: "OmniContainer", condition: .when(platforms: [.macOS, .linux])),
             ],
             path: "Sources/OmniAICode",
             swiftSettings: commonSwiftSettings
@@ -784,27 +587,6 @@ let package = Package(
             name: "OmniVFSTests",
             dependencies: [
                 "OmniVFS",
-                .product(name: "Testing", package: "swift-testing"),
-            ],
-            swiftSettings: commonSwiftSettings
-        ),
-        .testTarget(
-            name: "OmniContainerTests",
-            dependencies: [
-                "OmniContainer",
-                "OmniVFS",
-                "OmniExecution",
-                .product(name: "Testing", package: "swift-testing"),
-            ],
-            resources: [
-                .copy("Fixtures"),
-            ],
-            swiftSettings: commonSwiftSettings
-        ),
-        .testTarget(
-            name: "OmniTermTests",
-            dependencies: [
-                "OmniTermSupport",
                 .product(name: "Testing", package: "swift-testing"),
             ],
             swiftSettings: commonSwiftSettings

@@ -39,6 +39,6 @@ COPY Package.swift Package.resolved ./
 COPY Sources/ Sources/
 COPY Tests/ Tests/
 
-RUN swift build --product KitchenSink && swift build --product iGopherTUI
+RUN swift build --product KitchenSink
 
 ENTRYPOINT ["/bin/bash"]

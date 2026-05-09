@@ -1,9 +1,6 @@
 import Foundation
 import OmniAICore
 import OmniExecution
-#if os(iOS) || os(tvOS) || os(watchOS) || os(visionOS)
-import OmniContainer
-#endif
 
 /// High-level factory for creating coding agent sessions.
 public struct CodingAgent {
@@ -173,85 +170,7 @@ public struct CodingAgent {
                 workingDir: workingDir,
                 config: backendConfig
             )
-        case .container(let backendConfig):
-            #if os(iOS) || os(tvOS) || os(watchOS) || os(visionOS)
-            let hostWorkspaceDir = backendConfig.hostWorkspaceDir
-                ?? workingDir
-                ?? defaultWorkspaceDirectory()
-            try FileManager.default.createDirectory(
-                at: URL(fileURLWithPath: hostWorkspaceDir, isDirectory: true),
-                withIntermediateDirectories: true
-            )
-            let hostStateDir = backendConfig.hostStateDir
-            if let hostStateDir {
-                try FileManager.default.createDirectory(
-                    at: URL(fileURLWithPath: hostStateDir, isDirectory: true),
-                    withIntermediateDirectories: true
-                )
-            }
-            let rootFS = try await ImageStore.shared.resolve(backendConfig.imageRef)
-
-            var capabilities: Set<ContainerCapability> = [
-                .workspace(hostPath: hostWorkspaceDir),
-                .tmpfs,
-            ]
-            if backendConfig.networkEnabled {
-                capabilities.insert(.network)
-            }
-            if let hostStateDir {
-                capabilities.insert(.persistentVolume(name: "iagentsmith-state", hostPath: hostStateDir))
-            }
-
-            var containerEnv: [String: String] = [:]
-            if let guestHomeDir = backendConfig.guestHomeDir {
-                containerEnv["HOME"] = guestHomeDir
-            }
-            containerEnv["USER"] = "codex"
-            containerEnv["LOGNAME"] = "codex"
-            containerEnv["SHELL"] = "/bin/sh"
-            containerEnv["GIT_CONFIG_COUNT"] = "1"
-            containerEnv["GIT_CONFIG_KEY_0"] = "safe.directory"
-            containerEnv["GIT_CONFIG_VALUE_0"] = "*"
-
-            let container = ContainerActor(
-                config: ContainerSpec(
-                    imageRef: backendConfig.imageRef,
-                    env: containerEnv,
-                    workingDir: "/workspace",
-                    hostWorkspaceDir: hostWorkspaceDir,
-                    timeoutSeconds: max(1, config.maxCommandTimeoutMs / 1000),
-                    capabilities: capabilities
-                ),
-                rootFS: rootFS
-            )
-
-            return ContainerExecutionEnvironment(
-                container: container,
-                hostWorkspaceDir: hostWorkspaceDir
-            )
-            #else
-            throw CodingAgentError.containerBackendUnavailable
-            #endif
         }
     }
 
-    private static func defaultWorkspaceDirectory() -> String {
-        #if os(iOS) || os(tvOS) || os(watchOS) || os(visionOS)
-        return FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first?.path
-            ?? NSHomeDirectory()
-        #else
-        return FileManager.default.currentDirectoryPath
-        #endif
-    }
-}
-
-public enum CodingAgentError: LocalizedError {
-    case containerBackendUnavailable
-
-    public var errorDescription: String? {
-        switch self {
-        case .containerBackendUnavailable:
-            return "Container execution backend is unavailable on this platform."
-        }
-    }
 }

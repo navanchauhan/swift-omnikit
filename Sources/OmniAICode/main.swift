@@ -11,13 +11,17 @@ struct OmniAICodeCLI {
             try await command.run()
         } catch let error as ExitError {
             if !error.message.isEmpty {
-                fputs("Error: \(error.message)\n", stderr)
+                writeStderr("Error: \(error.message)\n")
             }
             Foundation.exit(error.code)
         } catch {
-            fputs("Error: \(error)\n", stderr)
+            writeStderr("Error: \(error)\n")
             Foundation.exit(1)
         }
+    }
+
+    private static func writeStderr(_ message: String) {
+        FileHandle.standardError.write(Data(message.utf8))
     }
 }
 
