@@ -281,8 +281,15 @@ import Testing
         ".accent",
         ".omni-drawing-island",
         "omni_accessible_label",
+        "omni_accessible_description",
+        "omni_accessible_role_description",
+        "omni_accessible_list_position",
         "gtk_accessible_update_property",
         "GTK_ACCESSIBLE_PROPERTY_LABEL",
+        "GTK_ACCESSIBLE_PROPERTY_DESCRIPTION",
+        "GTK_ACCESSIBLE_PROPERTY_PLACEHOLDER",
+        "GTK_ACCESSIBLE_RELATION_POS_IN_SET",
+        "GTK_ACCESSIBLE_STATE_SELECTED",
         "apply_initial_scroll_offset",
         "gtk_scrolled_window_get_vadjustment",
         "gtk_scrolled_window_get_hadjustment",
@@ -421,6 +428,10 @@ import Testing
     #expect(shim.contains("gtk_string_list_append"))
     #expect(shim.contains("gtk_list_view_new"))
     #expect(shim.contains("gtk_list_view_set_single_click_activate"))
+    #expect(shim.contains("gtk_list_item_set_accessible_label"))
+    #expect(shim.contains("on_virtual_list_button_clicked"))
+    #expect(shim.contains("omni-list-row-button"))
+    #expect(shim.contains("omni-sidebar-row-button"))
     #expect(shim.contains("on_sidebar_list_setup"))
     #expect(shim.contains("on_sidebar_list_bind"))
     #expect(shim.contains("if (count >= 128)"))
@@ -744,6 +755,8 @@ import Testing
         "gtk_widget_set_opacity",
         "gtk_widget_set_name(node->widget, copy)",
         "gtk_accessible_update_property(GTK_ACCESSIBLE(widget), GTK_ACCESSIBLE_PROPERTY_LABEL",
+        "gtk_accessible_update_property(GTK_ACCESSIBLE(widget), GTK_ACCESSIBLE_PROPERTY_DESCRIPTION",
+        "gtk_accessible_update_relation(",
         "GDK_KEY_Return",
         "GDK_KEY_Escape",
     ]
