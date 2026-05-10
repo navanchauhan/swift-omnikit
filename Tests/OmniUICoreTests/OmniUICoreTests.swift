@@ -1670,6 +1670,7 @@ struct _ScrollReaderProbeView: View {
     #expect(snapshot.text.contains("≣ Readme"))
     #expect(!snapshot.text.contains("folder"))
     #expect(!snapshot.text.contains("doc.plaintext"))
+    #expect(SFSymbolMap.unicode(for: "square.and.arrow.down") == "⇩")
 }
 
 @Test func icon_only_labels_use_terminal_safe_glyphs() async throws {

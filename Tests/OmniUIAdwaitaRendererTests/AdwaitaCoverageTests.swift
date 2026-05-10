@@ -294,13 +294,15 @@ import Testing
         "gtk_list_box_new",
         "gtk_list_box_row_new",
         "gtk_box_new(GTK_ORIENTATION_VERTICAL, 8)",
-        "adw_navigation_split_view_new",
-        "adw_navigation_page_new",
-        "adw_navigation_split_view_set_sidebar",
-        "adw_navigation_split_view_set_content",
-        "adw_navigation_split_view_set_show_content",
-        "ADW_IS_NAVIGATION_PAGE(parent)",
-        "adw_navigation_page_set_child",
+        "adw_overlay_split_view_new",
+        "adw_overlay_split_view_set_sidebar_position",
+        "adw_overlay_split_view_set_show_sidebar",
+        "adw_overlay_split_view_set_sidebar",
+        "adw_overlay_split_view_set_content",
+        "ADW_IS_OVERLAY_SPLIT_VIEW(parent->widget)",
+        "view-sidebar-start-symbolic",
+        "on_sidebar_toggle_toggled",
+        "sync_sidebar_toggle",
         "gtk_widget_set_size_request",
         "gtk_widget_set_margin_top",
         "gtk_widget_set_opacity",
@@ -408,6 +410,8 @@ import Testing
     #expect(renderer.contains("omni_adw_plain_list_new"))
     #expect(renderer.contains("private enum BuildContext: Equatable"))
     #expect(renderer.contains("case sidebar"))
+    #expect(renderer.contains("if case .spacer = child.kind"))
+    #expect(renderer.contains("built = omni_adw_box_new(vertical ? 1 : 0, 0)"))
     #expect(renderer.contains("navigationSplitContainer(children: children)"))
     #expect(renderer.contains("omni_adw_sidebar_list_new(labelPointers, idBuffer.baseAddress, depthBuffer.baseAddress"))
     #expect(renderer.contains("simpleList.rows.count >= 128"))
@@ -416,6 +420,7 @@ import Testing
     #expect(header.contains("omni_adw_sidebar_list_new"))
     #expect(shim.contains("gtk_string_list_append"))
     #expect(shim.contains("gtk_list_view_new"))
+    #expect(shim.contains("gtk_list_view_set_single_click_activate"))
     #expect(shim.contains("omni_adw_plain_list_new"))
     #expect(shim.contains("omni_adw_sidebar_list_new"))
     #expect(shim.contains("omni-sidebar-list"))
@@ -599,7 +604,12 @@ import Testing
     #expect(shim.contains("g_object_set_data(G_OBJECT(node->widget), \"omni-scroll-vertical\""))
     #expect(shim.contains("apply_initial_scroll_offset(GTK_SCROLLED_WINDOW(parent->widget))"))
     #expect(shim.contains("g_idle_add(restore_adjustment_value, request);"))
+    #expect(shim.contains("case 10:"))
+    #expect(shim.contains("GTK_IS_SCROLLED_WINDOW(widget)"))
+    #expect(shim.contains("schedule_adjustment_restore(adjustment, pixels);"))
     #expect(renderer.contains("omni_adw_scroll_new(axis == .vertical ? 1 : 0, Double(offset))"))
+    #expect(renderer.contains("case scroll = 10"))
+    #expect(renderer.contains("case .scroll(_, _, let offset):"))
     #expect(header.contains("omni_adw_scroll_new(int32_t vertical, double offset)"))
 }
 
@@ -627,7 +637,8 @@ import Testing
 
     guard
         let diffRange = renderer.range(of: "SemanticDiff.changes(from: $0, to: displaySnapshot)"),
-        let leafRange = renderer.range(of: "AdwaitaNodeBuilder.applyLeafUpdates", range: diffRange.lowerBound..<renderer.endIndex),
+        let noOpRange = renderer.range(of: "if changes.isEmpty, callbackBox.previousSnapshot != nil", range: diffRange.lowerBound..<renderer.endIndex),
+        let leafRange = renderer.range(of: "AdwaitaNodeBuilder.applyLeafUpdates", range: noOpRange.lowerBound..<renderer.endIndex),
         let structuralRange = renderer.range(of: "AdwaitaNodeBuilder.applyStructuralReplacement", range: leafRange.lowerBound..<renderer.endIndex),
         let buildRange = renderer.range(of: "AdwaitaNodeBuilder.build(displaySnapshot.root)", range: structuralRange.lowerBound..<renderer.endIndex),
         let rootRange = renderer.range(of: "omni_adw_app_set_root_focused", range: buildRange.lowerBound..<renderer.endIndex)
@@ -637,6 +648,8 @@ import Testing
     }
 
     #expect(diffRange.lowerBound < leafRange.lowerBound)
+    #expect(diffRange.lowerBound < noOpRange.lowerBound)
+    #expect(noOpRange.lowerBound < leafRange.lowerBound)
     #expect(leafRange.lowerBound < structuralRange.lowerBound)
     #expect(structuralRange.lowerBound < buildRange.lowerBound)
     #expect(buildRange.lowerBound < rootRange.lowerBound)

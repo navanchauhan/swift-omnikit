@@ -154,6 +154,11 @@ public final class AdwaitaApp<Root: View>: @unchecked Sendable {
             } ?? []
             callbackBox.lastChanges = changes
             callbackBox.textValuesByActionID = AdwaitaNodeBuilder.textValues(in: displaySnapshot.root)
+            if changes.isEmpty, callbackBox.previousSnapshot != nil {
+                syncNativePresentation(presentation.modal, app: cApp)
+                callbackBox.previousSnapshot = displaySnapshot
+                return
+            }
             if !changes.isEmpty, AdwaitaNodeBuilder.applyLeafUpdates(changes: changes, snapshot: displaySnapshot, app: cApp) {
                 syncNativePresentation(presentation.modal, app: cApp)
                 callbackBox.previousSnapshot = displaySnapshot
@@ -428,6 +433,7 @@ public struct AdwaitaNativeLeafUpdate: Sendable, Equatable {
         case slider = 7
         case stepper = 8
         case datePicker = 9
+        case scroll = 10
     }
 
     public let id: String
@@ -564,6 +570,8 @@ public enum AdwaitaReconciliation {
             return AdwaitaNativeLeafUpdate(id: node.id, kind: .stepper, text: "\(value ?? 0)\n\(label)")
         case .datePicker(let label, let value, let timestamp, _, _, _):
             return AdwaitaNativeLeafUpdate(id: node.id, kind: .datePicker, text: "\(timestamp)\n\(value)\n\(label)")
+        case .scroll(_, _, let offset):
+            return AdwaitaNativeLeafUpdate(id: node.id, kind: .scroll, text: "\(offset)")
         default:
             return nil
         }
@@ -888,7 +896,13 @@ enum AdwaitaNodeBuilder {
     private static func container(vertical: Bool, spacing: Int32, children: [SemanticNode], context: BuildContext) -> OpaquePointer? {
         guard let parent = omni_adw_box_new(vertical ? 1 : 0, spacing) else { return nil }
         for child in children {
-            if let built = build(child, context: context) {
+            let built: OpaquePointer?
+            if case .spacer = child.kind {
+                built = omni_adw_box_new(vertical ? 1 : 0, 0)
+            } else {
+                built = build(child, context: context)
+            }
+            if let built {
                 omni_adw_node_append(parent, built)
             }
         }

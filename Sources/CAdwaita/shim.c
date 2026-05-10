@@ -19,7 +19,9 @@ struct OmniAdwApp {
   GtkWidget *header_entry_row;
   GtkWidget *header_entry;
   GtkWidget *header_new_tab_button;
+  GtkWidget *header_sidebar_button;
   GtkWidget *content;
+  GtkWidget *active_split_view;
   GtkWidget *settings_window;
   GtkWidget *settings_content;
   GtkWidget *command_button;
@@ -148,6 +150,8 @@ static gboolean on_settings_close_request(GtkWindow *window, gpointer data);
 static gboolean on_key_pressed(GtkEventControllerKey *controller, guint keyval, guint keycode, GdkModifierType state, gpointer data);
 static void on_window_click_pressed(GtkGestureClick *gesture, int n_press, double x, double y, gpointer data);
 static void on_window_click_released(GtkGestureClick *gesture, int n_press, double x, double y, gpointer data);
+static void on_sidebar_toggle_toggled(GtkToggleButton *button, gpointer data);
+static void on_split_show_sidebar_notify(GObject *object, GParamSpec *pspec, gpointer data);
 static void on_entry_changed(GtkEditable *editable, gpointer data);
 static void wire_actions(GtkWidget *widget, OmniAdwApp *app);
 static void on_string_list_setup(GtkSignalListItemFactory *factory, GtkListItem *list_item, gpointer data);
@@ -200,6 +204,18 @@ static void apply_initial_scroll_offset(GtkScrolledWindow *scrolled) {
     ? gtk_scrolled_window_get_vadjustment(scrolled)
     : gtk_scrolled_window_get_hadjustment(scrolled);
   schedule_adjustment_restore(adjustment, *semantic_value);
+}
+
+static void sync_sidebar_toggle(OmniAdwApp *app) {
+  if (!app || !app->header_sidebar_button) return;
+  gboolean has_split = app->active_split_view && ADW_IS_OVERLAY_SPLIT_VIEW(app->active_split_view);
+  gtk_widget_set_visible(app->header_sidebar_button, has_split);
+  if (has_split) {
+    gboolean show_sidebar = adw_overlay_split_view_get_show_sidebar(ADW_OVERLAY_SPLIT_VIEW(app->active_split_view));
+    g_object_set_data(G_OBJECT(app->header_sidebar_button), "omni-updating", GINT_TO_POINTER(1));
+    gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(app->header_sidebar_button), show_sidebar);
+    g_object_set_data(G_OBJECT(app->header_sidebar_button), "omni-updating", NULL);
+  }
 }
 
 static gboolean app_focus_is_native_text_widget(OmniAdwApp *app) {
@@ -313,6 +329,16 @@ static void ensure_header_title_widget(OmniAdwApp *app) {
   gtk_widget_set_hexpand(app->header_entry_row, TRUE);
   gtk_widget_set_halign(app->header_entry_row, GTK_ALIGN_FILL);
 
+  app->header_sidebar_button = gtk_toggle_button_new();
+  gtk_button_set_icon_name(GTK_BUTTON(app->header_sidebar_button), "view-sidebar-start-symbolic");
+  gtk_widget_add_css_class(app->header_sidebar_button, "flat");
+  gtk_widget_set_tooltip_text(app->header_sidebar_button, "Toggle Sidebar");
+  gtk_widget_set_visible(app->header_sidebar_button, FALSE);
+  gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(app->header_sidebar_button), TRUE);
+  omni_accessible_label(app->header_sidebar_button, "Toggle Sidebar");
+  g_signal_connect(app->header_sidebar_button, "toggled", G_CALLBACK(on_sidebar_toggle_toggled), app);
+  adw_header_bar_pack_start(ADW_HEADER_BAR(app->header), app->header_sidebar_button);
+
   app->header_entry = gtk_entry_new();
   gtk_widget_add_css_class(app->header_entry, "omni-header-entry");
   gtk_widget_set_size_request(app->header_entry, 520, -1);
@@ -375,6 +401,7 @@ static void on_app_activate(GApplication *application, gpointer data) {
       gtk_box_append(GTK_BOX(app->body_slot), app->content);
     }
     adw_application_window_set_content(ADW_APPLICATION_WINDOW(app->window), app->shell);
+    sync_sidebar_toggle(app);
     if (!app->key_controller) {
       app->key_controller = gtk_event_controller_key_new();
       gtk_event_controller_set_propagation_phase(app->key_controller, GTK_PHASE_CAPTURE);
@@ -473,6 +500,22 @@ static void on_plain_list_row_activated(GtkListBox *box, GtkListBoxRow *row, gpo
     app->callback(action_id, app->context);
     omni_flush_pending_ui(app);
   }
+}
+
+static void on_sidebar_toggle_toggled(GtkToggleButton *button, gpointer data) {
+  if (g_object_get_data(G_OBJECT(button), "omni-updating") != NULL) return;
+  OmniAdwApp *app = (OmniAdwApp *)data;
+  if (!app || !app->active_split_view || !ADW_IS_OVERLAY_SPLIT_VIEW(app->active_split_view)) return;
+  adw_overlay_split_view_set_show_sidebar(
+    ADW_OVERLAY_SPLIT_VIEW(app->active_split_view),
+    gtk_toggle_button_get_active(button)
+  );
+}
+
+static void on_split_show_sidebar_notify(GObject *object, GParamSpec *pspec, gpointer data) {
+  (void)object;
+  (void)pspec;
+  sync_sidebar_toggle((OmniAdwApp *)data);
 }
 
 static void on_plain_list_row_pressed(GtkGestureClick *gesture, int n_press, double x, double y, gpointer data) {
@@ -802,6 +845,13 @@ static void wire_actions(GtkWidget *widget, OmniAdwApp *app) {
   if (GTK_IS_BUTTON(widget) || GTK_IS_CHECK_BUTTON(widget) || GTK_IS_ENTRY(widget) || GTK_IS_TEXT_VIEW(widget) || GTK_IS_DROP_DOWN(widget) || GTK_IS_MENU_BUTTON(widget) || GTK_IS_SCALE(widget) || GTK_IS_SPIN_BUTTON(widget) || GTK_IS_CALENDAR(widget) || GTK_IS_LIST_VIEW(widget) || GTK_IS_LIST_BOX(widget)) {
     g_object_set_data(G_OBJECT(widget), "omni-app", app);
   }
+  if (ADW_IS_OVERLAY_SPLIT_VIEW(widget)) {
+    app->active_split_view = widget;
+    if (!g_object_get_data(G_OBJECT(widget), "omni-sidebar-notify-installed")) {
+      g_signal_connect(widget, "notify::show-sidebar", G_CALLBACK(on_split_show_sidebar_notify), app);
+      g_object_set_data(G_OBJECT(widget), "omni-sidebar-notify-installed", GINT_TO_POINTER(1));
+    }
+  }
   if (GTK_IS_MENU_BUTTON(widget)) {
     GtkPopover *popover = gtk_menu_button_get_popover(GTK_MENU_BUTTON(widget));
     if (popover) {
@@ -996,7 +1046,9 @@ void omni_adw_app_set_root_focused(OmniAdwApp *app, OmniAdwNode *root, int32_t f
   gtk_widget_set_margin_bottom(app->content, 0);
   gtk_widget_set_margin_start(app->content, 0);
   gtk_widget_set_margin_end(app->content, 0);
+  app->active_split_view = NULL;
   wire_actions(app->content, app);
+  sync_sidebar_toggle(app);
   if (app->window) {
     gtk_window_set_focus(GTK_WINDOW(app->window), NULL);
     if (app->body_slot) {
@@ -1408,10 +1460,22 @@ int32_t omni_adw_app_update_node(OmniAdwApp *app, const char *semantic_id, int32
         g_free(owned_value);
       }
       break;
+    case 10:
+      if (!GTK_IS_SCROLLED_WINDOW(widget)) return 0;
+      {
+        double rows = strtod(value, NULL);
+        double pixels = omni_semantic_scroll_to_pixels(rows);
+        gboolean vertical = GPOINTER_TO_INT(g_object_get_data(G_OBJECT(widget), "omni-scroll-vertical")) != 0;
+        GtkAdjustment *adjustment = vertical
+          ? gtk_scrolled_window_get_vadjustment(GTK_SCROLLED_WINDOW(widget))
+          : gtk_scrolled_window_get_hadjustment(GTK_SCROLLED_WINDOW(widget));
+        schedule_adjustment_restore(adjustment, pixels);
+      }
+      break;
     default:
       return 0;
   }
-  if (value[0]) {
+  if (value[0] && kind != 10) {
     gtk_widget_set_tooltip_text(widget, value);
   }
   return 1;
@@ -1427,7 +1491,6 @@ int32_t omni_adw_app_replace_node(OmniAdwApp *app, const char *semantic_id, Omni
   GtkWidget *replacement_widget = replacement->widget;
   replacement->widget = NULL;
   omni_adw_node_free(replacement);
-  wire_actions(replacement_widget, app);
   app->focused_action_id = focused_action_id;
 
   if (target == app->content) {
@@ -1484,6 +1547,10 @@ int32_t omni_adw_app_replace_node(OmniAdwApp *app, const char *semantic_id, Omni
     }
   }
 
+  app->active_split_view = NULL;
+  wire_actions(app->content, app);
+  sync_sidebar_toggle(app);
+
   GtkWidget *focused = find_widget_for_action(app->content, focused_action_id);
   if (focused && gtk_widget_get_focusable(focused)) {
     gtk_widget_grab_focus(focused);
@@ -1532,6 +1599,7 @@ OmniAdwNode *omni_adw_string_list_new(const char **labels, const int32_t *action
   g_signal_connect(factory, "bind", G_CALLBACK(on_string_list_bind), NULL);
 
   node->widget = gtk_list_view_new(selection, factory);
+  gtk_list_view_set_single_click_activate(GTK_LIST_VIEW(node->widget), TRUE);
   gtk_widget_add_css_class(node->widget, "boxed-list");
   gtk_widget_set_hexpand(node->widget, TRUE);
   gtk_widget_set_halign(node->widget, GTK_ALIGN_FILL);
@@ -1640,14 +1708,19 @@ OmniAdwNode *omni_adw_form_new(void) {
 
 OmniAdwNode *omni_adw_split_new(void) {
   OmniAdwNode *node = calloc(1, sizeof(OmniAdwNode));
-  node->widget = adw_navigation_split_view_new();
+  node->widget = adw_overlay_split_view_new();
   gtk_widget_add_css_class(node->widget, "navigation-view");
   gtk_widget_set_hexpand(node->widget, TRUE);
   gtk_widget_set_vexpand(node->widget, TRUE);
   gtk_widget_set_halign(node->widget, GTK_ALIGN_FILL);
   gtk_widget_set_valign(node->widget, GTK_ALIGN_FILL);
-  adw_navigation_split_view_set_collapsed(ADW_NAVIGATION_SPLIT_VIEW(node->widget), FALSE);
-  adw_navigation_split_view_set_show_content(ADW_NAVIGATION_SPLIT_VIEW(node->widget), TRUE);
+  adw_overlay_split_view_set_sidebar_position(ADW_OVERLAY_SPLIT_VIEW(node->widget), GTK_PACK_START);
+  adw_overlay_split_view_set_show_sidebar(ADW_OVERLAY_SPLIT_VIEW(node->widget), TRUE);
+  adw_overlay_split_view_set_enable_show_gesture(ADW_OVERLAY_SPLIT_VIEW(node->widget), TRUE);
+  adw_overlay_split_view_set_enable_hide_gesture(ADW_OVERLAY_SPLIT_VIEW(node->widget), TRUE);
+  adw_overlay_split_view_set_min_sidebar_width(ADW_OVERLAY_SPLIT_VIEW(node->widget), 220);
+  adw_overlay_split_view_set_max_sidebar_width(ADW_OVERLAY_SPLIT_VIEW(node->widget), 320);
+  adw_overlay_split_view_set_sidebar_width_fraction(ADW_OVERLAY_SPLIT_VIEW(node->widget), 0.28);
   return node;
 }
 
@@ -2025,6 +2098,16 @@ void omni_adw_node_append(OmniAdwNode *parent, OmniAdwNode *child) {
     } else if (!gtk_paned_get_end_child(GTK_PANED(parent->widget))) {
       gtk_paned_set_end_child(GTK_PANED(parent->widget), child->widget);
     }
+  } else if (ADW_IS_OVERLAY_SPLIT_VIEW(parent->widget)) {
+    const gboolean sidebar = parent->split_child_count == 0;
+    GtkWidget *child_widget = child->widget;
+    if (sidebar) {
+      gtk_widget_set_size_request(child_widget, 280, -1);
+      adw_overlay_split_view_set_sidebar(ADW_OVERLAY_SPLIT_VIEW(parent->widget), child_widget);
+    } else if (parent->split_child_count == 1) {
+      adw_overlay_split_view_set_content(ADW_OVERLAY_SPLIT_VIEW(parent->widget), child_widget);
+    }
+    parent->split_child_count += 1;
   } else if (ADW_IS_NAVIGATION_SPLIT_VIEW(parent->widget)) {
     const gboolean sidebar = parent->split_child_count == 0;
     GtkWidget *child_widget = child->widget;
