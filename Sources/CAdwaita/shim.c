@@ -41,7 +41,6 @@ struct OmniAdwApp {
   int32_t default_width;
   int32_t default_height;
   GtkEventController *key_controller;
-  GHashTable *scroll_offsets;
 };
 
 struct OmniAdwNode {
@@ -156,119 +155,10 @@ static void on_string_list_bind(GtkSignalListItemFactory *factory, GtkListItem *
 static void on_string_list_activate(GtkListView *view, guint position, gpointer data);
 static void on_plain_list_row_activated(GtkListBox *box, GtkListBoxRow *row, gpointer data);
 
-static char *omni_scroll_index_key(int index) {
-  char buffer[64];
-  snprintf(buffer, sizeof(buffer), "__omni_scroll_%d", index);
-  return omni_strdup(buffer);
-}
-
-static void collect_scroll_offsets_indexed(GtkWidget *widget, GHashTable *offsets, int *index) {
-  if (!widget || !offsets) return;
-  if (GTK_IS_SCROLLED_WINDOW(widget)) {
-    int current_index = index ? (*index)++ : 0;
-    const char *name = gtk_widget_get_name(widget);
-    GtkAdjustment *adjustment = gtk_scrolled_window_get_vadjustment(GTK_SCROLLED_WINDOW(widget));
-    if (adjustment) {
-      double current_value = gtk_adjustment_get_value(adjustment);
-      char *index_key = omni_scroll_index_key(current_index);
-      double *indexed_value = malloc(sizeof(double));
-      if (index_key && indexed_value) {
-        *indexed_value = current_value;
-        g_hash_table_replace(offsets, index_key, indexed_value);
-      } else {
-        free(index_key);
-        free(indexed_value);
-      }
-    }
-    if (name && name[0] && adjustment) {
-      double *value = malloc(sizeof(double));
-      if (value) {
-        *value = gtk_adjustment_get_value(adjustment);
-        g_hash_table_replace(offsets, omni_strdup(name), value);
-      }
-    }
-  }
-  GtkWidget *child = gtk_widget_get_first_child(widget);
-  while (child) {
-    collect_scroll_offsets_indexed(child, offsets, index);
-    child = gtk_widget_get_next_sibling(child);
-  }
-}
-
-static void collect_scroll_offsets(GtkWidget *widget, GHashTable *offsets) {
-  int index = 0;
-  collect_scroll_offsets_indexed(widget, offsets, &index);
-}
-
-static void restore_scroll_offsets_indexed(GtkWidget *widget, GHashTable *offsets, int *index) {
-  if (!widget || !offsets) return;
-  if (GTK_IS_SCROLLED_WINDOW(widget)) {
-    int current_index = index ? (*index)++ : 0;
-    const char *name = gtk_widget_get_name(widget);
-    GtkAdjustment *adjustment = gtk_scrolled_window_get_vadjustment(GTK_SCROLLED_WINDOW(widget));
-    double *preserved_value = name && name[0] ? (double *)g_hash_table_lookup(offsets, name) : NULL;
-    char *index_key = omni_scroll_index_key(current_index);
-    double *indexed_value = index_key ? (double *)g_hash_table_lookup(offsets, index_key) : NULL;
-    double *semantic_value = (double *)g_object_get_data(G_OBJECT(widget), "omni-scroll-offset");
-    gboolean has_semantic_target = semantic_value && *semantic_value > 0.0;
-    double value = has_semantic_target ? *semantic_value : (preserved_value ? *preserved_value : (indexed_value ? *indexed_value : 0.0));
-    if (adjustment && (has_semantic_target || preserved_value || indexed_value)) {
-      double upper = gtk_adjustment_get_upper(adjustment);
-      double page = gtk_adjustment_get_page_size(adjustment);
-      double max = upper > page ? upper - page : 0;
-      double clamped = value < 0 ? 0 : (value > max ? max : value);
-      gtk_adjustment_set_value(adjustment, clamped);
-    }
-    free(index_key);
-  }
-  GtkWidget *child = gtk_widget_get_first_child(widget);
-  while (child) {
-    restore_scroll_offsets_indexed(child, offsets, index);
-    child = gtk_widget_get_next_sibling(child);
-  }
-}
-
-static void restore_scroll_offsets(GtkWidget *widget, GHashTable *offsets) {
-  int index = 0;
-  restore_scroll_offsets_indexed(widget, offsets, &index);
-}
-
-typedef struct {
-  GtkWidget *widget;
-  GHashTable *offsets;
-} OmniScrollRestoreRequest;
-
 typedef struct {
   GtkAdjustment *adjustment;
   double value;
 } OmniAdjustmentRestoreRequest;
-
-static gboolean restore_scroll_offsets_idle(gpointer data) {
-  OmniScrollRestoreRequest *request = (OmniScrollRestoreRequest *)data;
-  if (!request) return G_SOURCE_REMOVE;
-  restore_scroll_offsets(request->widget, request->offsets);
-  if (request->widget) g_object_unref(request->widget);
-  if (request->offsets) g_hash_table_unref(request->offsets);
-  free(request);
-  return G_SOURCE_REMOVE;
-}
-
-static OmniScrollRestoreRequest *scroll_restore_request_new(GtkWidget *widget, GHashTable *offsets) {
-  if (!widget || !offsets) return NULL;
-  OmniScrollRestoreRequest *request = calloc(1, sizeof(OmniScrollRestoreRequest));
-  if (!request) return NULL;
-  request->widget = g_object_ref(widget);
-  request->offsets = g_hash_table_ref(offsets);
-  return request;
-}
-
-static void schedule_scroll_offset_restore(GtkWidget *widget, GHashTable *offsets) {
-  if (!widget || !offsets) return;
-  OmniScrollRestoreRequest *request = scroll_restore_request_new(widget, offsets);
-  if (request) {
-    g_idle_add(restore_scroll_offsets_idle, request);
-  }
-}
 
 static gboolean restore_adjustment_value(gpointer data) {
   OmniAdjustmentRestoreRequest *request = (OmniAdjustmentRestoreRequest *)data;
@@ -285,28 +175,31 @@ static gboolean restore_adjustment_value(gpointer data) {
   return G_SOURCE_REMOVE;
 }
 
-static void schedule_adjustment_restore(GtkAdjustment *adjustment, double value, guint delay_ms) {
+static void schedule_adjustment_restore(GtkAdjustment *adjustment, double value) {
   if (!adjustment) return;
   OmniAdjustmentRestoreRequest *request = calloc(1, sizeof(OmniAdjustmentRestoreRequest));
   if (!request) return;
   request->adjustment = g_object_ref(adjustment);
   request->value = value;
-  if (delay_ms == 0) {
-    g_idle_add(restore_adjustment_value, request);
-  } else {
-    g_timeout_add(delay_ms, restore_adjustment_value, request);
-  }
+  g_idle_add(restore_adjustment_value, request);
 }
 
-static void preserve_app_scroll_offsets(OmniAdwApp *app) {
-  if (!app || !app->content || !app->scroll_offsets) return;
-  collect_scroll_offsets(app->content, app->scroll_offsets);
+static double omni_semantic_scroll_to_pixels(double offset) {
+  // OmniUI runtime scroll offsets are measured in terminal-style layout rows.
+  // GTK adjustments are pixels, so use a conservative row height that matches
+  // the native control density closely enough for ScrollViewReader targets.
+  return offset * 28.0;
 }
 
-static void restore_app_scroll_offsets(OmniAdwApp *app) {
-  if (!app || !app->content || !app->scroll_offsets) return;
-  restore_scroll_offsets(app->content, app->scroll_offsets);
-  schedule_scroll_offset_restore(app->content, app->scroll_offsets);
+static void apply_initial_scroll_offset(GtkScrolledWindow *scrolled) {
+  if (!scrolled) return;
+  double *semantic_value = (double *)g_object_get_data(G_OBJECT(scrolled), "omni-scroll-offset");
+  if (!semantic_value || *semantic_value <= 0.0) return;
+  gboolean vertical = GPOINTER_TO_INT(g_object_get_data(G_OBJECT(scrolled), "omni-scroll-vertical")) != 0;
+  GtkAdjustment *adjustment = vertical
+    ? gtk_scrolled_window_get_vadjustment(scrolled)
+    : gtk_scrolled_window_get_hadjustment(scrolled);
+  schedule_adjustment_restore(adjustment, *semantic_value);
 }
 
 static gboolean app_focus_is_native_text_widget(OmniAdwApp *app) {
@@ -317,22 +210,6 @@ static gboolean app_focus_is_native_text_widget(OmniAdwApp *app) {
     focus = gtk_widget_get_parent(focus);
   }
   return FALSE;
-}
-
-static GtkScrolledWindow *nearest_scrolled_window(GtkWidget *widget) {
-  GtkWidget *current = widget;
-  while (current) {
-    if (GTK_IS_SCROLLED_WINDOW(current)) return GTK_SCROLLED_WINDOW(current);
-    current = gtk_widget_get_parent(current);
-  }
-  return NULL;
-}
-
-static double omni_semantic_scroll_to_pixels(double offset) {
-  // OmniUI runtime scroll offsets are measured in terminal-style layout rows.
-  // GTK adjustments are pixels, so use a conservative row height that matches
-  // the native control density closely enough for ScrollViewReader targets.
-  return offset * 28.0;
 }
 
 static void omni_install_css_once(void) {
@@ -744,20 +621,11 @@ static void on_calendar_date_notify(GObject *object, GParamSpec *pspec, gpointer
 }
 
 static void on_calendar_pressed(GtkGestureClick *gesture, int n_press, double x, double y, gpointer data) {
-  OmniAdwApp *app = (OmniAdwApp *)data;
-  if (app && app->content && app->scroll_offsets) {
-    collect_scroll_offsets(app->content, app->scroll_offsets);
-  }
-  GtkWidget *widget = gtk_event_controller_get_widget(GTK_EVENT_CONTROLLER(gesture));
-  GtkScrolledWindow *scrolled = nearest_scrolled_window(widget);
-  GtkAdjustment *adjustment = scrolled ? gtk_scrolled_window_get_vadjustment(scrolled) : NULL;
-  if (adjustment) {
-    double value = gtk_adjustment_get_value(adjustment);
-    schedule_adjustment_restore(adjustment, value, 0);
-    schedule_adjustment_restore(adjustment, value, 50);
-    schedule_adjustment_restore(adjustment, value, 150);
-    schedule_adjustment_restore(adjustment, value, 300);
-  }
+  (void)gesture;
+  (void)n_press;
+  (void)x;
+  (void)y;
+  (void)data;
 }
 
 static void on_dropdown_selected(GObject *object, GParamSpec *pspec, gpointer data) {
@@ -795,9 +663,7 @@ static void on_entry_changed(GtkEditable *editable, gpointer data) {
   OmniAdwApp *app = (OmniAdwApp *)g_object_get_data(G_OBJECT(editable), "omni-app");
   int action_id = GPOINTER_TO_INT(g_object_get_data(G_OBJECT(editable), "omni-action-id"));
   if (app && app->text_callback) {
-    preserve_app_scroll_offsets(app);
     app->text_callback(action_id, gtk_editable_get_text(editable), app->context);
-    restore_app_scroll_offsets(app);
   }
 }
 
@@ -812,9 +678,7 @@ static void on_text_buffer_changed(GtkTextBuffer *buffer, gpointer data) {
   gtk_text_buffer_get_start_iter(buffer, &start);
   gtk_text_buffer_get_end_iter(buffer, &end);
   char *text = gtk_text_buffer_get_text(buffer, &start, &end, FALSE);
-  preserve_app_scroll_offsets(app);
   app->text_callback(action_id, text ? text : "", app->context);
-  restore_app_scroll_offsets(app);
   g_free(text);
 }
 
@@ -823,10 +687,8 @@ static void on_focus_enter(GtkEventControllerFocus *controller, gpointer data) {
   GtkWidget *widget = gtk_event_controller_get_widget(GTK_EVENT_CONTROLLER(controller));
   int action_id = GPOINTER_TO_INT(g_object_get_data(G_OBJECT(widget), "omni-action-id"));
   if (app && action_id > 0 && app->focused_action_id != action_id) {
-    preserve_app_scroll_offsets(app);
     app->focused_action_id = action_id;
     if (app->focus_callback) app->focus_callback(action_id, app->context);
-    restore_app_scroll_offsets(app);
   }
 }
 
@@ -835,10 +697,8 @@ static void on_text_widget_pressed(GtkGestureClick *gesture, int n_press, double
   GtkWidget *widget = gtk_event_controller_get_widget(GTK_EVENT_CONTROLLER(gesture));
   int action_id = GPOINTER_TO_INT(g_object_get_data(G_OBJECT(widget), "omni-action-id"));
   if (app && action_id > 0 && app->focused_action_id != action_id) {
-    preserve_app_scroll_offsets(app);
     app->focused_action_id = action_id;
     if (app->focus_callback) app->focus_callback(action_id, app->context);
-    restore_app_scroll_offsets(app);
   }
 }
 
@@ -852,15 +712,11 @@ static gboolean on_key_pressed(GtkEventControllerKey *controller, guint keyval, 
   }
 
   if (keyval == GDK_KEY_Return || keyval == GDK_KEY_KP_Enter) {
-    preserve_app_scroll_offsets(app);
     app->key_callback(0, 7, 0, app->context);
-    restore_app_scroll_offsets(app);
     return TRUE;
   }
   if (keyval == GDK_KEY_Escape) {
-    preserve_app_scroll_offsets(app);
     app->key_callback(0, 8, 0, app->context);
-    restore_app_scroll_offsets(app);
     return TRUE;
   }
 
@@ -901,9 +757,7 @@ static gboolean on_key_pressed(GtkEventControllerKey *controller, guint keyval, 
   }
 
   if (kind < 0) return FALSE;
-  preserve_app_scroll_offsets(app);
   app->key_callback(app->focused_action_id, kind, codepoint, app->context);
-  restore_app_scroll_offsets(app);
   return TRUE;
 }
 
@@ -1051,7 +905,6 @@ OmniAdwApp *omni_adw_app_new(const char *app_id, const char *title, omni_adw_act
   app->context = context;
   app->default_width = 1100;
   app->default_height = 760;
-  app->scroll_offsets = g_hash_table_new_full(g_str_hash, g_str_equal, free, free);
   app->application = adw_application_new(app_id ? app_id : "dev.omnikit.OmniUIAdwaita", G_APPLICATION_DEFAULT_FLAGS);
   g_signal_connect(app->application, "activate", G_CALLBACK(on_app_activate), app);
   return app;
@@ -1067,7 +920,6 @@ void omni_adw_app_free(OmniAdwApp *app) {
   if (app->modal_dialog) adw_dialog_force_close(app->modal_dialog);
   if (app->settings_window) gtk_window_destroy(GTK_WINDOW(app->settings_window));
   if (app->application) g_object_unref(app->application);
-  if (app->scroll_offsets) g_hash_table_destroy(app->scroll_offsets);
   free(app->title);
   free(app->header_entry_placeholder);
   free(app->header_entry_text);
@@ -1137,10 +989,6 @@ void omni_adw_app_set_root(OmniAdwApp *app, OmniAdwNode *root) {
 
 void omni_adw_app_set_root_focused(OmniAdwApp *app, OmniAdwNode *root, int32_t focused_action_id) {
   if (!app || !root) return;
-  GtkWidget *previous_content = app->content;
-  if (previous_content && app->scroll_offsets) {
-    collect_scroll_offsets(previous_content, app->scroll_offsets);
-  }
   app->focused_action_id = focused_action_id;
   app->content = root->widget;
   omni_widget_expand(app->content, TRUE);
@@ -1169,8 +1017,6 @@ void omni_adw_app_set_root_focused(OmniAdwApp *app, OmniAdwNode *root, int32_t f
       gtk_widget_add_controller(app->window, app->key_controller);
     }
   }
-  restore_scroll_offsets(app->content, app->scroll_offsets);
-  schedule_scroll_offset_restore(app->content, app->scroll_offsets);
   GtkWidget *focused = find_widget_for_action(app->content, focused_action_id);
   if (focused && gtk_widget_get_focusable(focused)) {
     gtk_widget_grab_focus(focused);
@@ -1383,9 +1229,6 @@ int32_t omni_adw_app_update_node(OmniAdwApp *app, const char *semantic_id, int32
   GtkWidget *widget = find_widget_for_name(app->content, name);
   free(name);
   if (!widget) return 0;
-  if (app->scroll_offsets && kind != 9) {
-    collect_scroll_offsets(app->content, app->scroll_offsets);
-  }
 
   const char *value = text ? text : "";
   switch (kind) {
@@ -1571,8 +1414,6 @@ int32_t omni_adw_app_update_node(OmniAdwApp *app, const char *semantic_id, int32
   if (value[0]) {
     gtk_widget_set_tooltip_text(widget, value);
   }
-  restore_scroll_offsets(app->content, app->scroll_offsets);
-  schedule_scroll_offset_restore(app->content, app->scroll_offsets);
   return 1;
 }
 
@@ -1582,10 +1423,6 @@ int32_t omni_adw_app_replace_node(OmniAdwApp *app, const char *semantic_id, Omni
   GtkWidget *target = find_widget_for_name(app->content, name);
   free(name);
   if (!target) return 0;
-
-  if (app->scroll_offsets) {
-    collect_scroll_offsets(app->content, app->scroll_offsets);
-  }
 
   GtkWidget *replacement_widget = replacement->widget;
   replacement->widget = NULL;
@@ -1647,8 +1484,6 @@ int32_t omni_adw_app_replace_node(OmniAdwApp *app, const char *semantic_id, Omni
     }
   }
 
-  restore_scroll_offsets(app->content, app->scroll_offsets);
-  schedule_scroll_offset_restore(app->content, app->scroll_offsets);
   GtkWidget *focused = find_widget_for_action(app->content, focused_action_id);
   if (focused && gtk_widget_get_focusable(focused)) {
     gtk_widget_grab_focus(focused);
@@ -2087,6 +1922,7 @@ OmniAdwNode *omni_adw_scroll_new(int32_t vertical, double offset) {
   gtk_scrolled_window_set_policy(GTK_SCROLLED_WINDOW(node->widget), vertical ? GTK_POLICY_NEVER : GTK_POLICY_AUTOMATIC, vertical ? GTK_POLICY_AUTOMATIC : GTK_POLICY_NEVER);
   gtk_scrolled_window_set_propagate_natural_height(GTK_SCROLLED_WINDOW(node->widget), FALSE);
   gtk_scrolled_window_set_propagate_natural_width(GTK_SCROLLED_WINDOW(node->widget), FALSE);
+  g_object_set_data(G_OBJECT(node->widget), "omni-scroll-vertical", GINT_TO_POINTER(vertical != 0));
   if (offset > 0.0) {
     double *stored_offset = malloc(sizeof(double));
     if (stored_offset) {
@@ -2202,6 +2038,7 @@ void omni_adw_node_append(OmniAdwNode *parent, OmniAdwNode *child) {
     parent->split_child_count += 1;
   } else if (GTK_IS_SCROLLED_WINDOW(parent->widget)) {
     gtk_scrolled_window_set_child(GTK_SCROLLED_WINDOW(parent->widget), child->widget);
+    apply_initial_scroll_offset(GTK_SCROLLED_WINDOW(parent->widget));
   }
   child->widget = NULL;
   omni_adw_node_free(child);

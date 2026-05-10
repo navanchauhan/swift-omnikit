@@ -283,9 +283,9 @@ import Testing
         "omni_accessible_label",
         "gtk_accessible_update_property",
         "GTK_ACCESSIBLE_PROPERTY_LABEL",
-        "collect_scroll_offsets",
-        "restore_scroll_offsets",
+        "apply_initial_scroll_offset",
         "gtk_scrolled_window_get_vadjustment",
+        "gtk_scrolled_window_get_hadjustment",
         "gtk_adjustment_set_value",
         "omni_adw_node_apply_layout",
         "omni_adw_list_new",
@@ -574,34 +574,31 @@ import Testing
     #expect(supportDoc.contains("Drawing islands carry tooltips/metadata"))
 }
 
-@Test func cAdwaitaShimPreservesScrollOffsetsAcrossStructuralRootReplacement() throws {
+@Test func cAdwaitaShimLetsGtkOwnScrollStateAndOnlyAppliesExplicitInitialOffsets() throws {
     let shim = try readRepositoryFile("Sources/CAdwaita/shim.c")
     let renderer = try readRepositoryFile("Sources/OmniUIAdwaitaRenderer/AdwaitaRenderer.swift")
     let header = try readRepositoryFile("Sources/CAdwaita/include/CAdwaita.h")
 
-    guard
-        let setRootRange = shim.range(of: "void omni_adw_app_set_root_focused"),
-        let collectRange = shim.range(of: "collect_scroll_offsets(previous_content, app->scroll_offsets);", range: setRootRange.lowerBound..<shim.endIndex),
-        let replaceRange = shim.range(of: "adw_application_window_set_content", range: setRootRange.lowerBound..<shim.endIndex),
-        let restoreRange = shim.range(of: "restore_scroll_offsets(app->content, app->scroll_offsets);", range: setRootRange.lowerBound..<shim.endIndex)
-    else {
-        #expect(Bool(false), "Scroll offset preservation hooks were not found in root replacement")
-        return
-    }
+    let setRootRange = try #require(shim.range(of: "void omni_adw_app_set_root_focused"))
+    let setRootEnd = try #require(shim.range(of: "typedef struct {", range: setRootRange.upperBound..<shim.endIndex))
+    let setRootBody = String(shim[setRootRange.lowerBound..<setRootEnd.lowerBound])
 
-    #expect(collectRange.lowerBound < replaceRange.lowerBound)
-    #expect(replaceRange.lowerBound < restoreRange.lowerBound)
+    #expect(setRootBody.contains("adw_application_window_set_content"))
+    #expect(!setRootBody.contains("collect_scroll_offsets"))
+    #expect(!setRootBody.contains("restore_scroll_offsets"))
+    #expect(!setRootBody.contains("schedule_scroll_offset_restore"))
+    #expect(!shim.contains("scroll_offsets"))
+    #expect(!shim.contains("collect_scroll_offsets"))
+    #expect(!shim.contains("restore_scroll_offsets"))
+    #expect(!shim.contains("schedule_scroll_offset_restore"))
+    #expect(!shim.contains("g_timeout_add"))
     #expect(shim.contains("gtk_widget_set_name(node->widget, copy)"))
     #expect(shim.contains("omni_semantic_scroll_to_pixels"))
     #expect(shim.contains("offset * 28.0"))
     #expect(shim.contains("if (offset > 0.0)"))
-    #expect(shim.contains("schedule_scroll_offset_restore(app->content, app->scroll_offsets);"))
-    #expect(shim.contains("g_idle_add(restore_scroll_offsets_idle, request);"))
-    #expect(!shim.contains("g_timeout_add(delays[i], restore_scroll_offsets_idle, settled_request);"))
-    #expect(!shim.contains("guint delays[] = {50, 150, 300, 750, 1500};"))
-    let setRootEnd = try #require(shim.range(of: "static void on_alert_response", range: setRootRange.upperBound..<shim.endIndex))
-    let setRootBody = String(shim[setRootRange.lowerBound..<setRootEnd.lowerBound])
-    #expect(setRootBody.components(separatedBy: "schedule_scroll_offset_restore(app->content, app->scroll_offsets);").count - 1 == 1)
+    #expect(shim.contains("g_object_set_data(G_OBJECT(node->widget), \"omni-scroll-vertical\""))
+    #expect(shim.contains("apply_initial_scroll_offset(GTK_SCROLLED_WINDOW(parent->widget))"))
+    #expect(shim.contains("g_idle_add(restore_adjustment_value, request);"))
     #expect(renderer.contains("omni_adw_scroll_new(axis == .vertical ? 1 : 0, Double(offset))"))
     #expect(header.contains("omni_adw_scroll_new(int32_t vertical, double offset)"))
 }
@@ -620,7 +617,7 @@ import Testing
     #expect(shim.contains("gtk_list_box_row_set_child"))
     #expect(shim.contains("gtk_paned_set_start_child"))
     #expect(shim.contains("gtk_scrolled_window_set_child"))
-    #expect(shim.contains("schedule_scroll_offset_restore(app->content, app->scroll_offsets);"))
+    #expect(!shim.contains("schedule_scroll_offset_restore(app->content, app->scroll_offsets);"))
     #expect(renderer.contains("applyStructuralReplacement"))
     #expect(renderer.contains("omni_adw_app_replace_node(app, replacement.id, node"))
 }
