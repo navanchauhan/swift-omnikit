@@ -8,7 +8,7 @@ final class MultiProviderE2ETests {
 
     // MARK: - Anthropic: simple tool-using task
 
-    @Test
+    @Test(.enabled(if: E2EConfig.hasAnthropic))
     func testAnthropicSimpleToolTask() async throws {
         try skipUnlessAnthropic()
         let tempDir = try TempTestDir()
@@ -28,7 +28,7 @@ final class MultiProviderE2ETests {
 
     // MARK: - OpenAI: simple tool-using task
 
-    @Test
+    @Test(.enabled(if: E2EConfig.hasOpenAI))
     func testOpenAISimpleToolTask() async throws {
         try skipUnlessOpenAI()
         let tempDir = try TempTestDir()
@@ -48,7 +48,7 @@ final class MultiProviderE2ETests {
 
     // MARK: - Gemini: simple tool-using task
 
-    @Test
+    @Test(.enabled(if: E2EConfig.hasGemini))
     func testGeminiSimpleToolTask() async throws {
         try skipUnlessGemini()
         let tempDir = try TempTestDir()
@@ -64,7 +64,7 @@ final class MultiProviderE2ETests {
 
     // MARK: - Cross-provider: write and verify
 
-    @Test
+    @Test(.enabled(if: E2EConfig.hasAnthropic))
     func testAnthropicWriteAndVerify() async throws {
         try skipUnlessAnthropic()
         let tempDir = try TempTestDir()
@@ -91,7 +91,7 @@ final class MultiProviderE2ETests {
 
     // MARK: - Groq: text-only response
 
-    @Test
+    @Test(.enabled(if: E2EConfig.hasGroq))
     func testGroqSimpleResponse() async throws {
         try skipUnlessGroq()
         let tempDir = try TempTestDir()
@@ -107,7 +107,7 @@ final class MultiProviderE2ETests {
 
     // MARK: - Cerebras: text-only response
 
-    @Test
+    @Test(.enabled(if: E2EConfig.hasCerebras))
     func testCerebrasSimpleResponse() async throws {
         try skipUnlessCerebras()
         let tempDir = try TempTestDir()

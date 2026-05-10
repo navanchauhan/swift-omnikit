@@ -37,6 +37,7 @@ public final class _UIRuntime: @unchecked Sendable {
 
     private var nextActionID: Int = 1
     private var actions: [_ActionID: (path: [Int], env: EnvironmentValues, action: () -> Void)] = [:]
+    private var dateSetters: [_ActionID: (path: [Int], env: EnvironmentValues, setter: (TimeInterval) -> Void)] = [:]
 
     private var nextFocusCaptureID: Int = 1
     private var focusCaptureResults: [Int: [Int]] = [:]
@@ -509,6 +510,7 @@ public final class _UIRuntime: @unchecked Sendable {
     private func _prepareRuntimeRegistriesForFrame() {
         nextActionID = 1
         actions.removeAll(keepingCapacity: true)
+        dateSetters.removeAll(keepingCapacity: true)
         textEditors.removeAll(keepingCapacity: true)
         focusOrder.removeAll(keepingCapacity: true)
         focusPriorities.removeAll(keepingCapacity: true)
@@ -716,18 +718,23 @@ public final class _UIRuntime: @unchecked Sendable {
         return candidates.first
     }
 
-    func _updateScrollTargets(_ targets: [_ScrollTarget]) {
+    @discardableResult
+    func _updateScrollTargets(_ targets: [_ScrollTarget]) -> Bool {
         scrollTargets = targets
-        guard !pendingScrollRequests.isEmpty else { return }
+        guard !pendingScrollRequests.isEmpty else { return false }
 
         var remaining: [_PendingScrollRequest] = []
         remaining.reserveCapacity(pendingScrollRequests.count)
+        var applied = false
         for request in pendingScrollRequests {
-            if !_applyScrollRequest(scopePath: request.scopePath, id: request.id, anchor: request.anchor) {
+            if _applyScrollRequest(scopePath: request.scopePath, id: request.id, anchor: request.anchor) {
+                applied = true
+            } else {
                 remaining.append(request)
             }
         }
         pendingScrollRequests = remaining
+        return applied
     }
 
     func _updateLastInteractionRegions(
@@ -899,7 +906,114 @@ public final class _UIRuntime: @unchecked Sendable {
         _invokeAction(_ActionID(raw: rawID))
     }
 
-    func _setFocus(path: [Int]?) {
+    func _registerDateSetter(_ setter: @escaping (TimeInterval) -> Void, path: [Int]) -> _ActionID {
+        _noteBuildSideEffect()
+        let id = _ActionID(raw: nextActionID)
+        nextActionID += 1
+        let env = _UIRuntime._currentEnvironment ?? _baseEnvironment
+        dateSetters[id] = (path: path, env: env, setter: setter)
+        return id
+    }
+
+    @discardableResult
+    public func setDateForRawActionID(_ rawID: Int, timestamp: TimeInterval) -> Bool {
+        let id = _ActionID(raw: rawID)
+        guard let entry = dateSetters[id] else { return false }
+        _UIRuntime.$_currentEnvironment.withValue(entry.env) {
+            _BuildContext.withRuntime(self, path: entry.path) {
+                entry.setter(timestamp)
+            }
+        }
+        _markDirty(path: entry.path)
+        return true
+    }
+
+    /// Public entry point for native renderers to mirror platform focus changes
+    /// back into OmniUI's focus path and any attached `@FocusState` bindings.
+    @discardableResult
+    public func focusByRawActionID(_ rawID: Int) -> Bool {
+        let id = _ActionID(raw: rawID)
+        if let focusPath = focusActivation.first(where: { $0.value == id })?.key {
+            return _setFocus(path: focusPath)
+        }
+        guard let actionPath = actions[id]?.path else { return false }
+        return _setFocus(path: actionPath)
+    }
+
+    /// Replace text for the text field associated with a native-widget action.
+    /// This intentionally routes through the registered text editor so bindings,
+    /// focus state, cursor state, keyboard filtering, and dirty marking stay in one place.
+    public func replaceTextForRawActionID(_ rawID: Int, previous: String, next: String) {
+        let id = _ActionID(raw: rawID)
+        _invokeAction(id)
+        guard let path = _textEditorPath(forNativeActionID: id) else { return }
+
+        if previous == next { return }
+
+        let newScalars = Array(next.unicodeScalars)
+        _handleKey(.end)
+        for _ in previous.unicodeScalars {
+            _handleKey(.backspace)
+        }
+        for scalar in newScalars {
+            _handleKey(.char(scalar.value))
+        }
+        _markDirty(path: path)
+    }
+
+    public func handleNativeKeyForRawActionID(_ rawID: Int, keyKind: Int, codepoint: UInt32) {
+        if rawID <= 0 {
+            switch keyKind {
+            case 7:
+                _ = invokeKeyboardShortcut(.return)
+            case 8:
+                _ = invokeKeyboardShortcut(.escape)
+            default:
+                break
+            }
+            return
+        }
+
+        let id = _ActionID(raw: rawID)
+        _invokeAction(id)
+        guard let path = _textEditorPath(forNativeActionID: id) else { return }
+
+        switch keyKind {
+        case 0:
+            _handleKey(.char(codepoint))
+        case 1:
+            _handleKey(.backspace)
+        case 2:
+            _handleKey(.delete)
+        case 3:
+            _handleKey(.left)
+        case 4:
+            _handleKey(.right)
+        case 5:
+            _handleKey(.home)
+        case 6:
+            _handleKey(.end)
+        default:
+            return
+        }
+        _markDirty(path: path)
+    }
+
+    private func _textEditorPath(forNativeActionID id: _ActionID) -> [Int]? {
+        let candidates: [[Int]?] = [
+            focusActivation.first(where: { $0.value == id })?.key,
+            focusedPath,
+            actions[id]?.path,
+        ]
+        for candidate in candidates {
+            guard let path = candidate, textEditors[path] != nil else { continue }
+            return path
+        }
+        return nil
+    }
+
+    @discardableResult
+    func _setFocus(path: [Int]?) -> Bool {
         let old = focusedPath
         focusedPath = path
         // Update any `FocusState<Bool>` bindings.
@@ -923,6 +1037,7 @@ public final class _UIRuntime: @unchecked Sendable {
             if let path { _markDirty(path: path) }
             if old == nil || path == nil { _markDirty() }
         }
+        return old != path
     }
 
     func _isFocused(path: [Int]) -> Bool {
@@ -1548,6 +1663,83 @@ extension _UIRuntime {
             runtime: runtime
         )
     }
+
+    public func semanticSnapshot<V: View>(_ root: V, size: _Size) -> SemanticSnapshot {
+        let runtime = self
+
+        runtime._prepareRuntimeRegistriesForFrame()
+        runtime._beginFrameBuild(size: size)
+        var node = runtime._buildRootNode(root, size: size)
+        node = runtime._applyOverlays(to: node)
+        runtime._finalizePostBuildState()
+        if !runtime.pendingScrollRequests.isEmpty || runtime._containsScrollReaderTarget(node) {
+            let firstLayout = _RenderLayout.layout(node: node, size: size)
+            if runtime._updateScrollTargets(firstLayout.scrollTargets) {
+                runtime._prepareRuntimeRegistriesForFrame()
+                node = runtime._buildRootNode(root, size: size)
+                node = runtime._applyOverlays(to: node)
+                runtime._finalizePostBuildState()
+                let secondLayout = _RenderLayout.layout(node: node, size: size)
+                runtime._updateScrollTargets(secondLayout.scrollTargets)
+            }
+        }
+
+        runtime._firePreferenceCallbacks()
+        runtime._finishFrameBuild(size: size)
+
+        return SemanticSnapshot(
+            root: SemanticLowerer.lower(node),
+            size: size,
+            focusedActionID: focusedActionRawID(),
+            activeMenu: nil,
+            activePicker: nil,
+            activeTextField: nil
+        )
+    }
+
+    private func _containsScrollReaderTarget(_ node: _VNode) -> Bool {
+        switch node {
+        case .identified(_, let readerScopePath, let child):
+            return readerScopePath != nil || _containsScrollReaderTarget(child)
+        case .group(let children), .stack(_, _, let children), .zstack(let children):
+            return children.contains(where: _containsScrollReaderTarget)
+        case .style(_, _, let child),
+             .textStyled(_, let child),
+             .contentShapeRect(_, let child),
+             .clip(_, let child),
+             .shadow(let child, _, _, _, _),
+             .elevated(_, let child),
+             .modalOverlay(_, _, _, let child),
+             .frame(_, _, _, _, _, _, let child),
+             .edgePadding(_, _, _, _, let child),
+             .offset(_, _, let child),
+             .opacity(_, let child),
+             .tapTarget(_, let child),
+             .hover(_, let child),
+             .scrollView(_, _, _, _, _, let child),
+             .onDelete(_, _, let child),
+             .tagged(_, let child),
+             .gestureTarget(_, let child),
+             .fixedSize(_, _, let child),
+             .layoutPriority(_, let child),
+             .aspectRatio(_, _, let child),
+             .alignmentGuide(_, _, let child),
+             .preferenceNode(_, let child):
+            return _containsScrollReaderTarget(child)
+        case .button(_, _, let label), .toggle(_, _, _, let label):
+            return _containsScrollReaderTarget(label)
+        case .viewThatFits(_, let children):
+            return children.contains(where: _containsScrollReaderTarget)
+        case .background(let child, let background):
+            return _containsScrollReaderTarget(child) || _containsScrollReaderTarget(background)
+        case .overlay(let child, let overlay):
+            return _containsScrollReaderTarget(child) || _containsScrollReaderTarget(overlay)
+        case .swipeActions(_, _, let actions, let child):
+            return _containsScrollReaderTarget(child) || actions.contains(where: _containsScrollReaderTarget)
+        default:
+            return false
+        }
+    }
 }
 
 extension _UIRuntime {
@@ -1769,9 +1961,17 @@ struct _BuildContext {
     }
 
     mutating func buildChild<V: View>(_ view: V) -> _VNode {
+        buildChild(view, pathComponent: nil)
+    }
+
+    mutating func buildIdentifiedChild<V: View, ID: Hashable>(_ view: V, id: ID) -> _VNode {
+        buildChild(view, pathComponent: Self.stablePathComponent(for: AnyHashable(id)))
+    }
+
+    private mutating func buildChild<V: View>(_ view: V, pathComponent: Int?) -> _VNode {
         let index = nextChildIndex
         nextChildIndex += 1
-        let childPath = path + [index]
+        let childPath = path + [pathComponent ?? index]
         let childPathKey = runtime._viewPathKey(path: childPath)
         let childTypeID = ObjectIdentifier(V.self)
         let childSignature = runtime._viewSignature(for: view)
@@ -1788,5 +1988,15 @@ struct _BuildContext {
         }
         runtime._endPathBuild(typeID: childTypeID, viewSignature: childSignature, node: node)
         return node
+    }
+
+    private static func stablePathComponent(for id: AnyHashable) -> Int {
+        let raw = String(reflecting: id.base)
+        var hash: UInt64 = 14_695_981_039_346_656_037
+        for byte in raw.utf8 {
+            hash ^= UInt64(byte)
+            hash &*= 1_099_511_628_211
+        }
+        return -1 - Int(hash & 0x3FFF_FFFF)
     }
 }

@@ -727,6 +727,14 @@ public final class PipelineEngine: Sendable {
         let outgoing = graph.outgoingEdges(from: nodeId)
         if outgoing.isEmpty { return [] }
 
+        // Explicit routing hints represent a branch choice. Resolve those
+        // before treating multiple unconditional edges as parallel fan-out.
+        if !outcome.preferredLabel.isEmpty || !outcome.suggestedNextIds.isEmpty {
+            if let edge = selectNextEdge(from: nodeId, outcome: outcome, context: context, graph: graph) {
+                return [edge]
+            }
+        }
+
         // Condition-matching edges
         var conditionMatched: [Edge] = []
         for edge in outgoing {

@@ -40,6 +40,6 @@ public struct ModelRoutePolicy: Sendable, Equatable {
         .implementer: Entry(provider: "openai", model: "gpt-5.4", reasoningEffort: "high"),
         .reviewer: Entry(provider: "openai", model: "gpt-5.4", reasoningEffort: "medium"),
         .vision: Entry(provider: "openai", model: "gpt-5.4", reasoningEffort: "high"),
-        .codergen: Entry(provider: "openai", model: "gpt-5.4", reasoningEffort: "high"),
+        .codergen: Entry(provider: "openai", model: "gpt-5.3-codex", reasoningEffort: "high"),
     ]
 }

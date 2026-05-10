@@ -152,6 +152,8 @@ enum _RenderLayout {
              .onDelete(_, _, let child),
              .tagged(_, let child),
              .shadow(let child, _, _, _, _),
+             .glass(_, _, let child),
+             .crt(_, let child),
              .hover(_, let child),
              .clip(_, let child),
              .gestureTarget(_, let child),
@@ -306,6 +308,11 @@ enum _RenderLayout {
         switch node {
         case .empty:
             return _Size(width: 0, height: 0)
+
+        case .glass(_, _, let child),
+             .crt(_, let child):
+            return draw(node: child, origin: origin, maxSize: maxSize, ctx: &ctx, ops: &ops, hitRegions: &hitRegions, hoverRegions: &hoverRegions, scrollRegions: &scrollRegions, scrollTargets: &scrollTargets, shapeRegions: &shapeRegions, cursorPosition: &cursorPosition, activeMenu: &activeMenu, activePicker: &activePicker, activeTextField: &activeTextField,
+                scrollContext: scrollContext)
 
         case .style(let fg, let bg, let child):
             let prev = ctx.style
@@ -984,8 +991,9 @@ enum _RenderLayout {
             hitRegions.append((rect, id))
             return _Size(width: width, height: 1)
 
-        case .textField(let id, let placeholder, let text, let cursor, let isFocused, let style):
-            let display = text.isEmpty ? placeholder : text
+        case .textField(let id, let placeholder, let text, let cursor, let isFocused, let isSecure, let style):
+            let fieldText = isSecure ? String(repeating: "•", count: text.count) : text
+            let display = fieldText.isEmpty ? placeholder : fieldText
             let prefix = isFocused ? "> " : "  "
             let cpos = max(0, min(cursor, display.unicodeScalars.count))
             let withCursor: String = {
@@ -1575,6 +1583,10 @@ enum _RenderLayout {
             return measure(child, maxSize, mode: mode)
         case .shadow(let child, _, _, _, _):
             return measure(child, maxSize, mode: mode)
+        case .glass(_, _, let child):
+            return measure(child, maxSize, mode: mode)
+        case .crt(_, let child):
+            return measure(child, maxSize, mode: mode)
         case .hover(_, let child):
             return measure(child, maxSize, mode: mode)
         case .background(let child, _):
@@ -1695,8 +1707,9 @@ enum _RenderLayout {
             let labelMax = _Size(width: max(0, maxSize.width - boxCount - xPad), height: 1)
             let l = measure(label, labelMax, mode: mode)
             return _Size(width: min(maxSize.width, xPad + boxCount + l.width), height: 1)
-        case .textField(_, let placeholder, let text, _, _, let style):
-            let display = text.isEmpty ? placeholder : text
+        case .textField(_, let placeholder, let text, _, _, let isSecure, let style):
+            let fieldText = isSecure ? String(repeating: "•", count: text.count) : text
+            let display = fieldText.isEmpty ? placeholder : fieldText
             let prefixCount = 2
             let boxExtra = style == .plain ? 0 : 2
             let s = prefixCount + boxExtra + display.count

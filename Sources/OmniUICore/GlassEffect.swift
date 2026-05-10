@@ -24,6 +24,14 @@ public struct GlassEffectShape: Hashable, Sendable {
     public static let capsule = GlassEffectShape("capsule")
 }
 
+public struct CRTEffect: Hashable, Sendable {
+    public let rawValue: String
+    public init(_ rawValue: String) { self.rawValue = rawValue }
+
+    public static let terminal = CRTEffect("terminal")
+    public static let scanline = CRTEffect("scanline")
+}
+
 public struct GlassEffectContainer<Content: View>: View, _PrimitiveView {
     public typealias Body = Never
 

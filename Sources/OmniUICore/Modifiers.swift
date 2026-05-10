@@ -94,12 +94,44 @@ public extension View {
     func labelsHidden() -> some View {
         _LabelsHidden(content: AnyView(self), hidden: true)
     }
+    func accessibilityLabel(_ label: String) -> some View {
+        _AccessibilityLabelModifier(content: AnyView(self), label: label)
+    }
+    func accessibilityLabel(_ label: Text) -> some View {
+        _AccessibilityLabelModifier(content: AnyView(self), label: label.content)
+    }
+    func accessibilityLabel(_ label: String, isEnabled: Bool) -> some View {
+        isEnabled ? AnyView(_AccessibilityLabelModifier(content: AnyView(self), label: label)) : AnyView(self)
+    }
+    func accessibilityLabel(_ label: Text, isEnabled: Bool) -> some View {
+        accessibilityLabel(label.content, isEnabled: isEnabled)
+    }
+    func accessibilityIdentifier(_ identifier: String) -> some View {
+        _AccessibilityIdentifierModifier(content: AnyView(self), identifier: identifier)
+    }
+    func accessibilityIdentifier(_ identifier: String, isEnabled: Bool) -> some View {
+        isEnabled ? AnyView(_AccessibilityIdentifierModifier(content: AnyView(self), identifier: identifier)) : AnyView(self)
+    }
+    func accessibilityHidden(_ hidden: Bool) -> some View {
+        _ = hidden
+        return _Passthrough(self)
+    }
+    func accessibilityElement(children: AccessibilityChildBehavior) -> some View {
+        _ = children
+        return _Passthrough(self)
+    }
 
-    // Liquid Glass (compile-only stubs)
+    // Liquid Glass: bounded native/terminal approximation carried as semantic metadata.
     func glassEffect() -> some View { _GlassEffectModifier(content: AnyView(self), style: .regular, shape: nil) }
     func glassEffect(_ style: GlassEffect) -> some View { _GlassEffectModifier(content: AnyView(self), style: style, shape: nil) }
+    func glassEffect(_ style: GlassEffect, in shape: GlassEffectShape) -> some View {
+        _GlassEffectModifier(content: AnyView(self), style: style, shape: shape)
+    }
     func glassEffect(in shape: GlassEffectShape) -> some View {
         _GlassEffectModifier(content: AnyView(self), style: .regular, shape: shape)
+    }
+    func crtEffect(_ style: CRTEffect = .terminal) -> some View {
+        _CRTEffectModifier(content: AnyView(self), style: style)
     }
 
     func background<B: View>(_ background: B) -> some View { _Background(content: AnyView(self), background: AnyView(background)) }
@@ -411,6 +443,18 @@ public extension View {
 
     func alert(isPresented: Binding<Bool>, content: @escaping () -> Alert) -> some View {
         _AlertFromType(content: AnyView(self), isPresented: isPresented, makeAlert: content)
+    }
+
+    func alert<Actions: View, Message: View>(_ title: String, isPresented: Binding<Bool>, @ViewBuilder actions: () -> Actions, @ViewBuilder message: () -> Message) -> some View {
+        _Alert(
+            content: AnyView(self),
+            isPresented: isPresented,
+            alert: AnyView(VStack(alignment: .leading, spacing: 12) {
+                Text(title)
+                message()
+                actions()
+            })
+        )
     }
 
     func focused(_ isFocused: Binding<Bool>) -> some View {
@@ -1104,9 +1148,18 @@ private struct _Alert: View, _PrimitiveView {
                     isPresented.wrappedValue = false
                 }
             }
+            let renderSize = _UIRuntime._currentRenderSize ?? _Size(width: 80, height: 24)
+            let sizing = _presentationOverlaySizing(
+                env: _UIRuntime._currentEnvironment ?? ctx.runtime._baseEnvironment,
+                renderSize: renderSize,
+                preferredWidth: 48
+            )
             ctx.runtime._registerOverlay(view: AnyView(
-                ZStack {
-                    Color.gray.opacity(0.35)
+                _ModalOverlayCard(
+                    scrim: Color.black.opacity(0.45),
+                    maxWidth: sizing.maxWidth,
+                    maxHeight: min(max(6, sizing.maxHeight), max(6, renderSize.height - 2))
+                ) {
                     VStack(spacing: 1) {
                         alert
                         HStack(spacing: 1) {
@@ -1183,9 +1236,18 @@ private struct _AlertFromType: View, _PrimitiveView {
 
             let button = alert.dismissButton ?? .default(Text("OK"), action: nil)
             let messageView: AnyView = alert.message.map(AnyView.init) ?? AnyView(EmptyView())
+            let renderSize = _UIRuntime._currentRenderSize ?? _Size(width: 80, height: 24)
+            let sizing = _presentationOverlaySizing(
+                env: _UIRuntime._currentEnvironment ?? ctx.runtime._baseEnvironment,
+                renderSize: renderSize,
+                preferredWidth: 48
+            )
             ctx.runtime._registerOverlay(view: AnyView(
-                ZStack {
-                    Color.gray.opacity(0.35)
+                _ModalOverlayCard(
+                    scrim: Color.black.opacity(0.45),
+                    maxWidth: sizing.maxWidth,
+                    maxHeight: min(max(6, sizing.maxHeight), max(6, renderSize.height - 2))
+                ) {
                     VStack(spacing: 1) {
                         VStack(spacing: 1) {
                             alert.title
@@ -1619,6 +1681,26 @@ private struct _LabelsHidden: View, _PrimitiveView {
     }
 }
 
+private struct _AccessibilityLabelModifier: View, _PrimitiveView {
+    typealias Body = Never
+    let content: AnyView
+    let label: String
+
+    func _makeNode(_ ctx: inout _BuildContext) -> _VNode {
+        .tagged(value: AnyHashable(_AccessibilityLabel(value: label)), label: ctx.buildChild(content))
+    }
+}
+
+private struct _AccessibilityIdentifierModifier: View, _PrimitiveView {
+    typealias Body = Never
+    let content: AnyView
+    let identifier: String
+
+    func _makeNode(_ ctx: inout _BuildContext) -> _VNode {
+        .tagged(value: AnyHashable(_AccessibilityIdentifier(value: identifier)), label: ctx.buildChild(content))
+    }
+}
+
 private struct _KeyboardShortcutBinder: View, _PrimitiveView {
     typealias Body = Never
 
@@ -1921,7 +2003,22 @@ private struct _GlassEffectModifier: View, _PrimitiveView {
         let isInteractive = style.rawValue.contains("interactive")
         let bgOpacity = isInteractive ? 0.24 : 0.16
         let shadowOpacity = isInteractive ? 0.12 : 0.08
-        return .background(child: .shadow(child: clipped, color: .white.opacity(shadowOpacity), radius: 1, x: 0, y: 0), background: ctx.buildChild(Color.gray.opacity(bgOpacity)))
+        let approximated = _VNode.background(
+            child: .shadow(child: clipped, color: .white.opacity(shadowOpacity), radius: 1, x: 0, y: 0),
+            background: ctx.buildChild(Color.gray.opacity(bgOpacity))
+        )
+        return .glass(style: style.rawValue, shape: shape?.rawValue, child: approximated)
+    }
+}
+
+private struct _CRTEffectModifier: View, _PrimitiveView {
+    typealias Body = Never
+
+    let content: AnyView
+    let style: CRTEffect
+
+    func _makeNode(_ ctx: inout _BuildContext) -> _VNode {
+        .crt(style: style.rawValue, child: ctx.buildChild(content))
     }
 }
 

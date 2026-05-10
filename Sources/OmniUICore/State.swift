@@ -32,6 +32,10 @@ public struct State<Value> {
         self.location = _StateLocation()
     }
 
+    public init(initialValue: Value, fileID: StaticString = #fileID, line: UInt = #line) {
+        self.init(wrappedValue: initialValue, fileID: fileID, line: line)
+    }
+
     public var wrappedValue: Value {
         get {
             if let resolved = location.resolved {

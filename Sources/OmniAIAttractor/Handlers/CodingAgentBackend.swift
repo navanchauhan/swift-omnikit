@@ -457,24 +457,12 @@ public final class CodingAgentBackend: CodergenBackend, Sendable {
             }
         }
 
-        if requireStatusBlock {
-            writeToAttractorStderr("[CodingAgentBackend:WARN] No structured status block found; returning retry because require_status_block=true\n")
-            return CodergenResult(
-                response: response,
-                status: .retry,
-                notes: "Agent completed some work but did not return the required structured status block; retrying the stage"
-            )
-        }
-
-        // No JSON block found, but if the agent did real work (the caller already
-        // checked for no-substantive-work above), default to success rather than
-        // retrying endlessly. Steering nodes that need a specific outcome should
-        // set require_status_block=true.
-        writeToAttractorStderr("[CodingAgentBackend] No structured status block found; defaulting to success\n")
+        let requirement = requireStatusBlock ? "required " : ""
+        writeToAttractorStderr("[CodingAgentBackend:WARN] No structured status block found; returning retry\n")
         return CodergenResult(
             response: response,
-            status: .success,
-            notes: "Agent completed work but did not return a structured status block; defaulting to success"
+            status: .retry,
+            notes: "No structured status block returned after agent work; retrying stage. \(requirement.capitalized)structured status block was expected."
         )
     }
 

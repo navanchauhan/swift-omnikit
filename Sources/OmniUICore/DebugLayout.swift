@@ -163,6 +163,8 @@ enum _DebugLayout {
              .onDelete(_, _, let child),
              .tagged(_, let child),
              .shadow(let child, _, _, _, _),
+             .glass(_, _, let child),
+             .crt(_, let child),
              .hover(_, let child),
              .clip(_, let child),
              .gestureTarget(_, let child),
@@ -192,6 +194,8 @@ enum _DebugLayout {
              .contentShapeRect(_, let child),
              .clip(_, let child),
              .shadow(let child, _, _, _, _),
+             .glass(_, _, let child),
+             .crt(_, let child),
              .background(let child, _),
              .overlay(let child, _),
              .elevated(_, let child),
@@ -280,8 +284,9 @@ enum _DebugLayout {
         case .toggle(_, let isFocused, _, let label):
             let labelSize = measureNode(label, _Size(width: max(0, maxSize.width - (isFocused ? 5 : 4)), height: 1))
             return _Size(width: min(maxSize.width, (isFocused ? 1 : 0) + 4 + labelSize.width), height: 1)
-        case .textField(_, let placeholder, let text, _, _, let style):
-            let display = text.isEmpty ? placeholder : text
+        case .textField(_, let placeholder, let text, _, _, let isSecure, let style):
+            let fieldText = isSecure ? String(repeating: "•", count: text.count) : text
+            let display = fieldText.isEmpty ? placeholder : fieldText
             let width = 2 + (style == .plain ? 0 : 2) + display.count
             return _Size(width: min(maxSize.width, width), height: 1)
         case .scrollView(_, _, _, _, _, let content):
@@ -700,7 +705,9 @@ enum _DebugLayout {
         case .empty:
             return _Size(width: 0, height: 0)
 
-        case .textStyled(_, let child):
+        case .textStyled(_, let child),
+             .glass(_, _, let child),
+             .crt(_, let child):
             // Text styles don't affect the debug layout — just recurse.
             return draw(
                 node: child, origin: origin, maxSize: maxSize,
@@ -1309,9 +1316,13 @@ enum _DebugLayout {
 	                    return measure(child, maxSize)
 	                case .clip(_, let child):
 	                    return measure(child, maxSize)
-	                case .shadow(let child, _, _, _, _):
-	                    return measure(child, maxSize)
-	                case .background(let child, _):
+		                case .shadow(let child, _, _, _, _):
+		                    return measure(child, maxSize)
+		                case .glass(_, _, let child):
+		                    return measure(child, maxSize)
+		                case .crt(_, let child):
+		                    return measure(child, maxSize)
+		                case .background(let child, _):
 	                    return measure(child, maxSize)
 	                case .overlay(let child, _):
 	                    return measure(child, maxSize)
@@ -1409,8 +1420,9 @@ enum _DebugLayout {
                     let labelMax = _Size(width: max(0, maxSize.width - boxCount - xPad), height: 1)
                     let l = measure(label, labelMax)
                     return _Size(width: min(maxSize.width, xPad + boxCount + l.width), height: 1)
-                case .textField(_, let placeholder, let text, _, _, _):
-                    let display = text.isEmpty ? placeholder : text
+                case .textField(_, let placeholder, let text, _, _, let isSecure, _):
+                    let fieldText = isSecure ? String(repeating: "•", count: text.count) : text
+                    let display = fieldText.isEmpty ? placeholder : fieldText
                     let prefixCount = 2
                     let s = prefixCount + 2 + display.count
                     return _Size(width: min(maxSize.width, s), height: 1)
@@ -1794,8 +1806,9 @@ enum _DebugLayout {
             hitRegions.append((rect, id))
             return _Size(width: width, height: 1)
 
-        case .textField(let id, let placeholder, let text, let cursor, let isFocused, let style):
-            let display = text.isEmpty ? placeholder : text
+        case .textField(let id, let placeholder, let text, let cursor, let isFocused, let isSecure, let style):
+            let fieldText = isSecure ? String(repeating: "•", count: text.count) : text
+            let display = fieldText.isEmpty ? placeholder : fieldText
             let prefix = isFocused ? "> " : "  "
             let cpos = max(0, min(cursor, display.unicodeScalars.count))
             let withCursor: String = {
@@ -1846,9 +1859,13 @@ enum _DebugLayout {
 	                        return m(child, maxSize)
 	                    case .clip(_, let child):
 	                        return m(child, maxSize)
-	                    case .shadow(let child, _, _, _, _):
-	                        return m(child, maxSize)
-	                    case .background(let child, _):
+		                    case .shadow(let child, _, _, _, _):
+		                        return m(child, maxSize)
+		                    case .glass(_, _, let child):
+		                        return m(child, maxSize)
+		                    case .crt(_, let child):
+		                        return m(child, maxSize)
+		                    case .background(let child, _):
 	                        return m(child, maxSize)
 	                    case .overlay(let child, _):
 	                        return m(child, maxSize)
@@ -1939,8 +1956,9 @@ enum _DebugLayout {
                         let labelMax = _Size(width: max(0, maxSize.width - boxCount - xPad), height: 1)
                         let l = m(label, labelMax)
                         return _Size(width: min(maxSize.width, xPad + boxCount + l.width), height: 1)
-                    case .textField(_, let placeholder, let text, _, _, _):
-                        let display = text.isEmpty ? placeholder : text
+                    case .textField(_, let placeholder, let text, _, _, let isSecure, _):
+                        let fieldText = isSecure ? String(repeating: "•", count: text.count) : text
+                        let display = fieldText.isEmpty ? placeholder : fieldText
                         let prefixCount = 2
                         let s = prefixCount + 2 + display.count
                         return _Size(width: min(maxSize.width, s), height: 1)

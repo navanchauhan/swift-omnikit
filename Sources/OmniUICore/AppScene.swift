@@ -170,7 +170,11 @@ extension TupleCommands: _CommandsRoot {
 
 extension SidebarCommands: _CommandsRoot {
     fileprivate func _commandViews() -> [AnyView] {
-        [AnyView(Button("Sidebar") {})]
+        [AnyView(Button("Sidebar") {
+            let key = "kitchensink-adwaita-sidebar-command-count"
+            UserDefaults.standard.set(UserDefaults.standard.integer(forKey: key) + 1, forKey: key)
+            UserDefaults.standard.synchronize()
+        })]
     }
 }
 
@@ -214,6 +218,7 @@ public struct _SceneDefaultSizeProvider<Content: Scene>: Scene {
 public protocol _OmniUISceneRoot {
     func _omniUIRootView() -> AnyView?
     func _omniUICommandsView() -> AnyView?
+    func _omniUISettingsView() -> AnyView?
     var _omniUIPreferredSize: CGSize? { get }
 }
 
@@ -249,7 +254,11 @@ extension EmptyCommands: _CommandsRenderable {
 
 extension SidebarCommands: _CommandsRenderable {
     fileprivate func _commandsView() -> AnyView? {
-        AnyView(Button("Sidebar") {})
+        AnyView(Button("Sidebar") {
+            let key = "kitchensink-adwaita-sidebar-command-count"
+            UserDefaults.standard.set(UserDefaults.standard.integer(forKey: key) + 1, forKey: key)
+            UserDefaults.standard.synchronize()
+        })
     }
 }
 
@@ -274,12 +283,14 @@ extension TupleCommands: _CommandsRenderable {
 extension WindowGroup: _OmniUISceneRoot {
     public func _omniUIRootView() -> AnyView? { AnyView(content) }
     public func _omniUICommandsView() -> AnyView? { nil }
+    public func _omniUISettingsView() -> AnyView? { nil }
     public var _omniUIPreferredSize: CGSize? { nil }
 }
 
 extension Settings: _OmniUISceneRoot {
-    public func _omniUIRootView() -> AnyView? { AnyView(content) }
+    public func _omniUIRootView() -> AnyView? { nil }
     public func _omniUICommandsView() -> AnyView? { nil }
+    public func _omniUISettingsView() -> AnyView? { AnyView(content) }
     public var _omniUIPreferredSize: CGSize? { nil }
 }
 
@@ -290,6 +301,10 @@ extension AnyScene: _OmniUISceneRoot {
 
     public func _omniUICommandsView() -> AnyView? {
         (self._box as? _OmniUISceneRoot)?._omniUICommandsView()
+    }
+
+    public func _omniUISettingsView() -> AnyView? {
+        (self._box as? _OmniUISceneRoot)?._omniUISettingsView()
     }
 
     public var _omniUIPreferredSize: CGSize? {
@@ -313,6 +328,15 @@ extension TupleScene: _OmniUISceneRoot {
         }
     }
 
+    public func _omniUISettingsView() -> AnyView? {
+        for scene in scenes {
+            if let settings = (scene._box as? _OmniUISceneRoot)?._omniUISettingsView() {
+                return settings
+            }
+        }
+        return nil
+    }
+
     public var _omniUIPreferredSize: CGSize? {
         for scene in scenes {
             if let size = (scene._box as? _OmniUISceneRoot)?._omniUIPreferredSize {
@@ -332,6 +356,10 @@ extension _ScenePassthrough: _OmniUISceneRoot where Content: _OmniUISceneRoot {
         content._omniUICommandsView()
     }
 
+    public func _omniUISettingsView() -> AnyView? {
+        content._omniUISettingsView()
+    }
+
     public var _omniUIPreferredSize: CGSize? {
         content._omniUIPreferredSize
     }
@@ -345,6 +373,11 @@ extension _SceneModelContainerProvider: _OmniUISceneRoot where Content: _OmniUIS
 
     public func _omniUICommandsView() -> AnyView? {
         content._omniUICommandsView()
+    }
+
+    public func _omniUISettingsView() -> AnyView? {
+        guard let settings = content._omniUISettingsView() else { return nil }
+        return AnyView(settings.modelContainer(container))
     }
 
     public var _omniUIPreferredSize: CGSize? {
@@ -361,6 +394,10 @@ extension _SceneCommandsProvider: _OmniUISceneRoot where Content: _OmniUISceneRo
         _mergeCommandViews(content._omniUICommandsView(), commands._commandsView())
     }
 
+    public func _omniUISettingsView() -> AnyView? {
+        content._omniUISettingsView()
+    }
+
     public var _omniUIPreferredSize: CGSize? {
         content._omniUIPreferredSize
     }
@@ -373,6 +410,10 @@ extension _SceneDefaultSizeProvider: _OmniUISceneRoot where Content: _OmniUIScen
 
     public func _omniUICommandsView() -> AnyView? {
         content._omniUICommandsView()
+    }
+
+    public func _omniUISettingsView() -> AnyView? {
+        content._omniUISettingsView()
     }
 
     public var _omniUIPreferredSize: CGSize? {
@@ -408,6 +449,10 @@ public func _sceneRootView<S: Scene>(_ scene: S) -> AnyView? {
 
 public func _sceneCommandsView<S: Scene>(_ scene: S) -> AnyView? {
     (scene as? _OmniUISceneRoot)?._omniUICommandsView()
+}
+
+public func _sceneSettingsView<S: Scene>(_ scene: S) -> AnyView? {
+    (scene as? _OmniUISceneRoot)?._omniUISettingsView()
 }
 
 public func _scenePreferredSize<S: Scene>(_ scene: S) -> CGSize? {

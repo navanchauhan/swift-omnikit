@@ -52,6 +52,8 @@ indirect enum _VNode {
     case contentShapeRect(kind: _ShapeKind, child: _VNode)
     case clip(kind: _ShapeKind, child: _VNode)
     case shadow(child: _VNode, color: Color, radius: Int, x: Int, y: Int)
+    case glass(style: String, shape: String?, child: _VNode)
+    case crt(style: String, child: _VNode)
     case background(child: _VNode, background: _VNode)
     case overlay(child: _VNode, overlay: _VNode)
     case elevated(zOffset: Int, child: _VNode)
@@ -69,7 +71,7 @@ indirect enum _VNode {
     case tapTarget(id: _ActionID, child: _VNode)
     case hover(id: _HoverID, child: _VNode)
     case toggle(id: _ActionID, isFocused: Bool, isOn: Bool, label: _VNode)
-    case textField(id: _ActionID, placeholder: String, text: String, cursor: Int, isFocused: Bool, style: _TextFieldStyleKind)
+    case textField(id: _ActionID, placeholder: String, text: String, cursor: Int, isFocused: Bool, isSecure: Bool, style: _TextFieldStyleKind)
     case scrollView(id: _ActionID, path: [Int], isFocused: Bool, axis: _Axis, offset: Int, content: _VNode)
     case identified(id: AnyHashable, readerScopePath: [Int]?, child: _VNode)
     case onDelete(actionScopePath: [Int], action: (IndexSet) -> Void, child: _VNode)
@@ -122,6 +124,51 @@ public enum _AlignmentID: Hashable, Sendable {
 enum _PreferenceNodeKind {
     case set(keyID: ObjectIdentifier, value: Any, reduce: (inout Any, () -> Any) -> Void)
     case onChange(keyID: ObjectIdentifier, callback: (Any) -> Void)
+}
+
+enum _SemanticRole: String, Hashable, Sendable {
+    case form
+    case list
+    case lazyVStack
+    case navigationStack
+    case navigationSplitView
+}
+
+struct _AccessibilityLabel: Hashable, Sendable {
+    let value: String
+}
+
+struct _AccessibilityIdentifier: Hashable, Sendable {
+    let value: String
+}
+
+enum _TextInputRole: String, Hashable, Sendable {
+    case textEditor
+}
+
+struct _ProgressRole: Hashable, Sendable {
+    let label: String
+    let fraction: Double?
+}
+
+struct _SliderRole: Hashable, Sendable {
+    let label: String
+    let value: Double
+    let lowerBound: Double
+    let upperBound: Double
+    let step: Double?
+}
+
+struct _StepperRole: Hashable, Sendable {
+    let label: String
+    let value: Double?
+}
+
+struct _DatePickerRole: Hashable, Sendable {
+    let label: String
+    let value: String
+    let timestamp: Double
+    let setActionID: Int?
 }
 
 public struct _StyledTextSegment {

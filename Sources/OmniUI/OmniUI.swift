@@ -1,5 +1,9 @@
-@_exported import OmniUICore
 import Foundation
+
+#if os(macOS) || os(iOS) || os(tvOS) || os(watchOS) || os(visionOS)
+@_exported import SwiftUI
+#else
+@_exported import OmniUICore
 import OmniUINotcursesRenderer
 
 private struct _OmniUIAppRootView: View, @unchecked Sendable {
@@ -35,3 +39,4 @@ public extension App {
         try await NotcursesApp(scene: app.body).run()
     }
 }
+#endif

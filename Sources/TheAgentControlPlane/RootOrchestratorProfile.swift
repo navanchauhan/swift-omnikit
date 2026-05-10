@@ -187,7 +187,7 @@ public final class RootOrchestratorProfile: ProviderProfile, @unchecked Sendable
     }
 }
 
-private extension RootOrchestratorProfile {
+extension RootOrchestratorProfile {
     static func shouldUseCompatibilityDirectReplyMode(for profile: any ProviderProfile) -> Bool {
         guard profile.id == "openai" else {
             return false

@@ -24,6 +24,8 @@ let zlibPkgConfig: String? = nil
 let zlibProviders: [SystemPackageProvider]? = nil
 let sqlitePkgConfig: String? = nil
 let sqliteProviders: [SystemPackageProvider]? = nil
+let adwaitaPkgConfig: String? = nil
+let adwaitaProviders: [SystemPackageProvider]? = nil
 #else
 let zlibPkgConfig: String? = "zlib"
 let zlibProviders: [SystemPackageProvider]? = [
@@ -34,6 +36,11 @@ let sqlitePkgConfig: String? = "sqlite3"
 let sqliteProviders: [SystemPackageProvider]? = [
     .apt(["libsqlite3-dev"]),
     .brew(["sqlite"]),
+]
+let adwaitaPkgConfig: String? = "libadwaita-1"
+let adwaitaProviders: [SystemPackageProvider]? = [
+    .apt(["libadwaita-1-dev", "libgtk-4-dev"]),
+    .brew(["libadwaita", "gtk4"]),
 ]
 #endif
 
@@ -117,8 +124,16 @@ let package = Package(
             targets: ["OmniUI"]
         ),
         .library(
+            name: "OmniUIAdwaita",
+            targets: ["OmniUIAdwaita"]
+        ),
+        .library(
             name: "OmniUINotcursesRenderer",
             targets: ["OmniUINotcursesRenderer"]
+        ),
+        .library(
+            name: "OmniUIAdwaitaRenderer",
+            targets: ["OmniUIAdwaitaRenderer"]
         ),
         .library(
             name: "OmniExecution",
@@ -131,6 +146,18 @@ let package = Package(
         .executable(
             name: "KitchenSink",
             targets: ["KitchenSink"]
+        ),
+        .executable(
+            name: "KitchenSinkAdwaita",
+            targets: ["KitchenSinkAdwaita"]
+        ),
+        .executable(
+            name: "OmniUIAdwaitaSmoke",
+            targets: ["OmniUIAdwaitaSmoke"]
+        ),
+        .executable(
+            name: "OmniUIAdwaitaSwiftUISmoke",
+            targets: ["OmniUIAdwaitaSwiftUISmoke"]
         ),
         .executable(
             name: "AttractorCLI",
@@ -197,7 +224,7 @@ let package = Package(
         .package(url: "https://github.com/vapor/websocket-kit.git", from: "2.15.0"),
         .package(path: "External/swift-photon"),
         // For Swift macro stubs (SwiftData compatibility).
-        .package(url: "https://github.com/swiftlang/swift-syntax.git", from: "602.0.0"),
+        .package(url: "https://github.com/swiftlang/swift-syntax.git", "602.0.0"..<"604.0.0"),
         // Swift-native testing DSL (`import Testing`, `@Test`, `#expect`).
         .package(url: "https://github.com/swiftlang/swift-testing.git", from: "6.2.0"),
         // Pure-Swift bash interpreter for in-process command execution.
@@ -220,8 +247,25 @@ let package = Package(
             providers: sqliteProviders
         ),
         .target(
+            name: "CAdwaita",
+            path: "Sources/CAdwaita",
+            publicHeadersPath: "include",
+            cSettings: [
+                .unsafeFlags(["-I/opt/homebrew/include/gtk-4.0", "-I/opt/homebrew/include/libadwaita-1", "-I/opt/homebrew/include/glib-2.0", "-I/opt/homebrew/lib/glib-2.0/include", "-I/opt/homebrew/include/pango-1.0", "-I/opt/homebrew/include/harfbuzz", "-I/opt/homebrew/include/cairo", "-I/opt/homebrew/include/gdk-pixbuf-2.0", "-I/opt/homebrew/include/graphene-1.0", "-I/opt/homebrew/lib/graphene-1.0/include"], .when(platforms: [.macOS])),
+                .unsafeFlags(["-I/usr/include/gtk-4.0", "-I/usr/include/libadwaita-1", "-I/usr/include/glib-2.0", "-I/usr/lib/x86_64-linux-gnu/glib-2.0/include", "-I/usr/lib/aarch64-linux-gnu/glib-2.0/include", "-I/usr/include/pango-1.0", "-I/usr/include/harfbuzz", "-I/usr/include/cairo", "-I/usr/include/gdk-pixbuf-2.0", "-I/usr/include/graphene-1.0", "-I/usr/lib/x86_64-linux-gnu/graphene-1.0/include", "-I/usr/lib/aarch64-linux-gnu/graphene-1.0/include"], .when(platforms: [.linux])),
+            ],
+            linkerSettings: [
+                .linkedLibrary("adwaita-1", .when(platforms: [.linux, .macOS])),
+                .linkedLibrary("gtk-4", .when(platforms: [.linux, .macOS])),
+                .linkedLibrary("glib-2.0", .when(platforms: [.linux, .macOS])),
+                .linkedLibrary("gobject-2.0", .when(platforms: [.linux, .macOS])),
+                .linkedLibrary("gio-2.0", .when(platforms: [.linux, .macOS])),
+                .unsafeFlags(["-L/opt/homebrew/lib"], .when(platforms: [.macOS])),
+            ]
+        ),
+        .target(
             name: "OmniSwiftUI",
-            dependencies: ["OmniUI", "SwiftUIMacros"],
+            dependencies: ["OmniUICore", "OmniUINotcursesRenderer", "SwiftUIMacros"],
             path: "Sources/SwiftUI",
             swiftSettings: commonSwiftSettings + [
                 // Some larger SwiftUI view trees can trip the default solver timeout.
@@ -369,7 +413,10 @@ let package = Package(
         ),
         .target(
             name: "OmniUI",
-            dependencies: ["OmniUICore", "OmniUINotcursesRenderer"],
+            dependencies: [
+                "OmniUICore",
+                .target(name: "OmniUINotcursesRenderer", condition: .when(platforms: [.linux])),
+            ],
             swiftSettings: commonSwiftSettings
         ),
         .target(
@@ -411,6 +458,16 @@ let package = Package(
                 .unsafeFlags(["-L/usr/local/lib"], .when(platforms: [.macOS])),
             ]
         ),
+        .target(
+            name: "OmniUIAdwaitaRenderer",
+            dependencies: ["OmniUICore", "CAdwaita"],
+            swiftSettings: commonSwiftSettings
+        ),
+        .target(
+            name: "OmniUIAdwaita",
+            dependencies: ["OmniUICore", "OmniUIAdwaitaRenderer", "SwiftUIMacros"],
+            swiftSettings: commonSwiftSettings
+        ),
         .executableTarget(
             name: "KitchenSink",
             dependencies: ["OmniSwiftUI", "OmniUI", "OmniUINotcursesRenderer"],
@@ -418,6 +475,35 @@ let package = Package(
                 .unsafeFlags(["-warn-concurrency", "-strict-concurrency=complete"]),
                 .unsafeFlags(["-enable-actor-data-race-checks"], .when(configuration: .debug)),
                 .unsafeFlags(["-Xfrontend", "-solver-expression-time-threshold=300"]),
+            ]
+        ),
+        .executableTarget(
+            name: "KitchenSinkAdwaita",
+            dependencies: ["OmniSwiftUI", "OmniSwiftData", "OmniUICore", "OmniUIAdwaita"],
+            swiftSettings: [
+                .unsafeFlags(["-warn-concurrency", "-strict-concurrency=complete"]),
+                .unsafeFlags(["-enable-actor-data-race-checks"], .when(configuration: .debug)),
+                .unsafeFlags(["-Xfrontend", "-solver-expression-time-threshold=300"]),
+                .unsafeFlags(["-module-alias", "SwiftUI=OmniSwiftUI"]),
+                .unsafeFlags(["-module-alias", "SwiftData=OmniSwiftData"]),
+            ]
+        ),
+        .executableTarget(
+            name: "OmniUIAdwaitaSmoke",
+            dependencies: ["OmniUIAdwaita"],
+            swiftSettings: [
+                .unsafeFlags(["-warn-concurrency", "-strict-concurrency=complete"]),
+                .unsafeFlags(["-enable-actor-data-race-checks"], .when(configuration: .debug)),
+            ]
+        ),
+        .executableTarget(
+            name: "OmniUIAdwaitaSwiftUISmoke",
+            dependencies: ["OmniUIAdwaita", "OmniSwiftData"],
+            swiftSettings: [
+                .unsafeFlags(["-warn-concurrency", "-strict-concurrency=complete"]),
+                .unsafeFlags(["-enable-actor-data-race-checks"], .when(configuration: .debug)),
+                .unsafeFlags(["-module-alias", "SwiftUI=OmniUIAdwaita"]),
+                .unsafeFlags(["-module-alias", "SwiftData=OmniSwiftData"]),
             ]
         ),
         .executableTarget(
@@ -764,6 +850,14 @@ let package = Package(
                 "OmniUICore",
                 .product(name: "Testing", package: "swift-testing"),
             ]
+        ),
+        .testTarget(
+            name: "OmniUIAdwaitaRendererTests",
+            dependencies: [
+                "OmniUIAdwaitaRenderer",
+                .product(name: "Testing", package: "swift-testing"),
+            ],
+            swiftSettings: commonSwiftSettings
         ),
     ],
     swiftLanguageModes: [.v6]

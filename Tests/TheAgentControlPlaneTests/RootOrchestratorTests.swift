@@ -109,7 +109,7 @@ struct RootOrchestratorTests {
         #expect(section.contains("# Runtime Clock Context"))
         #expect(section.contains("Current local date/time:"))
         #expect(section.contains("Current timestamp (ISO 8601):"))
-        #expect(section.contains("2025-11-02T20:30:45"))
+        #expect(section.contains("2025-11-04T12:44:05"))
     }
 
     @Test

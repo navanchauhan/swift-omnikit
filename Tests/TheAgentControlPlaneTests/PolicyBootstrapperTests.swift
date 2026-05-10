@@ -1,7 +1,7 @@
 import Foundation
 import Testing
 import OmniAgentMesh
-@testable import TheAgentControlPlane
+@testable import TheAgentControlPlaneKit
 
 @Suite
 struct PolicyBootstrapperTests {

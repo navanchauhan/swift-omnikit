@@ -112,9 +112,9 @@ public enum SFSymbolMap: Sendable {
         "magnifyingglass.circle.fill": "🔍",
 
         // iGopher / additional symbols
-        "bookmark": "🔖",
-        "bookmark.fill": "🔖",
-        "book": "📖",
+        "bookmark": "◇",
+        "bookmark.fill": "◆",
+        "book": "☰",
         "link": "🔗",
         "doc.plaintext": "📄",
         "doc.zipper": "📦",

@@ -1,0 +1,47 @@
+{
+  "skillID": "tpu.exps",
+  "version": "1.0.0",
+  "displayName": "TPU Experiments",
+  "summary": "Operate the TPU teacher-training experiment runbook and inspect training artifacts.",
+  "supportedScopes": ["system", "workspace", "mission"],
+  "activationPolicy": "suggested",
+  "projectionSurfaces": ["root_prompt", "tool_registry", "codergen", "attractor"],
+  "requiredCapabilities": ["tpu", "teacher-training"],
+  "allowedDomains": [],
+  "budgetHints": {
+    "preferredModelTier": "codergen",
+    "timeoutClass": "long",
+    "costClass": "medium"
+  },
+  "promptFile": "prompt.md",
+  "codergenPromptFile": "prompt.md",
+  "attractorPromptFile": "prompt.md",
+  "shellPaths": [],
+  "workerTools": [
+    {
+      "name": "inspect_status",
+      "description": "Inspect tmux sessions, recent logs, and current TPU experiment status.",
+      "instructionFile": "tools/inspect_status.md"
+    },
+    {
+      "name": "compare_best_runs",
+      "description": "Compare best-known and latest TPU experiment metrics.",
+      "instructionFile": "tools/compare_best_runs.md"
+    },
+    {
+      "name": "evaluate_best_checkpoint",
+      "description": "Run evaluation against the best-known checkpoint.",
+      "instructionFile": "tools/evaluate_best_checkpoint.md"
+    },
+    {
+      "name": "export_best_validation_samples",
+      "description": "Export validation samples from the best-known checkpoint.",
+      "instructionFile": "tools/export_best_validation_samples.md"
+    },
+    {
+      "name": "rerun_best_known_config",
+      "description": "Launch the best-known singing teacher-training rerun.",
+      "instructionFile": "tools/rerun_best_known_config.md"
+    }
+  ]
+}

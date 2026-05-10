@@ -8,7 +8,7 @@ final class StreamingE2ETests {
 
     // MARK: - Streaming events emitted
 
-    @Test
+    @Test(.enabled(if: E2EConfig.hasAnthropic))
     func testStreamingEventsEmitted() async throws {
         try skipUnlessAnthropic()
         let tempDir = try TempTestDir()
@@ -30,7 +30,7 @@ final class StreamingE2ETests {
 
     // MARK: - Token usage stats
 
-    @Test
+    @Test(.enabled(if: E2EConfig.hasAnthropic))
     func testTokenUsageStatsPresent() async throws {
         try skipUnlessAnthropic()
         let tempDir = try TempTestDir()
@@ -52,7 +52,7 @@ final class StreamingE2ETests {
 
     // MARK: - Tool call events tracked
 
-    @Test
+    @Test(.enabled(if: E2EConfig.hasAnthropic))
     func testToolCallEventsTracked() async throws {
         try skipUnlessAnthropic()
         let tempDir = try TempTestDir()
@@ -78,7 +78,7 @@ final class StreamingE2ETests {
 
     // MARK: - Text delta events contain content
 
-    @Test
+    @Test(.enabled(if: E2EConfig.hasAnthropic))
     func testTextDeltaEventsContainContent() async throws {
         try skipUnlessAnthropic()
         let tempDir = try TempTestDir()

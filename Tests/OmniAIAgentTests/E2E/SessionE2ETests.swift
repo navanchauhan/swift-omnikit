@@ -8,7 +8,7 @@ final class SessionE2ETests {
 
     // MARK: - Single-turn text response
 
-    @Test
+    @Test(.enabled(if: E2EConfig.hasAnthropic))
     func testSingleTurnTextResponse() async throws {
         try skipUnlessAnthropic()
         let tempDir = try TempTestDir()
@@ -27,7 +27,7 @@ final class SessionE2ETests {
 
     // MARK: - Multi-turn conversation
 
-    @Test
+    @Test(.enabled(if: E2EConfig.hasAnthropic))
     func testMultiTurnConversation() async throws {
         try skipUnlessAnthropic()
         let tempDir = try TempTestDir()
@@ -51,7 +51,7 @@ final class SessionE2ETests {
 
     // MARK: - Tool execution: read file
 
-    @Test
+    @Test(.enabled(if: E2EConfig.hasAnthropic))
     func testToolExecutionReadFile() async throws {
         try skipUnlessAnthropic()
         let tempDir = try TempTestDir()
@@ -71,7 +71,7 @@ final class SessionE2ETests {
 
     // MARK: - Tool execution: write file
 
-    @Test
+    @Test(.enabled(if: E2EConfig.hasAnthropic))
     func testToolExecutionWriteFile() async throws {
         try skipUnlessAnthropic()
         let tempDir = try TempTestDir()
@@ -95,7 +95,7 @@ final class SessionE2ETests {
 
     // MARK: - Tool execution: edit file
 
-    @Test
+    @Test(.enabled(if: E2EConfig.hasAnthropic))
     func testToolExecutionEditFile() async throws {
         try skipUnlessAnthropic()
         let tempDir = try TempTestDir()
@@ -116,7 +116,7 @@ final class SessionE2ETests {
 
     // MARK: - Tool execution: bash
 
-    @Test
+    @Test(.enabled(if: E2EConfig.hasAnthropic))
     func testToolExecutionBash() async throws {
         try skipUnlessAnthropic()
         let tempDir = try TempTestDir()
@@ -132,7 +132,7 @@ final class SessionE2ETests {
 
     // MARK: - Tool execution: glob
 
-    @Test
+    @Test(.enabled(if: E2EConfig.hasAnthropic))
     func testToolExecutionGlob() async throws {
         try skipUnlessAnthropic()
         let tempDir = try TempTestDir()
@@ -152,7 +152,7 @@ final class SessionE2ETests {
 
     // MARK: - Tool execution: grep
 
-    @Test
+    @Test(.enabled(if: E2EConfig.hasAnthropic))
     func testToolExecutionGrep() async throws {
         try skipUnlessAnthropic()
         let tempDir = try TempTestDir()
@@ -169,7 +169,7 @@ final class SessionE2ETests {
 
     // MARK: - Session history correctness
 
-    @Test
+    @Test(.enabled(if: E2EConfig.hasAnthropic))
     func testSessionHistoryCorrectness() async throws {
         try skipUnlessAnthropic()
         let tempDir = try TempTestDir()
@@ -203,7 +203,7 @@ final class SessionE2ETests {
 
     // MARK: - Session close/cleanup
 
-    @Test
+    @Test(.enabled(if: E2EConfig.hasAnthropic))
     func testSessionCloseCleanup() async throws {
         try skipUnlessAnthropic()
         let tempDir = try TempTestDir()

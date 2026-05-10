@@ -120,12 +120,23 @@ public struct Namespace {
         init() { self.rawValue = UUID() }
     }
 
-    private let id: ID
+    private let seed: _StateSeed
+    private let initial: () -> ID
 
     public init() {
-        self.id = ID()
+        self.init(fileID: #fileID, line: #line)
     }
 
-    public var wrappedValue: ID { id }
-}
+    public init(fileID: StaticString = #fileID, line: UInt = #line) {
+        self.seed = _StateSeed(fileID: fileID, line: line)
+        let id = ID()
+        self.initial = { id }
+    }
 
+    public var wrappedValue: ID {
+        guard let runtime = _UIRuntime._current, let path = _UIRuntime._currentPath else {
+            return initial()
+        }
+        return runtime._getState(seed: seed, path: path, initial: initial)
+    }
+}

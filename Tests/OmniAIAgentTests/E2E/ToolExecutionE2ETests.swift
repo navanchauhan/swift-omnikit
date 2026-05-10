@@ -8,7 +8,7 @@ final class ToolExecutionE2ETests {
 
     // MARK: - Read tool: offset and limit
 
-    @Test
+    @Test(.enabled(if: E2EConfig.hasAnthropic))
     func testReadFileWithOffsetAndLimit() async throws {
         try skipUnlessAnthropic()
         let tempDir = try TempTestDir()
@@ -32,7 +32,7 @@ final class ToolExecutionE2ETests {
 
     // MARK: - Write tool: parent directory creation
 
-    @Test
+    @Test(.enabled(if: E2EConfig.hasAnthropic))
     func testWriteCreatesParentDirectories() async throws {
         try skipUnlessAnthropic()
         let tempDir = try TempTestDir()
@@ -55,7 +55,7 @@ final class ToolExecutionE2ETests {
 
     // MARK: - Edit tool: string replacement
 
-    @Test
+    @Test(.enabled(if: E2EConfig.hasAnthropic))
     func testEditStringReplacement() async throws {
         try skipUnlessAnthropic()
         let tempDir = try TempTestDir()
@@ -76,7 +76,7 @@ final class ToolExecutionE2ETests {
 
     // MARK: - Bash tool: command execution
 
-    @Test
+    @Test(.enabled(if: E2EConfig.hasAnthropic))
     func testBashCommandExecution() async throws {
         try skipUnlessAnthropic()
         let tempDir = try TempTestDir()
@@ -92,7 +92,7 @@ final class ToolExecutionE2ETests {
 
     // MARK: - Glob tool: pattern matching
 
-    @Test
+    @Test(.enabled(if: E2EConfig.hasAnthropic))
     func testGlobPatternMatching() async throws {
         try skipUnlessAnthropic()
         let tempDir = try TempTestDir()
@@ -123,7 +123,7 @@ final class ToolExecutionE2ETests {
 
     // MARK: - Grep tool: content search
 
-    @Test
+    @Test(.enabled(if: E2EConfig.hasAnthropic))
     func testGrepContentSearch() async throws {
         try skipUnlessAnthropic()
         let tempDir = try TempTestDir()
@@ -150,7 +150,7 @@ final class ToolExecutionE2ETests {
 
     // MARK: - Error case: reading nonexistent file
 
-    @Test
+    @Test(.enabled(if: E2EConfig.hasAnthropic))
     func testReadNonexistentFileHandledGracefully() async throws {
         try skipUnlessAnthropic()
         let tempDir = try TempTestDir()

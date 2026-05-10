@@ -313,7 +313,7 @@ public final class RootAgentRuntime: @unchecked Sendable {
     }
 }
 
-private extension RootAgentRuntimeOptions {
+extension RootAgentRuntimeOptions {
     static let defaultLLMInactivityTimeoutSeconds = 180.0
 
     var effectiveEnableNativeWebSearch: Bool {

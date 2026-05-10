@@ -142,17 +142,7 @@ public final class OpenAIProfile: ProviderProfile, @unchecked Sendable {
 
 private extension OpenAIProfile {
     static func defaultSupportsStreaming(environment: [String: String] = ProcessInfo.processInfo.environment) -> Bool {
-        if Self.isCodexChatGPTAuthEnabled(environment: environment) {
-            return true
-        }
-        guard let baseURL = environment["OPENAI_BASE_URL"], !baseURL.isEmpty else {
-            return true
-        }
-        guard let components = URLComponents(string: baseURL),
-              let host = components.host?.lowercased() else {
-            return false
-        }
-        return host == "api.openai.com" || host.hasSuffix(".openai.com")
+        true
     }
 
     static func defaultSupportsPreviousResponseId(model: String, environment: [String: String] = ProcessInfo.processInfo.environment) -> Bool {

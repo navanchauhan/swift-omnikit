@@ -1,0 +1,4 @@
+module CAdwaita {
+  header "include/CAdwaita.h"
+  export *
+}

@@ -31,6 +31,9 @@ public enum AccessibilityAttachmentModifier {
 
 
 public enum AccessibilityChildBehavior {
+    case combine
+    case contain
+    case ignore
 }
 
 

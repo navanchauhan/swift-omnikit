@@ -13,6 +13,17 @@ struct CounterView: View {
     }
 }
 
+private enum _ProbeEnvironmentLabelKey: EnvironmentKey {
+    static let defaultValue = "Default environment"
+}
+
+private extension EnvironmentValues {
+    var probeEnvironmentLabel: String {
+        get { self[_ProbeEnvironmentLabelKey.self] }
+        set { self[_ProbeEnvironmentLabelKey.self] = newValue }
+    }
+}
+
 @Test func debugSnapshot_click_increments_state() async throws {
     let runtime = _UIRuntime()
     let size = _Size(width: 30, height: 6)
@@ -27,6 +38,517 @@ struct CounterView: View {
     #expect(s1.text.contains("Count: 1"))
 }
 
+@Test func environment_modifier_propagates_custom_value_to_child_view() async throws {
+    struct Child: View {
+        @Environment(\.probeEnvironmentLabel) private var label
+
+        var body: some View {
+            Text("Environment label: \(label)")
+        }
+    }
+
+    struct V: View {
+        var body: some View {
+            Child()
+                .environment(\.probeEnvironmentLabel, "Injected environment")
+        }
+    }
+
+    let runtime = _UIRuntime()
+    let snapshot = runtime.debugRender(V(), size: _Size(width: 60, height: 4))
+    #expect(snapshot.text.contains("Environment label: Injected environment"))
+}
+
+@Test func semanticSnapshot_preserves_native_control_roles() async throws {
+    let runtime = _UIRuntime()
+    let snapshot = runtime.semanticSnapshot(CounterView(), size: _Size(width: 30, height: 6))
+
+    func containsButton(_ node: SemanticNode) -> Bool {
+        if case .button = node.kind { return true }
+        return node.children.contains(where: containsButton)
+    }
+
+    func containsText(_ expected: String, in node: SemanticNode) -> Bool {
+        if case .text(let text) = node.kind, text.contains(expected) { return true }
+        return node.children.contains { containsText(expected, in: $0) }
+    }
+
+    #expect(containsButton(snapshot.root))
+    #expect(containsText("Count: 0", in: snapshot.root))
+    #expect(containsText("Inc", in: snapshot.root))
+}
+
+@Test func semanticSnapshot_preserves_progress_role() async throws {
+    struct V: View {
+        var body: some View {
+            ProgressView(value: 0.5, total: 1.0)
+        }
+    }
+
+    let runtime = _UIRuntime()
+    let snapshot = runtime.semanticSnapshot(V(), size: _Size(width: 30, height: 6))
+
+    func containsProgress(_ node: SemanticNode) -> Bool {
+        if case .progress(_, let fraction) = node.kind {
+            return fraction == 0.5
+        }
+        return node.children.contains(where: containsProgress)
+    }
+
+    #expect(containsProgress(snapshot.root))
+}
+
+@Test func secureField_masks_debug_output_but_preserves_semantic_value() async throws {
+    struct V: View {
+        @State var secret = "swordfish"
+
+        var body: some View {
+            SecureField("Secret", text: $secret)
+        }
+    }
+
+    let runtime = _UIRuntime()
+    let snapshot = runtime.debugRender(V(), size: _Size(width: 40, height: 4))
+    #expect(snapshot.text.contains("•••••••••"))
+    #expect(!snapshot.text.contains("swordfish"))
+
+    let semantic = runtime.semanticSnapshot(V(), size: _Size(width: 40, height: 4))
+    func containsSecureField(_ node: SemanticNode) -> Bool {
+        if case .textField(_, _, let text, _, _, let isSecure) = node.kind {
+            return isSecure && text == "swordfish"
+        }
+        return node.children.contains(where: containsSecureField)
+    }
+
+    #expect(containsSecureField(semantic.root))
+}
+
+@Test func semanticSnapshot_preserves_slider_role() async throws {
+    struct V: View {
+        @State var level = 0.4
+
+        var body: some View {
+            Slider(value: $level, in: 0...1, step: 0.1) {
+                Text("Level")
+            }
+        }
+    }
+
+    let runtime = _UIRuntime()
+    let snapshot = runtime.semanticSnapshot(V(), size: _Size(width: 40, height: 6))
+
+    func containsSlider(_ node: SemanticNode) -> Bool {
+        if case .slider(let label, let value, let lower, let upper, let step, let decrementActionID, let incrementActionID) = node.kind {
+            return label == "Level"
+                && value == 0.4
+                && lower == 0
+                && upper == 1
+                && step == 0.1
+                && decrementActionID != nil
+                && incrementActionID != nil
+        }
+        return node.children.contains(where: containsSlider)
+    }
+
+    #expect(containsSlider(snapshot.root))
+}
+
+@Test func semanticSnapshot_preserves_stepper_role() async throws {
+    struct V: View {
+        @State var value = 2
+
+        var body: some View {
+            Stepper("Stepper: \(value)", value: $value, in: 0...10)
+        }
+    }
+
+    let runtime = _UIRuntime()
+    let snapshot = runtime.semanticSnapshot(V(), size: _Size(width: 40, height: 6))
+
+    func containsStepper(_ node: SemanticNode) -> Bool {
+        if case .stepper(let label, let value, let decrementActionID, let incrementActionID) = node.kind {
+            return label == "Stepper: 2"
+                && value == 2
+                && decrementActionID != nil
+                && incrementActionID != nil
+        }
+        return node.children.contains(where: containsStepper)
+    }
+
+    #expect(containsStepper(snapshot.root))
+}
+
+@Test func semanticSnapshot_preserves_datePicker_role() async throws {
+    struct V: View {
+        @State var date = Date(timeIntervalSince1970: 1_704_067_200)
+
+        var body: some View {
+            DatePicker("Due", selection: $date)
+        }
+    }
+
+    let runtime = _UIRuntime()
+    let snapshot = runtime.semanticSnapshot(V(), size: _Size(width: 40, height: 6))
+
+    func containsDatePicker(_ node: SemanticNode) -> Bool {
+        if case .datePicker(let label, let value, let timestamp, let setActionID, let decrementActionID, let incrementActionID) = node.kind {
+            return label == "Due"
+                && value.contains("2023")
+                && timestamp == 1_704_067_200
+                && setActionID != nil
+                && decrementActionID != nil
+                && incrementActionID != nil
+        }
+        return node.children.contains(where: containsDatePicker)
+    }
+
+    #expect(containsDatePicker(snapshot.root))
+}
+
+@Test func semanticSnapshot_preserves_structural_container_roles() async throws {
+    struct V: View {
+        var body: some View {
+            NavigationSplitView {
+                List {
+                    Text("Side")
+                }
+            } detail: {
+                NavigationStack {
+                    Form {
+                        LazyVStack {
+                            Text("Detail")
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    let runtime = _UIRuntime()
+    let snapshot = runtime.semanticSnapshot(V(), size: _Size(width: 120, height: 30))
+
+    func contains(_ role: SemanticContainerRole, in node: SemanticNode) -> Bool {
+        if case .container(let nodeRole) = node.kind, nodeRole == role {
+            return true
+        }
+        return node.children.contains { contains(role, in: $0) }
+    }
+
+    #expect(contains(.navigationSplitView, in: snapshot.root))
+    #expect(contains(.navigationStack, in: snapshot.root))
+    #expect(contains(.list, in: snapshot.root))
+    #expect(contains(.form, in: snapshot.root))
+    #expect(contains(.lazyVStack, in: snapshot.root))
+}
+
+@Test func semanticSnapshot_preserves_explicit_identity_in_node_ids() async throws {
+    struct V: View {
+        var body: some View {
+            VStack(spacing: 0) {
+                Text("Stable A").id("stable-a")
+                Text("Stable B").id(42)
+            }
+        }
+    }
+
+    let runtime = _UIRuntime()
+    let snapshot = runtime.semanticSnapshot(V(), size: _Size(width: 80, height: 10))
+
+    func ids(for text: String, in node: SemanticNode) -> [String] {
+        var matches: [String] = []
+        if case .text(let value) = node.kind, value == text {
+            matches.append(node.id)
+        }
+        for child in node.children {
+            matches.append(contentsOf: ids(for: text, in: child))
+        }
+        return matches
+    }
+
+    #expect(ids(for: "Stable A", in: snapshot.root).contains { $0.contains("stable-a") })
+    #expect(ids(for: "Stable B", in: snapshot.root).contains { $0.contains("42") })
+}
+
+@Test func semanticSnapshot_preserves_accessibility_label_modifier() async throws {
+    struct V: View {
+        var body: some View {
+            Button("Visual") {}
+                .accessibilityLabel("Accessible action")
+        }
+    }
+
+    let runtime = _UIRuntime()
+    let snapshot = runtime.semanticSnapshot(V(), size: _Size(width: 80, height: 10))
+
+    func containsAccessibilityLabel(_ node: SemanticNode) -> Bool {
+        if case .modifier(.accessibilityLabel("Accessible action")) = node.kind {
+            return true
+        }
+        return node.children.contains(where: containsAccessibilityLabel)
+    }
+
+    #expect(containsAccessibilityLabel(snapshot.root))
+}
+
+@Test func semanticSnapshot_preserves_accessibility_identifier_modifier() async throws {
+    struct V: View {
+        var body: some View {
+            Text("Identifier target")
+                .accessibilityIdentifier("identifier-target")
+        }
+    }
+
+    let runtime = _UIRuntime()
+    let snapshot = runtime.semanticSnapshot(V(), size: _Size(width: 80, height: 10))
+
+    func containsAccessibilityIdentifier(_ node: SemanticNode) -> Bool {
+        if case .modifier(.accessibilityIdentifier("identifier-target")) = node.kind {
+            return true
+        }
+        return node.children.contains(where: containsAccessibilityIdentifier)
+    }
+
+    #expect(containsAccessibilityIdentifier(snapshot.root))
+}
+
+@Test func semanticSnapshot_preserves_liquid_glass_modifier_for_native_renderers() async throws {
+    struct V: View {
+        var body: some View {
+            Text("Glass")
+                .glassEffect(.regular.interactive(), in: .rect(cornerRadius: 8))
+        }
+    }
+
+    let runtime = _UIRuntime()
+    let snapshot = runtime.semanticSnapshot(V(), size: _Size(width: 80, height: 10))
+
+    func containsGlass(_ node: SemanticNode) -> Bool {
+        if case .modifier(.glass(let descriptor)) = node.kind {
+            return descriptor.contains("regular.interactive") && descriptor.contains("cornerRadius:8")
+        }
+        return node.children.contains(where: containsGlass)
+    }
+
+    #expect(containsGlass(snapshot.root))
+}
+
+@Test func semanticSnapshot_preserves_crt_modifier_as_native_noop_metadata() async throws {
+    struct V: View {
+        var body: some View {
+            Text("CRT")
+                .crtEffect(.scanline)
+        }
+    }
+
+    let runtime = _UIRuntime()
+    let snapshot = runtime.semanticSnapshot(V(), size: _Size(width: 80, height: 10))
+
+    func containsCRT(_ node: SemanticNode) -> Bool {
+        if case .modifier(.crt("scanline")) = node.kind {
+            return true
+        }
+        return node.children.contains(where: containsCRT)
+    }
+
+    #expect(containsCRT(snapshot.root))
+}
+
+@Test func appStorage_updates_visible_state_and_user_defaults() async throws {
+    let suiteName = "OmniUICoreTests.appStorage.\(UUID().uuidString)"
+    let store = UserDefaults(suiteName: suiteName)!
+    defer { store.removePersistentDomain(forName: suiteName) }
+
+    struct V: View {
+        let store: UserDefaults
+        @AppStorage("count", store: UserDefaults.standard) private var count = 0
+
+        init(store: UserDefaults) {
+            self.store = store
+            self._count = AppStorage(wrappedValue: 0, "count", store: store)
+        }
+
+        var body: some View {
+            VStack(spacing: 1) {
+                Text("Stored count: \(count)")
+                Button("Store +1") { count += 1 }
+            }
+        }
+    }
+
+    let runtime = _UIRuntime()
+    let size = _Size(width: 40, height: 6)
+    let initial = runtime.debugRender(V(store: store), size: size)
+    #expect(initial.text.contains("Stored count: 0"))
+
+    guard let button = _findButton(initial, title: "Store +1") else {
+        #expect(Bool(false), "Could not find AppStorage update button")
+        return
+    }
+    initial.click(x: button.x, y: button.y)
+
+    let next = runtime.debugRender(V(store: store), size: size)
+    #expect(next.text.contains("Stored count: 1"))
+    #expect(store.integer(forKey: "count") == 1)
+}
+
+@Test func bindable_text_field_updates_observable_model_state() async throws {
+    final class Model: OmniUICore.ObservableObject {
+        let _$observationRegistrar = _ObservationRegistrar()
+        var title = "Bindable start" {
+            didSet { _$observationRegistrar.notify() }
+        }
+    }
+
+    struct Editor: View {
+        @Bindable var model: Model
+
+        var body: some View {
+            TextField("Title", text: $model.title)
+        }
+    }
+
+    struct V: View {
+        @State private var model = Model()
+
+        var body: some View {
+            VStack(spacing: 1) {
+                Editor(model: model)
+                Text("Model title: \(model.title)")
+            }
+        }
+    }
+
+    let runtime = _UIRuntime()
+    let size = _Size(width: 50, height: 6)
+    let initial = runtime.semanticSnapshot(V(), size: size)
+
+    func textFieldActionID(in node: SemanticNode) -> Int? {
+        if case .textField(let actionID, _, _, _, _, _) = node.kind {
+            return actionID
+        }
+        for child in node.children {
+            if let actionID = textFieldActionID(in: child) {
+                return actionID
+            }
+        }
+        return nil
+    }
+
+    guard let actionID = textFieldActionID(in: initial.root) else {
+        #expect(Bool(false), "Could not find @Bindable TextField")
+        return
+    }
+
+    runtime.replaceTextForRawActionID(actionID, previous: "Bindable start", next: "Bindable native edit")
+    let next = runtime.debugRender(V(), size: size)
+    #expect(next.text.contains("Model title: Bindable native edit"))
+}
+
+@Test func namespace_id_stays_stable_across_state_rerender() async throws {
+    struct V: View {
+        @Namespace private var namespace
+        @State private var count = 0
+
+        var body: some View {
+            VStack(spacing: 1) {
+                Text("Namespace: \(namespace.hashValue)")
+                Text("Count: \(count)")
+                Button("Increment") { count += 1 }
+            }
+        }
+    }
+
+    func namespaceLine(in snapshot: DebugSnapshot) -> String? {
+        snapshot.lines.first(where: { $0.contains("Namespace:") })?
+            .trimmingCharacters(in: .whitespaces)
+    }
+
+    let runtime = _UIRuntime()
+    let size = _Size(width: 60, height: 8)
+    let initial = runtime.debugRender(V(), size: size)
+    let initialNamespace = namespaceLine(in: initial)
+    #expect(initial.text.contains("Count: 0"))
+
+    guard let button = _findButton(initial, title: "Increment") else {
+        #expect(Bool(false), "Could not find namespace rerender button")
+        return
+    }
+    initial.click(x: button.x, y: button.y)
+
+    let next = runtime.debugRender(V(), size: size)
+    #expect(next.text.contains("Count: 1"))
+    #expect(namespaceLine(in: next) == initialNamespace)
+}
+
+@Test func semanticSnapshot_preserves_disabled_control_roles_for_native_renderers() async throws {
+    struct V: View {
+        @State var enabled = true
+        @State var name = "Locked"
+        @State var picker = "A"
+
+        var body: some View {
+            VStack {
+                Button("Disabled action") {}
+                    .disabled(true)
+                Toggle("Disabled toggle", isOn: $enabled)
+                    .disabled(true)
+                TextField("Disabled name", text: $name)
+                    .disabled(true)
+                Picker("Disabled picker", selection: $picker, options: [("A", "A")])
+                    .disabled(true)
+            }
+        }
+    }
+
+    let runtime = _UIRuntime()
+    let snapshot = runtime.semanticSnapshot(V(), size: _Size(width: 80, height: 12))
+
+    #expect(_containsSemantic(snapshot.root) {
+        if case .disabledButton(let label) = $0.kind {
+            return label == "Disabled action"
+        }
+        return false
+    })
+    #expect(_containsSemantic(snapshot.root) {
+        if case .disabledToggle(let label, let isOn) = $0.kind {
+            return label == "Disabled toggle" && isOn
+        }
+        return false
+    })
+    #expect(_containsSemantic(snapshot.root) {
+        if case .disabledTextField(let placeholder, let text, false) = $0.kind {
+            return placeholder == "Disabled name" && text == "Locked"
+        }
+        return false
+    })
+    #expect(_containsSemantic(snapshot.root) {
+        if case .disabledMenu(let title, let value) = $0.kind {
+            return title == "Disabled picker" && value == "A"
+        }
+        return false
+    })
+}
+
+@Test func semanticDiff_reports_updates_insertions_removals_and_reorders() async throws {
+    let previous = SemanticNode(id: "root", kind: .stack(axis: .vertical, spacing: 0), children: [
+        SemanticNode(id: "a", kind: .text("A")),
+        SemanticNode(id: "b", kind: .text("B")),
+        SemanticNode(id: "c", kind: .button(actionID: 1, isFocused: false)),
+    ])
+    let next = SemanticNode(id: "root", kind: .stack(axis: .vertical, spacing: 0), children: [
+        SemanticNode(id: "b", kind: .text("B2")),
+        SemanticNode(id: "a", kind: .text("A")),
+        SemanticNode(id: "d", kind: .toggle(actionID: 2, isFocused: false, isOn: true)),
+    ])
+
+    let changes = SemanticDiff.changes(from: previous, to: next)
+
+    #expect(changes.contains(SemanticChange(id: "root", kind: .childrenReordered)))
+    #expect(changes.contains(SemanticChange(id: "b", kind: .updated)))
+    #expect(changes.contains(SemanticChange(id: "c", kind: .removed)))
+    #expect(changes.contains(SemanticChange(id: "d", kind: .inserted)))
+}
+
 struct TextFieldView: View {
     @State private var text: String = ""
     var body: some View {
@@ -35,6 +557,39 @@ struct TextFieldView: View {
             Text("Value: \(text)")
         }
     }
+}
+
+struct TextEditorSemanticView: View {
+    @State private var text: String = "Line 1\nLine 2"
+
+    var body: some View {
+        TextEditor(text: $text)
+    }
+}
+
+struct TextEditorNativeInputView: View {
+    @State private var text: String = "Native TextEditor"
+
+    var body: some View {
+        VStack(spacing: 1) {
+            TextEditor(text: $text)
+            Text("Value: \(text)")
+        }
+    }
+}
+
+@Test func semanticSnapshot_preserves_textEditor_role() async throws {
+    let runtime = _UIRuntime()
+    let snapshot = runtime.semanticSnapshot(TextEditorSemanticView(), size: _Size(width: 40, height: 8))
+
+    func containsTextEditor(_ node: SemanticNode) -> Bool {
+        if case .textEditor(_, let text, _, _) = node.kind {
+            return text.contains("Line 1") && text.contains("Line 2")
+        }
+        return node.children.contains(where: containsTextEditor)
+    }
+
+    #expect(containsTextEditor(snapshot.root))
 }
 
 @Test func debugSnapshot_textField_focus_and_typing_updates_state() async throws {
@@ -50,6 +605,114 @@ struct TextFieldView: View {
 
     let s1 = runtime.debugRender(TextFieldView(), size: size)
     #expect(s1.text.contains("Value: abc"))
+}
+
+@Test func runtime_replaceTextForRawActionID_updates_textField_binding() async throws {
+    let runtime = _UIRuntime()
+    let size = _Size(width: 40, height: 4)
+
+    func textFieldActionID(in node: SemanticNode) -> Int? {
+        if case .textField(let actionID, _, _, _, _, _) = node.kind {
+            return actionID
+        }
+        for child in node.children {
+            if let id = textFieldActionID(in: child) {
+                return id
+            }
+        }
+        return nil
+    }
+
+    let semantic = runtime.semanticSnapshot(TextFieldView(), size: size)
+    guard let actionID = textFieldActionID(in: semantic.root) else {
+        #expect(Bool(false), "Could not find semantic TextField action")
+        return
+    }
+
+    runtime.replaceTextForRawActionID(actionID, previous: "", next: "native")
+    var rendered = runtime.debugRender(TextFieldView(), size: size)
+    #expect(rendered.text.contains("Value: native"))
+
+    runtime.replaceTextForRawActionID(actionID, previous: "native", next: "native GTK")
+    rendered = runtime.debugRender(TextFieldView(), size: size)
+    #expect(rendered.text.contains("Value: native GTK"))
+
+    runtime.replaceTextForRawActionID(actionID, previous: "native GTK", next: "GTK")
+    rendered = runtime.debugRender(TextFieldView(), size: size)
+    #expect(rendered.text.contains("Value: GTK"))
+}
+
+struct FocusedTextFieldNativeView: View {
+    @FocusState private var isFocused: Bool
+
+    var body: some View {
+        VStack(spacing: 1) {
+            TextField("Name", text: Binding(get: { "" }, set: { _ in }))
+                .focused($isFocused)
+            Text("Focus: \(isFocused ? "focused" : "idle")")
+        }
+    }
+}
+
+@Test func runtime_focusByRawActionID_updates_focusState_binding() async throws {
+    let runtime = _UIRuntime()
+    let size = _Size(width: 40, height: 5)
+
+    func textFieldActionID(in node: SemanticNode) -> Int? {
+        if case .textField(let actionID, _, _, _, _, _) = node.kind {
+            return actionID
+        }
+        for child in node.children {
+            if let id = textFieldActionID(in: child) {
+                return id
+            }
+        }
+        return nil
+    }
+
+    var rendered = runtime.debugRender(FocusedTextFieldNativeView(), size: size)
+    #expect(rendered.text.contains("Focus: idle"))
+
+    let semantic = runtime.semanticSnapshot(FocusedTextFieldNativeView(), size: size)
+    guard let actionID = textFieldActionID(in: semantic.root) else {
+        #expect(Bool(false), "Could not find semantic TextField action")
+        return
+    }
+
+    _ = runtime.focusByRawActionID(actionID)
+    #expect(!runtime.focusByRawActionID(actionID))
+    rendered = runtime.debugRender(FocusedTextFieldNativeView(), size: size)
+    #expect(rendered.text.contains("Focus: focused"))
+}
+
+@Test func runtime_nativeTextEditorReplacement_updates_binding() async throws {
+    let runtime = _UIRuntime()
+    let size = _Size(width: 40, height: 8)
+
+    func textEditorActionID(in node: SemanticNode) -> Int? {
+        if case .textEditor(let actionID, _, _, _) = node.kind {
+            return actionID
+        }
+        for child in node.children {
+            if let id = textEditorActionID(in: child) {
+                return id
+            }
+        }
+        return nil
+    }
+
+    _ = runtime.debugRender(TextEditorNativeInputView(), size: size)
+    let semantic = runtime.semanticSnapshot(TextEditorNativeInputView(), size: size)
+    guard let actionID = textEditorActionID(in: semantic.root) else {
+        #expect(Bool(false), "Could not find semantic TextEditor action")
+        return
+    }
+
+    _ = runtime.focusByRawActionID(actionID)
+    runtime.replaceTextForRawActionID(actionID, previous: "Native TextEditor", next: "Native TextEditor typed")
+
+    let rendered = runtime.debugRender(TextEditorNativeInputView(), size: size)
+    #expect(rendered.text.contains("Value: Native TextEditor typed"))
 }
 
 @Test func debugSnapshot_textField_readline_key_events_work() async throws {
@@ -86,6 +749,32 @@ struct SimplePickerView: View {
             Picker("Choice", selection: $choice, options: [(.a, "A"), (.b, "B"), (.c, "C")])
         }
     }
+}
+
+@Test func semanticSnapshot_preserves_picker_options_when_collapsed() async throws {
+    let runtime = _UIRuntime()
+    let snapshot = runtime.semanticSnapshot(SimplePickerView(), size: _Size(width: 80, height: 10))
+
+    func menuChildren(_ node: SemanticNode) -> [SemanticNode]? {
+        if case .menu = node.kind {
+            return node.children
+        }
+        for child in node.children {
+            if let found = menuChildren(child) {
+                return found
+            }
+        }
+        return nil
+    }
+
+    let children = menuChildren(snapshot.root) ?? []
+    #expect(children.count == 3)
+    #expect(children.contains { child in
+        child.children.contains { if case .text("A") = $0.kind { true } else { false } }
+    })
+    #expect(children.contains { child in
+        child.children.contains { if case .text("C") = $0.kind { true } else { false } }
+    })
 }
 
 @Test func debugSnapshot_picker_dropdown_click_selects_option() async throws {
@@ -249,6 +938,63 @@ struct ListRenderView: View {
     #expect(s1.text.contains("picked: 1"))
 }
 
+private struct _StableForEachRow: View {
+    let value: Int
+    @State private var taps = 0
+
+    var body: some View {
+        Button("Row \(value): \(taps)") {
+            taps += 1
+        }
+    }
+}
+
+private struct _StableForEachListProbe: View {
+    @State private var items = [1, 2]
+
+    var body: some View {
+        VStack(spacing: 1) {
+            Button("Reverse") {
+                items.reverse()
+            }
+            List {
+                ForEach(items, id: \.self) { item in
+                    _StableForEachRow(value: item)
+                }
+            }
+        }
+    }
+}
+
+@Test func forEach_list_row_state_stays_with_stable_id_after_reorder() async throws {
+    let runtime = _UIRuntime()
+    let size = _Size(width: 40, height: 10)
+
+    let initial = runtime.debugRender(_StableForEachListProbe(), size: size)
+    #expect(initial.text.contains("Row 1: 0"))
+    #expect(initial.text.contains("Row 2: 0"))
+
+    guard let row2 = _findButton(initial, title: "Row 2: 0") else {
+        #expect(Bool(false), "Could not find second row button")
+        return
+    }
+    initial.click(x: row2.x, y: row2.y)
+
+    let tapped = runtime.debugRender(_StableForEachListProbe(), size: size)
+    #expect(tapped.text.contains("Row 1: 0"))
+    #expect(tapped.text.contains("Row 2: 1"))
+
+    guard let reverse = _findButton(tapped, title: "Reverse") else {
+        #expect(Bool(false), "Could not find reverse button")
+        return
+    }
+    tapped.click(x: reverse.x, y: reverse.y)
+
+    let reordered = runtime.debugRender(_StableForEachListProbe(), size: size)
+    #expect(reordered.text.contains("Row 2: 1"))
+    #expect(reordered.text.contains("Row 1: 0"))
+}
+
 @Test func swiftDataCompat_query_reflects_modelContext_inserts() async throws {
     final class M {
         var id: Int
@@ -283,6 +1029,60 @@ struct ListRenderView: View {
     let s1 = runtime.debugRender(V(), size: size)
     #expect(s1.text.contains("count: 2"))
     #expect(s1.text.contains("first: 2"))
+}
+
+@Test func swiftDataCompat_query_reflects_modelContext_deletes() async throws {
+    final class M {
+        var id: Int
+        init(id: Int) { self.id = id }
+    }
+
+    struct V: View {
+        @Environment(\.modelContext) private var modelContext
+        @Query(sort: \M.id, order: .forward) private var models: [M]
+
+        var body: some View {
+            VStack(spacing: 1) {
+                Text("count: \(models.count)")
+                Text("first: \(models.first?.id ?? -1)")
+                Button("Seed") {
+                    if models.isEmpty {
+                        modelContext.insert(M(id: 1))
+                        modelContext.insert(M(id: 2))
+                    }
+                }
+                Button("Delete first") {
+                    if let first = models.first {
+                        modelContext.delete(first)
+                    }
+                }
+            }
+        }
+    }
+
+    let runtime = _UIRuntime()
+    let size = _Size(width: 40, height: 8)
+
+    let initial = runtime.debugRender(V(), size: size)
+    #expect(initial.text.contains("count: 0"))
+    guard let seed = _findButton(initial, title: "Seed") else {
+        #expect(Bool(false), "Could not find SwiftData seed button")
+        return
+    }
+    initial.click(x: seed.x, y: seed.y)
+
+    let seeded = runtime.debugRender(V(), size: size)
+    #expect(seeded.text.contains("count: 2"))
+    #expect(seeded.text.contains("first: 1"))
+    guard let delete = _findButton(seeded, title: "Delete first") else {
+        #expect(Bool(false), "Could not find SwiftData delete button")
+        return
+    }
+    seeded.click(x: delete.x, y: delete.y)
+
+    let deleted = runtime.debugRender(V(), size: size)
+    #expect(deleted.text.contains("count: 1"))
+    #expect(deleted.text.contains("first: 2"))
 }
 
 struct TapGestureView: View {
@@ -395,6 +1195,35 @@ struct MenuGestureView: View {
     #expect(box.cancelled)
 }
 
+@Test func runtime_native_global_key_invokes_default_and_cancel_shortcuts() async throws {
+    final class Box {
+        var defaultCount = 0
+        var cancelCount = 0
+    }
+
+    struct V: View {
+        let box: Box
+        var body: some View {
+            VStack {
+                Button("Default") { box.defaultCount += 1 }
+                    .keyboardShortcut(.defaultAction)
+                Button("Cancel") { box.cancelCount += 1 }
+                    .keyboardShortcut(.cancelAction)
+            }
+        }
+    }
+
+    let box = Box()
+    let runtime = _UIRuntime()
+    _ = runtime.semanticSnapshot(V(box: box), size: _Size(width: 40, height: 6))
+
+    runtime.handleNativeKeyForRawActionID(0, keyKind: 7, codepoint: 0)
+    runtime.handleNativeKeyForRawActionID(0, keyKind: 8, codepoint: 0)
+
+    #expect(box.defaultCount == 1)
+    #expect(box.cancelCount == 1)
+}
+
 @Test func keyboardShortcut_action_runs_with_captured_environment() async throws {
     final class Box {
         var opened: URL? = nil
@@ -469,6 +1298,7 @@ struct MenuGestureView: View {
     for _ in 0..<50 {
         if box.cancelled == 1 { break }
         await Task.yield()
+        try await Task.sleep(nanoseconds: 1_000_000)
     }
     #expect(box.cancelled == 1)
 }
@@ -651,6 +1481,40 @@ private func _findText(_ snap: DebugSnapshot, text: String, occurrence: Int = 0)
     return nil
 }
 
+private func _semanticButtonActionID(in node: SemanticNode, title: String) -> Int? {
+    if case .button(let actionID, _) = node.kind, _semanticContainsText(node, title) {
+        return actionID
+    }
+    for child in node.children {
+        if let actionID = _semanticButtonActionID(in: child, title: title) {
+            return actionID
+        }
+    }
+    return nil
+}
+
+private func _semanticContainsText(_ node: SemanticNode, _ text: String) -> Bool {
+    if case .text(let value) = node.kind, value.contains(text) {
+        return true
+    }
+    return node.children.contains { _semanticContainsText($0, text) }
+}
+
+private func _containsSemantic(_ node: SemanticNode, matching predicate: (SemanticNode) -> Bool) -> Bool {
+    if predicate(node) { return true }
+    return node.children.contains { _containsSemantic($0, matching: predicate) }
+}
+
+private func _maxScrollOffset(in node: SemanticNode) -> Int {
+    let own: Int
+    if case .scroll(_, _, let offset) = node.kind {
+        own = offset
+    } else {
+        own = 0
+    }
+    return max(own, node.children.map(_maxScrollOffset(in:)).max() ?? 0)
+}
+
 @Test func state_invalidation_rebuilds_only_affected_subtree() async throws {
     let runtime = _UIRuntime()
     let box = _BuildCountBox()
@@ -713,6 +1577,22 @@ struct _ScrollReaderProbeView: View {
         let s2 = runtime.debugRender(_ScrollReaderProbeView(), size: size)
         #expect(s2.text.contains("Row 35"))
     }
+}
+
+@Test func semanticSnapshot_scrollViewReader_exposes_nonzero_scroll_offset_after_native_action() async throws {
+    let runtime = _UIRuntime()
+    let size = _Size(width: 40, height: 10)
+
+    let initial = runtime.semanticSnapshot(_ScrollReaderProbeView(), size: size)
+    guard let jumpActionID = _semanticButtonActionID(in: initial.root, title: "Jump") else {
+        #expect(Bool(false), "Could not find Jump button action")
+        return
+    }
+
+    runtime.invokeActionByRawID(jumpActionID)
+    let next = runtime.semanticSnapshot(_ScrollReaderProbeView(), size: size)
+
+    #expect(_maxScrollOffset(in: next.root) > 0)
 }
 
 @Test func text_image_uses_terminal_symbol_mapping() async throws {
@@ -1091,6 +1971,20 @@ struct _ConfirmationDialogProbeView: View {
     }
 }
 
+struct _AlertSemanticProbeView: View {
+    @State private var isPresented: Bool = false
+
+    var body: some View {
+        VStack(spacing: 1) {
+            Text("alert: \(isPresented ? "open" : "closed")")
+            Button("Show") { isPresented = true }
+        }
+        .alert(isPresented: $isPresented) {
+            Text("Enabled")
+        }
+    }
+}
+
 private struct _PopoverItemProbeItem: Identifiable {
     let id: Int
 }
@@ -1245,6 +2139,46 @@ struct PresentationOverlayTests {
         let s2 = runtime.debugRender(_ConfirmationDialogProbeView(), size: size)
         #expect(s2.text.contains("picked: Two"))
         #expect(!s2.text.contains("Choose"))
+    }
+
+    @Test func alert_uses_semantic_modal_overlay_instead_of_drawing_scrim() async throws {
+        let runtime = _UIRuntime()
+        let size = _Size(width: 50, height: 12)
+
+        let initial = runtime.debugRender(_AlertSemanticProbeView(), size: size)
+        guard let show = _findButton(initial, title: "Show") else {
+            #expect(Bool(false), "Could not find Show button")
+            return
+        }
+        initial.click(x: show.x, y: show.y)
+
+        let snapshot = runtime.semanticSnapshot(_AlertSemanticProbeView(), size: size)
+
+        func containsAdwaitaDialog(_ node: SemanticNode) -> Bool {
+            if case .modifier(.background("adw-dialog")) = node.kind {
+                return true
+            }
+            return node.children.contains(where: containsAdwaitaDialog)
+        }
+
+        func containsDrawingIsland(_ node: SemanticNode) -> Bool {
+            if case .drawingIsland = node.kind {
+                return true
+            }
+            return node.children.contains(where: containsDrawingIsland)
+        }
+
+        func containsText(_ expected: String, in node: SemanticNode) -> Bool {
+            if case .text(let text) = node.kind, text.contains(expected) {
+                return true
+            }
+            return node.children.contains { containsText(expected, in: $0) }
+        }
+
+        #expect(containsAdwaitaDialog(snapshot.root))
+        #expect(containsText("Enabled", in: snapshot.root))
+        #expect(containsText("OK", in: snapshot.root))
+        #expect(!containsDrawingIsland(snapshot.root))
     }
 
     @Test func popover_item_presents_and_dismisses() async throws {
@@ -1672,6 +2606,51 @@ struct _HoverProbe: View {
     #expect(cleared.text.contains("Hover OFF"))
 }
 
+struct _ToolbarSemanticProbe: View {
+    var body: some View {
+        Text("Toolbar Base")
+            .toolbar {
+                ToolbarItem(placement: .topBarLeading) {
+                    Button("Lead") {}
+                }
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button("Trail") {}
+                }
+                ToolbarItem(placement: .bottomBar) {
+                    Button("Bottom") {}
+                }
+            }
+    }
+}
+
+@Test func toolbar_items_are_preserved_in_semantic_snapshot() async throws {
+    let runtime = _UIRuntime()
+    let snapshot = runtime.semanticSnapshot(_ToolbarSemanticProbe(), size: _Size(width: 50, height: 10))
+
+    func containsText(_ expected: String, in node: SemanticNode) -> Bool {
+        if case .text(let text) = node.kind, text.contains(expected) {
+            return true
+        }
+        return node.children.contains { containsText(expected, in: $0) }
+    }
+
+    func buttonCount(in node: SemanticNode) -> Int {
+        let selfCount: Int
+        if case .button = node.kind {
+            selfCount = 1
+        } else {
+            selfCount = 0
+        }
+        return selfCount + node.children.map(buttonCount).reduce(0, +)
+    }
+
+    #expect(containsText("Toolbar Base", in: snapshot.root))
+    #expect(containsText("Lead", in: snapshot.root))
+    #expect(containsText("Trail", in: snapshot.root))
+    #expect(containsText("Bottom", in: snapshot.root))
+    #expect(buttonCount(in: snapshot.root) == 3)
+}
+
 struct _SceneCommandProbe: Scene {
     @SceneBuilder var body: some Scene {
         WindowGroup {
@@ -1683,6 +2662,19 @@ struct _SceneCommandProbe: Scene {
             }
         }
         .defaultSize(width: 90, height: 30)
+    }
+}
+
+struct _SceneSettingsProbe: Scene {
+    @SceneBuilder var body: some Scene {
+        WindowGroup {
+            Text("Main Root")
+        }
+        Settings {
+            Form {
+                Text("Settings Root")
+            }
+        }
     }
 }
 
@@ -1699,6 +2691,23 @@ struct _SceneCommandProbe: Scene {
     let runtime = _UIRuntime()
     let snapshot = runtime.debugRender(root!, size: _Size(width: 30, height: 6))
     #expect(snapshot.text.contains("Scene Root"))
+}
+
+@Test func scene_settings_are_exposed_separately_from_window_root() async throws {
+    let scene = _SceneSettingsProbe().body
+    let root = _sceneRootView(scene)
+    let settings = _sceneSettingsView(scene)
+
+    #expect(root != nil)
+    #expect(settings != nil)
+
+    let runtime = _UIRuntime()
+    let rootSnapshot = runtime.debugRender(root!, size: _Size(width: 30, height: 6))
+    #expect(rootSnapshot.text.contains("Main Root"))
+    #expect(!rootSnapshot.text.contains("Settings Root"))
+
+    let settingsSnapshot = runtime.debugRender(settings!, size: _Size(width: 30, height: 6))
+    #expect(settingsSnapshot.text.contains("Settings Root"))
 }
 
 struct _TextFieldConfigProbe: View {
@@ -1752,6 +2761,7 @@ struct _TextFieldConfigProbe: View {
     let rootScene: _OmniUISceneRoot = scene
     #expect(rootScene._omniUIRootView() != nil)
     #expect(rootScene._omniUICommandsView() != nil)
+    #expect(rootScene._omniUISettingsView() == nil)
     #expect(rootScene._omniUIPreferredSize == CGSize(width: 42, height: 17))
 
     let runtime = _UIRuntime()

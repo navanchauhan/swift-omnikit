@@ -66,6 +66,12 @@ public struct Path: Hashable, Sendable, Shape, _PrimitiveView {
 
 public protocol Shape: View {}
 
+public extension Shape where Self == RoundedRectangle {
+    static func rect(cornerRadius: CGFloat = 0) -> RoundedRectangle {
+        RoundedRectangle(cornerRadius: cornerRadius)
+    }
+}
+
 public struct Rectangle: Shape, _PrimitiveView {
     public typealias Body = Never
     public init() {}

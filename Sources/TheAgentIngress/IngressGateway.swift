@@ -233,7 +233,7 @@ public actor IngressGateway {
                 stagedAttachments: enrichedAttachments,
                 attachmentStageMetadata: stagedAttachments.metadata
             )
-            _ = try await runtime.submitUserText(
+            let initialRuntimeResult = try await runtime.submitUserText(
                 rootInputText,
                 actorID: route.messageActorID,
                 metadata: route.messageMetadata(
@@ -242,14 +242,15 @@ public actor IngressGateway {
                 ),
                 recordAssistantText: false
             )
+            var rawAssistantTextFallback = initialRuntimeResult.assistantText.trimmingCharacters(in: .whitespacesAndNewlines)
             var actionOutcome = try await collectChannelActionOutcome(
                 sessionID: route.runtimeScope.sessionID,
                 route: route,
                 envelope: envelope
             )
-            if actionOutcome.requiresProtocolRetry(for: envelope) {
+            if actionOutcome.requiresProtocolRetry(for: envelope) && rawAssistantTextFallback.isEmpty {
                 print("[IngressGateway] protocol violation: no typed channel action for \(envelope.idempotencyKey); retrying once.")
-                _ = try await runtime.submitUserText(
+                let retryRuntimeResult = try await runtime.submitUserText(
                     protocolCorrectionText(for: envelope),
                     actorID: route.messageActorID,
                     metadata: route.messageMetadata(
@@ -261,6 +262,10 @@ public actor IngressGateway {
                     ),
                     recordAssistantText: false
                 )
+                let retryAssistantText = retryRuntimeResult.assistantText.trimmingCharacters(in: .whitespacesAndNewlines)
+                if !retryAssistantText.isEmpty {
+                    rawAssistantTextFallback = retryAssistantText
+                }
                 actionOutcome = try await collectChannelActionOutcome(
                     sessionID: route.runtimeScope.sessionID,
                     route: route,
@@ -268,6 +273,39 @@ public actor IngressGateway {
                 )
             }
             if actionOutcome.isProtocolViolation(for: envelope) {
+                if !rawAssistantTextFallback.isEmpty {
+                    let instructions = rawAssistantTextFallbackInstructions(
+                        text: rawAssistantTextFallback,
+                        route: route,
+                        envelope: envelope
+                    )
+                    _ = try await runtime.server.recordAssistantText(
+                        rawAssistantTextFallback,
+                        metadata: [
+                            "source": "raw_assistant_text_fallback",
+                            "ingress_transport": envelope.transport.rawValue,
+                            "ingress_event_kind": envelope.eventKind.rawValue,
+                            "protocol_violation": "missing_typed_channel_action",
+                        ]
+                    )
+                    try await saveInboundDelivery(
+                        envelope: envelope,
+                        route: route,
+                        status: .processed,
+                        summary: trimmed
+                    )
+                    for instruction in instructions {
+                        try await saveOutboundDelivery(instruction, route: route)
+                    }
+                    return IngressGatewayResult(
+                        disposition: .processed,
+                        runtimeScope: route.runtimeScope,
+                        actorID: route.messageActorID,
+                        assistantText: rawAssistantTextFallback,
+                        deliveries: instructions
+                    )
+                }
+
                 let summary = "Protocol violation: root agent produced no typed channel action."
                 print("[IngressGateway] \(summary) idempotency_key=\(envelope.idempotencyKey)")
                 try await saveInboundDelivery(
@@ -285,13 +323,21 @@ public actor IngressGateway {
                 )
             }
 
-            let assistantText = actionOutcome.assistantText
-            let instructions = actionOutcome.instructions
+            var assistantText = actionOutcome.assistantText
+            var instructions = actionOutcome.instructions
+            if assistantText.isEmpty, !rawAssistantTextFallback.isEmpty {
+                assistantText = rawAssistantTextFallback
+                instructions.append(contentsOf: rawAssistantTextFallbackInstructions(
+                    text: rawAssistantTextFallback,
+                    route: route,
+                    envelope: envelope
+                ))
+            }
             if !assistantText.isEmpty {
                 _ = try await runtime.server.recordAssistantText(
                     assistantText,
                     metadata: [
-                        "source": "channel_send_message",
+                        "source": actionOutcome.assistantText.isEmpty ? "raw_assistant_text_fallback" : "channel_send_message",
                         "ingress_transport": envelope.transport.rawValue,
                         "ingress_event_kind": envelope.eventKind.rawValue,
                     ]
@@ -519,6 +565,32 @@ public actor IngressGateway {
                     "inbound_event_kind": envelope.eventKind.rawValue,
                     "channel_action_sequence": String(send.sequence),
                 ]) { _, new in new }
+            )
+        }
+    }
+
+    private func rawAssistantTextFallbackInstructions(
+        text: String,
+        route: ResolvedIngressRoute,
+        envelope: IngressEnvelope
+    ) -> [IngressDeliveryInstruction] {
+        IngressDeliveryFormatter.chunkText(text).enumerated().map { index, chunk in
+            IngressDeliveryInstruction(
+                idempotencyKey: "\(envelope.idempotencyKey).raw_assistant_text_fallback.\(index + 1)",
+                kind: .message,
+                transport: envelope.transport,
+                visibility: .sameChannel,
+                workspaceID: route.runtimeScope.workspaceID,
+                channelID: route.runtimeScope.channelID,
+                actorID: route.messageActorID,
+                targetExternalID: envelope.channelExternalID,
+                chunks: [chunk],
+                metadata: [
+                    "side_effect": "raw_assistant_text_fallback",
+                    "inbound_event_kind": envelope.eventKind.rawValue,
+                    "protocol_violation": "missing_typed_channel_action",
+                    "chunk_index": String(index + 1),
+                ]
             )
         }
     }
