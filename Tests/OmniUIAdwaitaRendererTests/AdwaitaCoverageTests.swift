@@ -186,7 +186,7 @@ import Testing
     #expect(!renderer.contains("root.safeAreaInset(edge: .bottom) { commands }"))
     #expect(header.contains("omni_adw_app_set_settings"))
     #expect(header.contains("omni_adw_app_set_commands"))
-    #expect(shim.contains("gtk_menu_button_set_label(GTK_MENU_BUTTON(app->command_button), \"Commands\")"))
+    #expect(shim.contains("gtk_menu_button_set_icon_name(GTK_MENU_BUTTON(app->command_button), \"open-menu-symbolic\")"))
     #expect(shim.contains("gtk_widget_set_visible(app->command_button, FALSE)"))
     #expect(!shim.contains("gtk_button_new_with_label(\"Settings\")"))
     #expect(shim.contains("app->settings_window = gtk_window_new()"))
@@ -341,7 +341,7 @@ import Testing
         "sync_header_entry",
         "omni-header-entry",
         "header_new_tab_button",
-        "gtk_button_new_with_label(\"+\")",
+        "gtk_button_set_icon_name(GTK_BUTTON(app->header_new_tab_button), \"adw-tab-new-symbolic\")",
         "omni_adw_secure_entry_new",
         "gtk_entry_set_visibility",
         "gtk_entry_set_invisible_char",
@@ -538,6 +538,15 @@ import Testing
     #expect(shim.contains("adw-sidebar-symbolic"))
     #expect(shim.contains("omni-sidebar-toggle"))
     #expect(shim.contains("gtk_widget_set_size_request(app->header_sidebar_button, 36, 34)"))
+    #expect(shim.contains("omni_symbolic_icon_name_for_label"))
+    #expect(shim.contains("user-home-symbolic"))
+    #expect(shim.contains("go-previous-symbolic"))
+    #expect(shim.contains("go-next-symbolic"))
+    #expect(shim.contains("bookmark-new-symbolic"))
+    #expect(shim.contains("open-menu-symbolic"))
+    #expect(shim.contains("adw-external-link-symbolic"))
+    #expect(shim.contains("adw-tab-new-symbolic"))
+    #expect(shim.contains("gtk_menu_button_set_icon_name(GTK_MENU_BUTTON(app->command_button), \"open-menu-symbolic\")"))
     #expect(shim.contains("omni-go-button"))
     #expect(shim.contains("gtk_widget_set_size_request(node->widget, 46, 34)"))
     #expect(shim.contains("omni-monospace-text"))

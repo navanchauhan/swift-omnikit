@@ -465,8 +465,12 @@ static void ensure_header_title_widget(OmniAdwApp *app) {
   g_signal_connect(app->header_entry, "changed", G_CALLBACK(on_entry_changed), NULL);
   gtk_box_append(GTK_BOX(app->header_entry_row), app->header_entry);
 
-  app->header_new_tab_button = gtk_button_new_with_label("+");
+  app->header_new_tab_button = gtk_button_new();
+  gtk_button_set_icon_name(GTK_BUTTON(app->header_new_tab_button), "adw-tab-new-symbolic");
   gtk_widget_add_css_class(app->header_new_tab_button, "flat");
+  gtk_widget_add_css_class(app->header_new_tab_button, "omni-icon-button");
+  gtk_widget_set_size_request(app->header_new_tab_button, 38, 34);
+  gtk_widget_set_tooltip_text(app->header_new_tab_button, "New tab");
   gtk_widget_set_vexpand(app->header_new_tab_button, FALSE);
   gtk_widget_set_valign(app->header_new_tab_button, GTK_ALIGN_CENTER);
   omni_accessible_label(app->header_new_tab_button, "New tab");
@@ -501,7 +505,11 @@ static void on_app_activate(GApplication *application, gpointer data) {
 
     app->command_button = gtk_menu_button_new();
     gtk_widget_set_visible(app->command_button, FALSE);
-    gtk_menu_button_set_label(GTK_MENU_BUTTON(app->command_button), "Commands");
+    gtk_menu_button_set_icon_name(GTK_MENU_BUTTON(app->command_button), "open-menu-symbolic");
+    gtk_widget_add_css_class(app->command_button, "flat");
+    gtk_widget_add_css_class(app->command_button, "omni-icon-button");
+    gtk_widget_set_size_request(app->command_button, 38, 34);
+    gtk_widget_set_tooltip_text(app->command_button, "Commands");
     omni_accessible_label(app->command_button, "Commands");
     omni_accessible_description(app->command_button, "Shows app commands");
     gtk_accessible_update_property(GTK_ACCESSIBLE(app->command_button), GTK_ACCESSIBLE_PROPERTY_HAS_POPUP, TRUE, -1);
@@ -819,6 +827,52 @@ static gboolean omni_label_looks_iconic(const char *label) {
     if (g_unichar_isalnum(ch)) return FALSE;
   }
   return TRUE;
+}
+
+static const char *omni_symbolic_icon_name_for_label(const char *label) {
+  if (!label || !label[0]) return NULL;
+  if (strcmp(label, "⌂") == 0) return "user-home-symbolic";
+  if (strcmp(label, "‹") == 0) return "go-previous-symbolic";
+  if (strcmp(label, "›") == 0) return "go-next-symbolic";
+  if (strcmp(label, "☰") == 0) return "open-menu-symbolic";
+  if (strcmp(label, "↗") == 0) return "adw-external-link-symbolic";
+  if (strcmp(label, "◆") == 0) return "bookmark-new-symbolic";
+  if (strcmp(label, "+") == 0) return "adw-tab-new-symbolic";
+  if (strcmp(label, "⌕") == 0 || strcmp(label, "🔍") == 0) return "system-search-symbolic";
+  if (strcmp(label, "✓") == 0) return "adw-entry-apply-symbolic";
+  return NULL;
+}
+
+static const char *omni_accessible_label_for_symbolic_label(const char *label) {
+  if (!label || !label[0]) return NULL;
+  if (strcmp(label, "⌂") == 0) return "Home";
+  if (strcmp(label, "‹") == 0) return "Back";
+  if (strcmp(label, "›") == 0) return "Forward";
+  if (strcmp(label, "☰") == 0) return "Menu";
+  if (strcmp(label, "↗") == 0) return "Open externally";
+  if (strcmp(label, "◆") == 0) return "Bookmark";
+  if (strcmp(label, "+") == 0) return "New tab";
+  if (strcmp(label, "⌕") == 0 || strcmp(label, "🔍") == 0) return "Search";
+  if (strcmp(label, "✓") == 0) return "Apply";
+  return NULL;
+}
+
+static gboolean omni_button_set_symbolic_icon(GtkButton *button, const char *label) {
+  const char *icon_name = omni_symbolic_icon_name_for_label(label);
+  if (!button || !icon_name) return FALSE;
+  gtk_button_set_icon_name(button, icon_name);
+  GtkWidget *widget = GTK_WIDGET(button);
+  gtk_widget_add_css_class(widget, "omni-icon-button");
+  gtk_widget_set_size_request(widget, 38, 34);
+  gtk_widget_set_tooltip_text(widget, omni_accessible_label_for_symbolic_label(label));
+  return TRUE;
+}
+
+static void omni_button_set_label_or_symbolic_icon(GtkButton *button, const char *label) {
+  const char *value = label ? label : "";
+  if (!button) return;
+  if (omni_button_set_symbolic_icon(button, value)) return;
+  gtk_button_set_label(button, value);
 }
 
 static void on_scale_value_changed(GtkRange *range, gpointer data) {
@@ -1900,8 +1954,11 @@ int32_t omni_adw_app_update_node(OmniAdwApp *app, const char *semantic_id, int32
       break;
     case 1:
       if (!GTK_IS_BUTTON(widget)) return 0;
-      gtk_button_set_label(GTK_BUTTON(widget), value);
-      omni_accessible_label(widget, value);
+      omni_button_set_label_or_symbolic_icon(GTK_BUTTON(widget), value);
+      {
+        const char *accessible_value = omni_accessible_label_for_symbolic_label(value);
+        omni_accessible_label(widget, accessible_value ? accessible_value : value);
+      }
       break;
     case 2:
       if (!GTK_IS_CHECK_BUTTON(widget)) return 0;
@@ -2440,6 +2497,7 @@ OmniAdwNode *omni_adw_button_new(const char *label, int32_t action_id) {
   OmniAdwNode *node = calloc(1, sizeof(OmniAdwNode));
   const char *value = label ? label : "Button";
   node->widget = gtk_button_new_with_label(value);
+  omni_button_set_label_or_symbolic_icon(GTK_BUTTON(node->widget), value);
   gtk_widget_set_halign(node->widget, GTK_ALIGN_START);
   gtk_widget_set_vexpand(node->widget, FALSE);
   gtk_widget_set_valign(node->widget, GTK_ALIGN_CENTER);
@@ -2451,7 +2509,8 @@ OmniAdwNode *omni_adw_button_new(const char *label, int32_t action_id) {
     gtk_widget_set_size_request(node->widget, 46, 34);
   }
   gtk_widget_set_focusable(node->widget, action_id > 0);
-  omni_accessible_label(node->widget, value);
+  const char *accessible_value = omni_accessible_label_for_symbolic_label(value);
+  omni_accessible_label(node->widget, accessible_value ? accessible_value : value);
   omni_accessible_description(node->widget, action_id > 0 ? "Button" : "Disabled button");
   omni_accessible_set_disabled(node->widget, action_id <= 0);
   g_object_set_data(G_OBJECT(node->widget), "omni-action-id", GINT_TO_POINTER(action_id));
