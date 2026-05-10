@@ -307,7 +307,7 @@ import Testing
         "adw_overlay_split_view_set_sidebar",
         "adw_overlay_split_view_set_content",
         "ADW_IS_OVERLAY_SPLIT_VIEW(parent->widget)",
-        "view-sidebar-start-symbolic",
+        "adw-sidebar-symbolic",
         "on_sidebar_toggle_toggled",
         "sync_sidebar_toggle",
         "gtk_widget_set_size_request",
@@ -535,6 +535,9 @@ import Testing
     #expect(shim.contains("omni-selected-tab"))
     #expect(shim.contains("omni-icon-button"))
     #expect(shim.contains("gtk_widget_set_size_request(node->widget, 38, 34)"))
+    #expect(shim.contains("adw-sidebar-symbolic"))
+    #expect(shim.contains("omni-sidebar-toggle"))
+    #expect(shim.contains("gtk_widget_set_size_request(app->header_sidebar_button, 36, 34)"))
     #expect(shim.contains("omni-go-button"))
     #expect(shim.contains("gtk_widget_set_size_request(node->widget, 46, 34)"))
     #expect(shim.contains("omni-monospace-text"))
@@ -644,6 +647,9 @@ import Testing
     #expect(shim.contains("setAccessibilityChildren:"))
     #expect(shim.contains("setAccessibilityChildrenInNavigationOrder:"))
     #expect(shim.contains("omni_macos_accessibility_schedule(app);"))
+    #expect(shim.contains("omni_macos_accessibility_schedule_after_scroll"))
+    #expect(shim.contains("g_timeout_source_new(120)"))
+    #expect(shim.contains("omni_macos_accessibility_has_exported_action_ancestor"))
     #expect(shim.contains("omni_macos_accessibility_sync_idle"))
     #expect(shim.contains("on_scroll_adjustment_value_changed"))
     #expect(shim.contains("g_signal_connect(vadjustment, \"value-changed\", G_CALLBACK(on_scroll_adjustment_value_changed), app)"))

@@ -109,14 +109,27 @@ static void omni_widget_expand(GtkWidget *widget, gboolean vertical) {
   }
 }
 
+static gboolean omni_cached_bool_update(GtkWidget *widget, const char *key, gboolean value) {
+  if (!widget || !key) return FALSE;
+  int next = value ? 1 : 2;
+  int current = GPOINTER_TO_INT(g_object_get_data(G_OBJECT(widget), key));
+  if (current == next) return FALSE;
+  g_object_set_data(G_OBJECT(widget), key, GINT_TO_POINTER(next));
+  return TRUE;
+}
+
 static void omni_accessible_label(GtkWidget *widget, const char *label) {
   if (!widget || !label || !label[0]) return;
+  const char *current = (const char *)g_object_get_data(G_OBJECT(widget), "omni-accessible-label");
+  if (current && strcmp(current, label) == 0) return;
   g_object_set_data_full(G_OBJECT(widget), "omni-accessible-label", omni_strdup(label), free);
   gtk_accessible_update_property(GTK_ACCESSIBLE(widget), GTK_ACCESSIBLE_PROPERTY_LABEL, label, -1);
 }
 
 static void omni_accessible_description(GtkWidget *widget, const char *description) {
   if (!widget || !description || !description[0]) return;
+  const char *current = (const char *)g_object_get_data(G_OBJECT(widget), "omni-accessible-description");
+  if (current && strcmp(current, description) == 0) return;
   g_object_set_data_full(G_OBJECT(widget), "omni-accessible-description", omni_strdup(description), free);
   gtk_accessible_update_property(GTK_ACCESSIBLE(widget), GTK_ACCESSIBLE_PROPERTY_DESCRIPTION, description, -1);
 }
@@ -143,21 +156,27 @@ static void omni_accessible_multi_line(GtkWidget *widget, gboolean multi_line) {
 
 static void omni_accessible_value_text(GtkWidget *widget, const char *value) {
   if (!widget || !value || !value[0]) return;
+  const char *current = (const char *)g_object_get_data(G_OBJECT(widget), "omni-accessible-value");
+  if (current && strcmp(current, value) == 0) return;
+  g_object_set_data_full(G_OBJECT(widget), "omni-accessible-value", omni_strdup(value), free);
   gtk_accessible_update_property(GTK_ACCESSIBLE(widget), GTK_ACCESSIBLE_PROPERTY_VALUE_TEXT, value, -1);
 }
 
 static void omni_accessible_set_disabled(GtkWidget *widget, gboolean disabled) {
   if (!widget) return;
+  if (!omni_cached_bool_update(widget, "omni-accessible-disabled-cache", disabled)) return;
   gtk_accessible_update_state(GTK_ACCESSIBLE(widget), GTK_ACCESSIBLE_STATE_DISABLED, disabled, -1);
 }
 
 static void omni_accessible_set_selected(GtkWidget *widget, gboolean selected) {
   if (!widget) return;
+  if (!omni_cached_bool_update(widget, "omni-accessible-selected-cache", selected)) return;
   gtk_accessible_update_state(GTK_ACCESSIBLE(widget), GTK_ACCESSIBLE_STATE_SELECTED, selected, -1);
 }
 
 static void omni_accessible_set_expanded(GtkWidget *widget, gboolean expanded) {
   if (!widget) return;
+  if (!omni_cached_bool_update(widget, "omni-accessible-expanded-cache", expanded)) return;
   gtk_accessible_update_state(GTK_ACCESSIBLE(widget), GTK_ACCESSIBLE_STATE_EXPANDED, expanded, -1);
 }
 
@@ -195,13 +214,16 @@ static gboolean omni_click_is_stationary(GtkGestureClick *gesture, double x, dou
 }
 
 static void omni_macos_accessibility_sync(OmniAdwApp *app);
+static void omni_macos_accessibility_cancel_pending(OmniAdwApp *app);
 static void omni_macos_accessibility_schedule(OmniAdwApp *app);
+static void omni_macos_accessibility_schedule_after_scroll(OmniAdwApp *app);
 
 static void omni_flush_pending_ui(OmniAdwApp *app) {
   if (app && app->window) gtk_widget_queue_draw(app->window);
   while (g_main_context_pending(NULL)) {
     g_main_context_iteration(NULL, FALSE);
   }
+  omni_macos_accessibility_cancel_pending(app);
   omni_macos_accessibility_sync(app);
 }
 
@@ -340,6 +362,7 @@ static void omni_install_css_once(void) {
     ".omni-icon-button { min-width: 38px; min-height: 34px; padding: 0; font-size: 16px; }"
     ".omni-go-button { min-width: 46px; min-height: 34px; padding: 0 12px; font-weight: 700; }"
     ".omni-monospace-text { font-family: monospace; font-size: 12px; }"
+    ".omni-sidebar-toggle { min-width: 36px; min-height: 34px; padding: 0; }"
     "entry, textview, menubutton { border-radius: 8px; }";
 
   GtkCssProvider *provider = gtk_css_provider_new();
@@ -416,8 +439,10 @@ static void ensure_header_title_widget(OmniAdwApp *app) {
   omni_accessible_role_description(app->header_entry_row, "toolbar");
 
   app->header_sidebar_button = gtk_toggle_button_new();
-  gtk_button_set_icon_name(GTK_BUTTON(app->header_sidebar_button), "view-sidebar-start-symbolic");
+  gtk_button_set_icon_name(GTK_BUTTON(app->header_sidebar_button), "adw-sidebar-symbolic");
   gtk_widget_add_css_class(app->header_sidebar_button, "flat");
+  gtk_widget_add_css_class(app->header_sidebar_button, "omni-sidebar-toggle");
+  gtk_widget_set_size_request(app->header_sidebar_button, 36, 34);
   gtk_widget_set_tooltip_text(app->header_sidebar_button, "Toggle Sidebar");
   gtk_widget_set_visible(app->header_sidebar_button, FALSE);
   gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(app->header_sidebar_button), TRUE);
@@ -619,7 +644,6 @@ static void on_string_list_bind(GtkSignalListItemFactory *factory, GtkListItem *
   omni_accessible_list_position(button, (int32_t)position + 1, count);
   omni_accessible_description(button, action_id > 0 ? "Activates this list row" : "Static list row");
   omni_accessible_label(button, text);
-  omni_accessible_label(label, text);
 }
 
 static void on_string_list_activate(GtkListView *view, guint position, gpointer data) {
@@ -635,7 +659,7 @@ static void on_string_list_activate(GtkListView *view, guint position, gpointer 
 
 static void on_scroll_adjustment_value_changed(GtkAdjustment *adjustment, gpointer data) {
   (void)adjustment;
-  omni_macos_accessibility_schedule((OmniAdwApp *)data);
+  omni_macos_accessibility_schedule_after_scroll((OmniAdwApp *)data);
 }
 
 static void on_virtual_list_button_clicked(GtkButton *button, gpointer data) {
@@ -715,7 +739,6 @@ static void on_sidebar_list_bind(GtkSignalListItemFactory *factory, GtkListItem 
   omni_accessible_list_position(button, (int32_t)position + 1, count);
   omni_accessible_description(button, depth == 0 ? "Top-level sidebar item" : "Nested sidebar item");
   omni_accessible_label(button, text);
-  omni_accessible_label(label, text);
 }
 
 static void on_plain_list_row_activated(GtkListBox *box, GtkListBoxRow *row, gpointer data) {
@@ -1337,10 +1360,31 @@ static const char *omni_macos_accessibility_role(GtkWidget *widget) {
   return "AXGroup";
 }
 
+static gboolean omni_macos_accessibility_is_action_widget(GtkWidget *widget) {
+  if (!widget) return FALSE;
+  if (GPOINTER_TO_INT(g_object_get_data(G_OBJECT(widget), "omni-action-id")) > 0) return TRUE;
+  return GTK_IS_BUTTON(widget) || GTK_IS_MENU_BUTTON(widget) || GTK_IS_CHECK_BUTTON(widget);
+}
+
+static gboolean omni_macos_accessibility_has_exported_action_ancestor(GtkWidget *widget) {
+  GtkWidget *parent = widget ? gtk_widget_get_parent(widget) : NULL;
+  while (parent) {
+    if (omni_macos_accessibility_is_action_widget(parent)) return TRUE;
+    if (GTK_IS_LIST_BOX_ROW(parent) && GPOINTER_TO_INT(g_object_get_data(G_OBJECT(parent), "omni-action-id")) > 0) return TRUE;
+    parent = gtk_widget_get_parent(parent);
+  }
+  return FALSE;
+}
+
 static gboolean omni_macos_accessibility_should_export(GtkWidget *widget) {
   if (!widget || !gtk_widget_get_visible(widget) || !gtk_widget_get_mapped(widget)) return FALSE;
   if (GPOINTER_TO_INT(g_object_get_data(G_OBJECT(widget), "omni-action-id")) > 0) return TRUE;
-  if (g_object_get_data(G_OBJECT(widget), "omni-accessible-label") != NULL) return TRUE;
+  const char *label = (const char *)g_object_get_data(G_OBJECT(widget), "omni-accessible-label");
+  if (label != NULL) {
+    if (GTK_IS_LABEL(widget) && omni_macos_accessibility_has_exported_action_ancestor(widget)) return FALSE;
+    if (!GTK_IS_ENTRY(widget) && !GTK_IS_TEXT_VIEW(widget) && !GTK_IS_BUTTON(widget) && !GTK_IS_MENU_BUTTON(widget) && !GTK_IS_CHECK_BUTTON(widget) && !GTK_IS_LIST_VIEW(widget) && !GTK_IS_LIST_BOX(widget) && !GTK_IS_LIST_BOX_ROW(widget) && strlen(label) > 160) return FALSE;
+    return TRUE;
+  }
   if (GTK_IS_ENTRY(widget) || GTK_IS_TEXT_VIEW(widget) || GTK_IS_BUTTON(widget) || GTK_IS_MENU_BUTTON(widget) || GTK_IS_CHECK_BUTTON(widget)) return TRUE;
   if (GTK_IS_LIST_VIEW(widget) || GTK_IS_LIST_BOX(widget) || GTK_IS_LIST_BOX_ROW(widget)) return TRUE;
   return FALSE;
@@ -1459,16 +1503,40 @@ static gboolean omni_macos_accessibility_sync_idle(gpointer data) {
   return G_SOURCE_REMOVE;
 }
 
+static void omni_macos_accessibility_cancel_pending(OmniAdwApp *app) {
+  if (!app || app->macos_accessibility_sync_source == 0) return;
+  g_source_remove(app->macos_accessibility_sync_source);
+  app->macos_accessibility_sync_source = 0;
+}
+
 static void omni_macos_accessibility_schedule(OmniAdwApp *app) {
-  if (!app || app->macos_accessibility_sync_source != 0) return;
+  if (!app) return;
+  omni_macos_accessibility_cancel_pending(app);
   app->macos_accessibility_sync_source = g_idle_add(omni_macos_accessibility_sync_idle, app);
+}
+
+static void omni_macos_accessibility_schedule_after_scroll(OmniAdwApp *app) {
+  if (!app) return;
+  omni_macos_accessibility_cancel_pending(app);
+  GSource *source = g_timeout_source_new(120);
+  g_source_set_callback(source, omni_macos_accessibility_sync_idle, app, NULL);
+  app->macos_accessibility_sync_source = g_source_attach(source, NULL);
+  g_source_unref(source);
 }
 #else
 static void omni_macos_accessibility_sync(OmniAdwApp *app) {
   (void)app;
 }
 
+static void omni_macos_accessibility_cancel_pending(OmniAdwApp *app) {
+  (void)app;
+}
+
 static void omni_macos_accessibility_schedule(OmniAdwApp *app) {
+  (void)app;
+}
+
+static void omni_macos_accessibility_schedule_after_scroll(OmniAdwApp *app) {
   (void)app;
 }
 #endif
