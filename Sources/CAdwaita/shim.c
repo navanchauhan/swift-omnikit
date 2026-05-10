@@ -2,6 +2,11 @@
 
 #include <adwaita.h>
 #include <gdk/gdkkeysyms.h>
+#if defined(__APPLE__)
+#include <objc/message.h>
+#include <objc/objc.h>
+#include <objc/runtime.h>
+#endif
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -43,6 +48,7 @@ struct OmniAdwApp {
   int32_t default_width;
   int32_t default_height;
   GtkEventController *key_controller;
+  guint macos_accessibility_sync_source;
 };
 
 struct OmniAdwNode {
@@ -188,11 +194,15 @@ static gboolean omni_click_is_stationary(GtkGestureClick *gesture, double x, dou
   return dx <= 8.0 && dy <= 8.0;
 }
 
+static void omni_macos_accessibility_sync(OmniAdwApp *app);
+static void omni_macos_accessibility_schedule(OmniAdwApp *app);
+
 static void omni_flush_pending_ui(OmniAdwApp *app) {
   if (app && app->window) gtk_widget_queue_draw(app->window);
   while (g_main_context_pending(NULL)) {
     g_main_context_iteration(NULL, FALSE);
   }
+  omni_macos_accessibility_sync(app);
 }
 
 static void present_settings_window(OmniAdwApp *app);
@@ -509,6 +519,7 @@ static void on_app_activate(GApplication *application, gpointer data) {
     gtk_widget_add_controller(app->window, GTK_EVENT_CONTROLLER(click_controller));
   }
   gtk_window_present(GTK_WINDOW(app->window));
+  omni_macos_accessibility_schedule(app);
 }
 
 static void present_settings_window(OmniAdwApp *app) {
@@ -622,6 +633,11 @@ static void on_string_list_activate(GtkListView *view, guint position, gpointer 
   }
 }
 
+static void on_scroll_adjustment_value_changed(GtkAdjustment *adjustment, gpointer data) {
+  (void)adjustment;
+  omni_macos_accessibility_schedule((OmniAdwApp *)data);
+}
+
 static void on_virtual_list_button_clicked(GtkButton *button, gpointer data) {
   GtkWidget *widget = GTK_WIDGET(button);
   GtkWidget *list_view = gtk_widget_get_ancestor(widget, GTK_TYPE_LIST_VIEW);
@@ -727,12 +743,15 @@ static void on_sidebar_toggle_toggled(GtkToggleButton *button, gpointer data) {
     gtk_toggle_button_get_active(button) ? GTK_ACCESSIBLE_TRISTATE_TRUE : GTK_ACCESSIBLE_TRISTATE_FALSE,
     -1
   );
+  omni_macos_accessibility_schedule(app);
 }
 
 static void on_split_show_sidebar_notify(GObject *object, GParamSpec *pspec, gpointer data) {
   (void)object;
   (void)pspec;
-  sync_sidebar_toggle((OmniAdwApp *)data);
+  OmniAdwApp *app = (OmniAdwApp *)data;
+  sync_sidebar_toggle(app);
+  omni_macos_accessibility_schedule(app);
 }
 
 static void on_plain_list_row_pressed(GtkGestureClick *gesture, int n_press, double x, double y, gpointer data) {
@@ -931,6 +950,7 @@ static void on_entry_changed(GtkEditable *editable, gpointer data) {
   OmniAdwApp *app = (OmniAdwApp *)g_object_get_data(G_OBJECT(editable), "omni-app");
   int action_id = GPOINTER_TO_INT(g_object_get_data(G_OBJECT(editable), "omni-action-id"));
   omni_accessible_value_text(GTK_WIDGET(editable), gtk_editable_get_text(editable));
+  omni_macos_accessibility_schedule(app);
   if (app && app->text_callback) {
     app->text_callback(action_id, gtk_editable_get_text(editable), app->context);
   }
@@ -948,6 +968,7 @@ static void on_text_buffer_changed(GtkTextBuffer *buffer, gpointer data) {
   gtk_text_buffer_get_end_iter(buffer, &end);
   char *text = gtk_text_buffer_get_text(buffer, &start, &end, FALSE);
   omni_accessible_value_text(text_view, text);
+  omni_macos_accessibility_schedule(app);
   app->text_callback(action_id, text ? text : "", app->context);
   g_free(text);
 }
@@ -1106,6 +1127,13 @@ static void wire_actions(GtkWidget *widget, OmniAdwApp *app) {
     gtk_widget_add_controller(widget, GTK_EVENT_CONTROLLER(click_controller));
     g_object_set_data(G_OBJECT(widget), "omni-scroll-capture-installed", GINT_TO_POINTER(1));
   }
+  if (GTK_IS_SCROLLED_WINDOW(widget) && !g_object_get_data(G_OBJECT(widget), "omni-macos-scroll-accessibility-installed")) {
+    GtkAdjustment *vadjustment = gtk_scrolled_window_get_vadjustment(GTK_SCROLLED_WINDOW(widget));
+    GtkAdjustment *hadjustment = gtk_scrolled_window_get_hadjustment(GTK_SCROLLED_WINDOW(widget));
+    if (vadjustment) g_signal_connect(vadjustment, "value-changed", G_CALLBACK(on_scroll_adjustment_value_changed), app);
+    if (hadjustment) g_signal_connect(hadjustment, "value-changed", G_CALLBACK(on_scroll_adjustment_value_changed), app);
+    g_object_set_data(G_OBJECT(widget), "omni-macos-scroll-accessibility-installed", GINT_TO_POINTER(1));
+  }
   GtkWidget *child = gtk_widget_get_first_child(widget);
   while (child) {
     wire_actions(child, app);
@@ -1169,6 +1197,282 @@ static const char *first_widget_accessible_label(GtkWidget *widget) {
   return NULL;
 }
 
+#if defined(__APPLE__)
+typedef struct {
+  double x;
+  double y;
+} OmniAXPoint;
+
+typedef struct {
+  double width;
+  double height;
+} OmniAXSize;
+
+typedef struct {
+  OmniAXPoint origin;
+  OmniAXSize size;
+} OmniAXRect;
+
+static char omni_macos_accessibility_widget_key;
+
+static OmniAXRect omni_ax_rect_make(double x, double y, double width, double height) {
+  OmniAXRect rect;
+  rect.origin.x = x;
+  rect.origin.y = y;
+  rect.size.width = width;
+  rect.size.height = height;
+  return rect;
+}
+
+static id omni_objc_send_id(id receiver, const char *selector) {
+  if (!receiver || !selector) return nil;
+  return ((id (*)(id, SEL))objc_msgSend)(receiver, sel_registerName(selector));
+}
+
+static void omni_objc_send_void_id(id receiver, const char *selector, id value) {
+  if (!receiver || !selector) return;
+  ((void (*)(id, SEL, id))objc_msgSend)(receiver, sel_registerName(selector), value);
+}
+
+static void omni_objc_send_void_bool(id receiver, const char *selector, BOOL value) {
+  if (!receiver || !selector) return;
+  ((void (*)(id, SEL, BOOL))objc_msgSend)(receiver, sel_registerName(selector), value);
+}
+
+static OmniAXRect omni_objc_send_rect(id receiver, const char *selector) {
+  if (!receiver || !selector) return omni_ax_rect_make(0.0, 0.0, 0.0, 0.0);
+  return ((OmniAXRect (*)(id, SEL))objc_msgSend)(receiver, sel_registerName(selector));
+}
+
+static OmniAdwApp *omni_app_for_widget(GtkWidget *widget) {
+  GtkWidget *current = widget;
+  while (current) {
+    OmniAdwApp *app = (OmniAdwApp *)g_object_get_data(G_OBJECT(current), "omni-app");
+    if (app) return app;
+    current = gtk_widget_get_parent(current);
+  }
+  return NULL;
+}
+
+static BOOL omni_macos_accessibility_perform_press(id self, SEL _cmd) {
+  (void)_cmd;
+  GtkWidget *widget = (GtkWidget *)objc_getAssociatedObject(self, &omni_macos_accessibility_widget_key);
+  if (!widget) return NO;
+  if (GTK_IS_ENTRY(widget) || GTK_IS_TEXT_VIEW(widget)) {
+    gtk_widget_grab_focus(widget);
+    return YES;
+  }
+  int actionID = GPOINTER_TO_INT(g_object_get_data(G_OBJECT(widget), "omni-action-id"));
+  OmniAdwApp *app = omni_app_for_widget(widget);
+  if (!app || !app->callback || actionID <= 0) return NO;
+  app->callback(actionID, app->context);
+  omni_flush_pending_ui(app);
+  return YES;
+}
+
+static id omni_macos_accessibility_element_class(void) {
+  static id elementClass = nil;
+  if (elementClass) return elementClass;
+  Class baseClass = (Class)objc_getClass("NSAccessibilityElement");
+  Class customClass = objc_allocateClassPair(baseClass, "OmniAdwaitaAccessibilityElement", 0);
+  if (customClass) {
+    class_addMethod(
+      customClass,
+      sel_registerName("accessibilityPerformPress"),
+      (IMP)omni_macos_accessibility_perform_press,
+      "c@:"
+    );
+    objc_registerClassPair(customClass);
+    elementClass = (id)customClass;
+  } else {
+    elementClass = (id)objc_getClass("OmniAdwaitaAccessibilityElement");
+  }
+  return elementClass ? elementClass : (id)baseClass;
+}
+
+static id omni_ns_string(const char *value) {
+  if (!value || !value[0]) return nil;
+  id stringClass = (id)objc_getClass("NSString");
+  return ((id (*)(id, SEL, const char *))objc_msgSend)(stringClass, sel_registerName("stringWithUTF8String:"), value);
+}
+
+static id omni_ns_mutable_array(void) {
+  id arrayClass = (id)objc_getClass("NSMutableArray");
+  return omni_objc_send_id(arrayClass, "array");
+}
+
+static void omni_ns_array_add(id array, id object) {
+  if (!array || !object) return;
+  ((void (*)(id, SEL, id))objc_msgSend)(array, sel_registerName("addObject:"), object);
+}
+
+static id omni_macos_accessibility_window(OmniAdwApp *app) {
+  id nsApp = ((id (*)(id, SEL))objc_msgSend)((id)objc_getClass("NSApplication"), sel_registerName("sharedApplication"));
+  id keyWindow = omni_objc_send_id(nsApp, "keyWindow");
+  if (keyWindow) return keyWindow;
+  id windows = omni_objc_send_id(nsApp, "windows");
+  unsigned long count = windows ? ((unsigned long (*)(id, SEL))objc_msgSend)(windows, sel_registerName("count")) : 0;
+  const char *wantedTitle = app && app->title ? app->title : NULL;
+  for (unsigned long i = 0; i < count; i++) {
+    id window = ((id (*)(id, SEL, unsigned long))objc_msgSend)(windows, sel_registerName("objectAtIndex:"), i);
+    if (!wantedTitle || !wantedTitle[0]) return window;
+    id title = omni_objc_send_id(window, "title");
+    const char *titleText = title ? ((const char *(*)(id, SEL))objc_msgSend)(title, sel_registerName("UTF8String")) : NULL;
+    if (titleText && strcmp(titleText, wantedTitle) == 0) return window;
+  }
+  return nil;
+}
+
+static const char *omni_macos_accessibility_role(GtkWidget *widget) {
+  if (!widget) return "AXGroup";
+  if (GTK_IS_ENTRY(widget)) return "AXTextField";
+  if (GTK_IS_TEXT_VIEW(widget)) return "AXTextArea";
+  if (GTK_IS_CHECK_BUTTON(widget)) return "AXCheckBox";
+  if (GTK_IS_BUTTON(widget) || GTK_IS_MENU_BUTTON(widget)) return "AXButton";
+  if (GTK_IS_LIST_BOX_ROW(widget) && GPOINTER_TO_INT(g_object_get_data(G_OBJECT(widget), "omni-action-id")) > 0) return "AXButton";
+  if (GTK_IS_LIST_BOX_ROW(widget)) return "AXRow";
+  if (GTK_IS_LIST_VIEW(widget) || GTK_IS_LIST_BOX(widget)) return "AXList";
+  if (GTK_IS_LABEL(widget)) return "AXStaticText";
+  if (GTK_IS_SEPARATOR(widget)) return "AXSplitter";
+  return "AXGroup";
+}
+
+static gboolean omni_macos_accessibility_should_export(GtkWidget *widget) {
+  if (!widget || !gtk_widget_get_visible(widget) || !gtk_widget_get_mapped(widget)) return FALSE;
+  if (GPOINTER_TO_INT(g_object_get_data(G_OBJECT(widget), "omni-action-id")) > 0) return TRUE;
+  if (g_object_get_data(G_OBJECT(widget), "omni-accessible-label") != NULL) return TRUE;
+  if (GTK_IS_ENTRY(widget) || GTK_IS_TEXT_VIEW(widget) || GTK_IS_BUTTON(widget) || GTK_IS_MENU_BUTTON(widget) || GTK_IS_CHECK_BUTTON(widget)) return TRUE;
+  if (GTK_IS_LIST_VIEW(widget) || GTK_IS_LIST_BOX(widget) || GTK_IS_LIST_BOX_ROW(widget)) return TRUE;
+  return FALSE;
+}
+
+static const char *omni_macos_widget_label(GtkWidget *widget) {
+  const char *label = widget ? (const char *)g_object_get_data(G_OBJECT(widget), "omni-accessible-label") : NULL;
+  if (label && label[0]) return label;
+  if (GTK_IS_BUTTON(widget)) {
+    label = gtk_button_get_label(GTK_BUTTON(widget));
+    if (label && label[0]) return label;
+  }
+  if (GTK_IS_CHECK_BUTTON(widget)) {
+    label = gtk_check_button_get_label(GTK_CHECK_BUTTON(widget));
+    if (label && label[0]) return label;
+  }
+  if (GTK_IS_ENTRY(widget)) {
+    label = gtk_entry_get_placeholder_text(GTK_ENTRY(widget));
+    if (label && label[0]) return label;
+  }
+  if (GTK_IS_LABEL(widget)) {
+    label = gtk_label_get_text(GTK_LABEL(widget));
+    if (label && label[0]) return label;
+  }
+  return first_widget_accessible_label(widget);
+}
+
+static const char *omni_macos_widget_value(GtkWidget *widget) {
+  if (GTK_IS_ENTRY(widget)) return gtk_editable_get_text(GTK_EDITABLE(widget));
+  const char *value = (const char *)g_object_get_data(G_OBJECT(widget), "omni-accessible-value");
+  return value && value[0] ? value : NULL;
+}
+
+static void omni_macos_accessibility_add_widget(
+  GtkWidget *widget,
+  GtkWidget *root,
+  id parent,
+  id elements,
+  OmniAXRect windowFrame,
+  OmniAXRect contentFrame,
+  int *count
+) {
+  if (!widget || !root || !elements || !count || *count >= 500) return;
+  if (!gtk_widget_get_visible(widget) || !gtk_widget_get_mapped(widget)) return;
+
+  if (omni_macos_accessibility_should_export(widget)) {
+    graphene_rect_t bounds;
+    if (gtk_widget_compute_bounds(widget, root, &bounds) && bounds.size.width >= 2.0f && bounds.size.height >= 2.0f) {
+      const char *label = omni_macos_widget_label(widget);
+      if (label && label[0]) {
+        double x = windowFrame.origin.x + contentFrame.origin.x + bounds.origin.x;
+        double y = windowFrame.origin.y + contentFrame.origin.y + contentFrame.size.height - bounds.origin.y - bounds.size.height;
+        OmniAXRect frame = omni_ax_rect_make(x, y, bounds.size.width, bounds.size.height);
+        id elementClass = omni_macos_accessibility_element_class();
+        id element = ((id (*)(id, SEL, id, OmniAXRect, id, id))objc_msgSend)(
+          elementClass,
+          sel_registerName("accessibilityElementWithRole:frame:label:parent:"),
+          omni_ns_string(omni_macos_accessibility_role(widget)),
+          frame,
+          omni_ns_string(label),
+          parent
+        );
+        if (element) {
+          objc_setAssociatedObject(element, &omni_macos_accessibility_widget_key, (id)widget, OBJC_ASSOCIATION_ASSIGN);
+          const char *description = (const char *)g_object_get_data(G_OBJECT(widget), "omni-accessible-description");
+          const char *name = gtk_widget_get_name(widget);
+          const char *value = omni_macos_widget_value(widget);
+          int actionID = GPOINTER_TO_INT(g_object_get_data(G_OBJECT(widget), "omni-action-id"));
+          if (description && description[0]) omni_objc_send_void_id(element, "setAccessibilityHelp:", omni_ns_string(description));
+          if (name && name[0]) omni_objc_send_void_id(element, "setAccessibilityIdentifier:", omni_ns_string(name));
+          if (value && value[0]) omni_objc_send_void_id(element, "setAccessibilityValue:", omni_ns_string(value));
+          omni_objc_send_void_bool(element, "setAccessibilityEnabled:", gtk_widget_get_sensitive(widget) && actionID >= 0);
+          omni_objc_send_void_bool(element, "setAccessibilitySelected:", GTK_IS_LIST_BOX_ROW(widget) && gtk_list_box_row_is_selected(GTK_LIST_BOX_ROW(widget)));
+          if (GTK_IS_BUTTON(widget) || GTK_IS_MENU_BUTTON(widget) || GTK_IS_CHECK_BUTTON(widget) || GTK_IS_LIST_BOX_ROW(widget)) {
+            omni_objc_send_void_id(element, "setAccessibilityRoleDescription:", omni_ns_string(actionID > 0 ? "button" : "row"));
+          }
+          omni_ns_array_add(elements, element);
+          *count += 1;
+        }
+      }
+    }
+  }
+
+  GtkWidget *child = gtk_widget_get_first_child(widget);
+  while (child) {
+    omni_macos_accessibility_add_widget(child, root, parent, elements, windowFrame, contentFrame, count);
+    child = gtk_widget_get_next_sibling(child);
+  }
+}
+
+static void omni_macos_accessibility_sync(OmniAdwApp *app) {
+  if (!app || !app->window) return;
+  id window = omni_macos_accessibility_window(app);
+  id contentView = omni_objc_send_id(window, "contentView");
+  if (!window || !contentView) return;
+
+  OmniAXRect windowFrame = omni_objc_send_rect(window, "frame");
+  OmniAXRect contentFrame = omni_objc_send_rect(contentView, "frame");
+  if (contentFrame.size.width <= 0.0 || contentFrame.size.height <= 0.0) return;
+
+  id elements = omni_ns_mutable_array();
+  int count = 0;
+  omni_macos_accessibility_add_widget(app->window, app->window, window, elements, windowFrame, contentFrame, &count);
+
+  omni_objc_send_void_bool(contentView, "setAccessibilityElement:", YES);
+  omni_objc_send_void_id(contentView, "setAccessibilityRole:", omni_ns_string("AXGroup"));
+  omni_objc_send_void_id(contentView, "setAccessibilityLabel:", omni_ns_string("GTK content"));
+  omni_objc_send_void_id(contentView, "setAccessibilityChildren:", elements);
+  omni_objc_send_void_id(contentView, "setAccessibilityChildrenInNavigationOrder:", elements);
+}
+
+static gboolean omni_macos_accessibility_sync_idle(gpointer data) {
+  OmniAdwApp *app = (OmniAdwApp *)data;
+  if (app) app->macos_accessibility_sync_source = 0;
+  omni_macos_accessibility_sync(app);
+  return G_SOURCE_REMOVE;
+}
+
+static void omni_macos_accessibility_schedule(OmniAdwApp *app) {
+  if (!app || app->macos_accessibility_sync_source != 0) return;
+  app->macos_accessibility_sync_source = g_idle_add(omni_macos_accessibility_sync_idle, app);
+}
+#else
+static void omni_macos_accessibility_sync(OmniAdwApp *app) {
+  (void)app;
+}
+
+static void omni_macos_accessibility_schedule(OmniAdwApp *app) {
+  (void)app;
+}
+#endif
+
 OmniAdwApp *omni_adw_app_new(const char *app_id, const char *title, omni_adw_action_callback callback, omni_adw_text_callback text_callback, omni_adw_key_callback key_callback, omni_adw_focus_callback focus_callback, void *context) {
   gtk_init();
   adw_init();
@@ -1194,6 +1498,7 @@ int32_t omni_adw_app_run(OmniAdwApp *app, int32_t argc, char **argv) {
 
 void omni_adw_app_free(OmniAdwApp *app) {
   if (!app) return;
+  if (app->macos_accessibility_sync_source != 0) g_source_remove(app->macos_accessibility_sync_source);
   if (app->modal_dialog) adw_dialog_force_close(app->modal_dialog);
   if (app->settings_window) gtk_window_destroy(GTK_WINDOW(app->settings_window));
   if (app->application) g_object_unref(app->application);
@@ -1300,6 +1605,7 @@ void omni_adw_app_set_root_focused(OmniAdwApp *app, OmniAdwNode *root, int32_t f
   if (focused && gtk_widget_get_focusable(focused)) {
     gtk_widget_grab_focus(focused);
   }
+  omni_macos_accessibility_schedule(app);
   root->widget = NULL;
   omni_adw_node_free(root);
 }
@@ -1457,6 +1763,7 @@ static void present_sheet_dialog(OmniAdwApp *app, OmniAdwNode *modal, OmniModalS
   g_signal_connect(dialog, "closed", G_CALLBACK(on_sheet_closed), app);
   if (app->window) {
     adw_dialog_present(dialog, app->window);
+    omni_macos_accessibility_schedule(app);
   }
   free_modal_summary(summary);
 }
@@ -1495,6 +1802,7 @@ void omni_adw_app_present_modal(OmniAdwApp *app, OmniAdwNode *modal, const char 
   app->modal_dialog = base_dialog;
   if (app->window) {
     adw_dialog_present(base_dialog, app->window);
+    omni_macos_accessibility_schedule(app);
   }
   omni_adw_node_free(modal);
 }
@@ -1728,6 +2036,7 @@ int32_t omni_adw_app_update_node(OmniAdwApp *app, const char *semantic_id, int32
   if (value[0] && kind != 10) {
     gtk_widget_set_tooltip_text(widget, value);
   }
+  omni_macos_accessibility_schedule(app);
   return 1;
 }
 
@@ -1805,6 +2114,7 @@ int32_t omni_adw_app_replace_node(OmniAdwApp *app, const char *semantic_id, Omni
   if (focused && gtk_widget_get_focusable(focused)) {
     gtk_widget_grab_focus(focused);
   }
+  omni_macos_accessibility_schedule(app);
   return 1;
 }
 

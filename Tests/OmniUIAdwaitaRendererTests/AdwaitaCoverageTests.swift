@@ -631,6 +631,28 @@ import Testing
     #expect(header.contains("omni_adw_scroll_new(int32_t vertical, double offset)"))
 }
 
+@Test func cAdwaitaShimExportsGtkWidgetsToMacOSAccessibility() throws {
+    let shim = try readRepositoryFile("Sources/CAdwaita/shim.c")
+
+    #expect(shim.contains("#include <objc/message.h>"))
+    #expect(shim.contains("NSAccessibilityElement"))
+    #expect(shim.contains("objc_allocateClassPair(baseClass, \"OmniAdwaitaAccessibilityElement\", 0)"))
+    #expect(shim.contains("accessibilityPerformPress"))
+    #expect(shim.contains("app->callback(actionID, app->context);"))
+    #expect(shim.contains("accessibilityElementWithRole:frame:label:parent:"))
+    #expect(shim.contains("gtk_widget_compute_bounds(widget, root, &bounds)"))
+    #expect(shim.contains("setAccessibilityChildren:"))
+    #expect(shim.contains("setAccessibilityChildrenInNavigationOrder:"))
+    #expect(shim.contains("omni_macos_accessibility_schedule(app);"))
+    #expect(shim.contains("omni_macos_accessibility_sync_idle"))
+    #expect(shim.contains("on_scroll_adjustment_value_changed"))
+    #expect(shim.contains("g_signal_connect(vadjustment, \"value-changed\", G_CALLBACK(on_scroll_adjustment_value_changed), app)"))
+    #expect(shim.contains("if (GTK_IS_ENTRY(widget)) return \"AXTextField\";"))
+    #expect(shim.contains("if (GTK_IS_BUTTON(widget) || GTK_IS_MENU_BUTTON(widget)) return \"AXButton\";"))
+    #expect(shim.contains("if (GTK_IS_LIST_BOX_ROW(widget) && GPOINTER_TO_INT(g_object_get_data(G_OBJECT(widget), \"omni-action-id\")) > 0) return \"AXButton\";"))
+    #expect(shim.contains("if (GTK_IS_LIST_VIEW(widget) || GTK_IS_LIST_BOX(widget)) return \"AXList\";"))
+}
+
 @Test func cAdwaitaShimCanReplaceNamedSemanticSubtrees() throws {
     let shim = try readRepositoryFile("Sources/CAdwaita/shim.c")
     let renderer = try readRepositoryFile("Sources/OmniUIAdwaitaRenderer/AdwaitaRenderer.swift")
