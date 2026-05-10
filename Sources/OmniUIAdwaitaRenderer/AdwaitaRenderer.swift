@@ -379,10 +379,7 @@ private enum AdwaitaPresentationExtractor {
         guard case .modifier(.background("adw-dialog")) = node.kind else {
             return node
         }
-        if node.children.count == 1, let child = node.children.first {
-            return child
-        }
-        return SemanticNode(id: "\(node.id).native-content", kind: .group, children: node.children)
+        return node
     }
 }
 
@@ -652,6 +649,11 @@ public enum AdwaitaReconciliation {
 }
 
 enum AdwaitaNodeBuilder {
+    private enum BuildContext: Equatable {
+        case normal
+        case sidebar
+    }
+
     static func offsetActionIDs(in node: SemanticNode, by offset: Int) -> SemanticNode {
         let kind: SemanticNode.Kind
         switch node.kind {
@@ -710,19 +712,23 @@ enum AdwaitaNodeBuilder {
     }
 
     static func build(_ node: SemanticNode) -> OpaquePointer? {
+        build(node, context: .normal)
+    }
+
+    private static func build(_ node: SemanticNode, context: BuildContext) -> OpaquePointer? {
         let built: OpaquePointer?
         var metadataID = node.id
         switch node.kind {
         case .empty:
             built = omni_adw_box_new(1, 0)
         case .group:
-            built = container(vertical: true, spacing: 6, children: node.children)
+            built = container(vertical: true, spacing: 6, children: node.children, context: context)
         case .zstack:
-            built = container(vertical: true, spacing: 6, children: visibleChildren(forOverlayChildren: node.children))
+            built = container(vertical: true, spacing: 6, children: visibleChildren(forOverlayChildren: node.children), context: context)
         case .spacer:
             built = omni_adw_box_new(1, 0)
         case .stack(let axis, let spacing):
-            built = container(vertical: axis == .vertical, spacing: Int32(spacing), children: node.children)
+            built = container(vertical: axis == .vertical, spacing: Int32(spacing), children: node.children, context: context)
         case .text(let text):
             built = omni_adw_text_new(text)
         case .image(let text):
@@ -744,7 +750,9 @@ enum AdwaitaNodeBuilder {
             } else {
                 var ids = items.map { Int32($0.actionID) }
                 built = items.map(\.label).withCStringArray { labels in
-                    omni_adw_dropdown_new(title, value, labels, &ids, Int32(items.count))
+                    ids.withUnsafeMutableBufferPointer { idBuffer in
+                        omni_adw_dropdown_new(title, value, labels, idBuffer.baseAddress, Int32(items.count))
+                    }
                 }
             }
         case .disabledButton(let label):
@@ -778,7 +786,7 @@ enum AdwaitaNodeBuilder {
                 omni_adw_node_append(parent, scale)
             }
             for child in node.children {
-                if let built = build(child) {
+                if let built = build(child, context: context) {
                     omni_adw_node_append(parent, built)
                 }
             }
@@ -791,7 +799,7 @@ enum AdwaitaNodeBuilder {
                 omni_adw_node_append(parent, spin)
             }
             for child in node.children {
-                if let built = build(child) {
+                if let built = build(child, context: context) {
                     omni_adw_node_append(parent, built)
                 }
             }
@@ -804,7 +812,7 @@ enum AdwaitaNodeBuilder {
                 omni_adw_node_append(parent, date)
             }
             for child in node.children {
-                if let built = build(child) {
+                if let built = build(child, context: context) {
                     omni_adw_node_append(parent, built)
                 }
             }
@@ -812,7 +820,7 @@ enum AdwaitaNodeBuilder {
             metadataID = "\(node.id).container"
         case .scroll(let axis, _, let offset):
             guard let scroll = omni_adw_scroll_new(axis == .vertical ? 1 : 0, Double(offset)) else { return nil }
-            if let child = container(vertical: true, spacing: 6, children: node.children) {
+            if let child = container(vertical: true, spacing: 6, children: node.children, context: context) {
                 omni_adw_node_append(scroll, child)
             }
             built = scroll
@@ -821,12 +829,12 @@ enum AdwaitaNodeBuilder {
         case .drawingIsland(let kind):
             built = omni_adw_drawing_new("OmniUI \(kind)")
         case .container(let role):
-            built = semanticContainer(role, children: node.children)
+            built = semanticContainer(role, children: node.children, context: context)
         case .modifier(let modifier):
             if case .accessibilityIdentifier(let identifier) = modifier, !identifier.isEmpty {
                 metadataID = identifier
             }
-            built = modifiedContainer(modifier, children: node.children)
+            built = modifiedContainer(modifier, children: node.children, context: context)
         }
         if let built {
             omni_adw_node_set_metadata(built, metadataID, metadataLabel(for: node))
@@ -877,31 +885,31 @@ enum AdwaitaNodeBuilder {
         AdwaitaReconciliation.menuItems(in: node)
     }
 
-    private static func container(vertical: Bool, spacing: Int32, children: [SemanticNode]) -> OpaquePointer? {
+    private static func container(vertical: Bool, spacing: Int32, children: [SemanticNode], context: BuildContext) -> OpaquePointer? {
         guard let parent = omni_adw_box_new(vertical ? 1 : 0, spacing) else { return nil }
         for child in children {
-            if let built = build(child) {
+            if let built = build(child, context: context) {
                 omni_adw_node_append(parent, built)
             }
         }
         return parent
     }
 
-    private static func modifiedContainer(_ modifier: SemanticModifier, children: [SemanticNode]) -> OpaquePointer? {
+    private static func modifiedContainer(_ modifier: SemanticModifier, children: [SemanticNode], context: BuildContext) -> OpaquePointer? {
         func primaryContent() -> OpaquePointer? {
             if let content = children.first(where: { $0.id.hasSuffix(".content") }) {
-                return build(content)
+                return build(content, context: context)
             }
             if children.count == 2 {
                 switch modifier {
                 case .background:
-                    return build(visibleChildren(forOverlayChildren: children).first ?? children[1])
+                    return build(visibleChildren(forOverlayChildren: children).first ?? children[1], context: context)
                 default:
                     break
                 }
             }
             if let child = children.last {
-                return build(child)
+                return build(child, context: context)
             }
             return nil
         }
@@ -916,9 +924,9 @@ enum AdwaitaNodeBuilder {
             css = "accent"
         case .accessibilityIdentifier:
             if children.count == 1, let child = children.first {
-                return build(child)
+                return build(child, context: context)
             }
-            return container(vertical: true, spacing: 0, children: children)
+            return container(vertical: true, spacing: 0, children: children, context: context)
         case .frame, .padding, .opacity, .offset:
             if let node = primaryContent() {
                 applyLayoutModifier(modifier, to: node)
@@ -929,7 +937,7 @@ enum AdwaitaNodeBuilder {
         guard let parent = omni_adw_frame_new(css, 0) else { return nil }
         applyLayoutModifier(modifier, to: parent)
         for child in children {
-            if let built = build(child) {
+            if let built = build(child, context: context) {
                 omni_adw_node_append(parent, built)
             }
         }
@@ -1003,11 +1011,11 @@ enum AdwaitaNodeBuilder {
         return Int32(value * scale)
     }
 
-    private static func semanticContainer(_ role: SemanticContainerRole, children: [SemanticNode]) -> OpaquePointer? {
+    private static func semanticContainer(_ role: SemanticContainerRole, children: [SemanticNode], context: BuildContext) -> OpaquePointer? {
         if role == .form {
             guard let parent = omni_adw_form_new() else { return nil }
             for child in formRows(from: children) {
-                if let built = build(child) {
+                if let built = build(child, context: context) {
                     omni_adw_node_append(parent, built)
                 }
             }
@@ -1021,30 +1029,33 @@ enum AdwaitaNodeBuilder {
             if let simpleList = simpleListRows(from: children) {
                 var ids = simpleList.rows.map { Int32($0.actionID ?? 0) }
                 let labels = simpleList.rows.map(\.label)
+                var depths = simpleList.rows.map { Int32($0.depth) }
                 let list = labels.withCStringArray { labelPointers in
-                    if simpleList.rows.count >= 128 {
-                        omni_adw_string_list_new(labelPointers, &ids, Int32(simpleList.rows.count))
-                    } else {
-                        omni_adw_plain_list_new(labelPointers, &ids, Int32(simpleList.rows.count))
+                    ids.withUnsafeMutableBufferPointer { idBuffer in
+                        depths.withUnsafeMutableBufferPointer { depthBuffer in
+                            if context == .sidebar {
+                                omni_adw_sidebar_list_new(labelPointers, idBuffer.baseAddress, depthBuffer.baseAddress, Int32(simpleList.rows.count))
+                            } else if simpleList.rows.count >= 128 {
+                                omni_adw_string_list_new(labelPointers, idBuffer.baseAddress, Int32(simpleList.rows.count))
+                            } else {
+                                omni_adw_plain_list_new(labelPointers, idBuffer.baseAddress, Int32(simpleList.rows.count))
+                            }
+                        }
                     }
                 }
                 guard let list else { return nil }
                 if let scroll = simpleList.scroll {
-                    guard let scrollNode = omni_adw_scroll_new(scroll.axis == .vertical ? 1 : 0, Double(scroll.offset)) else {
-                        return list
-                    }
-                    omni_adw_node_append(scrollNode, list)
-                    return scrollNode
+                    return wrapInScroll(list, axis: scroll.axis, offset: scroll.offset)
                 }
-                return list
+                return wrapInScroll(list, axis: .vertical, offset: 0)
             }
             guard let parent = omni_adw_list_new() else { return nil }
             for child in children {
-                if let built = build(child) {
+                if let built = build(child, context: context) {
                     omni_adw_node_append(parent, built)
                 }
             }
-            return parent
+            return wrapInScroll(parent, axis: .vertical, offset: 0)
         }
 
         if role == .navigationSplitView {
@@ -1072,15 +1083,23 @@ enum AdwaitaNodeBuilder {
         }
         guard let parent = omni_adw_frame_new(css, spacing) else { return nil }
         for child in children {
-            if let built = build(child) {
+            if let built = build(child, context: context) {
                 omni_adw_node_append(parent, built)
             }
         }
         return parent
     }
 
+    private static func wrapInScroll(_ child: OpaquePointer, axis: SemanticAxis, offset: Int) -> OpaquePointer? {
+        guard let scrollNode = omni_adw_scroll_new(axis == .vertical ? 1 : 0, Double(offset)) else {
+            return child
+        }
+        omni_adw_node_append(scrollNode, child)
+        return scrollNode
+    }
+
     private struct SimpleList {
-        let rows: [(label: String, actionID: Int?)]
+        let rows: [(label: String, actionID: Int?, depth: Int)]
         let scroll: (axis: SemanticAxis, offset: Int)?
     }
 
@@ -1093,8 +1112,8 @@ enum AdwaitaNodeBuilder {
         return SimpleList(rows: rows, scroll: (axis: axis, offset: offset))
     }
 
-    private static func simpleRows(in nodes: [SemanticNode]) -> [(label: String, actionID: Int?)]? {
-        var rows: [(label: String, actionID: Int?)] = []
+    private static func simpleRows(in nodes: [SemanticNode]) -> [(label: String, actionID: Int?, depth: Int)]? {
+        var rows: [(label: String, actionID: Int?, depth: Int)] = []
 
         func contentChildren(of node: SemanticNode) -> [SemanticNode] {
             node.children.filter { child in
@@ -1110,6 +1129,18 @@ enum AdwaitaNodeBuilder {
         func rowLabel(from node: SemanticNode) -> String {
             let label = accessibleLabel(for: node).trimmingCharacters(in: .whitespacesAndNewlines)
             return label == "Action" ? "" : label
+        }
+
+        func leadingWhitespaceDepth(in node: SemanticNode) -> Int {
+            switch node.kind {
+            case .text(let text):
+                guard text.allSatisfy({ $0 == " " || $0 == "\t" }) else { return 0 }
+                return max(0, text.reduce(0) { $0 + ($1 == "\t" ? 2 : 1) } / 2)
+            case .button, .stack(axis: .horizontal, _), .modifier, .group:
+                return node.children.map(leadingWhitespaceDepth(in:)).max() ?? 0
+            default:
+                return 0
+            }
         }
 
         func firstButtonActionID(in node: SemanticNode) -> Int? {
@@ -1151,17 +1182,17 @@ enum AdwaitaNodeBuilder {
             case .divider, .empty, .spacer, .drawingIsland:
                 return true
             case .text(let text):
-                rows.append((label: text, actionID: nil))
+                rows.append((label: text, actionID: nil, depth: 0))
                 return true
             case .button(let actionID, _):
                 let label = rowLabel(from: node)
                 if label.isEmpty { return false }
-                rows.append((label: label, actionID: actionID))
+                rows.append((label: label, actionID: actionID, depth: leadingWhitespaceDepth(in: node)))
                 return true
             case .stack(axis: .horizontal, _), .zstack:
                 let label = rowLabel(from: node)
                 if label.isEmpty { return false }
-                rows.append((label: label, actionID: firstButtonActionID(in: node)))
+                rows.append((label: label, actionID: firstButtonActionID(in: node), depth: leadingWhitespaceDepth(in: node)))
                 return true
             default:
                 return false
@@ -1207,17 +1238,17 @@ enum AdwaitaNodeBuilder {
         guard let parent = omni_adw_split_new() else { return nil }
         guard let columns = navigationSplitColumns(from: children) else {
             for child in children {
-                if let built = build(child) {
+                if let built = build(child, context: .normal) {
                     omni_adw_node_append(parent, built)
                 }
             }
             return parent
         }
 
-        if let sidebar = build(columns.sidebar) {
+        if let sidebar = build(columns.sidebar, context: .sidebar) {
             omni_adw_node_append(parent, sidebar)
         }
-        if let detail = container(vertical: true, spacing: 6, children: columns.detail) {
+        if let detail = container(vertical: true, spacing: 6, children: columns.detail, context: .normal) {
             omni_adw_node_append(parent, detail)
         }
         return parent

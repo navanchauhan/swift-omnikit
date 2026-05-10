@@ -28,6 +28,7 @@ OmniAdwNode *omni_adw_box_new(int32_t vertical, int32_t spacing);
 OmniAdwNode *omni_adw_list_new(void);
 OmniAdwNode *omni_adw_string_list_new(const char **labels, const int32_t *action_ids, int32_t count);
 OmniAdwNode *omni_adw_plain_list_new(const char **labels, const int32_t *action_ids, int32_t count);
+OmniAdwNode *omni_adw_sidebar_list_new(const char **labels, const int32_t *action_ids, const int32_t *depths, int32_t count);
 OmniAdwNode *omni_adw_form_new(void);
 OmniAdwNode *omni_adw_split_new(void);
 OmniAdwNode *omni_adw_text_new(const char *text);

@@ -24,6 +24,23 @@ private extension EnvironmentValues {
     }
 }
 
+private enum SemanticTextProbe {
+    static func collect(in node: SemanticNode) -> String {
+        var parts: [String] = []
+        func visit(_ current: SemanticNode) {
+            switch current.kind {
+            case .text(let text), .image(let text):
+                parts.append(text)
+            default:
+                break
+            }
+            current.children.forEach(visit)
+        }
+        visit(node)
+        return parts.joined(separator: " ")
+    }
+}
+
 @Test func debugSnapshot_click_increments_state() async throws {
     let runtime = _UIRuntime()
     let size = _Size(width: 30, height: 6)
@@ -36,6 +53,48 @@ private extension EnvironmentValues {
 
     let s1 = runtime.debugRender(CounterView(), size: size)
     #expect(s1.text.contains("Count: 1"))
+}
+
+@Test func semanticSnapshot_navigationLinkPushesDestinationAfterNativeAction() async throws {
+    struct V: View {
+        var body: some View {
+            NavigationStack {
+                List {
+                    NavigationLink(destination: Text("Destination loaded")) {
+                        HStack {
+                            Image(systemName: "doc.plaintext")
+                            Text("Open file")
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    func firstActionID(in node: SemanticNode, matching text: String) -> Int? {
+        if case .button(let actionID, _) = node.kind,
+           SemanticTextProbe.collect(in: node).contains(text) {
+            return actionID
+        }
+        for child in node.children {
+            if let actionID = firstActionID(in: child, matching: text) {
+                return actionID
+            }
+        }
+        return nil
+    }
+
+    let runtime = _UIRuntime()
+    let size = _Size(width: 80, height: 20)
+    let initial = runtime.semanticSnapshot(V(), size: size)
+    guard let actionID = firstActionID(in: initial.root, matching: "Open file") else {
+        #expect(Bool(false), "No NavigationLink action")
+        return
+    }
+
+    runtime.invokeActionByRawID(actionID)
+    let next = runtime.semanticSnapshot(V(), size: size)
+    #expect(SemanticTextProbe.collect(in: next.root).contains("Destination loaded"))
 }
 
 @Test func environment_modifier_propagates_custom_value_to_child_view() async throws {
