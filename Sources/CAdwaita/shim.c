@@ -51,8 +51,8 @@ struct OmniAdwNode {
 };
 
 typedef struct {
-  char **labels;
   int32_t *action_ids;
+  int32_t *depths;
   int32_t count;
 } OmniStringListData;
 
@@ -88,13 +88,8 @@ static void free_label_array(gpointer data) {
 static void free_string_list_data(gpointer data) {
   OmniStringListData *list = (OmniStringListData *)data;
   if (!list) return;
-  if (list->labels) {
-    for (int32_t i = 0; i < list->count; i++) {
-      free(list->labels[i]);
-    }
-    free(list->labels);
-  }
   free(list->action_ids);
+  free(list->depths);
   free(list);
 }
 
@@ -157,6 +152,8 @@ static void wire_actions(GtkWidget *widget, OmniAdwApp *app);
 static void on_string_list_setup(GtkSignalListItemFactory *factory, GtkListItem *list_item, gpointer data);
 static void on_string_list_bind(GtkSignalListItemFactory *factory, GtkListItem *list_item, gpointer data);
 static void on_string_list_activate(GtkListView *view, guint position, gpointer data);
+static void on_sidebar_list_setup(GtkSignalListItemFactory *factory, GtkListItem *list_item, gpointer data);
+static void on_sidebar_list_bind(GtkSignalListItemFactory *factory, GtkListItem *list_item, gpointer data);
 static void on_plain_list_row_activated(GtkListBox *box, GtkListBoxRow *row, gpointer data);
 
 typedef struct {
@@ -466,7 +463,8 @@ static void on_toggled(GtkCheckButton *button, gpointer data) {
 static void on_string_list_setup(GtkSignalListItemFactory *factory, GtkListItem *list_item, gpointer data) {
   GtkWidget *label = gtk_label_new("");
   gtk_label_set_xalign(GTK_LABEL(label), 0.0f);
-  gtk_label_set_wrap(GTK_LABEL(label), TRUE);
+  gtk_label_set_wrap(GTK_LABEL(label), FALSE);
+  gtk_label_set_ellipsize(GTK_LABEL(label), PANGO_ELLIPSIZE_END);
   gtk_widget_set_hexpand(label, TRUE);
   gtk_widget_set_halign(label, GTK_ALIGN_FILL);
   gtk_list_item_set_child(list_item, label);
@@ -490,6 +488,50 @@ static void on_string_list_activate(GtkListView *view, guint position, gpointer 
     app->callback(action_id, app->context);
     omni_flush_pending_ui(app);
   }
+}
+
+static void on_sidebar_list_setup(GtkSignalListItemFactory *factory, GtkListItem *list_item, gpointer data) {
+  GtkWidget *box = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 6);
+  gtk_widget_add_css_class(box, "omni-sidebar-row");
+  gtk_widget_set_hexpand(box, TRUE);
+  gtk_widget_set_halign(box, GTK_ALIGN_FILL);
+
+  GtkWidget *disclosure = gtk_label_new("");
+  gtk_widget_add_css_class(disclosure, "omni-sidebar-disclosure");
+  gtk_label_set_xalign(GTK_LABEL(disclosure), 0.5f);
+  gtk_box_append(GTK_BOX(box), disclosure);
+
+  GtkWidget *label = gtk_label_new("");
+  gtk_widget_add_css_class(label, "omni-sidebar-label");
+  gtk_label_set_xalign(GTK_LABEL(label), 0.0f);
+  gtk_label_set_wrap(GTK_LABEL(label), FALSE);
+  gtk_label_set_ellipsize(GTK_LABEL(label), PANGO_ELLIPSIZE_END);
+  gtk_widget_set_hexpand(label, TRUE);
+  gtk_widget_set_halign(label, GTK_ALIGN_FILL);
+  gtk_box_append(GTK_BOX(box), label);
+
+  gtk_list_item_set_child(list_item, box);
+}
+
+static void on_sidebar_list_bind(GtkSignalListItemFactory *factory, GtkListItem *list_item, gpointer data) {
+  GtkWidget *box = gtk_list_item_get_child(list_item);
+  gpointer item = gtk_list_item_get_item(list_item);
+  if (!GTK_IS_BOX(box) || !GTK_IS_STRING_OBJECT(item)) return;
+  GtkWidget *disclosure = gtk_widget_get_first_child(box);
+  GtkWidget *label = disclosure ? gtk_widget_get_next_sibling(disclosure) : NULL;
+  if (!GTK_IS_LABEL(disclosure) || !GTK_IS_LABEL(label)) return;
+
+  const char *text = gtk_string_object_get_string(GTK_STRING_OBJECT(item));
+  guint position = gtk_list_item_get_position(list_item);
+  OmniStringListData *list = (OmniStringListData *)data;
+  int32_t depth = list && list->depths && position < (guint)list->count ? list->depths[position] : 0;
+  if (depth < 0) depth = 0;
+  if (depth > 8) depth = 8;
+
+  gtk_widget_set_margin_start(box, depth * 16);
+  gtk_label_set_text(GTK_LABEL(disclosure), depth == 0 ? "▾" : " ");
+  gtk_label_set_text(GTK_LABEL(label), text ? text : "");
+  omni_accessible_label(label, text);
 }
 
 static void on_plain_list_row_activated(GtkListBox *box, GtkListBoxRow *row, gpointer data) {
@@ -1583,13 +1625,11 @@ OmniAdwNode *omni_adw_string_list_new(const char **labels, const int32_t *action
   OmniStringListData *data = calloc(1, sizeof(OmniStringListData));
   if (data && count > 0) {
     data->count = count;
-    data->labels = calloc((size_t)count, sizeof(char *));
     data->action_ids = calloc((size_t)count, sizeof(int32_t));
   }
   for (int32_t i = 0; i < count; i++) {
     const char *label = labels && labels[i] ? labels[i] : "";
     gtk_string_list_append(strings, label);
-    if (data && data->labels) data->labels[i] = omni_strdup(label);
     if (data && data->action_ids) data->action_ids[i] = action_ids ? action_ids[i] : 0;
   }
 
@@ -1644,6 +1684,36 @@ OmniAdwNode *omni_adw_plain_list_new(const char **labels, const int32_t *action_
 
 OmniAdwNode *omni_adw_sidebar_list_new(const char **labels, const int32_t *action_ids, const int32_t *depths, int32_t count) {
   OmniAdwNode *node = calloc(1, sizeof(OmniAdwNode));
+  if (count >= 128) {
+    GtkStringList *strings = gtk_string_list_new(NULL);
+    OmniStringListData *data = calloc(1, sizeof(OmniStringListData));
+    if (data && count > 0) {
+      data->count = count;
+      data->action_ids = calloc((size_t)count, sizeof(int32_t));
+      data->depths = calloc((size_t)count, sizeof(int32_t));
+    }
+    for (int32_t i = 0; i < count; i++) {
+      const char *label = labels && labels[i] ? labels[i] : "";
+      gtk_string_list_append(strings, label);
+      if (data && data->action_ids) data->action_ids[i] = action_ids ? action_ids[i] : 0;
+      if (data && data->depths) data->depths[i] = depths ? depths[i] : 0;
+    }
+
+    GtkSelectionModel *selection = GTK_SELECTION_MODEL(gtk_single_selection_new(G_LIST_MODEL(strings)));
+    GtkListItemFactory *factory = gtk_signal_list_item_factory_new();
+    g_signal_connect(factory, "setup", G_CALLBACK(on_sidebar_list_setup), NULL);
+    g_signal_connect(factory, "bind", G_CALLBACK(on_sidebar_list_bind), data);
+
+    node->widget = gtk_list_view_new(selection, factory);
+    gtk_list_view_set_single_click_activate(GTK_LIST_VIEW(node->widget), TRUE);
+    gtk_widget_add_css_class(node->widget, "omni-sidebar-list");
+    gtk_widget_set_hexpand(node->widget, TRUE);
+    gtk_widget_set_halign(node->widget, GTK_ALIGN_FILL);
+    g_object_set_data_full(G_OBJECT(node->widget), "omni-string-list-data", data, free_string_list_data);
+    g_signal_connect(node->widget, "activate", G_CALLBACK(on_string_list_activate), NULL);
+    return node;
+  }
+
   node->widget = gtk_list_box_new();
   gtk_list_box_set_selection_mode(GTK_LIST_BOX(node->widget), GTK_SELECTION_SINGLE);
   gtk_list_box_set_activate_on_single_click(GTK_LIST_BOX(node->widget), TRUE);
