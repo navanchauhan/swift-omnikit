@@ -11,6 +11,9 @@
 #include <stdlib.h>
 #include <string.h>
 
+#define OMNI_MACOS_ACCESSIBILITY_MAX_ELEMENTS 512
+#define OMNI_NATIVE_ACCESSIBILITY_ROW_UPDATE_LIMIT 2048
+
 struct OmniAdwApp {
   AdwApplication *application;
   GtkWidget *window;
@@ -68,7 +71,7 @@ typedef struct {
   int32_t *visible_indices;
   int32_t visible_count;
   int32_t count;
-  GtkStringList *string_list;
+  GListModel *model;
   GtkWidget **rows;
 } OmniStringListData;
 
@@ -118,6 +121,115 @@ static void free_string_list_data(gpointer data) {
   free(list);
 }
 
+typedef struct _OmniListRowObject {
+  GObject parent_instance;
+  int32_t original_index;
+} OmniListRowObject;
+
+typedef struct _OmniListRowObjectClass {
+  GObjectClass parent_class;
+} OmniListRowObjectClass;
+
+GType omni_list_row_object_get_type(void);
+#define OMNI_TYPE_LIST_ROW_OBJECT (omni_list_row_object_get_type())
+#define OMNI_LIST_ROW_OBJECT(obj) ((OmniListRowObject *)(obj))
+#define OMNI_IS_LIST_ROW_OBJECT(obj) (G_TYPE_CHECK_INSTANCE_TYPE((obj), OMNI_TYPE_LIST_ROW_OBJECT))
+
+G_DEFINE_TYPE(OmniListRowObject, omni_list_row_object, G_TYPE_OBJECT)
+
+static void omni_list_row_object_class_init(OmniListRowObjectClass *klass) {
+  (void)klass;
+}
+
+static void omni_list_row_object_init(OmniListRowObject *object) {
+  object->original_index = -1;
+}
+
+static OmniListRowObject *omni_list_row_object_new(int32_t original_index) {
+  OmniListRowObject *object = g_object_new(OMNI_TYPE_LIST_ROW_OBJECT, NULL);
+  object->original_index = original_index;
+  return object;
+}
+
+typedef struct _OmniListModel {
+  GObject parent_instance;
+  OmniStringListData *data;
+} OmniListModel;
+
+typedef struct _OmniListModelClass {
+  GObjectClass parent_class;
+} OmniListModelClass;
+
+GType omni_list_model_get_type(void);
+#define OMNI_TYPE_LIST_MODEL (omni_list_model_get_type())
+#define OMNI_LIST_MODEL(obj) ((OmniListModel *)(obj))
+
+static void omni_list_model_list_model_init(GListModelInterface *iface);
+
+G_DEFINE_TYPE_WITH_CODE(
+  OmniListModel,
+  omni_list_model,
+  G_TYPE_OBJECT,
+  G_IMPLEMENT_INTERFACE(G_TYPE_LIST_MODEL, omni_list_model_list_model_init)
+)
+
+static GType omni_list_model_get_item_type(GListModel *model) {
+  (void)model;
+  return OMNI_TYPE_LIST_ROW_OBJECT;
+}
+
+static guint omni_list_model_get_n_items(GListModel *model) {
+  OmniListModel *self = OMNI_LIST_MODEL(model);
+  OmniStringListData *list = self ? self->data : NULL;
+  if (!list) return 0;
+  if (list->visible_indices) return (guint)list->visible_count;
+  return (guint)list->count;
+}
+
+static gpointer omni_list_model_get_item(GListModel *model, guint position) {
+  OmniListModel *self = OMNI_LIST_MODEL(model);
+  OmniStringListData *list = self ? self->data : NULL;
+  if (!list) return NULL;
+  int32_t original = (int32_t)position;
+  if (list->visible_indices && position < (guint)list->visible_count) {
+    original = list->visible_indices[position];
+  }
+  if (original < 0 || original >= list->count) return NULL;
+  return omni_list_row_object_new(original);
+}
+
+static void omni_list_model_list_model_init(GListModelInterface *iface) {
+  iface->get_item_type = omni_list_model_get_item_type;
+  iface->get_n_items = omni_list_model_get_n_items;
+  iface->get_item = omni_list_model_get_item;
+}
+
+static void omni_list_model_finalize(GObject *object) {
+  OmniListModel *self = OMNI_LIST_MODEL(object);
+  if (self->data) {
+    self->data->model = NULL;
+    free_string_list_data(self->data);
+    self->data = NULL;
+  }
+  G_OBJECT_CLASS(omni_list_model_parent_class)->finalize(object);
+}
+
+static void omni_list_model_class_init(OmniListModelClass *klass) {
+  GObjectClass *object_class = G_OBJECT_CLASS(klass);
+  object_class->finalize = omni_list_model_finalize;
+}
+
+static void omni_list_model_init(OmniListModel *model) {
+  model->data = NULL;
+}
+
+static OmniListModel *omni_list_model_new(OmniStringListData *data) {
+  OmniListModel *model = g_object_new(OMNI_TYPE_LIST_MODEL, NULL);
+  model->data = data;
+  if (data) data->model = G_LIST_MODEL(model);
+  return model;
+}
+
 static void omni_widget_expand(GtkWidget *widget, gboolean vertical) {
   if (!widget) return;
   gtk_widget_set_hexpand(widget, TRUE);
@@ -137,12 +249,17 @@ static gboolean omni_cached_bool_update(GtkWidget *widget, const char *key, gboo
   return TRUE;
 }
 
-static void omni_accessible_label(GtkWidget *widget, const char *label) {
+static void omni_accessible_label_with_native_update(GtkWidget *widget, const char *label, gboolean update_native) {
   if (!widget || !label || !label[0]) return;
   const char *current = (const char *)g_object_get_data(G_OBJECT(widget), "omni-accessible-label");
   if (current && strcmp(current, label) == 0) return;
   g_object_set_data_full(G_OBJECT(widget), "omni-accessible-label", omni_strdup(label), free);
+  if (!update_native) return;
   gtk_accessible_update_property(GTK_ACCESSIBLE(widget), GTK_ACCESSIBLE_PROPERTY_LABEL, label, -1);
+}
+
+static void omni_accessible_label(GtkWidget *widget, const char *label) {
+  omni_accessible_label_with_native_update(widget, label, TRUE);
 }
 
 static void omni_accessible_description(GtkWidget *widget, const char *description) {
@@ -201,6 +318,12 @@ static void omni_accessible_set_expanded(GtkWidget *widget, gboolean expanded) {
 
 static void omni_accessible_list_position(GtkWidget *widget, int32_t position, int32_t size) {
   if (!widget || position <= 0 || size <= 0) return;
+  if (size > OMNI_NATIVE_ACCESSIBILITY_ROW_UPDATE_LIMIT) return;
+  int current_position = GPOINTER_TO_INT(g_object_get_data(G_OBJECT(widget), "omni-accessible-pos-cache"));
+  int current_size = GPOINTER_TO_INT(g_object_get_data(G_OBJECT(widget), "omni-accessible-set-size-cache"));
+  if (current_position == position && current_size == size) return;
+  g_object_set_data(G_OBJECT(widget), "omni-accessible-pos-cache", GINT_TO_POINTER(position));
+  g_object_set_data(G_OBJECT(widget), "omni-accessible-set-size-cache", GINT_TO_POINTER(size));
   gtk_accessible_update_relation(
     GTK_ACCESSIBLE(widget),
     GTK_ACCESSIBLE_RELATION_POS_IN_SET, position,
@@ -771,6 +894,7 @@ static gboolean sidebar_index_is_visible(OmniStringListData *list, int32_t index
 
 static void sidebar_rebuild_visible_indices(OmniStringListData *list) {
   if (!list || !list->labels) return;
+  int32_t previous_visible_count = list->visible_indices ? list->visible_count : 0;
   free(list->visible_indices);
   list->visible_indices = calloc((size_t)list->count, sizeof(int32_t));
   list->visible_count = 0;
@@ -779,16 +903,13 @@ static void sidebar_rebuild_visible_indices(OmniStringListData *list) {
       list->visible_indices[list->visible_count++] = i;
     }
   }
-  if (list->string_list) {
-    guint existing = g_list_model_get_n_items(G_LIST_MODEL(list->string_list));
-    while (existing > 0) {
-      gtk_string_list_remove(list->string_list, 0);
-      existing--;
-    }
-    for (int32_t i = 0; i < list->visible_count; i++) {
-      int32_t original = list->visible_indices[i];
-      gtk_string_list_append(list->string_list, list->labels[original] ? list->labels[original] : "");
-    }
+  if (list->model) {
+    g_list_model_items_changed(
+      list->model,
+      0,
+      previous_visible_count > 0 ? (guint)previous_visible_count : 0,
+      list->visible_count > 0 ? (guint)list->visible_count : 0
+    );
   }
 }
 
@@ -870,20 +991,30 @@ static void on_string_list_setup(GtkSignalListItemFactory *factory, GtkListItem 
 static void on_string_list_bind(GtkSignalListItemFactory *factory, GtkListItem *list_item, gpointer data) {
   GtkWidget *button = gtk_list_item_get_child(list_item);
   gpointer item = gtk_list_item_get_item(list_item);
-  if (!GTK_IS_BUTTON(button) || !GTK_IS_STRING_OBJECT(item)) return;
+  if (!GTK_IS_BUTTON(button)) return;
   GtkWidget *label = gtk_button_get_child(GTK_BUTTON(button));
   if (!GTK_IS_LABEL(label)) return;
-  const char *text = gtk_string_object_get_string(GTK_STRING_OBJECT(item));
   guint position = gtk_list_item_get_position(list_item);
   GtkWidget *list_view = gtk_widget_get_ancestor(button, GTK_TYPE_LIST_VIEW);
   OmniStringListData *list = list_view ? (OmniStringListData *)g_object_get_data(G_OBJECT(list_view), "omni-string-list-data") : NULL;
-  int32_t original = sidebar_original_index_for_visible_position(list, position);
+  int32_t original = OMNI_IS_LIST_ROW_OBJECT(item)
+    ? OMNI_LIST_ROW_OBJECT(item)->original_index
+    : sidebar_original_index_for_visible_position(list, position);
+  const char *text = "";
+  if (list && list->labels && original >= 0 && original < list->count) {
+    text = list->labels[original] ? list->labels[original] : "";
+  } else if (GTK_IS_STRING_OBJECT(item)) {
+    text = gtk_string_object_get_string(GTK_STRING_OBJECT(item));
+  }
   int32_t action_id = list && list->action_ids && original >= 0 && original < list->count ? list->action_ids[original] : 0;
-  int32_t count = list ? list->count : 0;
+  int32_t count = list && list->visible_indices ? list->visible_count : (list ? list->count : 0);
+  gboolean native_accessible = count <= OMNI_NATIVE_ACCESSIBILITY_ROW_UPDATE_LIMIT;
 
   gtk_label_set_text(GTK_LABEL(label), text ? text : "");
-  gtk_list_item_set_accessible_label(list_item, text ? text : "");
-  gtk_list_item_set_accessible_description(list_item, action_id > 0 ? "Activates this list row" : "Static list row");
+  if (native_accessible) {
+    gtk_list_item_set_accessible_label(list_item, text ? text : "");
+    gtk_list_item_set_accessible_description(list_item, action_id > 0 ? "Activates this list row" : "Static list row");
+  }
   gtk_list_item_set_activatable(list_item, action_id > 0);
   gtk_list_item_set_selectable(list_item, action_id > 0);
   gtk_list_item_set_focusable(list_item, action_id > 0);
@@ -893,7 +1024,7 @@ static void on_string_list_bind(GtkSignalListItemFactory *factory, GtkListItem *
   omni_accessible_set_selected(button, gtk_list_item_get_selected(list_item));
   omni_accessible_list_position(button, (int32_t)position + 1, count);
   omni_accessible_description(button, action_id > 0 ? "Activates this list row" : "Static list row");
-  omni_accessible_label(button, text);
+  omni_accessible_label_with_native_update(button, text, native_accessible);
 }
 
 static void on_string_list_activate(GtkListView *view, guint position, gpointer data) {
@@ -996,20 +1127,25 @@ static void on_sidebar_list_bind(GtkSignalListItemFactory *factory, GtkListItem 
   GtkWidget *box = gtk_list_item_get_child(list_item);
   gpointer item = gtk_list_item_get_item(list_item);
   if (!GTK_IS_BOX(box)) return;
-  if (!GTK_IS_STRING_OBJECT(item)) return;
+  if (!OMNI_IS_LIST_ROW_OBJECT(item) && !GTK_IS_STRING_OBJECT(item)) return;
   GtkWidget *disclosure_button = gtk_widget_get_first_child(box);
   GtkWidget *button = disclosure_button ? gtk_widget_get_next_sibling(disclosure_button) : NULL;
   GtkWidget *disclosure = GTK_IS_BUTTON(disclosure_button) ? gtk_button_get_child(GTK_BUTTON(disclosure_button)) : NULL;
   GtkWidget *label = GTK_IS_BUTTON(button) ? gtk_button_get_child(GTK_BUTTON(button)) : NULL;
   if (!GTK_IS_BUTTON(disclosure_button) || !GTK_IS_BUTTON(button) || !GTK_IS_LABEL(disclosure) || !GTK_IS_LABEL(label)) return;
 
-  const char *text = gtk_string_object_get_string(GTK_STRING_OBJECT(item));
   guint position = gtk_list_item_get_position(list_item);
   OmniStringListData *list = (OmniStringListData *)data;
-  int32_t original = sidebar_original_index_for_visible_position(list, position);
+  int32_t original = OMNI_IS_LIST_ROW_OBJECT(item)
+    ? OMNI_LIST_ROW_OBJECT(item)->original_index
+    : sidebar_original_index_for_visible_position(list, position);
+  const char *text = list && list->labels && original >= 0 && original < list->count
+    ? list->labels[original]
+    : (GTK_IS_STRING_OBJECT(item) ? gtk_string_object_get_string(GTK_STRING_OBJECT(item)) : "");
   int32_t depth = list && list->depths && original >= 0 && original < list->count ? list->depths[original] : 0;
   int32_t action_id = list && list->action_ids && original >= 0 && original < list->count ? list->action_ids[original] : 0;
-  int32_t count = list ? list->count : 0;
+  int32_t count = list && list->visible_indices ? list->visible_count : (list ? list->count : 0);
+  gboolean native_accessible = count <= OMNI_NATIVE_ACCESSIBILITY_ROW_UPDATE_LIMIT;
   gboolean has_children = sidebar_row_has_children(list, original);
   if (depth < 0) depth = 0;
   if (depth > 8) depth = 8;
@@ -1018,8 +1154,10 @@ static void on_sidebar_list_bind(GtkSignalListItemFactory *factory, GtkListItem 
   gtk_widget_set_visible(disclosure_button, has_children);
   gtk_label_set_text(GTK_LABEL(disclosure), has_children ? (list->collapsed && list->collapsed[original] ? "▸" : "▾") : "");
   gtk_label_set_text(GTK_LABEL(label), text ? text : "");
-  gtk_list_item_set_accessible_label(list_item, text ? text : "");
-  gtk_list_item_set_accessible_description(list_item, has_children ? "Collapsible sidebar item" : (action_id > 0 ? "Sidebar item" : "Static sidebar item"));
+  if (native_accessible) {
+    gtk_list_item_set_accessible_label(list_item, text ? text : "");
+    gtk_list_item_set_accessible_description(list_item, has_children ? "Collapsible sidebar item" : (action_id > 0 ? "Sidebar item" : "Static sidebar item"));
+  }
   gtk_list_item_set_activatable(list_item, FALSE);
   gtk_list_item_set_selectable(list_item, action_id > 0);
   gtk_list_item_set_focusable(list_item, action_id > 0 || has_children);
@@ -1035,7 +1173,7 @@ static void on_sidebar_list_bind(GtkSignalListItemFactory *factory, GtkListItem 
   omni_accessible_description(button, depth == 0 ? "Top-level sidebar item" : "Nested sidebar item");
   omni_accessible_description(disclosure_button, has_children ? "Expands or collapses this sidebar group" : "");
   omni_accessible_label(disclosure_button, has_children ? (list->collapsed && list->collapsed[original] ? "Expand" : "Collapse") : "");
-  omni_accessible_label(button, text);
+  omni_accessible_label_with_native_update(button, text, native_accessible);
 }
 
 static void on_plain_list_row_activated(GtkListBox *box, GtkListBoxRow *row, gpointer data) {
@@ -1928,12 +2066,23 @@ static gboolean omni_macos_accessibility_has_exported_action_ancestor(GtkWidget 
   return FALSE;
 }
 
+static gboolean omni_macos_accessibility_has_exported_row_ancestor(GtkWidget *widget) {
+  GtkWidget *parent = widget ? gtk_widget_get_parent(widget) : NULL;
+  while (parent) {
+    if (GTK_IS_LIST_BOX_ROW(parent)) return TRUE;
+    if (GTK_IS_LIST_VIEW(parent) || GTK_IS_LIST_BOX(parent)) return FALSE;
+    parent = gtk_widget_get_parent(parent);
+  }
+  return FALSE;
+}
+
 static gboolean omni_macos_accessibility_should_export(GtkWidget *widget) {
   if (!widget || !gtk_widget_get_visible(widget) || !gtk_widget_get_mapped(widget)) return FALSE;
   if (GPOINTER_TO_INT(g_object_get_data(G_OBJECT(widget), "omni-action-id")) > 0) return TRUE;
   const char *label = (const char *)g_object_get_data(G_OBJECT(widget), "omni-accessible-label");
   if (label != NULL) {
     if (GTK_IS_LABEL(widget) && omni_macos_accessibility_has_exported_action_ancestor(widget)) return FALSE;
+    if (GTK_IS_LABEL(widget) && omni_macos_accessibility_has_exported_row_ancestor(widget)) return FALSE;
     if (!GTK_IS_ENTRY(widget) && !GTK_IS_TEXT_VIEW(widget) && !GTK_IS_BUTTON(widget) && !GTK_IS_MENU_BUTTON(widget) && !GTK_IS_CHECK_BUTTON(widget) && !GTK_IS_LIST_VIEW(widget) && !GTK_IS_LIST_BOX(widget) && !GTK_IS_LIST_BOX_ROW(widget) && strlen(label) > 160) return FALSE;
     return TRUE;
   }
@@ -1979,7 +2128,7 @@ static void omni_macos_accessibility_add_widget(
   OmniAXRect contentFrame,
   int *count
 ) {
-  if (!widget || !root || !elements || !count || *count >= 500) return;
+  if (!widget || !root || !elements || !count || *count >= OMNI_MACOS_ACCESSIBILITY_MAX_ELEMENTS) return;
   if (!gtk_widget_get_visible(widget)) return;
 
   if (gtk_widget_get_mapped(widget) && omni_macos_accessibility_should_export(widget)) {
@@ -2023,7 +2172,7 @@ static void omni_macos_accessibility_add_widget(
   }
 
   GtkWidget *child = gtk_widget_get_first_child(widget);
-  while (child) {
+  while (child && *count < OMNI_MACOS_ACCESSIBILITY_MAX_ELEMENTS) {
     omni_macos_accessibility_add_widget(child, root, parent, elements, windowFrame, contentFrame, count);
     child = gtk_widget_get_next_sibling(child);
   }
@@ -2074,8 +2223,8 @@ static void omni_macos_accessibility_schedule(OmniAdwApp *app) {
 
 static void omni_macos_accessibility_schedule_after_scroll(OmniAdwApp *app) {
   if (!app) return;
-  omni_macos_accessibility_cancel_pending(app);
-  GSource *source = g_timeout_source_new(120);
+  if (app->macos_accessibility_sync_source != 0) return;
+  GSource *source = g_timeout_source_new(350);
   g_source_set_callback(source, omni_macos_accessibility_sync_idle, app, NULL);
   app->macos_accessibility_sync_source = g_source_attach(source, NULL);
   g_source_unref(source);
@@ -2897,19 +3046,21 @@ OmniAdwNode *omni_adw_list_new(void) {
 
 OmniAdwNode *omni_adw_string_list_new(const char **labels, const int32_t *action_ids, int32_t count) {
   OmniAdwNode *node = calloc(1, sizeof(OmniAdwNode));
-  GtkStringList *strings = gtk_string_list_new(NULL);
   OmniStringListData *data = calloc(1, sizeof(OmniStringListData));
   if (data && count > 0) {
     data->count = count;
+    data->labels = calloc((size_t)count, sizeof(char *));
     data->action_ids = calloc((size_t)count, sizeof(int32_t));
   }
   for (int32_t i = 0; i < count; i++) {
     const char *label = labels && labels[i] ? labels[i] : "";
-    gtk_string_list_append(strings, label);
+    if (data && data->labels) data->labels[i] = omni_strdup(label);
     if (data && data->action_ids) data->action_ids[i] = action_ids ? action_ids[i] : 0;
   }
 
-  GtkSelectionModel *selection = GTK_SELECTION_MODEL(gtk_single_selection_new(G_LIST_MODEL(strings)));
+  OmniListModel *model = omni_list_model_new(data);
+  g_object_ref(model);
+  GtkSelectionModel *selection = GTK_SELECTION_MODEL(gtk_single_selection_new(G_LIST_MODEL(model)));
   GtkListItemFactory *factory = gtk_signal_list_item_factory_new();
   g_signal_connect(factory, "setup", G_CALLBACK(on_string_list_setup), NULL);
   g_signal_connect(factory, "bind", G_CALLBACK(on_string_list_bind), NULL);
@@ -2922,7 +3073,8 @@ OmniAdwNode *omni_adw_string_list_new(const char **labels, const int32_t *action
   omni_accessible_label(node->widget, "Content list");
   omni_accessible_description(node->widget, "Virtualized list");
   omni_accessible_role_description(node->widget, "list");
-  g_object_set_data_full(G_OBJECT(node->widget), "omni-string-list-data", data, free_string_list_data);
+  g_object_set_data(G_OBJECT(node->widget), "omni-string-list-data", data);
+  g_object_set_data_full(G_OBJECT(node->widget), "omni-list-model", model, g_object_unref);
   g_signal_connect(node->widget, "activate", G_CALLBACK(on_string_list_activate), NULL);
   return node;
 }
@@ -3000,11 +3152,11 @@ OmniAdwNode *omni_adw_sidebar_list_new(const char **labels, const int32_t *actio
     }
   }
   if (count >= 128) {
-    GtkStringList *strings = gtk_string_list_new(NULL);
-    if (data) data->string_list = strings;
     sidebar_rebuild_visible_indices(data);
+    OmniListModel *model = omni_list_model_new(data);
+    g_object_ref(model);
 
-    GtkSelectionModel *selection = GTK_SELECTION_MODEL(gtk_single_selection_new(G_LIST_MODEL(strings)));
+    GtkSelectionModel *selection = GTK_SELECTION_MODEL(gtk_single_selection_new(G_LIST_MODEL(model)));
     GtkListItemFactory *factory = gtk_signal_list_item_factory_new();
     g_signal_connect(factory, "setup", G_CALLBACK(on_sidebar_list_setup), NULL);
     g_signal_connect(factory, "bind", G_CALLBACK(on_sidebar_list_bind), data);
@@ -3017,7 +3169,8 @@ OmniAdwNode *omni_adw_sidebar_list_new(const char **labels, const int32_t *actio
     omni_accessible_label(node->widget, "Sidebar");
     omni_accessible_description(node->widget, "Virtualized sidebar outline");
     omni_accessible_role_description(node->widget, "sidebar list");
-    g_object_set_data_full(G_OBJECT(node->widget), "omni-string-list-data", data, free_string_list_data);
+    g_object_set_data(G_OBJECT(node->widget), "omni-string-list-data", data);
+    g_object_set_data_full(G_OBJECT(node->widget), "omni-list-model", model, g_object_unref);
     g_signal_connect(node->widget, "activate", G_CALLBACK(on_string_list_activate), NULL);
     return node;
   }

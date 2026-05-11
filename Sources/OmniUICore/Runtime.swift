@@ -618,11 +618,21 @@ public final class _UIRuntime: @unchecked Sendable {
     }
 
     public func needsRender(size: _Size) -> Bool {
-        if !_hasRenderedAtLeastOnce { return true }
-        if _lastRenderedSize != size { return true }
-        if _pendingDirtyEverything { return true }
-        if !_activeAnimations.isEmpty { return true }
-        return !_pendingDirtyPaths.isEmpty
+        renderInvalidationReason(size: size) != nil
+    }
+
+    public func renderInvalidationReason(size: _Size) -> String? {
+        if !_hasRenderedAtLeastOnce { return "initial" }
+        if _lastRenderedSize != size { return "size" }
+        if _pendingDirtyEverything { return "dirty-all" }
+        if !_activeAnimations.isEmpty { return "animations:\(_activeAnimations.count)" }
+        if !_pendingDirtyPaths.isEmpty {
+            let preview = _pendingDirtyPaths.prefix(6).map { path in
+                _viewPathKey(path: path)
+            }.joined(separator: ",")
+            return "dirty-paths:\(_pendingDirtyPaths.count):\(preview)"
+        }
+        return nil
     }
 
     private func _setGlobalEditMode(_ mode: EditMode) {

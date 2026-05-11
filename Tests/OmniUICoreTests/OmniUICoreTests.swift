@@ -3357,6 +3357,15 @@ private struct _OnAppearStateProbe: View {
     }
 }
 
+private struct _OptionalOnChangeIdleProbe: View {
+    @State private var selected: Int? = nil
+
+    var body: some View {
+        Text(selected.map(String.init) ?? "None")
+            .onChange(of: selected) { _, _ in }
+    }
+}
+
 private struct _BrowserChromeHotLoopProbe: View {
     @State private var url = "gopher://gopher.navan.dev:70/"
     @State private var showTooltip = false
@@ -3405,6 +3414,17 @@ private struct _BrowserChromeHotLoopProbe: View {
 
     for _ in 0..<4 {
         _ = runtime.debugRender(_OnAppearStateProbe(), size: size)
+    }
+
+    #expect(!runtime.needsRender(size: size))
+}
+
+@Test func optional_on_change_value_does_not_dirty_every_frame() async throws {
+    let runtime = _UIRuntime()
+    let size = _Size(width: 30, height: 4)
+
+    for _ in 0..<4 {
+        _ = runtime.debugRender(_OptionalOnChangeIdleProbe(), size: size)
     }
 
     #expect(!runtime.needsRender(size: size))

@@ -2431,10 +2431,14 @@ public struct _OnChange<V: Equatable>: View, _PrimitiveView {
     @State private var last: V? = nil
 
     func _makeNode(_ ctx: inout _BuildContext) -> _VNode {
-        if let prev = last, prev != value {
-            action(prev, value)
+        if let prev = last {
+            if prev != value {
+                action(prev, value)
+                last = value
+            }
+        } else {
+            last = value
         }
-        last = value
         return ctx.buildChild(content)
     }
 }
@@ -2454,10 +2458,15 @@ public struct _OnChangeSimple<V: Equatable>: View, _PrimitiveView {
         if initial && !firedInitial {
             action()
             firedInitial = true
-        } else if let prev = last, prev != value {
-            action()
         }
-        last = value
+        if let prev = last {
+            if prev != value {
+                action()
+                last = value
+            }
+        } else {
+            last = value
+        }
         return ctx.buildChild(content)
     }
 }
@@ -2477,10 +2486,15 @@ public struct _OnChangeWithInitial<V: Equatable>: View, _PrimitiveView {
         if initial && !firedInitial {
             action(value, value)
             firedInitial = true
-        } else if let prev = last, prev != value {
-            action(prev, value)
         }
-        last = value
+        if let prev = last {
+            if prev != value {
+                action(prev, value)
+                last = value
+            }
+        } else {
+            last = value
+        }
         return ctx.buildChild(content)
     }
 }

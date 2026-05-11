@@ -200,9 +200,19 @@ public final class AdwaitaApp<Root: View>: @unchecked Sendable {
         box.takeUnretainedValue().rerender = { Task { @MainActor in rerender() } }
         rerender()
         let observationRenderLoop = Task { @MainActor [runtime, renderSize] in
+            let traceRenders = ProcessInfo.processInfo.environment["OMNIUI_ADWAITA_RENDER_TRACE"] == "1"
             while !Task.isCancelled {
                 try? await Task.sleep(nanoseconds: 33_000_000)
-                if runtime.needsRender(size: renderSize) {
+                let hadActiveAnimations = runtime._hasActiveAnimations
+                if hadActiveAnimations {
+                    _ = runtime._tickAnimations()
+                }
+                let invalidationReason = runtime.renderInvalidationReason(size: renderSize)
+                if hadActiveAnimations || invalidationReason != nil {
+                    if traceRenders {
+                        let reason = hadActiveAnimations ? "animation" : (invalidationReason ?? "unknown")
+                        print("OmniUI Adwaita render invalidation: \(reason)")
+                    }
                     rerender()
                 }
             }
