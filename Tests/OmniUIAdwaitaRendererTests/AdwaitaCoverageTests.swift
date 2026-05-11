@@ -304,6 +304,7 @@ import Testing
         "adw_overlay_split_view_new",
         "adw_overlay_split_view_set_sidebar_position",
         "adw_overlay_split_view_set_show_sidebar",
+        "sidebar_show_sidebar",
         "adw_overlay_split_view_set_sidebar",
         "adw_overlay_split_view_set_content",
         "ADW_IS_OVERLAY_SPLIT_VIEW(parent->widget)",
@@ -538,6 +539,9 @@ import Testing
     #expect(shim.contains("adw-sidebar-symbolic"))
     #expect(shim.contains("omni-sidebar-toggle"))
     #expect(shim.contains("gtk_widget_set_size_request(app->header_sidebar_button, 36, 34)"))
+    #expect(shim.contains("app->sidebar_show_sidebar = TRUE"))
+    #expect(shim.contains("app->sidebar_show_sidebar = show_sidebar"))
+    #expect(shim.contains("adw_overlay_split_view_set_show_sidebar(ADW_OVERLAY_SPLIT_VIEW(widget), app->sidebar_show_sidebar)"))
     #expect(shim.contains("omni_symbolic_icon_name_for_label"))
     #expect(shim.contains("user-home-symbolic"))
     #expect(shim.contains("go-previous-symbolic"))

@@ -27,6 +27,7 @@ struct OmniAdwApp {
   GtkWidget *header_sidebar_button;
   GtkWidget *content;
   GtkWidget *active_split_view;
+  gboolean sidebar_show_sidebar;
   GtkWidget *settings_window;
   GtkWidget *settings_content;
   GtkWidget *command_button;
@@ -298,6 +299,7 @@ static void sync_sidebar_toggle(OmniAdwApp *app) {
   gtk_widget_set_visible(app->header_sidebar_button, has_split);
   if (has_split) {
     gboolean show_sidebar = adw_overlay_split_view_get_show_sidebar(ADW_OVERLAY_SPLIT_VIEW(app->active_split_view));
+    app->sidebar_show_sidebar = show_sidebar;
     g_object_set_data(G_OBJECT(app->header_sidebar_button), "omni-updating", GINT_TO_POINTER(1));
     gtk_toggle_button_set_active(GTK_TOGGLE_BUTTON(app->header_sidebar_button), show_sidebar);
     g_object_set_data(G_OBJECT(app->header_sidebar_button), "omni-updating", NULL);
@@ -763,15 +765,17 @@ static void on_sidebar_toggle_toggled(GtkToggleButton *button, gpointer data) {
   if (g_object_get_data(G_OBJECT(button), "omni-updating") != NULL) return;
   OmniAdwApp *app = (OmniAdwApp *)data;
   if (!app || !app->active_split_view || !ADW_IS_OVERLAY_SPLIT_VIEW(app->active_split_view)) return;
+  gboolean show_sidebar = gtk_toggle_button_get_active(button);
+  app->sidebar_show_sidebar = show_sidebar;
   adw_overlay_split_view_set_show_sidebar(
     ADW_OVERLAY_SPLIT_VIEW(app->active_split_view),
-    gtk_toggle_button_get_active(button)
+    show_sidebar
   );
-  omni_accessible_set_expanded(GTK_WIDGET(button), gtk_toggle_button_get_active(button));
+  omni_accessible_set_expanded(GTK_WIDGET(button), show_sidebar);
   gtk_accessible_update_state(
     GTK_ACCESSIBLE(button),
     GTK_ACCESSIBLE_STATE_PRESSED,
-    gtk_toggle_button_get_active(button) ? GTK_ACCESSIBLE_TRISTATE_TRUE : GTK_ACCESSIBLE_TRISTATE_FALSE,
+    show_sidebar ? GTK_ACCESSIBLE_TRISTATE_TRUE : GTK_ACCESSIBLE_TRISTATE_FALSE,
     -1
   );
   omni_macos_accessibility_schedule(app);
@@ -781,6 +785,9 @@ static void on_split_show_sidebar_notify(GObject *object, GParamSpec *pspec, gpo
   (void)object;
   (void)pspec;
   OmniAdwApp *app = (OmniAdwApp *)data;
+  if (app && app->active_split_view && ADW_IS_OVERLAY_SPLIT_VIEW(app->active_split_view)) {
+    app->sidebar_show_sidebar = adw_overlay_split_view_get_show_sidebar(ADW_OVERLAY_SPLIT_VIEW(app->active_split_view));
+  }
   sync_sidebar_toggle(app);
   omni_macos_accessibility_schedule(app);
 }
@@ -1172,6 +1179,7 @@ static void wire_actions(GtkWidget *widget, OmniAdwApp *app) {
   }
   if (ADW_IS_OVERLAY_SPLIT_VIEW(widget)) {
     app->active_split_view = widget;
+    adw_overlay_split_view_set_show_sidebar(ADW_OVERLAY_SPLIT_VIEW(widget), app->sidebar_show_sidebar);
     if (!g_object_get_data(G_OBJECT(widget), "omni-sidebar-notify-installed")) {
       g_signal_connect(widget, "notify::show-sidebar", G_CALLBACK(on_split_show_sidebar_notify), app);
       g_object_set_data(G_OBJECT(widget), "omni-sidebar-notify-installed", GINT_TO_POINTER(1));
@@ -1608,6 +1616,7 @@ OmniAdwApp *omni_adw_app_new(const char *app_id, const char *title, omni_adw_act
   app->context = context;
   app->default_width = 1100;
   app->default_height = 760;
+  app->sidebar_show_sidebar = TRUE;
   app->application = adw_application_new(app_id ? app_id : "dev.omnikit.OmniUIAdwaita", G_APPLICATION_DEFAULT_FLAGS);
   g_signal_connect(app->application, "activate", G_CALLBACK(on_app_activate), app);
   return app;
