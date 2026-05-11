@@ -111,6 +111,19 @@ public final class AdwaitaApp<Root: View>: @unchecked Sendable {
             box.release()
             throw OmniUIAdwaitaRendererError.unableToCreateApplication
         }
+        let appHandle = cApp
+        runtime.setDefaultOpenURLAction(OpenURLAction { url in
+            url.absoluteString.withCString { value in
+                omni_adw_app_share_url(appHandle, value)
+            }
+            return .handled
+        })
+        runtime.setDefaultShareURLAction(OpenURLAction { url in
+            url.absoluteString.withCString { value in
+                omni_adw_app_share_url(appHandle, value)
+            }
+            return .handled
+        })
         let windowSize = nativeWindowSize(for: size)
         let renderSize = semanticRenderSize(for: size)
         omni_adw_app_set_default_size(cApp, Int32(windowSize.width), Int32(windowSize.height))
@@ -384,7 +397,7 @@ private enum AdwaitaPresentationExtractor {
         guard case .modifier(.background("adw-dialog")) = node.kind else {
             return node
         }
-        return node
+        return node.children.first(where: { $0.id.hasSuffix(".content") }) ?? node
     }
 }
 
@@ -751,7 +764,7 @@ enum AdwaitaNodeBuilder {
                 : omni_adw_entry_new(placeholder, text, Int32(actionID))
         case .textEditor(let actionID, let text, _, _):
             built = omni_adw_text_view_new(text, Int32(actionID))
-        case .menu(let actionID, let title, let value, _):
+        case .menu(let actionID, let title, let value, let isExpanded):
             let items = menuItems(in: node)
             if items.isEmpty {
                 built = omni_adw_button_new(value.isEmpty ? title : "\(title): \(value)", Int32(actionID))
@@ -759,7 +772,7 @@ enum AdwaitaNodeBuilder {
                 var ids = items.map { Int32($0.actionID) }
                 built = items.map(\.label).withCStringArray { labels in
                     ids.withUnsafeMutableBufferPointer { idBuffer in
-                        omni_adw_dropdown_new(title, value, labels, idBuffer.baseAddress, Int32(items.count))
+                        omni_adw_dropdown_new(title, value, labels, idBuffer.baseAddress, Int32(items.count), isExpanded ? 1 : 0)
                     }
                 }
             }

@@ -90,7 +90,16 @@ import AppKit
 
 public extension Color {
     init(_ nsColor: AppKit.NSColor) {
-        self.init(String(describing: nsColor))
+        if let converted = nsColor.usingColorSpace(.sRGB) {
+            self.init(
+                red: Double(converted.redComponent),
+                green: Double(converted.greenComponent),
+                blue: Double(converted.blueComponent),
+                opacity: Double(converted.alphaComponent)
+            )
+        } else {
+            self.init(String(describing: nsColor))
+        }
     }
 
     init(nsColor: AppKit.NSColor) {

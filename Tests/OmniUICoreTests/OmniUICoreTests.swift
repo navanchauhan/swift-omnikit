@@ -1317,6 +1317,57 @@ struct MenuGestureView: View {
     #expect(box.opened?.absoluteString == "https://example.com")
 }
 
+@Test func shareLink_uses_runtime_share_action_instead_of_openURL_environment() async throws {
+    final class Box {
+        var opened: URL? = nil
+        var shared: URL? = nil
+    }
+
+    struct V: View {
+        private static let shareURL: URL = {
+            guard let url = URL(string: "https://example.com/share") else {
+                preconditionFailure("Invalid OmniUICore share URL test URL")
+            }
+            return url
+        }()
+
+        var body: some View {
+            ShareLink(item: Self.shareURL) {
+                Text("Share")
+            }
+        }
+    }
+
+    func firstActionID(in node: SemanticNode, matching text: String) -> Int? {
+        if case .button(let actionID, _) = node.kind,
+           SemanticTextProbe.collect(in: node).contains(text) {
+            return actionID
+        }
+        for child in node.children {
+            if let actionID = firstActionID(in: child, matching: text) {
+                return actionID
+            }
+        }
+        return nil
+    }
+
+    let box = Box()
+    let runtime = _UIRuntime()
+    runtime.setDefaultShareURLAction(OpenURLAction({ url in box.shared = url; return .handled }))
+    let root = V()
+        .environment(\.openURL, OpenURLAction({ url in box.opened = url; return .handled }))
+    let snapshot = runtime.semanticSnapshot(root, size: _Size(width: 20, height: 3))
+    guard let actionID = firstActionID(in: snapshot.root, matching: "Share") else {
+        #expect(Bool(false), "No ShareLink action")
+        return
+    }
+
+    runtime.invokeActionByRawID(actionID)
+
+    #expect(box.shared?.absoluteString == "https://example.com/share")
+    #expect(box.opened == nil)
+}
+
 @MainActor
 @Test func task_runs_and_cancels_with_view_lifecycle() async throws {
     final class Box {

@@ -21,6 +21,7 @@ void omni_adw_app_set_root(OmniAdwApp *app, OmniAdwNode *root);
 void omni_adw_app_set_root_focused(OmniAdwApp *app, OmniAdwNode *root, int32_t focused_action_id);
 void omni_adw_app_present_modal(OmniAdwApp *app, OmniAdwNode *modal, const char *title);
 void omni_adw_app_dismiss_modal(OmniAdwApp *app);
+void omni_adw_app_share_url(OmniAdwApp *app, const char *url);
 int32_t omni_adw_app_update_node(OmniAdwApp *app, const char *semantic_id, int32_t kind, const char *text, int32_t active);
 int32_t omni_adw_app_replace_node(OmniAdwApp *app, const char *semantic_id, OmniAdwNode *replacement, int32_t focused_action_id);
 
@@ -37,7 +38,7 @@ OmniAdwNode *omni_adw_toggle_new(const char *label, int32_t active, int32_t acti
 OmniAdwNode *omni_adw_entry_new(const char *placeholder, const char *text, int32_t action_id);
 OmniAdwNode *omni_adw_secure_entry_new(const char *placeholder, const char *text, int32_t action_id);
 OmniAdwNode *omni_adw_text_view_new(const char *text, int32_t action_id);
-OmniAdwNode *omni_adw_dropdown_new(const char *title, const char *value, const char **labels, const int32_t *action_ids, int32_t count);
+OmniAdwNode *omni_adw_dropdown_new(const char *title, const char *value, const char **labels, const int32_t *action_ids, int32_t count, int32_t expanded);
 OmniAdwNode *omni_adw_progress_new(const char *label, double fraction);
 OmniAdwNode *omni_adw_scale_new(const char *label, double value, double lower, double upper, double step, int32_t decrement_action_id, int32_t increment_action_id);
 OmniAdwNode *omni_adw_spin_new(const char *label, double value, int32_t decrement_action_id, int32_t increment_action_id);

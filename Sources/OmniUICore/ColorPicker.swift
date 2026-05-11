@@ -83,10 +83,10 @@ public struct ColorPicker: View, _PrimitiveView {
 
     private func _renderBar(label: String, value: Double, width: Int, focused: Bool) -> _VNode {
         let filled = max(0, min(width, Int((value * Double(width)).rounded())))
-        let filledStr = String(repeating: "▓", count: filled)
-        let emptyStr = String(repeating: "░", count: width - filled)
-        let prefix = focused ? ">\(label):" : " \(label):"
-        return .text("\(prefix)\(filledStr)\(emptyStr)")
+        let filledStr = String(repeating: "#", count: filled)
+        let emptyStr = String(repeating: "-", count: width - filled)
+        let prefix = focused ? ">\(label):[" : " \(label):["
+        return .text("\(prefix)\(filledStr)\(emptyStr)]")
     }
 
     // -- Color conversion helpers --
@@ -116,14 +116,15 @@ public struct ColorPicker: View, _PrimitiveView {
             return (entry.1, entry.2, entry.3)
         }
         // Try parsing rgb() format
-        if name.hasPrefix("rgb("), let rgb = _parseRGB(name) {
+        if name.contains("rgb("), let rgb = _parseRGB(name) {
             return _rgbToHSL(r: rgb.0, g: rgb.1, b: rgb.2)
         }
         return (0.0, 0.0, 0.5) // fallback: gray
     }
 
     private func _parseRGB(_ s: String) -> (Double, Double, Double)? {
-        let inner = s.dropFirst(4).dropLast(1) // strip "rgb(" and ")"
+        guard let start = s.range(of: "rgb("), s.hasSuffix(")") else { return nil }
+        let inner = s[start.upperBound..<s.index(before: s.endIndex)]
         let parts = inner.split(separator: ",")
         guard parts.count == 3,
               let r = Double(parts[0]),

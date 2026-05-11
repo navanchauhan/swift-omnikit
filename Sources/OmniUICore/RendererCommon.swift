@@ -57,9 +57,10 @@ public func _resolveColorToRGB(_ c: Color?) -> _RGB? {
     case "accentColor":  return _RGB(r: 0x34, g: 0xD3, b: 0x99)
     case "clear":        return nil
     default:
-        // Parse "rgb(r,g,b)" where r/g/b are 0.0–1.0 doubles.
-        if c.name.hasPrefix("rgb("), c.name.hasSuffix(")") {
-            let inner = c.name.dropFirst(4).dropLast()
+        // Parse "rgb(r,g,b)" where r/g/b are 0.0-1.0 doubles. AppKit-backed
+        // descriptions can carry a colorspace prefix before the rgb payload.
+        if let start = c.name.range(of: "rgb("), c.name.hasSuffix(")") {
+            let inner = c.name[start.upperBound..<c.name.index(before: c.name.endIndex)]
             let parts = inner.split(separator: ",")
             if parts.count == 3,
                let r = Double(parts[0]),

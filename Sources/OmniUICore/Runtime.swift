@@ -204,6 +204,7 @@ public final class _UIRuntime: @unchecked Sendable {
 
     // Base environment at the root render call.
     var _baseEnvironment: EnvironmentValues = EnvironmentValues()
+    private var defaultShareURLAction: OpenURLAction = OpenURLAction()
 
     public init() {
         // Provide a per-runtime model context so `@Environment(\\.modelContext)` and `@Query` have
@@ -229,6 +230,19 @@ public final class _UIRuntime: @unchecked Sendable {
         let result = env.openURL(url)
         _ = result
         _markDirty()
+    }
+
+    public func setDefaultOpenURLAction(_ action: OpenURLAction) {
+        _baseEnvironment.openURL = action
+        _markDirty()
+    }
+
+    public func setDefaultShareURLAction(_ action: OpenURLAction) {
+        defaultShareURLAction = action
+    }
+
+    func _shareURL(_ url: URL) {
+        _ = defaultShareURLAction(url)
     }
 
     func _beginFocusCapture() -> Int {
