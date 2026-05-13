@@ -139,6 +139,11 @@ public extension View {
         _Background(content: AnyView(self), background: AnyView(background()))
     }
     func background(_ color: Color) -> some View { _Style(content: AnyView(self), fg: nil, bg: color) }
+    func background<S: Shape>(_ color: Color, in shape: S, fillStyle: FillStyle = FillStyle()) -> some View {
+        background {
+            shape.fill(color, style: fillStyle)
+        }
+    }
     func background(_ material: Material) -> some View {
         // Terminal-friendly approximation.
         switch material.raw {
@@ -152,6 +157,11 @@ public extension View {
             return AnyView(background(Color.gray.opacity(0.25)))
         default:
             return AnyView(background(Color.gray.opacity(0.2)))
+        }
+    }
+    func background<S: Shape>(_ material: Material, in shape: S, fillStyle: FillStyle = FillStyle()) -> some View {
+        background {
+            shape.fill(material, style: fillStyle)
         }
     }
     func overlay<O: View>(_ overlay: O) -> some View { _Overlay(content: AnyView(self), overlay: AnyView(overlay)) }
@@ -330,6 +340,9 @@ public extension View {
     func toolbar<Content: View>(@ViewBuilder content: () -> Content) -> some View {
         _ToolbarModifier(content: AnyView(self), toolbar: AnyView(content()))
     }
+    func toolbar<Content: ToolbarContent>(@ToolbarContentBuilder content: () -> Content) -> some View {
+        _ToolbarModifier(content: AnyView(self), toolbar: content()._toolbarView())
+    }
     func toolbar(removing placements: ToolbarPlacement...) -> some View {
         let existing = (_UIRuntime._currentEnvironment ?? EnvironmentValues()).toolbarRemovedPlacements
         return environment(\.toolbarRemovedPlacements, existing.union(placements))
@@ -388,6 +401,9 @@ public extension View {
     }
     func keyboardShortcut(_ shortcut: KeyboardShortcut) -> some View {
         _KeyboardShortcutBinder(content: AnyView(self), shortcut: shortcut)
+    }
+    func onKeyPress(_ key: KeyEquivalent, action: @escaping () -> KeyPress.Result) -> some View {
+        _OnKeyPressBinder(content: AnyView(self), key: key, action: { action() == .handled }, actionScopePath: _UIRuntime._currentPath ?? [])
     }
     func help(_ text: String) -> some View {
         _HelpModifier(content: AnyView(self), text: text)
@@ -469,6 +485,10 @@ public extension View {
         _FocusBoolBinder(content: AnyView(self), get: { isFocused.wrappedValue }, set: { isFocused.wrappedValue = $0 })
     }
 
+    func focusedSceneValue<Value>(_ keyPath: WritableKeyPath<FocusedValues, Value?>, _ value: Value?) -> some View {
+        _FocusedSceneValueModifier(content: AnyView(self), keyPath: keyPath, value: value)
+    }
+
     func id<ID: Hashable>(_ id: ID) -> some View {
         _Identified(content: AnyView(self), id: AnyHashable(id), readerScopePath: _UIRuntime._currentScrollReaderScopePath)
     }
@@ -478,19 +498,19 @@ public extension View {
     }
 
     func onChange<V: Equatable>(of value: V, perform action: @escaping (_ newValue: V) -> Void) -> some View {
-        _OnChange(content: AnyView(self), value: value, action: { _, newValue in action(newValue) })
+        AnyView(_OnChange(content: AnyView(self), value: value, action: { _, newValue in action(newValue) }))
     }
 
     func onChange<V: Equatable>(of value: V, perform action: @escaping (_ oldValue: V, _ newValue: V) -> Void) -> some View {
-        _OnChange(content: AnyView(self), value: value, action: action)
+        AnyView(_OnChange(content: AnyView(self), value: value, action: action))
     }
 
     func onChange<V: Equatable>(of value: V, initial: Bool = false, _ action: @escaping () -> Void) -> some View {
-        _OnChangeSimple(content: AnyView(self), value: value, initial: initial, action: action)
+        AnyView(_OnChangeSimple(content: AnyView(self), value: value, initial: initial, action: action))
     }
 
     func onChange<V: Equatable>(of value: V, initial: Bool = false, _ action: @escaping (_ oldValue: V, _ newValue: V) -> Void) -> some View {
-        _OnChangeWithInitial(content: AnyView(self), value: value, initial: initial, action: action)
+        AnyView(_OnChangeWithInitial(content: AnyView(self), value: value, initial: initial, action: action))
     }
 
     func task(priority: TaskPriority? = nil, _ action: @escaping () async -> Void) -> some View {
@@ -541,6 +561,20 @@ public extension View {
 
     func onHover(perform action: @escaping (Bool) -> Void) -> some View {
         _HoverModifier(content: AnyView(self), action: action, actionScopePath: _UIRuntime._currentPath ?? [])
+    }
+
+    func contextMenu<MenuItems: View>(@ViewBuilder menuItems: () -> MenuItems) -> some View {
+        _ = menuItems()
+        return _Passthrough(self)
+    }
+
+    func contextMenu<MenuItems: View, Preview: View>(
+        @ViewBuilder menuItems: () -> MenuItems,
+        @ViewBuilder preview: () -> Preview
+    ) -> some View {
+        _ = menuItems()
+        _ = preview()
+        return _Passthrough(self)
     }
 
     func frame(
@@ -598,6 +632,11 @@ public extension View {
 
     func padding(_ length: CGFloat) -> some View {
         padding(.all, length)
+    }
+
+    func clipped(antialiased: Bool = false) -> some View {
+        _ = antialiased
+        return clipShape(Rectangle())
     }
 
     // MARK: Parity modifiers
@@ -754,6 +793,20 @@ private struct _Hidden: View, _PrimitiveView {
         // Still build the subtree so it can register actions/shortcuts, but don't render it.
         _ = ctx.buildChild(content)
         return .empty
+    }
+}
+
+private struct _FocusedSceneValueModifier<Value>: View, _PrimitiveView {
+    typealias Body = Never
+    let content: AnyView
+    let keyPath: WritableKeyPath<FocusedValues, Value?>
+    let value: Value?
+
+    func _makeNode(_ ctx: inout _BuildContext) -> _VNode {
+        var next = FocusedValues._current
+        next[keyPath: keyPath] = value
+        FocusedValues._current = next
+        return ctx.buildChild(content)
     }
 }
 
@@ -1476,24 +1529,28 @@ private struct _Frame: View, _PrimitiveView {
     func _makeNode(_ ctx: inout _BuildContext) -> _VNode {
         func toInt(_ v: CGFloat?) -> Int? {
             guard let v else { return nil }
-            if v.isInfinite { return Int.max }
+            if v.isInfinite || v >= CGFloat(Int.max) { return Int.max }
             return max(0, Int(v.rounded()))
         }
         // Update _currentRenderSize for children (F20: GeometryReader container size)
         let currentRS = _UIRuntime._currentRenderSize ?? _Size(width: 0, height: 0)
-        let resolvedW = toInt(width) ?? toInt(maxWidth) ?? currentRS.width
-        let resolvedH = toInt(height) ?? toInt(maxHeight) ?? currentRS.height
+        let fixedWidth = toInt(width)
+        let fixedHeight = toInt(height)
+        let resolvedMaxWidth = toInt(maxWidth)
+        let resolvedMaxHeight = toInt(maxHeight)
+        let resolvedW = fixedWidth ?? (resolvedMaxWidth == Int.max ? currentRS.width : (resolvedMaxWidth ?? currentRS.width))
+        let resolvedH = fixedHeight ?? (resolvedMaxHeight == Int.max ? currentRS.height : (resolvedMaxHeight ?? currentRS.height))
         let childRenderSize = _Size(width: resolvedW, height: resolvedH)
         let child = _UIRuntime.$_currentRenderSize.withValue(childRenderSize) {
             ctx.buildChild(content)
         }
         return .frame(
-            width: toInt(width),
-            height: toInt(height),
+            width: fixedWidth,
+            height: fixedHeight,
             minWidth: toInt(minWidth),
-            maxWidth: toInt(maxWidth),
+            maxWidth: resolvedMaxWidth,
             minHeight: toInt(minHeight),
-            maxHeight: toInt(maxHeight),
+            maxHeight: resolvedMaxHeight,
             child: child
         )
     }
@@ -1720,6 +1777,26 @@ private struct _KeyboardShortcutBinder: View, _PrimitiveView {
     }
 }
 
+private struct _OnKeyPressBinder: View, _PrimitiveView {
+    typealias Body = Never
+
+    let content: AnyView
+    let key: KeyEquivalent
+    let action: () -> Bool
+    let actionScopePath: [Int]
+
+    func _makeNode(_ ctx: inout _BuildContext) -> _VNode {
+        let runtime = ctx.runtime
+        let captureID = runtime._beginFocusCapture()
+        let node = _UIRuntime.$_currentFocusCaptureID.withValue(captureID) {
+            ctx.buildChild(content)
+        }
+        let targetPath = runtime._endFocusCapture(captureID) ?? ctx.path
+        runtime._registerKeyPress(key, forFocusablePath: targetPath, actionPath: actionScopePath, action: action)
+        return node
+    }
+}
+
 // MARK: Keyboard shortcuts
 
 public struct KeyboardShortcut: Hashable, Sendable {
@@ -1736,10 +1813,30 @@ public struct KeyboardShortcut: Hashable, Sendable {
 
 public struct KeyEquivalent: Hashable, Sendable, ExpressibleByStringLiteral {
     public var rawValue: String
+    public init(_ rawValue: String) { self.rawValue = rawValue }
     public init(stringLiteral value: StringLiteralType) { self.rawValue = value }
 
     public static let escape: KeyEquivalent = "\u{001B}"
     public static let `return`: KeyEquivalent = "\n"
+    public static let upArrow: KeyEquivalent = "\u{F700}"
+    public static let downArrow: KeyEquivalent = "\u{F701}"
+    public static let leftArrow: KeyEquivalent = "\u{F702}"
+    public static let rightArrow: KeyEquivalent = "\u{F703}"
+    public static let home: KeyEquivalent = "\u{F729}"
+    public static let end: KeyEquivalent = "\u{F72B}"
+}
+
+public enum KeyPress {
+    public enum Phases {
+        public enum ArrayLiteralElement {}
+        public enum Element {}
+        public enum RawValue {}
+    }
+
+    public enum Result {
+        case handled
+        case ignored
+    }
 }
 
 public struct EventModifiers: OptionSet, Hashable, Sendable {
@@ -2188,14 +2285,8 @@ private struct _HelpModifier: View, _PrimitiveView {
     let text: String
 
     func _makeNode(_ ctx: inout _BuildContext) -> _VNode {
-        guard !text.isEmpty else { return ctx.buildChild(content) }
-        return ctx.buildChild(
-            VStack(alignment: .leading, spacing: 0) {
-                content
-                Text(text)
-                    .foregroundStyle(.tertiary)
-            }
-        )
+        _ = text
+        return ctx.buildChild(content)
     }
 }
 
@@ -2317,20 +2408,17 @@ public struct _AnimationModifier<Value: Equatable>: View, _PrimitiveView {
 
     func _makeNode(_ ctx: inout _BuildContext) -> _VNode {
         if let anim = animation {
-            let seed = _StateSeed(fileID: "_AnimationModifier", line: UInt(ctx.path.hashValue & 0x7FFF))
-            let prevBox: _AnimPrevBox<Value> = ctx.runtime._getState(seed: seed, path: ctx.path, initial: { _AnimPrevBox<Value>(value: nil) })
-            let prev = prevBox.value
-            ctx.runtime._setState(seed: seed, path: ctx.path, value: _AnimPrevBox<Value>(value: value))
-            if let prev, prev != value {
+            let previous: Value? = ctx.runtime._replaceModifierValue(
+                prefix: "animation",
+                path: ctx.path,
+                value: value
+            )
+            if let previous, previous != value {
                 ctx.runtime._registerAnimation(curve: anim.curve, duration: anim.duration)
             }
         }
         return ctx.buildChild(content)
     }
-}
-
-private struct _AnimPrevBox<V> {
-    let value: V?
 }
 
 // MARK: - _PhaseAnimatorPrimitive (cycles through phases with runtime-managed state)
@@ -2351,25 +2439,10 @@ public struct _PhaseAnimatorPrimitive: View, _PrimitiveView {
     func _makeNode(_ ctx: inout _BuildContext) -> _VNode {
         guard !phases.isEmpty else { return .empty }
 
-        let seed = _StateSeed(fileID: "_PhaseAnimator", line: UInt(ctx.path.hashValue & 0x7FFF))
-        let currentIndex: Int = ctx.runtime._getState(seed: seed, path: ctx.path, initial: { 0 })
-        let phase = phases[currentIndex % phases.count]
-
-        let phaseCount = phases.count
-        let interval = intervalSeconds
-        let path = ctx.path
-        ctx.runtime._registerTask(path: path) { [weak runtime = ctx.runtime] in
-            guard let runtime else { return }
-            while !Task.isCancelled {
-                try? await Task.sleep(nanoseconds: UInt64(interval * 1_000_000_000))
-                guard !Task.isCancelled else { break }
-                let idx: Int = runtime._getState(seed: seed, path: path, initial: { 0 })
-                let nextIdx = (idx + 1) % phaseCount
-                runtime._setState(seed: seed, path: path, value: nextIdx)
-            }
-        }
-
-        return ctx.buildChild(content(phase))
+        // Keep this deterministic for native renderers. The previous timer-backed
+        // implementation mutated runtime state from an async task and could race
+        // GTK's render pass. Apps still get the first phase layout without churn.
+        return ctx.buildChild(content(phases[0]))
     }
 }
 
@@ -2428,16 +2501,10 @@ public struct _OnChange<V: Equatable>: View, _PrimitiveView {
     let value: V
     let action: (_ oldValue: V, _ newValue: V) -> Void
 
-    @State private var last: V? = nil
-
     func _makeNode(_ ctx: inout _BuildContext) -> _VNode {
-        if let prev = last {
-            if prev != value {
-                action(prev, value)
-                last = value
-            }
-        } else {
-            last = value
+        let change = ctx.runtime._consumeOnChange(path: ctx.path, value: value, initial: false)
+        if change.shouldFire {
+            action(change.oldValue, value)
         }
         return ctx.buildChild(content)
     }
@@ -2451,21 +2518,10 @@ public struct _OnChangeSimple<V: Equatable>: View, _PrimitiveView {
     let initial: Bool
     let action: () -> Void
 
-    @State private var last: V? = nil
-    @State private var firedInitial = false
-
     func _makeNode(_ ctx: inout _BuildContext) -> _VNode {
-        if initial && !firedInitial {
+        let change = ctx.runtime._consumeOnChange(path: ctx.path, value: value, initial: initial)
+        if change.shouldFire {
             action()
-            firedInitial = true
-        }
-        if let prev = last {
-            if prev != value {
-                action()
-                last = value
-            }
-        } else {
-            last = value
         }
         return ctx.buildChild(content)
     }
@@ -2479,21 +2535,10 @@ public struct _OnChangeWithInitial<V: Equatable>: View, _PrimitiveView {
     let initial: Bool
     let action: (_ oldValue: V, _ newValue: V) -> Void
 
-    @State private var last: V? = nil
-    @State private var firedInitial = false
-
     func _makeNode(_ ctx: inout _BuildContext) -> _VNode {
-        if initial && !firedInitial {
-            action(value, value)
-            firedInitial = true
-        }
-        if let prev = last {
-            if prev != value {
-                action(prev, value)
-                last = value
-            }
-        } else {
-            last = value
+        let change = ctx.runtime._consumeOnChange(path: ctx.path, value: value, initial: initial)
+        if change.shouldFire {
+            action(change.oldValue, value)
         }
         return ctx.buildChild(content)
     }

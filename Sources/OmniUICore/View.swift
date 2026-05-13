@@ -45,5 +45,15 @@ func _makeNode<V: View>(_ view: V, _ ctx: inout _BuildContext) -> _VNode {
     if let primitive = view as? _PrimitiveView {
         return primitive._makeNode(&ctx)
     }
+    #if canImport(AppKit)
+    if view is any NSViewRepresentable {
+        return .empty
+    }
+    #endif
+    #if canImport(UIKit)
+    if view is any UIViewRepresentable {
+        return .empty
+    }
+    #endif
     return _makeNode(view.body, &ctx)
 }

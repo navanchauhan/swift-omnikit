@@ -1,7 +1,26 @@
 import Foundation
+#if canImport(AppKit)
+import AppKit
+#endif
 #if canImport(FoundationNetworking)
 import FoundationNetworking
 #endif
+
+struct _LazyViewport {
+    let axis: _Axis
+    let offset: Int
+    let extent: Int
+}
+
+enum _LazyPlaceholderMode {
+    case compressed
+    case individual
+}
+
+struct _LazyRealization {
+    let range: Range<Int>
+    let placeholderMode: _LazyPlaceholderMode
+}
 
 public struct Text: View, _PrimitiveView {
     public typealias Body = Never
@@ -104,9 +123,29 @@ public struct Image: View, _PrimitiveView {
         self.name = systemName
     }
 
+#if canImport(AppKit)
+    public init(nsImage: NSImage) {
+        self.name = nsImage.name() ?? "photo"
+    }
+#endif
+
+    public func resizable(
+        capInsets: EdgeInsets = EdgeInsets(),
+        resizingMode: ImageResizingMode = .stretch
+    ) -> Image {
+        _ = capInsets
+        _ = resizingMode
+        return self
+    }
+
     func _makeNode(_ ctx: inout _BuildContext) -> _VNode {
         .image(name)
     }
+}
+
+public enum ImageResizingMode: Hashable, Sendable {
+    case tile
+    case stretch
 }
 
 public struct Spacer: View, _PrimitiveView {
@@ -154,13 +193,23 @@ public struct ScrollView<Content: View>: View, _PrimitiveView {
             ? runtime._getScrollOffsetX(path: controlPath)
             : runtime._getScrollOffset(path: controlPath)
 
+        let renderSize = _UIRuntime._currentRenderSize ?? _Size(width: 80, height: 24)
+        let viewport = _LazyViewport(
+            axis: axis,
+            offset: offset,
+            extent: axis == .horizontal ? renderSize.width : renderSize.height
+        )
+        let child = _UIRuntime.$_currentScrollViewport.withValue(viewport) {
+            ctx.buildChild(content)
+        }
+
         return .scrollView(
             id: id,
             path: controlPath,
             isFocused: isFocused,
             axis: axis,
             offset: offset,
-            content: ctx.buildChild(content)
+            content: child
         )
     }
 }
@@ -862,12 +911,15 @@ public struct LazyVGrid<Content: View>: View, _PrimitiveView {
     }
 
     func _makeNode(_ ctx: inout _BuildContext) -> _VNode {
-        let items = _flatten(ctx.buildChild(content))
-        guard !items.isEmpty else { return .empty }
-
         let gap = Swift.max(0, Int((spacing ?? 1).rounded()))
         let availableWidth = (_UIRuntime._currentRenderSize ?? _Size(width: 80, height: 0)).width
         let columnsCount = _gridColumnCount(columns, availableWidth: availableWidth, spacing: gap)
+        let realization = _lazyRealizationForGrid(columns: columnsCount)
+        let built = _UIRuntime.$_currentLazyRealization.withValue(realization) {
+            ctx.buildChild(content)
+        }
+        let items = _flatten(built)
+        guard !items.isEmpty else { return .empty }
 
         guard columnsCount > 1 else {
             return .stack(axis: .vertical, spacing: gap, children: items)
@@ -916,6 +968,30 @@ private func _gridColumnCount(_ columns: [GridItem], availableWidth: Int, spacin
     }
 }
 
+private func _lazyRealizationForGrid(columns: Int) -> _LazyRealization? {
+    guard let viewport = _UIRuntime._currentScrollViewport, viewport.axis == .vertical else {
+        return nil
+    }
+    let cellHeight = 10
+    let rowBuffer = 2
+    let firstRow = Swift.max(0, viewport.offset / cellHeight - rowBuffer)
+    let visibleRows = Swift.max(3, viewport.extent / cellHeight + rowBuffer * 2)
+    let lower = firstRow * Swift.max(1, columns)
+    let upper = (firstRow + visibleRows) * Swift.max(1, columns)
+    return _LazyRealization(range: lower..<upper, placeholderMode: .individual)
+}
+
+private func _lazyRealizationForStack() -> _LazyRealization? {
+    guard let viewport = _UIRuntime._currentScrollViewport, viewport.axis == .vertical else {
+        return nil
+    }
+    let rowHeight = 3
+    let buffer = 8
+    let lower = Swift.max(0, viewport.offset / rowHeight - buffer)
+    let visible = Swift.max(16, viewport.extent / rowHeight + buffer * 2)
+    return _LazyRealization(range: lower..<(lower + visible), placeholderMode: .compressed)
+}
+
 public struct ForEach<Data: RandomAccessCollection, ID: Hashable, Content: View>: View, _PrimitiveView {
     public typealias Body = Never
 
@@ -936,6 +1012,11 @@ public struct ForEach<Data: RandomAccessCollection, ID: Hashable, Content: View>
     }
 
     func _makeNode(_ ctx: inout _BuildContext) -> _VNode {
+        if let realization = _UIRuntime._currentLazyRealization,
+           data.count > realization.range.lowerBound {
+            return _makeLazyNode(&ctx, realization: realization)
+        }
+
         var nodes: [_VNode] = []
         nodes.reserveCapacity(data.count)
         for element in data {
@@ -944,6 +1025,61 @@ public struct ForEach<Data: RandomAccessCollection, ID: Hashable, Content: View>
             nodes.append(.identified(id: AnyHashable(elementID), readerScopePath: nil, child: child))
         }
         return .group(nodes)
+    }
+
+    private func _makeLazyNode(_ ctx: inout _BuildContext, realization: _LazyRealization) -> _VNode {
+        let count = data.count
+        let lower = Swift.min(Swift.max(0, realization.range.lowerBound), count)
+        let upper = Swift.min(Swift.max(lower, realization.range.upperBound), count)
+
+        switch realization.placeholderMode {
+        case .compressed:
+            var nodes: [_VNode] = []
+            nodes.reserveCapacity((upper - lower) + 2)
+            if lower > 0 {
+                nodes.append(.frame(width: nil, height: lower, minWidth: nil, maxWidth: nil, minHeight: lower, maxHeight: lower, child: .empty))
+            }
+
+            var index = data.index(data.startIndex, offsetBy: lower)
+            var offset = lower
+            while offset < upper {
+                let element = data[index]
+                let elementID = element[keyPath: id]
+                let child = _UIRuntime.$_currentLazyRealization.withValue(nil) {
+                    ctx.buildIdentifiedChild(content(element), id: elementID)
+                }
+                nodes.append(.identified(id: AnyHashable(elementID), readerScopePath: nil, child: child))
+                data.formIndex(after: &index)
+                offset += 1
+            }
+
+            if upper < count {
+                let remaining = count - upper
+                nodes.append(.frame(width: nil, height: remaining, minWidth: nil, maxWidth: nil, minHeight: remaining, maxHeight: remaining, child: .empty))
+            }
+            return .group(nodes)
+
+        case .individual:
+            var nodes: [_VNode] = []
+            nodes.reserveCapacity(count)
+            var index = data.startIndex
+            var offset = 0
+            while offset < count {
+                if offset >= lower && offset < upper {
+                    let element = data[index]
+                    let elementID = element[keyPath: id]
+                    let child = _UIRuntime.$_currentLazyRealization.withValue(nil) {
+                        ctx.buildIdentifiedChild(content(element), id: elementID)
+                    }
+                    nodes.append(.identified(id: AnyHashable(elementID), readerScopePath: nil, child: child))
+                } else {
+                    nodes.append(.frame(width: nil, height: 1, minWidth: nil, maxWidth: nil, minHeight: 1, maxHeight: 1, child: .empty))
+                }
+                data.formIndex(after: &index)
+                offset += 1
+            }
+            return .group(nodes)
+        }
     }
 }
 
@@ -1643,48 +1779,12 @@ public struct LazyVStack<Content: View>: View, _PrimitiveView {
 
     func _makeNode(_ ctx: inout _BuildContext) -> _VNode {
         let sp = Int(spacing ?? 0)
-        let child = ctx.buildChild(content)
+        let realization = _lazyRealizationForStack()
+        let child = _UIRuntime.$_currentLazyRealization.withValue(realization) {
+            ctx.buildChild(content)
+        }
         let allChildren = _flatten(child)
-
-        // Basic virtualization: if the child count is small, render everything.
-        let virtualizationThreshold = 50
-        guard allChildren.count > virtualizationThreshold else {
-            return .tagged(value: AnyHashable(_SemanticRole.lazyVStack), label: .stack(axis: .vertical, spacing: sp, children: allChildren))
-        }
-
-        // Estimate visible range from the enclosing ScrollView's offset.
-        // Each child row is assumed to have height ~1 (typical for TUI text rows).
-        // We use a generous buffer (2x viewport estimate) to avoid popping.
-        let runtime = ctx.runtime
-        // Walk up from current path to find the nearest scroll offset.
-        var parentPath = ctx.path
-        var scrollOffset = 0
-        while !parentPath.isEmpty {
-            parentPath.removeLast()
-            let off = runtime._getScrollOffset(path: parentPath)
-            if off > 0 {
-                scrollOffset = off
-                break
-            }
-        }
-
-        // Estimate viewport as 80 rows (typical terminal), with 40-row buffer on each side.
-        let estimatedViewport = 80
-        let buffer = 40
-        let visibleStart = max(0, scrollOffset - buffer)
-        let visibleEnd = min(allChildren.count, scrollOffset + estimatedViewport + buffer)
-
-        var virtualized = [_VNode]()
-        virtualized.reserveCapacity(allChildren.count)
-        for i in 0..<allChildren.count {
-            if i >= visibleStart && i < visibleEnd {
-                virtualized.append(allChildren[i])
-            } else {
-                // Placeholder: an empty frame with height 1 preserves layout positions.
-                virtualized.append(.frame(width: nil, height: 1, minWidth: nil, maxWidth: nil, minHeight: 1, maxHeight: 1, child: .empty))
-            }
-        }
-        return .tagged(value: AnyHashable(_SemanticRole.lazyVStack), label: .stack(axis: .vertical, spacing: sp, children: virtualized))
+        return .tagged(value: AnyHashable(_SemanticRole.lazyVStack), label: .stack(axis: .vertical, spacing: sp, children: allChildren))
     }
 }
 

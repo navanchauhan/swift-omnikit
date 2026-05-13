@@ -1,4 +1,7 @@
 import Foundation
+#if canImport(Observation)
+import Observation
+#endif
 
 // Safety: OmniUI runtime state is confined to a single render/event loop owner.
 // We intentionally do not use `@MainActor` here because notcurses/terminal renderers
@@ -21,6 +24,10 @@ public final class _UIRuntime: @unchecked Sendable {
 
     /// The current `ScrollViewReader` scope path while building descendants.
     @TaskLocal static var _currentScrollReaderScopePath: [Int]?
+
+    @TaskLocal static var _currentScrollViewport: _LazyViewport?
+
+    @TaskLocal static var _currentLazyRealization: _LazyRealization?
 
     /// Whether hit testing is enabled for the current subtree (SwiftUI `.allowsHitTesting`).
     @TaskLocal static var _hitTestingEnabled: Bool = true
@@ -53,6 +60,7 @@ public final class _UIRuntime: @unchecked Sendable {
     private var menuCaptureResults: [Int: [_MenuCaptureItem]] = [:]
 
     private var state: [String: Any] = [:]
+    private var modifierState: [String: Any] = [:]
 
     private var focusedPath: [Int]? = nil
     private var textEditors: [[Int]: _TextEditor] = [:]
@@ -62,6 +70,7 @@ public final class _UIRuntime: @unchecked Sendable {
     private var focusActivation: [[Int]: _ActionID] = [:]
     private var focusBoolBindings: [[Int]: (Bool) -> Void] = [:]
     private var submitHandlers: [[Int]: (path: [Int], env: EnvironmentValues, action: () -> Void)] = [:]
+    private var keyPressHandlers: [[Int]: [KeyEquivalent: (path: [Int], env: EnvironmentValues, action: () -> Bool)]] = [:]
     private var nextHoverID: Int = 1
     private var hoverHandlers: [_HoverID: (path: [Int], env: EnvironmentValues, action: (Bool) -> Void)] = [:]
     private var activeHoverID: _HoverID? = nil
@@ -554,12 +563,24 @@ public final class _UIRuntime: @unchecked Sendable {
         let rootSignature = _viewSignature(for: root)
 
         _beginPathBuild(path: rootPath, pathKey: rootPathKey)
-        let node = _UIRuntime.$_currentRenderSize.withValue(size) {
-            _BuildContext.withRuntime(runtime, path: rootPath) {
-                var local = ctx
-                return _makeNode(root, &local)
+        let build = {
+            _UIRuntime.$_currentRenderSize.withValue(size) {
+                _BuildContext.withRuntime(runtime, path: rootPath) {
+                    var local = ctx
+                    return _makeNode(root, &local)
+                }
             }
         }
+        let node: _VNode
+        #if canImport(Observation)
+        node = withObservationTracking {
+            build()
+        } onChange: { [weak runtime] in
+            runtime?._markDirty(path: rootPath)
+        }
+        #else
+        node = build()
+        #endif
         _endPathBuild(typeID: rootTypeID, viewSignature: rootSignature, node: node)
         return node
     }
@@ -986,6 +1007,15 @@ public final class _UIRuntime: @unchecked Sendable {
     }
 
     public func handleNativeKeyForRawActionID(_ rawID: Int, keyKind: Int, codepoint: UInt32) {
+        if rawID > 0 {
+            let id = _ActionID(raw: rawID)
+            _invokeAction(id)
+        }
+
+        if _dispatchKeyPress(kind: keyKind, codepoint: codepoint) {
+            return
+        }
+
         if rawID <= 0 {
             switch keyKind {
             case 7:
@@ -999,10 +1029,15 @@ public final class _UIRuntime: @unchecked Sendable {
         }
 
         let id = _ActionID(raw: rawID)
-        _invokeAction(id)
         guard let path = _textEditorPath(forNativeActionID: id) else { return }
 
         switch keyKind {
+        case 7:
+            submitFocusedTextEditor()
+            return
+        case 8:
+            _ = invokeKeyboardShortcut(.escape)
+            return
         case 0:
             _handleKey(.char(codepoint))
         case 1:
@@ -1153,6 +1188,7 @@ public final class _UIRuntime: @unchecked Sendable {
     public func _handleKey(_ ev: _KeyEvent) {
         // When a picker is expanded, it owns the keyboard.
         if expandedPickerPath != nil { return }
+        if _dispatchKeyPress(event: ev) { return }
         guard let p = focusedPath, let editor = textEditors[p] else { return }
         editor.handle(ev)
         _markDirty(path: p)
@@ -1291,6 +1327,92 @@ public final class _UIRuntime: @unchecked Sendable {
         keyboardShortcuts[shortcut] = id
     }
 
+    func _registerKeyPress(_ key: KeyEquivalent, forFocusablePath path: [Int], actionPath: [Int], action: @escaping () -> Bool) {
+        _noteBuildSideEffect()
+        let env = _UIRuntime._currentEnvironment ?? _baseEnvironment
+        var handlers = keyPressHandlers[path] ?? [:]
+        handlers[key] = (path: actionPath, env: env, action: action)
+        keyPressHandlers[path] = handlers
+    }
+
+    @discardableResult
+    private func _dispatchKeyPress(kind: Int, codepoint: UInt32) -> Bool {
+        guard let key = _keyEquivalent(kind: kind, codepoint: codepoint) else { return false }
+        return _dispatchKeyPress(key)
+    }
+
+    @discardableResult
+    private func _dispatchKeyPress(event: _KeyEvent) -> Bool {
+        guard let key = _keyEquivalent(event: event) else { return false }
+        return _dispatchKeyPress(key)
+    }
+
+    @discardableResult
+    private func _dispatchKeyPress(_ key: KeyEquivalent) -> Bool {
+        guard let focusedPath else { return false }
+        var candidate = focusedPath
+        while true {
+            if let entry = keyPressHandlers[candidate]?[key] {
+                let handled = _UIRuntime.$_currentEnvironment.withValue(entry.env) {
+                    _BuildContext.withRuntime(self, path: entry.path) {
+                        entry.action()
+                    }
+                }
+                if handled {
+                    _markDirty(path: entry.path)
+                    return true
+                }
+            }
+            guard !candidate.isEmpty else { break }
+            candidate.removeLast()
+        }
+        return false
+    }
+
+    private func _keyEquivalent(kind: Int, codepoint: UInt32) -> KeyEquivalent? {
+        switch kind {
+        case 0:
+            guard let scalar = UnicodeScalar(codepoint) else { return nil }
+            return KeyEquivalent(Character(scalar).description)
+        case 3:
+            return .leftArrow
+        case 4:
+            return .rightArrow
+        case 5:
+            return .home
+        case 6:
+            return .end
+        case 7:
+            return .return
+        case 8:
+            return .escape
+        case 9:
+            return .upArrow
+        case 10:
+            return .downArrow
+        default:
+            return nil
+        }
+    }
+
+    private func _keyEquivalent(event: _KeyEvent) -> KeyEquivalent? {
+        switch event {
+        case .char(let codepoint):
+            guard let scalar = UnicodeScalar(codepoint) else { return nil }
+            return KeyEquivalent(Character(scalar).description)
+        case .left:
+            return .leftArrow
+        case .right:
+            return .rightArrow
+        case .home:
+            return .home
+        case .end:
+            return .end
+        default:
+            return nil
+        }
+    }
+
     @discardableResult
     public func invokeKeyboardShortcut(_ key: KeyEquivalent, modifiers: EventModifiers = []) -> Bool {
         func lookup(_ mods: EventModifiers) -> _ActionID? {
@@ -1337,6 +1459,7 @@ public final class _UIRuntime: @unchecked Sendable {
                 }
             }
         }
+        _markDirty(path: path)
     }
 
     func _registerTask(path: [Int], priority: TaskPriority? = nil, action: @escaping () async -> Void) {
@@ -1521,6 +1644,55 @@ public final class _UIRuntime: @unchecked Sendable {
         // Keep this deterministic and stable across processes (avoid ObjectIdentifier / memory addresses).
         let p = path.map(String.init).joined(separator: ".")
         return "\(seed.fileID):\(seed.line):\(p)"
+    }
+
+    private struct _OnChangeRuntimeState<Value> {
+        var value: Value
+        var firedInitial: Bool
+    }
+
+    func _consumeOnChange<Value: Equatable>(
+        path: [Int],
+        value: Value,
+        initial: Bool
+    ) -> (shouldFire: Bool, oldValue: Value) {
+        let key = _pathKey(prefix: "onChange", path: path)
+        if var state = modifierState[key] as? _OnChangeRuntimeState<Value> {
+            let oldValue = state.value
+            var shouldFire = false
+
+            if initial && !state.firedInitial {
+                state.firedInitial = true
+                shouldFire = true
+            }
+            if oldValue != value {
+                state.value = value
+                shouldFire = true
+            }
+
+            modifierState[key] = state
+            if shouldFire {
+                _noteBuildSideEffect()
+            }
+            return (shouldFire, oldValue)
+        }
+
+        modifierState[key] = _OnChangeRuntimeState(value: value, firedInitial: initial)
+        if initial {
+            _noteBuildSideEffect()
+        }
+        return (initial, value)
+    }
+
+    func _replaceModifierValue<Value>(
+        prefix: String,
+        path: [Int],
+        value: Value
+    ) -> Value? {
+        let key = _pathKey(prefix: prefix, path: path)
+        let previous = modifierState[key] as? Value
+        modifierState[key] = value
+        return previous
     }
 
     public func debugRender<V: View>(_ root: V, size: _Size, renderShapeGlyphs: Bool = true) -> DebugSnapshot {

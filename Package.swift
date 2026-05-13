@@ -128,6 +128,10 @@ let package = Package(
             targets: ["OmniUIAdwaita"]
         ),
         .library(
+            name: "Sparkle",
+            targets: ["Sparkle"]
+        ),
+        .library(
             name: "OmniUINotcursesRenderer",
             targets: ["OmniUINotcursesRenderer"]
         ),
@@ -466,6 +470,11 @@ let package = Package(
         .target(
             name: "OmniUIAdwaita",
             dependencies: ["OmniUICore", "OmniUIAdwaitaRenderer", "SwiftUIMacros"],
+            swiftSettings: commonSwiftSettings
+        ),
+        .target(
+            name: "Sparkle",
+            path: "Sources/Sparkle",
             swiftSettings: commonSwiftSettings
         ),
         .executableTarget(

@@ -94,6 +94,9 @@ public struct EmptyCommands: Commands { public init() {} }
 
 public enum CommandGroupPlacement: Hashable, Sendable {
     case appInfo
+    case textEditing
+    case sidebar
+    case toolbar
 }
 
 public struct CommandGroup<Content: View>: Commands {

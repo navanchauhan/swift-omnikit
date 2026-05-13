@@ -9,6 +9,10 @@ public enum ViewBuilder {
         expression
     }
 
+    public static func buildExpression<C: ToolbarContent>(_ expression: C) -> AnyView {
+        expression._toolbarView()
+    }
+
     public static func buildExpression<V: View>(_ expression: V) -> AnyView {
         AnyView(expression)
     }

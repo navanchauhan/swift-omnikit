@@ -14,7 +14,9 @@ OmniAdwApp *omni_adw_app_new(const char *app_id, const char *title, omni_adw_act
 int32_t omni_adw_app_run(OmniAdwApp *app, int32_t argc, char **argv);
 void omni_adw_app_free(OmniAdwApp *app);
 void omni_adw_app_set_default_size(OmniAdwApp *app, int32_t width, int32_t height);
+void omni_adw_app_set_header_title(OmniAdwApp *app, const char *title);
 void omni_adw_app_set_header_entry(OmniAdwApp *app, const char *placeholder, const char *text, int32_t action_id);
+void omni_adw_app_set_header_actions(OmniAdwApp *app, const char **labels, const int32_t *action_ids, const int32_t *placements, int32_t count);
 void omni_adw_app_set_settings(OmniAdwApp *app, OmniAdwNode *settings);
 void omni_adw_app_set_commands(OmniAdwApp *app, OmniAdwNode *commands);
 void omni_adw_app_set_root(OmniAdwApp *app, OmniAdwNode *root);
@@ -51,4 +53,5 @@ void omni_adw_node_apply_layout(OmniAdwNode *node, int32_t width, int32_t height
 void omni_adw_node_set_sensitive(OmniAdwNode *node, int32_t sensitive);
 void omni_adw_node_set_metadata(OmniAdwNode *node, const char *semantic_id, const char *label);
 void omni_adw_node_append(OmniAdwNode *parent, OmniAdwNode *child);
+void omni_adw_node_set_expand(OmniAdwNode *node, int32_t horizontal, int32_t vertical);
 void omni_adw_node_free(OmniAdwNode *node);

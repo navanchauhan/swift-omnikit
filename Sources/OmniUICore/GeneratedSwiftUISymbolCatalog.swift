@@ -927,15 +927,36 @@ public enum FocusedObject {
 }
 
 
-public enum FocusedValue {
+@propertyWrapper
+public struct FocusedValue<Value> {
+    private let keyPath: KeyPath<FocusedValues, Value?>
+
+    public init(_ keyPath: KeyPath<FocusedValues, Value?>) {
+        self.keyPath = keyPath
+    }
+
+    public var wrappedValue: Value? {
+        FocusedValues._current[keyPath: keyPath]
+    }
 }
 
 
-public enum FocusedValueKey {
+public protocol FocusedValueKey {
+    associatedtype Value
 }
 
 
-public enum FocusedValues {
+public struct FocusedValues {
+    private var storage: [ObjectIdentifier: Any] = [:]
+
+    public init() {}
+
+    public subscript<Key: FocusedValueKey>(key: Key.Type) -> Key.Value? {
+        get { storage[ObjectIdentifier(key)] as? Key.Value }
+        set { storage[ObjectIdentifier(key)] = newValue }
+    }
+
+    nonisolated(unsafe) static var _current = FocusedValues()
 }
 
 
@@ -1184,25 +1205,6 @@ public enum ItemProviderTableRowModifier {
 }
 
 
-public enum KeyPress {
-    public enum Phases {
-        public enum ArrayLiteralElement {
-        }
-
-        public enum Element {
-        }
-
-        public enum RawValue {
-        }
-    }
-
-    public enum Result {
-        case handled
-        case ignored
-    }
-}
-
-
 public enum LabeledContentStyle {
     public enum Configuration {
     }
@@ -1247,12 +1249,6 @@ public enum LinearCapacityGaugeStyle {
 
 
 public enum LinearProgressViewStyle {
-    public enum Body {
-    }
-}
-
-
-public enum Link {
     public enum Body {
     }
 }
@@ -2504,14 +2500,6 @@ public enum ToggleStyleConfiguration {
 public enum ToolbarCommands {
     public enum Body {
     }
-}
-
-
-public enum ToolbarContent {
-}
-
-
-public enum ToolbarContentBuilder {
 }
 
 

@@ -161,6 +161,10 @@ public final class AdwaitaApp<Root: View>: @unchecked Sendable {
             if let headerEntry = AdwaitaHeaderEntry.extract(from: displaySnapshot.root) {
                 omni_adw_app_set_header_entry(cApp, headerEntry.placeholder, headerEntry.text, Int32(headerEntry.actionID))
             }
+            if let title = presentation.toolbar.title {
+                title.withCString { omni_adw_app_set_header_title(cApp, $0) }
+            }
+            syncNativeHeaderActions(presentation.toolbar.actions, app: cApp)
             let callbackBox = box.takeUnretainedValue()
             let changes = callbackBox.previousSnapshot.map {
                 SemanticDiff.changes(from: $0, to: displaySnapshot)
@@ -374,22 +378,149 @@ private final class CallbackBox: @unchecked Sendable {
 private struct AdwaitaPresentation {
     var root: SemanticNode
     var modal: SemanticNode?
+    var toolbar: AdwaitaHeaderToolbar
+}
+
+private struct AdwaitaHeaderToolbar {
+    struct Action {
+        enum Placement: Int32 {
+            case start = 0
+            case end = 1
+        }
+
+        var label: String
+        var actionID: Int
+        var placement: Placement
+    }
+
+    var title: String?
+    var actions: [Action] = []
+
+    mutating func merge(_ other: AdwaitaHeaderToolbar) {
+        if title == nil {
+            title = other.title
+        }
+        actions.append(contentsOf: other.actions)
+    }
+
+    static func extractToolbarBar(from node: SemanticNode) -> AdwaitaHeaderToolbar? {
+        guard case .stack(let axis, _) = node.kind, axis == .vertical else { return nil }
+        guard node.children.count == 2, isDivider(node.children[1]) else { return nil }
+        let row = node.children[0]
+        guard case .stack(let rowAxis, _) = row.kind, rowAxis == .horizontal else { return nil }
+
+        let segments = toolbarSegments(in: row.children)
+        guard !segments.isEmpty else { return nil }
+        var toolbar = AdwaitaHeaderToolbar()
+        for (index, segment) in segments.enumerated() {
+            let placement: Action.Placement = index == 0 ? .start : .end
+            let actions = headerActions(in: segment, placement: placement)
+            if actions.isEmpty {
+                let title = textLabel(in: segment)
+                if toolbar.title == nil, !title.isEmpty {
+                    toolbar.title = title
+                }
+            } else {
+                toolbar.actions.append(contentsOf: actions)
+            }
+        }
+        return toolbar.title != nil || !toolbar.actions.isEmpty ? toolbar : nil
+    }
+
+    private static func toolbarSegments(in children: [SemanticNode]) -> [[SemanticNode]] {
+        var segments: [[SemanticNode]] = [[]]
+        for child in children {
+            if case .spacer = child.kind {
+                if segments.last?.isEmpty == false {
+                    segments.append([])
+                }
+            } else {
+                segments[segments.count - 1].append(child)
+            }
+        }
+        return segments.filter { !$0.isEmpty }
+    }
+
+    private static func headerActions(in nodes: [SemanticNode], placement: Action.Placement) -> [Action] {
+        var actions: [Action] = []
+        func visit(_ node: SemanticNode) {
+            switch node.kind {
+            case .button(let actionID, _):
+                let label = AdwaitaReconciliation.accessibleLabel(for: node).trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !label.isEmpty, label != "Action", label != "☰" else { return }
+                actions.append(Action(label: label, actionID: actionID, placement: placement))
+            case .menu(let actionID, let title, let value, _):
+                let label = value.isEmpty ? title : value
+                guard !label.isEmpty else { return }
+                actions.append(Action(label: label, actionID: actionID, placement: placement))
+            case .disabledButton, .disabledToggle, .disabledMenu, .disabledTextField:
+                return
+            case .stack, .group, .zstack, .container, .modifier:
+                for child in node.children {
+                    visit(child)
+                }
+            default:
+                return
+            }
+        }
+        for node in nodes {
+            visit(node)
+        }
+        return actions
+    }
+
+    private static func textLabel(in nodes: [SemanticNode]) -> String {
+        var parts: [String] = []
+        func visit(_ node: SemanticNode) {
+            switch node.kind {
+            case .text(let text):
+                let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+                if !trimmed.isEmpty {
+                    parts.append(trimmed)
+                }
+            case .image, .button, .menu, .toggle, .textField, .textEditor:
+                return
+            case .stack, .group, .zstack, .container, .modifier:
+                for child in node.children {
+                    visit(child)
+                }
+            default:
+                return
+            }
+        }
+        for node in nodes {
+            visit(node)
+        }
+        return parts.joined(separator: " ")
+    }
+
+    private static func isDivider(_ node: SemanticNode) -> Bool {
+        if case .divider = node.kind {
+            return true
+        }
+        return false
+    }
 }
 
 private enum AdwaitaPresentationExtractor {
     static func extract(from root: SemanticNode) -> AdwaitaPresentation {
         var modal: SemanticNode?
-        let cleaned = stripPresentation(from: root, modal: &modal)
-        return AdwaitaPresentation(root: cleaned ?? SemanticNode(id: root.id, kind: .empty), modal: modal)
+        var toolbar = AdwaitaHeaderToolbar()
+        let cleaned = stripPresentation(from: root, modal: &modal, toolbar: &toolbar)
+        return AdwaitaPresentation(root: cleaned ?? SemanticNode(id: root.id, kind: .empty), modal: modal, toolbar: toolbar)
     }
 
-    private static func stripPresentation(from node: SemanticNode, modal: inout SemanticNode?) -> SemanticNode? {
+    private static func stripPresentation(from node: SemanticNode, modal: inout SemanticNode?, toolbar: inout AdwaitaHeaderToolbar) -> SemanticNode? {
         if isAdwaitaDialog(node) {
             modal = nativeDialogContent(from: node)
             return nil
         }
+        if let toolbarBar = AdwaitaHeaderToolbar.extractToolbarBar(from: node) {
+            toolbar.merge(toolbarBar)
+            return nil
+        }
 
-        let children = node.children.compactMap { stripPresentation(from: $0, modal: &modal) }
+        let children = node.children.compactMap { stripPresentation(from: $0, modal: &modal, toolbar: &toolbar) }
         if node.kind == .zstack, children.count == 1 {
             return children[0]
         }
@@ -422,6 +553,26 @@ private func syncNativePresentation(_ modal: SemanticNode?, app: OpaquePointer?)
         return
     }
     omni_adw_app_present_modal(app, node, "Presentation")
+}
+
+private func syncNativeHeaderActions(_ actions: [AdwaitaHeaderToolbar.Action], app: OpaquePointer?) {
+    guard let app else { return }
+    let labels = actions.map(\.label)
+    var ids = actions.map { Int32($0.actionID) }
+    var placements = actions.map { $0.placement.rawValue }
+    labels.withCStringArray { labelPointers in
+        ids.withUnsafeMutableBufferPointer { idBuffer in
+            placements.withUnsafeMutableBufferPointer { placementBuffer in
+                omni_adw_app_set_header_actions(
+                    app,
+                    labelPointers,
+                    idBuffer.baseAddress,
+                    placementBuffer.baseAddress,
+                    Int32(actions.count)
+                )
+            }
+        }
+    }
 }
 
 public enum AdwaitaSemanticCoverage {
@@ -766,6 +917,9 @@ enum AdwaitaNodeBuilder {
             built = omni_adw_text_new(SFSymbolMap.unicode(for: text) ?? text)
         case .button(let actionID, _):
             built = omni_adw_button_new(accessibleLabel(for: node), Int32(actionID))
+            if let built, rendersComplexButtonContent(node), let child = node.children.first, let childNode = build(child, context: context) {
+                omni_adw_node_append(built, childNode)
+            }
         case .toggle(let actionID, _, let isOn):
             built = omni_adw_toggle_new(accessibleLabel(for: node), isOn ? 1 : 0, Int32(actionID))
         case .textField(let actionID, let placeholder, let text, _, _, let isSecure):
@@ -816,11 +970,6 @@ enum AdwaitaNodeBuilder {
                 omni_adw_node_set_metadata(scale, node.id, label.isEmpty ? "Slider" : label)
                 omni_adw_node_append(parent, scale)
             }
-            for child in node.children {
-                if let built = build(child, context: context) {
-                    omni_adw_node_append(parent, built)
-                }
-            }
             built = parent
             metadataID = "\(node.id).container"
         case .stepper(let label, let value, let decrementActionID, let incrementActionID):
@@ -829,11 +978,6 @@ enum AdwaitaNodeBuilder {
                 omni_adw_node_set_metadata(spin, node.id, label.isEmpty ? "Stepper" : label)
                 omni_adw_node_append(parent, spin)
             }
-            for child in node.children {
-                if let built = build(child, context: context) {
-                    omni_adw_node_append(parent, built)
-                }
-            }
             built = parent
             metadataID = "\(node.id).container"
         case .datePicker(let label, let value, let timestamp, let setActionID, let decrementActionID, let incrementActionID):
@@ -841,11 +985,6 @@ enum AdwaitaNodeBuilder {
             if let date = omni_adw_date_new(label.isEmpty ? "Date" : label, value, timestamp, Int32(setActionID ?? 0), Int32(decrementActionID ?? 0), Int32(incrementActionID ?? 0)) {
                 omni_adw_node_set_metadata(date, node.id, label.isEmpty ? "Date" : label)
                 omni_adw_node_append(parent, date)
-            }
-            for child in node.children {
-                if let built = build(child, context: context) {
-                    omni_adw_node_append(parent, built)
-                }
             }
             built = parent
             metadataID = "\(node.id).container"
@@ -922,6 +1061,9 @@ enum AdwaitaNodeBuilder {
             let built: OpaquePointer?
             if case .spacer = child.kind {
                 built = omni_adw_box_new(vertical ? 1 : 0, 0)
+                if let built {
+                    omni_adw_node_set_expand(built, 1, vertical ? 1 : 0)
+                }
             } else {
                 built = build(child, context: context)
             }
@@ -1002,12 +1144,30 @@ enum AdwaitaNodeBuilder {
         }
     }
 
+    private static func rendersComplexButtonContent(_ node: SemanticNode) -> Bool {
+        guard node.children.count == 1, let child = node.children.first else { return false }
+        return !isSimpleButtonLabel(child)
+    }
+
+    private static func isSimpleButtonLabel(_ node: SemanticNode) -> Bool {
+        switch node.kind {
+        case .text, .image:
+            return true
+        case .group, .stack, .zstack:
+            return node.children.allSatisfy(isSimpleButtonLabel)
+        case .modifier(.foreground), .modifier(.background), .modifier(.padding), .modifier(.opacity), .modifier(.frame), .modifier(.accessibilityLabel), .modifier(.accessibilityIdentifier), .modifier(.noOp):
+            return node.children.allSatisfy(isSimpleButtonLabel)
+        default:
+            return false
+        }
+    }
+
     private static func applyLayoutModifier(_ modifier: SemanticModifier, to node: OpaquePointer) {
         let cellWidth = 1
         let cellHeight = 1
         let marginUnit = 1
         switch modifier {
-        case .frame(let width, let height, let minWidth, _, let minHeight, _):
+        case .frame(let width, let height, let minWidth, let maxWidth, let minHeight, let maxHeight):
             omni_adw_node_apply_layout(
                 node,
                 scaled(width, by: cellWidth),
@@ -1017,6 +1177,9 @@ enum AdwaitaNodeBuilder {
                 -1, -1, -1, -1,
                 -1
             )
+            if maxWidth != nil || maxHeight != nil {
+                omni_adw_node_set_expand(node, maxWidth != nil ? 1 : -1, maxHeight != nil ? 1 : -1)
+            }
         case .padding(let top, let leading, let bottom, let trailing):
             omni_adw_node_apply_layout(
                 node,

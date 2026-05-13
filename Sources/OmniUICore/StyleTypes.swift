@@ -39,8 +39,10 @@ public struct Color: Hashable, Sendable {
     public static let primary = Color("primary")
     public static let secondary = Color("secondary")
     public static let tertiary = Color("tertiary")
+    public static let quaternary = Color("quaternary")
 
     public static let accentColor = Color("accentColor")
+    public static let tint = Color("tint")
     public static let black = Color("black")
     public static let white = Color("white")
     public static let gray = Color("gray")
@@ -164,6 +166,9 @@ public enum VerticalAlignment: Sendable {
     case top
     case center
     case bottom
+
+    public static var firstTextBaseline: VerticalAlignment { .center }
+    public static var lastTextBaseline: VerticalAlignment { .center }
 }
 
 public struct Alignment: Hashable, Sendable {
@@ -175,6 +180,10 @@ public struct Alignment: Hashable, Sendable {
     public static let trailing = Alignment("trailing")
     public static let top = Alignment("top")
     public static let bottom = Alignment("bottom")
+    public static let topLeading = Alignment("topLeading")
+    public static let topTrailing = Alignment("topTrailing")
+    public static let bottomLeading = Alignment("bottomLeading")
+    public static let bottomTrailing = Alignment("bottomTrailing")
 }
 
 public enum Edge: Hashable, Sendable {
@@ -195,6 +204,24 @@ public enum Edge: Hashable, Sendable {
         public static let horizontal: Set = [.leading, .trailing]
         public static let vertical: Set = [.top, .bottom]
         public static let all: Set = [.top, .leading, .bottom, .trailing]
+    }
+}
+
+public struct EdgeInsets: Hashable, Sendable {
+    public var top: CGFloat
+    public var leading: CGFloat
+    public var bottom: CGFloat
+    public var trailing: CGFloat
+
+    public init() {
+        self.init(top: 0, leading: 0, bottom: 0, trailing: 0)
+    }
+
+    public init(top: CGFloat, leading: CGFloat, bottom: CGFloat, trailing: CGFloat) {
+        self.top = top
+        self.leading = leading
+        self.bottom = bottom
+        self.trailing = trailing
     }
 }
 

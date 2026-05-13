@@ -6,6 +6,7 @@ public enum ToolbarItemPlacement: Hashable, Sendable {
     case topBarTrailing
     case navigationBarLeading
     case navigationBarTrailing
+    case navigation
     case bottomBar
     case principal
 }
@@ -42,7 +43,7 @@ func _collectToolbarItems(from node: _VNode) -> _ToolbarLayoutItems {
         case .tagged(let value, let label):
             if let tag = value.base as? _ToolbarItemTag {
                 switch tag.placement {
-                case .navigationBarLeading, .topBarLeading, .cancellationAction:
+                case .navigation, .navigationBarLeading, .topBarLeading, .cancellationAction:
                     out.leading.append(label)
                 case .navigationBarTrailing, .topBarTrailing, .confirmationAction, .automatic:
                     out.trailing.append(label)
@@ -97,7 +98,7 @@ func _collectToolbarItems(from node: _VNode) -> _ToolbarLayoutItems {
     return out
 }
 
-public struct ToolbarItem<Content: View>: View, _PrimitiveView {
+public struct ToolbarItem<Content: View>: View, ToolbarContent, _PrimitiveView {
     public typealias Body = Never
 
     public let placement: ToolbarItemPlacement
@@ -116,7 +117,7 @@ public struct ToolbarItem<Content: View>: View, _PrimitiveView {
     }
 }
 
-public struct ToolbarItemGroup<Content: View>: View, _PrimitiveView {
+public struct ToolbarItemGroup<Content: View>: View, ToolbarContent, _PrimitiveView {
     public typealias Body = Never
 
     public let placement: ToolbarItemPlacement

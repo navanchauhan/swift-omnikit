@@ -71,7 +71,7 @@ private enum _DefaultObservationRegistrar {
 
 @propertyWrapper
 @dynamicMemberLookup
-public struct ObservedObject<ObjectType: ObservableObject> {
+public struct ObservedObject<ObjectType: AnyObject> {
     public var wrappedValue: ObjectType
 
     public init(wrappedValue: ObjectType) {
@@ -81,7 +81,7 @@ public struct ObservedObject<ObjectType: ObservableObject> {
     public var projectedValue: ObservedObject<ObjectType> { self }
 
     public subscript<Value>(dynamicMember keyPath: ReferenceWritableKeyPath<ObjectType, Value>) -> Binding<Value> {
-        wrappedValue._$observationRegistrar.track()
+        (wrappedValue as? ObservableObject)?._$observationRegistrar.track()
         let runtime = _UIRuntime._current
         let path = _UIRuntime._currentPath
         return Binding(
@@ -96,7 +96,7 @@ public struct ObservedObject<ObjectType: ObservableObject> {
 
 @propertyWrapper
 @dynamicMemberLookup
-public struct StateObject<ObjectType: ObservableObject> {
+public struct StateObject<ObjectType: AnyObject> {
     private let seed: _StateSeed
     private let initial: () -> ObjectType
 
@@ -117,7 +117,7 @@ public struct StateObject<ObjectType: ObservableObject> {
     public var projectedValue: StateObject<ObjectType> { self }
 
     public subscript<Value>(dynamicMember keyPath: ReferenceWritableKeyPath<ObjectType, Value>) -> Binding<Value> {
-        wrappedValue._$observationRegistrar.track()
+        (wrappedValue as? ObservableObject)?._$observationRegistrar.track()
         let runtime = _UIRuntime._current
         let path = _UIRuntime._currentPath
         return Binding(
@@ -138,7 +138,7 @@ final class _EnvironmentObjectLocation<ObjectType: AnyObject>: @unchecked Sendab
 
 @propertyWrapper
 @dynamicMemberLookup
-public struct EnvironmentObject<ObjectType: ObservableObject> {
+public struct EnvironmentObject<ObjectType: AnyObject> {
     private let location = _EnvironmentObjectLocation<ObjectType>()
 
     public init() {}
@@ -160,7 +160,7 @@ public struct EnvironmentObject<ObjectType: ObservableObject> {
     public subscript<Value>(dynamicMember keyPath: ReferenceWritableKeyPath<ObjectType, Value>) -> Binding<Value> {
         // Capture the object now so later event contexts (keypresses, clicks) don't need TaskLocal environment.
         let object = wrappedValue
-        object._$observationRegistrar.track()
+        (object as? ObservableObject)?._$observationRegistrar.track()
         let runtime = _UIRuntime._current
         let path = _UIRuntime._currentPath
         return Binding(

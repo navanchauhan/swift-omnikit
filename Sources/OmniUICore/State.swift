@@ -15,6 +15,10 @@ public struct Binding<Value>: @unchecked Sendable {
         self.get = get
         self.set = set
     }
+
+    public static func constant(_ value: Value) -> Binding<Value> {
+        Binding(get: { value }, set: { _ in })
+    }
 }
 
 /// A SwiftUI-like `State` backed by the current `_UIRuntime` via a build context.

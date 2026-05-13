@@ -163,6 +163,22 @@ public extension Shape {
     func stroke(lineWidth: CGFloat = 1) -> some View {
         _ShapeStyle(content: AnyView(self), fill: nil, stroke: StrokeStyle(lineWidth: lineWidth), fillColor: nil, strokeColor: .primary)
     }
+
+    func strokeBorder(_ content: Color = .primary, lineWidth: CGFloat = 1, antialiased: Bool = true) -> some View {
+        _ = antialiased
+        return stroke(content, style: StrokeStyle(lineWidth: lineWidth))
+    }
+
+    func strokeBorder<S>(_ content: S, lineWidth: CGFloat = 1, antialiased: Bool = true) -> some View {
+        _ = content
+        _ = antialiased
+        return stroke(.primary, style: StrokeStyle(lineWidth: lineWidth))
+    }
+
+    func strokeBorder(lineWidth: CGFloat = 1, antialiased: Bool = true) -> some View {
+        _ = antialiased
+        return stroke(.primary, style: StrokeStyle(lineWidth: lineWidth))
+    }
 }
 
 private struct _ShapeStyle: View, _PrimitiveView {
