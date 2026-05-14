@@ -1,9 +1,13 @@
 @_exported import Foundation
 @_exported import OmniUICore
 @_exported import OmniUIAdwaitaRenderer
+@_exported import Observation
+#if canImport(FoundationNetworking)
+@_exported import FoundationNetworking
+#endif
 import Foundation
 
-#if canImport(AppKit)
+#if canImport(AppKit) && !os(Linux)
 @_exported import AppKit
 #endif
 

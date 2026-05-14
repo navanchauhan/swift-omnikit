@@ -26,6 +26,8 @@ let sqlitePkgConfig: String? = nil
 let sqliteProviders: [SystemPackageProvider]? = nil
 let adwaitaPkgConfig: String? = nil
 let adwaitaProviders: [SystemPackageProvider]? = nil
+let webKitGTKPkgConfig: String? = nil
+let webKitGTKProviders: [SystemPackageProvider]? = nil
 #else
 let zlibPkgConfig: String? = "zlib"
 let zlibProviders: [SystemPackageProvider]? = [
@@ -41,6 +43,11 @@ let adwaitaPkgConfig: String? = "libadwaita-1"
 let adwaitaProviders: [SystemPackageProvider]? = [
     .apt(["libadwaita-1-dev", "libgtk-4-dev"]),
     .brew(["libadwaita", "gtk4"]),
+]
+let webKitGTKPkgConfig: String? = "webkitgtk-6.0"
+let webKitGTKProviders: [SystemPackageProvider]? = [
+    .apt(["libwebkitgtk-6.0-dev"]),
+    .brew(["webkitgtk"]),
 ]
 #endif
 
@@ -125,7 +132,31 @@ let package = Package(
         ),
         .library(
             name: "OmniUIAdwaita",
-            targets: ["OmniUIAdwaita"]
+            targets: ["OmniUIAdwaita", "OmniWebKit", "Security", "AppKit", "Combine", "OmniFoundationExtras"]
+        ),
+        .library(
+            name: "WebKit",
+            targets: ["OmniWebKit"]
+        ),
+        .library(
+            name: "OmniWebKit",
+            targets: ["OmniWebKit"]
+        ),
+        .library(
+            name: "Security",
+            targets: ["Security"]
+        ),
+        .library(
+            name: "AppKit",
+            targets: ["AppKit"]
+        ),
+        .library(
+            name: "Combine",
+            targets: ["Combine"]
+        ),
+        .library(
+            name: "OmniFoundationExtras",
+            targets: ["OmniFoundationExtras"]
         ),
         .library(
             name: "Sparkle",
@@ -162,6 +193,10 @@ let package = Package(
         .executable(
             name: "OmniUIAdwaitaSwiftUISmoke",
             targets: ["OmniUIAdwaitaSwiftUISmoke"]
+        ),
+        .executable(
+            name: "OmniWebKitAdwaitaSmoke",
+            targets: ["OmniWebKitAdwaitaSmoke"]
         ),
         .executable(
             name: "AttractorCLI",
@@ -231,10 +266,9 @@ let package = Package(
         .package(url: "https://github.com/swiftlang/swift-syntax.git", "602.0.0"..<"604.0.0"),
         // Swift-native testing DSL (`import Testing`, `@Test`, `#expect`).
         .package(url: "https://github.com/swiftlang/swift-testing.git", from: "6.2.0"),
-        // Pure-Swift bash interpreter for in-process command execution.
-        .package(url: "https://github.com/Cocoanetics/SwiftBash.git", branch: "main"),
-        // Mail access for Jeff's email inbox and outbound drafts.
-        .package(url: "https://github.com/Cocoanetics/SwiftMail.git", branch: "main"),
+        // Agent-only optional dependencies are stubbed locally so UI consumers can resolve on Swift 6.1.
+        .package(path: "External/SwiftBashStub"),
+        .package(path: "External/SwiftMailStub"),
     ],
     targets: [
         // Targets are the basic building blocks of a package, defining a module or a test suite.
@@ -250,13 +284,26 @@ let package = Package(
             pkgConfig: sqlitePkgConfig,
             providers: sqliteProviders
         ),
+        .systemLibrary(
+            name: "CAdwaitaSystem",
+            path: "Sources/CAdwaitaSystem",
+            pkgConfig: adwaitaPkgConfig,
+            providers: adwaitaProviders
+        ),
+        .systemLibrary(
+            name: "CWebKitGTK",
+            path: "Sources/CWebKitGTK",
+            pkgConfig: webKitGTKPkgConfig,
+            providers: webKitGTKProviders
+        ),
         .target(
             name: "CAdwaita",
+            dependencies: ["CAdwaitaSystem", "CWebKitGTK"],
             path: "Sources/CAdwaita",
             publicHeadersPath: "include",
             cSettings: [
                 .unsafeFlags(["-I/opt/homebrew/include/gtk-4.0", "-I/opt/homebrew/include/libadwaita-1", "-I/opt/homebrew/include/glib-2.0", "-I/opt/homebrew/lib/glib-2.0/include", "-I/opt/homebrew/include/pango-1.0", "-I/opt/homebrew/include/harfbuzz", "-I/opt/homebrew/include/cairo", "-I/opt/homebrew/include/gdk-pixbuf-2.0", "-I/opt/homebrew/include/graphene-1.0", "-I/opt/homebrew/lib/graphene-1.0/include"], .when(platforms: [.macOS])),
-                .unsafeFlags(["-I/usr/include/gtk-4.0", "-I/usr/include/libadwaita-1", "-I/usr/include/glib-2.0", "-I/usr/lib/x86_64-linux-gnu/glib-2.0/include", "-I/usr/lib/aarch64-linux-gnu/glib-2.0/include", "-I/usr/include/pango-1.0", "-I/usr/include/harfbuzz", "-I/usr/include/cairo", "-I/usr/include/gdk-pixbuf-2.0", "-I/usr/include/graphene-1.0", "-I/usr/lib/x86_64-linux-gnu/graphene-1.0/include", "-I/usr/lib/aarch64-linux-gnu/graphene-1.0/include"], .when(platforms: [.linux])),
+                .unsafeFlags(["-I/usr/include/webkitgtk-6.0", "-I/usr/include/libsoup-3.0", "-I/usr/include/gtk-4.0", "-I/usr/include/libadwaita-1", "-I/usr/include/glib-2.0", "-I/usr/lib/x86_64-linux-gnu/glib-2.0/include", "-I/usr/lib/aarch64-linux-gnu/glib-2.0/include", "-I/usr/include/pango-1.0", "-I/usr/include/harfbuzz", "-I/usr/include/cairo", "-I/usr/include/gdk-pixbuf-2.0", "-I/usr/include/graphene-1.0", "-I/usr/lib/x86_64-linux-gnu/graphene-1.0/include", "-I/usr/lib/aarch64-linux-gnu/graphene-1.0/include"], .when(platforms: [.linux])),
             ],
             linkerSettings: [
                 .linkedLibrary("adwaita-1", .when(platforms: [.linux, .macOS])),
@@ -264,6 +311,9 @@ let package = Package(
                 .linkedLibrary("glib-2.0", .when(platforms: [.linux, .macOS])),
                 .linkedLibrary("gobject-2.0", .when(platforms: [.linux, .macOS])),
                 .linkedLibrary("gio-2.0", .when(platforms: [.linux, .macOS])),
+                .linkedLibrary("webkitgtk-6.0", .when(platforms: [.linux])),
+                .linkedLibrary("javascriptcoregtk-6.0", .when(platforms: [.linux])),
+                .linkedLibrary("soup-3.0", .when(platforms: [.linux])),
                 .linkedLibrary("dl", .when(platforms: [.linux])),
                 .linkedFramework("AppKit", .when(platforms: [.macOS])),
                 .linkedFramework("WebKit", .when(platforms: [.macOS])),
@@ -357,8 +407,8 @@ let package = Package(
                 "OmniExecution",
                 "OmniSkills",
                 "CSQLite",
-                .product(name: "BashInterpreter", package: "SwiftBash"),
-                .product(name: "BashCommandKit", package: "SwiftBash"),
+                .product(name: "BashInterpreter", package: "SwiftBashStub"),
+                .product(name: "BashCommandKit", package: "SwiftBashStub"),
             ],
             path: "Sources/OmniAIAgent",
             resources: [
@@ -419,6 +469,33 @@ let package = Package(
             swiftSettings: commonSwiftSettings
         ),
         .target(
+            name: "OmniWebKit",
+            dependencies: ["OmniUICore", "CAdwaita"],
+            swiftSettings: commonSwiftSettings
+        ),
+        .target(
+            name: "Security",
+            path: "Sources/Security",
+            swiftSettings: commonSwiftSettings
+        ),
+        .target(
+            name: "AppKit",
+            dependencies: ["OmniUICore"],
+            path: "Sources/AppKit",
+            swiftSettings: commonSwiftSettings
+        ),
+        .target(
+            name: "Combine",
+            dependencies: ["OmniUICore"],
+            path: "Sources/Combine",
+            swiftSettings: commonSwiftSettings
+        ),
+        .target(
+            name: "OmniFoundationExtras",
+            path: "Sources/OmniFoundationExtras",
+            swiftSettings: commonSwiftSettings
+        ),
+        .target(
             name: "OmniUI",
             dependencies: [
                 "OmniUICore",
@@ -472,7 +549,7 @@ let package = Package(
         ),
         .target(
             name: "OmniUIAdwaita",
-            dependencies: ["OmniUICore", "OmniUIAdwaitaRenderer", "SwiftUIMacros"],
+            dependencies: ["OmniUICore", "OmniUIAdwaitaRenderer", "OmniWebKit", "Security", "AppKit", "Combine", "OmniFoundationExtras", "SwiftUIMacros"],
             swiftSettings: commonSwiftSettings
         ),
         .target(
@@ -516,6 +593,14 @@ let package = Package(
                 .unsafeFlags(["-enable-actor-data-race-checks"], .when(configuration: .debug)),
                 .unsafeFlags(["-module-alias", "SwiftUI=OmniUIAdwaita"]),
                 .unsafeFlags(["-module-alias", "SwiftData=OmniSwiftData"]),
+            ]
+        ),
+        .executableTarget(
+            name: "OmniWebKitAdwaitaSmoke",
+            dependencies: ["OmniUIAdwaita", "OmniWebKit"],
+            swiftSettings: [
+                .unsafeFlags(["-warn-concurrency", "-strict-concurrency=complete"]),
+                .unsafeFlags(["-enable-actor-data-race-checks"], .when(configuration: .debug)),
             ]
         ),
         .executableTarget(
@@ -590,7 +675,7 @@ let package = Package(
                 "OmniAgentDeliveryCore",
                 "OmniSkills",
                 "TheAgentWorkerKit",
-                "SwiftMail",
+                .product(name: "SwiftMail", package: "SwiftMailStub"),
             ],
             path: "Sources/TheAgentControlPlane",
             exclude: ["main.swift"],
@@ -862,6 +947,14 @@ let package = Package(
                 "OmniUICore",
                 .product(name: "Testing", package: "swift-testing"),
             ]
+        ),
+        .testTarget(
+            name: "OmniWebKitTests",
+            dependencies: [
+                "OmniWebKit",
+                "OmniUICore",
+            ],
+            swiftSettings: commonSwiftSettings
         ),
         .testTarget(
             name: "OmniUIAdwaitaRendererTests",

@@ -71,7 +71,7 @@ public final class UIColor: NSObject, NSSecureCoding, @unchecked Sendable {
 }
 
 public extension Color {
-    #if !canImport(AppKit)
+    #if !canImport(AppKit) || os(Linux)
         init(_ uiColor: UIColor) {
             self.init(uiColor.name, alpha: uiColor.alpha)
         }
@@ -85,7 +85,7 @@ public extension Color {
 
 // MARK: - AppKit
 
-#if canImport(AppKit)
+#if canImport(AppKit) && !os(Linux)
 import AppKit
 
 public extension Color {

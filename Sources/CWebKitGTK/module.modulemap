@@ -1,0 +1,7 @@
+module CWebKitGTK [system] {
+  header "shim.h"
+  link "webkitgtk-6.0"
+  link "javascriptcoregtk-6.0"
+  link "soup-3.0"
+  export *
+}

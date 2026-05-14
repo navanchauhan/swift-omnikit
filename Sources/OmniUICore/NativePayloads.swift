@@ -4,10 +4,10 @@ import Dispatch
 import FoundationNetworking
 #endif
 
-#if canImport(AppKit)
+#if canImport(AppKit) && !os(Linux)
 import AppKit
 #endif
-#if canImport(WebKit)
+#if canImport(WebKit) && !os(Linux)
 import WebKit
 #endif
 
@@ -74,24 +74,274 @@ public enum _OmniImageRegistry {
 }
 
 public struct _OmniWebViewPayload {
-    public let url: URL
+    public enum Load: Sendable, Equatable {
+        case url(URL)
+        case html(String, baseURL: URL?)
+    }
+
+    public struct UserScript: Sendable, Equatable {
+        public let source: String
+        public let injectionTime: Int32
+        public let forMainFrameOnly: Bool
+
+        public init(source: String, injectionTime: Int32, forMainFrameOnly: Bool) {
+            self.source = source
+            self.injectionTime = injectionTime
+            self.forMainFrameOnly = forMainFrameOnly
+        }
+    }
+
+    public struct ContentRule: Sendable, Equatable {
+        public let identifier: String
+        public let encodedRules: String
+
+        public init(identifier: String, encodedRules: String) {
+            self.identifier = identifier
+            self.encodedRules = encodedRules
+        }
+    }
+
+    public struct Cookie: Sendable, Equatable {
+        public let name: String
+        public let value: String
+        public let domain: String
+        public let path: String
+        public let expiresAt: Double?
+        public let isSecure: Bool
+        public let isHTTPOnly: Bool
+
+        public init(name: String, value: String, domain: String, path: String, expiresAt: Double?, isSecure: Bool, isHTTPOnly: Bool) {
+            self.name = name
+            self.value = value
+            self.domain = domain
+            self.path = path
+            self.expiresAt = expiresAt
+            self.isSecure = isSecure
+            self.isHTTPOnly = isHTTPOnly
+        }
+    }
+
+    public struct Header: Sendable, Equatable {
+        public let name: String
+        public let value: String
+
+        public init(name: String, value: String) {
+            self.name = name
+            self.value = value
+        }
+    }
+
+    public typealias MessageCallback = @convention(c) (UnsafeMutableRawPointer?, UnsafePointer<CChar>?, UnsafePointer<CChar>?) -> Void
+    public typealias NavigationCallback = @convention(c) (UnsafeMutableRawPointer?, Int32, UnsafePointer<CChar>?, UnsafePointer<CChar>?) -> Void
+    public typealias PolicyCallback = @convention(c) (UnsafeMutableRawPointer?, UnsafePointer<CChar>?, Int32, Int32) -> Int32
+    public typealias TitleCallback = @convention(c) (UnsafeMutableRawPointer?, UnsafePointer<CChar>?) -> Void
+    public typealias ProgressCallback = @convention(c) (UnsafeMutableRawPointer?, Double) -> Void
+    public typealias CookieCallback = @convention(c) (
+        UnsafeMutableRawPointer?,
+        UnsafeMutablePointer<UnsafePointer<CChar>?>?,
+        UnsafeMutablePointer<UnsafePointer<CChar>?>?,
+        UnsafeMutablePointer<UnsafePointer<CChar>?>?,
+        UnsafeMutablePointer<UnsafePointer<CChar>?>?,
+        UnsafePointer<Double>?,
+        UnsafePointer<Int32>?,
+        UnsafePointer<Int32>?,
+        Int32
+    ) -> Void
+    public typealias ScriptDialogCallback = @convention(c) (
+        UnsafeMutableRawPointer?,
+        Int32,
+        UnsafePointer<CChar>?,
+        UnsafePointer<CChar>?,
+        UnsafeMutablePointer<Int32>?,
+        UnsafeMutablePointer<Int32>?
+    ) -> UnsafeMutablePointer<CChar>?
+
+    public let load: Load
     public let fallbackText: String
-    #if canImport(AppKit)
+    public let stableIdentity: String
+    public let userAgentApplicationName: String?
+    public let customUserAgent: String?
+    public let pageZoom: Double
+    public let allowsBackForwardNavigationGestures: Bool
+    public let javaScriptCanOpenWindowsAutomatically: Bool
+    public let javaScriptEnabled: Bool
+    public let minimumFontSize: Double
+    public let isInspectable: Bool
+    public let allowsInlineMediaPlayback: Bool
+    public let mediaPlaybackRequiresUserGesture: Bool
+    public let userScripts: [UserScript]
+    public let scriptMessageHandlerNames: [String]
+    public let contentRules: [ContentRule]
+    public let cookies: [Cookie]
+    public let requestHeaders: [Header]
+    public let hasNavigationDelegate: Bool
+    public let hasUIDelegate: Bool
+    public let dataStoreIdentifier: String
+    public let accessibilityLabel: String?
+    public let accessibilityDescription: String?
+    public let swiftObject: AnyObject?
+    public let messageCallback: MessageCallback?
+    public let navigationCallback: NavigationCallback?
+    public let policyCallback: PolicyCallback?
+    public let titleCallback: TitleCallback?
+    public let progressCallback: ProgressCallback?
+    public let cookieCallback: CookieCallback?
+    public let scriptDialogCallback: ScriptDialogCallback?
+    public let callbackContext: UnsafeMutableRawPointer?
+    #if canImport(AppKit) && !os(Linux)
     public let nativeView: NSView?
     #endif
 
+    public var url: URL {
+        switch load {
+        case .url(let url): return url
+        case .html(_, let baseURL): return baseURL ?? URL(string: "about:blank")!
+        }
+    }
+
     public init(url: URL, fallbackText: String) {
-        self.url = url
+        self.load = .url(url)
         self.fallbackText = fallbackText
-        #if canImport(AppKit)
+        self.stableIdentity = url.absoluteString + "\n" + fallbackText
+        self.userAgentApplicationName = nil
+        self.customUserAgent = nil
+        self.pageZoom = 1
+        self.allowsBackForwardNavigationGestures = false
+        self.javaScriptCanOpenWindowsAutomatically = true
+        self.javaScriptEnabled = true
+        self.minimumFontSize = 0
+        self.isInspectable = false
+        self.allowsInlineMediaPlayback = true
+        self.mediaPlaybackRequiresUserGesture = false
+        self.userScripts = []
+        self.scriptMessageHandlerNames = []
+        self.contentRules = []
+        self.cookies = []
+        self.requestHeaders = []
+        self.hasNavigationDelegate = false
+        self.hasUIDelegate = false
+        self.dataStoreIdentifier = "default"
+        self.accessibilityLabel = nil
+        self.accessibilityDescription = nil
+        self.swiftObject = nil
+        self.messageCallback = nil
+        self.navigationCallback = nil
+        self.policyCallback = nil
+        self.titleCallback = nil
+        self.progressCallback = nil
+        self.cookieCallback = nil
+        self.scriptDialogCallback = nil
+        self.callbackContext = nil
+        #if canImport(AppKit) && !os(Linux)
         self.nativeView = nil
         #endif
     }
 
-    #if canImport(AppKit)
-    public init(url: URL, fallbackText: String, nativeView: NSView?) {
-        self.url = url
+    public init(
+        load: Load,
+        fallbackText: String,
+        stableIdentity: String,
+        userAgentApplicationName: String? = nil,
+        customUserAgent: String? = nil,
+        pageZoom: Double = 1,
+        allowsBackForwardNavigationGestures: Bool = false,
+        javaScriptCanOpenWindowsAutomatically: Bool = true,
+        javaScriptEnabled: Bool = true,
+        minimumFontSize: Double = 0,
+        isInspectable: Bool = false,
+        allowsInlineMediaPlayback: Bool = true,
+        mediaPlaybackRequiresUserGesture: Bool = false,
+        userScripts: [UserScript] = [],
+        scriptMessageHandlerNames: [String] = [],
+        contentRules: [ContentRule] = [],
+        cookies: [Cookie] = [],
+        requestHeaders: [Header] = [],
+        hasNavigationDelegate: Bool = false,
+        hasUIDelegate: Bool = false,
+        dataStoreIdentifier: String = "default",
+        accessibilityLabel: String? = nil,
+        accessibilityDescription: String? = nil,
+        swiftObject: AnyObject? = nil,
+        messageCallback: MessageCallback? = nil,
+        navigationCallback: NavigationCallback? = nil,
+        policyCallback: PolicyCallback? = nil,
+        titleCallback: TitleCallback? = nil,
+        progressCallback: ProgressCallback? = nil,
+        cookieCallback: CookieCallback? = nil,
+        scriptDialogCallback: ScriptDialogCallback? = nil,
+        callbackContext: UnsafeMutableRawPointer? = nil
+    ) {
+        self.load = load
         self.fallbackText = fallbackText
+        self.stableIdentity = stableIdentity
+        self.userAgentApplicationName = userAgentApplicationName
+        self.customUserAgent = customUserAgent
+        self.pageZoom = pageZoom
+        self.allowsBackForwardNavigationGestures = allowsBackForwardNavigationGestures
+        self.javaScriptCanOpenWindowsAutomatically = javaScriptCanOpenWindowsAutomatically
+        self.javaScriptEnabled = javaScriptEnabled
+        self.minimumFontSize = minimumFontSize
+        self.isInspectable = isInspectable
+        self.allowsInlineMediaPlayback = allowsInlineMediaPlayback
+        self.mediaPlaybackRequiresUserGesture = mediaPlaybackRequiresUserGesture
+        self.userScripts = userScripts
+        self.scriptMessageHandlerNames = scriptMessageHandlerNames
+        self.contentRules = contentRules
+        self.cookies = cookies
+        self.requestHeaders = requestHeaders
+        self.hasNavigationDelegate = hasNavigationDelegate
+        self.hasUIDelegate = hasUIDelegate
+        self.dataStoreIdentifier = dataStoreIdentifier
+        self.accessibilityLabel = accessibilityLabel
+        self.accessibilityDescription = accessibilityDescription
+        self.swiftObject = swiftObject
+        self.messageCallback = messageCallback
+        self.navigationCallback = navigationCallback
+        self.policyCallback = policyCallback
+        self.titleCallback = titleCallback
+        self.progressCallback = progressCallback
+        self.cookieCallback = cookieCallback
+        self.scriptDialogCallback = scriptDialogCallback
+        self.callbackContext = callbackContext
+        #if canImport(AppKit) && !os(Linux)
+        self.nativeView = nil
+        #endif
+    }
+
+    #if canImport(AppKit) && !os(Linux)
+    public init(url: URL, fallbackText: String, nativeView: NSView?) {
+        self.load = .url(url)
+        self.fallbackText = fallbackText
+        self.stableIdentity = url.absoluteString + "\n" + fallbackText
+        self.userAgentApplicationName = nil
+        self.customUserAgent = nil
+        self.pageZoom = 1
+        self.allowsBackForwardNavigationGestures = false
+        self.javaScriptCanOpenWindowsAutomatically = true
+        self.javaScriptEnabled = true
+        self.minimumFontSize = 0
+        self.isInspectable = false
+        self.allowsInlineMediaPlayback = true
+        self.mediaPlaybackRequiresUserGesture = false
+        self.userScripts = []
+        self.scriptMessageHandlerNames = []
+        self.contentRules = []
+        self.cookies = []
+        self.requestHeaders = []
+        self.hasNavigationDelegate = false
+        self.hasUIDelegate = false
+        self.dataStoreIdentifier = "default"
+        self.accessibilityLabel = nil
+        self.accessibilityDescription = nil
+        self.swiftObject = nativeView
+        self.messageCallback = nil
+        self.navigationCallback = nil
+        self.policyCallback = nil
+        self.titleCallback = nil
+        self.progressCallback = nil
+        self.cookieCallback = nil
+        self.scriptDialogCallback = nil
+        self.callbackContext = nil
         self.nativeView = nativeView
     }
 
@@ -102,6 +352,10 @@ public struct _OmniWebViewPayload {
     #endif
 }
 
+public protocol _OmniWebViewPayloadProviding: AnyObject {
+    var _omniWebViewPayload: _OmniWebViewPayload { get }
+}
+
 public enum _OmniWebViewRegistry {
     private static let payloads = _OmniLockedDictionary<_OmniWebViewPayload>()
 
@@ -109,7 +363,13 @@ public enum _OmniWebViewRegistry {
         store(url: url, fallbackText: fallbackText, identity: nil)
     }
 
-    #if canImport(AppKit)
+    public static func store(payload: _OmniWebViewPayload) -> String {
+        let key = "omni-webview:\(stableIdentifier(for: payload.stableIdentity))"
+        payloads.set(payload, for: key)
+        return key
+    }
+
+    #if canImport(AppKit) && !os(Linux)
     public static func store(url: URL, fallbackText: String, nativeView: NSView?, identity: String? = nil) -> String {
         let key = storeKey(url: url, fallbackText: fallbackText, identity: identity)
         payloads.set(_OmniWebViewPayload(url: url, fallbackText: fallbackText, nativeView: nativeView), for: key)
@@ -143,7 +403,7 @@ public enum _OmniWebViewRegistry {
     }
 }
 
-#if canImport(AppKit)
+#if canImport(AppKit) && !os(Linux)
 extension NSImage {
     func _omniPNGRepresentation() -> Data? {
         guard let tiff = tiffRepresentation,
@@ -154,13 +414,12 @@ extension NSImage {
 #endif
 
 enum _OmniRepresentableFallback {
-    #if canImport(AppKit)
     private final class NativeEntry {
-        let nsView: NSView
+        let nsView: AnyObject
         let update: (Any) -> Void
         let dismantle: () -> Void
 
-        init(nsView: NSView, update: @escaping (Any) -> Void, dismantle: @escaping () -> Void) {
+        init(nsView: AnyObject, update: @escaping (Any) -> Void, dismantle: @escaping () -> Void) {
             self.nsView = nsView
             self.update = update
             self.dismantle = dismantle
@@ -172,13 +431,10 @@ enum _OmniRepresentableFallback {
     }
 
     private static let nativeEntries = _OmniLockedDictionary<NativeEntry>()
-    #endif
 
-    #if canImport(AppKit)
     static func node<R: NSViewRepresentable>(for view: R, path: [Int]) -> _VNode? {
         nativeNode(for: view, erasedView: view, path: path)
     }
-    #endif
 
     static func node<V>(for view: V, path: [Int]) -> _VNode? {
         guard let url = mirrorValue(named: "url", in: view) as? URL else { return nil }
@@ -187,7 +443,6 @@ enum _OmniRepresentableFallback {
         return .image(_OmniWebViewRegistry.store(url: url, fallbackText: text))
     }
 
-    #if canImport(AppKit)
     private static func nativeNode<R: NSViewRepresentable>(for view: R, erasedView: Any, path: [Int]) -> _VNode {
         let key = nativeRepresentableKey(typeName: String(reflecting: R.self), path: path)
         let entry: NativeEntry
@@ -212,11 +467,19 @@ enum _OmniRepresentableFallback {
 
         entry.update(erasedView)
 
+        if let provider = entry.nsView as? _OmniWebViewPayloadProviding {
+            return .image(_OmniWebViewRegistry.store(payload: provider._omniWebViewPayload))
+        }
+
         let url = nativeRepresentableURL(for: erasedView, nsView: entry.nsView)
         let textScale = mirrorValue(named: "textScale", in: erasedView) as? Double ?? 1.0
         let fallback = nativeFallbackText(for: url, nsView: entry.nsView, textScale: textScale)
         trace("native \(String(reflecting: R.self)) path=\(path.map(String.init).joined(separator: ".")) url=\(url.absoluteString)")
-        return .image(_OmniWebViewRegistry.store(url: url, fallbackText: fallback, nativeView: entry.nsView, identity: key))
+        #if canImport(AppKit) && !os(Linux)
+        return .image(_OmniWebViewRegistry.store(url: url, fallbackText: fallback, nativeView: entry.nsView as? NSView, identity: key))
+        #else
+        return .image(_OmniWebViewRegistry.store(payload: _OmniWebViewPayload(load: .url(url), fallbackText: fallback, stableIdentity: key, swiftObject: entry.nsView)))
+        #endif
     }
 
     private static func nativeRepresentableKey(typeName: String, path: [Int]) -> String {
@@ -224,7 +487,7 @@ enum _OmniRepresentableFallback {
         return "\(typeName):\(pathKey)"
     }
 
-    private static func nativeRepresentableURL(for view: Any, nsView: NSView) -> URL {
+    private static func nativeRepresentableURL(for view: Any, nsView: AnyObject) -> URL {
         _ = nsView
         if let url = mirrorValue(named: "url", in: view) as? URL {
             return url
@@ -232,8 +495,8 @@ enum _OmniRepresentableFallback {
         return URL(string: "about:blank")!
     }
 
-    private static func nativeFallbackText(for url: URL, nsView: NSView, textScale: Double) -> String {
-        #if canImport(WebKit)
+    private static func nativeFallbackText(for url: URL, nsView: AnyObject, textScale: Double) -> String {
+        #if canImport(WebKit) && !os(Linux)
         if nsView is WKWebView {
             return "Web content\n\(url.absoluteString)"
         }
@@ -243,7 +506,6 @@ enum _OmniRepresentableFallback {
         }
         return "Native view\n\(String(describing: type(of: nsView)))"
     }
-    #endif
 
     private static func trace(_ message: String) {
         guard ProcessInfo.processInfo.environment["OMNIUI_NATIVE_FALLBACK_TRACE"] == "1" else { return }

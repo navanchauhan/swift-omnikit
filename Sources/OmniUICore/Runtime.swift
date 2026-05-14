@@ -396,6 +396,9 @@ public final class _UIRuntime: @unchecked Sendable {
     }
 
     private func _beginFrameBuild(size: _Size) {
+        #if os(Linux)
+        _baseEnvironment.colorScheme = _omniEffectiveAppearanceColorScheme()
+        #endif
         let sizeChanged = (_lastRenderedSize != size)
         if sizeChanged {
             _viewCache.removeAll(keepingCapacity: true)
@@ -1480,15 +1483,22 @@ public final class _UIRuntime: @unchecked Sendable {
         let env = _UIRuntime._currentEnvironment ?? _baseEnvironment
 
         let p = priority ?? .userInitiated
+        let inserted = _withTaskRegistryLock {
+            if tasks[key] != nil { return false }
+            tasks[key] = _TaskEntry(env: env, path: path, action: action, task: nil)
+            return true
+        }
+        guard inserted else { return }
+
         let t = Task(priority: p) { @MainActor in
             await runtime._runTask(key: key)
         }
-        let inserted = _withTaskRegistryLock {
-            if tasks[key] != nil { return false }
-            tasks[key] = _TaskEntry(env: env, path: path, action: action, task: t)
+        let stored = _withTaskRegistryLock {
+            guard tasks[key] != nil else { return false }
+            tasks[key]?.task = t
             return true
         }
-        if !inserted {
+        if !stored {
             t.cancel()
         }
     }
@@ -1530,15 +1540,22 @@ public final class _UIRuntime: @unchecked Sendable {
         let env = _UIRuntime._currentEnvironment ?? _baseEnvironment
 
         let p = priority ?? .userInitiated
+        let inserted = _withTaskRegistryLock {
+            guard taskLastIds[key] == id else { return false }
+            tasks[key] = _TaskEntry(env: env, path: path, action: action, task: nil)
+            return true
+        }
+        guard inserted else { return }
+
         let t = Task(priority: p) { @MainActor in
             await runtime._runTask(key: key)
         }
-        let inserted = _withTaskRegistryLock {
-            guard taskLastIds[key] == id else { return false }
-            tasks[key] = _TaskEntry(env: env, path: path, action: action, task: t)
+        let stored = _withTaskRegistryLock {
+            guard tasks[key] != nil, taskLastIds[key] == id else { return false }
+            tasks[key]?.task = t
             return true
         }
-        if !inserted {
+        if !stored {
             t.cancel()
         }
     }

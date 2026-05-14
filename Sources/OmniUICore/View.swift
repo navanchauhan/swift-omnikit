@@ -40,25 +40,21 @@ protocol _PrimitiveView {
     func _makeNode(_ ctx: inout _BuildContext) -> _VNode
 }
 
-#if canImport(AppKit)
 private func _makeRepresentableNode(_ representable: any NSViewRepresentable, path: [Int]) -> _VNode {
     func open<R: NSViewRepresentable>(_ value: R) -> _VNode {
         _OmniRepresentableFallback.node(for: value, path: path) ?? .empty
     }
     return _openExistential(representable, do: open)
 }
-#endif
 
 @inline(__always)
 func _makeNode<V: View>(_ view: V, _ ctx: inout _BuildContext) -> _VNode {
     if let primitive = view as? _PrimitiveView {
         return primitive._makeNode(&ctx)
     }
-    #if canImport(AppKit)
     if let representable = view as? any NSViewRepresentable {
         return _makeRepresentableNode(representable, path: ctx.path)
     }
-    #endif
     #if canImport(UIKit)
     if view is any UIViewRepresentable {
         return .empty

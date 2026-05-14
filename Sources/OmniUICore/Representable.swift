@@ -1,7 +1,24 @@
 import Foundation
 
-#if canImport(AppKit)
+#if canImport(AppKit) && !os(Linux)
 import AppKit
+#else
+open class NSView: NSObject {
+    public override init() {
+        super.init()
+    }
+
+    public weak var window: _OmniNSWindow?
+}
+
+open class _OmniNSWindow: NSObject {
+    public let tab = _OmniNSWindowTab()
+}
+
+open class _OmniNSWindowTab: NSObject {
+    public var title: String = ""
+}
+#endif
 
 public struct NSViewRepresentableContext<Representable: NSViewRepresentable> {
     public let coordinator: Representable.Coordinator
@@ -39,7 +56,6 @@ func _makeNode<V: NSViewRepresentable>(_ view: V, _ ctx: inout _BuildContext) ->
     _OmniRepresentableFallback.node(for: view, path: ctx.path)
         ?? .style(fg: .secondary, bg: nil, child: .text("NSView: \(String(describing: V.NSViewType.self))"))
 }
-#endif
 
 #if canImport(UIKit)
 import UIKit

@@ -1,5 +1,5 @@
 import Foundation
-#if canImport(AppKit)
+#if canImport(AppKit) && !os(Linux)
 import AppKit
 #endif
 #if canImport(FoundationNetworking)
@@ -123,7 +123,7 @@ public struct Image: View, _PrimitiveView {
         self.name = systemName
     }
 
-#if canImport(AppKit)
+#if canImport(AppKit) && !os(Linux)
     public init(nsImage: NSImage) {
         if let data = nsImage._omniPNGRepresentation() {
             self.name = _OmniImageRegistry.store(data)

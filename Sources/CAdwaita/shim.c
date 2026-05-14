@@ -1,8 +1,11 @@
 #include "CAdwaita.h"
 
 #include <adwaita.h>
-#include <dlfcn.h>
 #include <gdk/gdkkeysyms.h>
+#if defined(__linux__)
+#include <webkit/webkit.h>
+#include <jsc/jsc.h>
+#endif
 #if defined(__APPLE__)
 #include <objc/message.h>
 #include <objc/objc.h>
@@ -98,67 +101,92 @@ typedef struct {
   double y;
 } OmniClickStart;
 
-typedef GtkWidget *(*OmniWebKitWebViewNewFn)(void);
-typedef void (*OmniWebKitWebViewLoadURIFn)(void *web_view, const char *uri);
+typedef struct {
+  omni_adw_tick_callback callback;
+  void *context;
+} OmniAdwTickBridge;
 
 typedef struct {
-  void *handle;
-  OmniWebKitWebViewNewFn web_view_new;
-  OmniWebKitWebViewLoadURIFn web_view_load_uri;
-  gboolean attempted;
-} OmniWebKitSymbols;
+  omni_adw_web_message_callback message_callback;
+  omni_adw_web_navigation_callback navigation_callback;
+  omni_adw_web_policy_callback policy_callback;
+  omni_adw_web_title_callback title_callback;
+  omni_adw_web_progress_callback progress_callback;
+  omni_adw_web_cookie_callback cookie_callback;
+  omni_adw_web_script_dialog_callback script_dialog_callback;
+  void *callback_context;
+  GHashTable *message_handler_ids;
+} OmniWebViewBridge;
 
-static OmniWebKitSymbols omni_webkit_symbols = {0};
+typedef struct {
+  OmniWebViewBridge *bridge;
+  char *name;
+} OmniWebViewScriptHandler;
+
+typedef struct {
+  omni_adw_web_evaluate_callback callback;
+  void *callback_context;
+} OmniWebViewEvaluation;
+
+typedef struct {
+  WebKitUserContentManager *manager;
+  struct OmniWebViewDeferredLoad *deferred_load;
+} OmniWebViewFilterInstall;
+
+typedef struct {
+  OmniWebViewBridge *bridge;
+  WebKitUserContentManager *manager;
+  char *name;
+} OmniWebViewHandlerInstall;
+
+typedef struct OmniWebViewDeferredLoad {
+  WebKitWebView *web_view;
+  char *url;
+  char *html;
+  char *base_url;
+  char **request_header_names;
+  char **request_header_values;
+  int32_t request_header_count;
+  int32_t pending_filters;
+  gboolean did_load;
+} OmniWebViewDeferredLoad;
+
+static GHashTable *omni_webkit_views_by_identity = NULL;
 
 static void omni_accessible_label(GtkWidget *widget, const char *label);
 static void omni_accessible_description(GtkWidget *widget, const char *description);
+static void omni_accessible_role_description(GtkWidget *widget, const char *description);
+
+static GHashTable *omni_webkit_view_registry(void) {
+  if (!omni_webkit_views_by_identity) {
+    omni_webkit_views_by_identity = g_hash_table_new_full(g_str_hash, g_str_equal, free, NULL);
+  }
+  return omni_webkit_views_by_identity;
+}
+
+static gpointer omni_webkit_lookup_view(const char *identity) {
+#if defined(__linux__)
+  if (!identity || !identity[0] || !omni_webkit_views_by_identity) return NULL;
+  GtkWidget *widget = GTK_WIDGET(g_hash_table_lookup(omni_webkit_views_by_identity, identity));
+  if (!widget || !WEBKIT_IS_WEB_VIEW(widget)) return NULL;
+  return WEBKIT_WEB_VIEW(widget);
+#else
+  (void)identity;
+  return NULL;
+#endif
+}
+
+static void omni_webkit_unregister_identity(GtkWidget *widget, gpointer user_data) {
+  (void)widget;
+  const char *identity = (const char *)user_data;
+  if (identity && omni_webkit_views_by_identity) {
+    g_hash_table_remove(omni_webkit_views_by_identity, identity);
+  }
+}
 
 static char *omni_strdup(const char *s) {
   if (!s) return strdup("");
   return strdup(s);
-}
-
-static void *omni_dlopen_first_available(const char **names) {
-  for (const char **name = names; name && *name; name++) {
-    void *handle = dlopen(*name, RTLD_LAZY | RTLD_LOCAL);
-    if (handle) return handle;
-  }
-  return NULL;
-}
-
-static gboolean omni_webkit_load_symbols(void) {
-  if (omni_webkit_symbols.attempted) {
-    return omni_webkit_symbols.handle &&
-           omni_webkit_symbols.web_view_new &&
-           omni_webkit_symbols.web_view_load_uri;
-  }
-  omni_webkit_symbols.attempted = TRUE;
-
-  const char *library_names[] = {
-    "libwebkitgtk-6.0.so.4",
-    "libwebkitgtk-6.0.so",
-    "libwebkitgtk-6.0.dylib",
-    "/opt/homebrew/lib/libwebkitgtk-6.0.dylib",
-    NULL
-  };
-
-  omni_webkit_symbols.handle = omni_dlopen_first_available(library_names);
-  if (!omni_webkit_symbols.handle) return FALSE;
-
-  omni_webkit_symbols.web_view_new =
-      (OmniWebKitWebViewNewFn)dlsym(omni_webkit_symbols.handle, "webkit_web_view_new");
-  omni_webkit_symbols.web_view_load_uri =
-      (OmniWebKitWebViewLoadURIFn)dlsym(omni_webkit_symbols.handle, "webkit_web_view_load_uri");
-
-  if (!omni_webkit_symbols.web_view_new || !omni_webkit_symbols.web_view_load_uri) {
-    dlclose(omni_webkit_symbols.handle);
-    omni_webkit_symbols.handle = NULL;
-    omni_webkit_symbols.web_view_new = NULL;
-    omni_webkit_symbols.web_view_load_uri = NULL;
-    return FALSE;
-  }
-
-  return TRUE;
 }
 
 static GtkWidget *omni_create_webkit_web_view(const char *url, void *native_view) {
@@ -166,13 +194,10 @@ static GtkWidget *omni_create_webkit_web_view(const char *url, void *native_view
 #if defined(__APPLE__)
   GtkWidget *native_web_view = omni_macos_web_view_new(url, native_view);
   if (native_web_view) return native_web_view;
-#endif
-  if (!omni_webkit_load_symbols()) return NULL;
-
-  GtkWidget *web_view = omni_webkit_symbols.web_view_new();
+#elif defined(__linux__)
+  GtkWidget *web_view = GTK_WIDGET(webkit_web_view_new());
   if (!web_view) return NULL;
-
-  omni_webkit_symbols.web_view_load_uri((void *)web_view, url);
+  webkit_web_view_load_uri(WEBKIT_WEB_VIEW(web_view), url);
   gtk_widget_set_hexpand(web_view, TRUE);
   gtk_widget_set_vexpand(web_view, TRUE);
   gtk_widget_set_halign(web_view, GTK_ALIGN_FILL);
@@ -181,6 +206,1275 @@ static GtkWidget *omni_create_webkit_web_view(const char *url, void *native_view
   omni_accessible_label(web_view, url);
   omni_accessible_description(web_view, "Web content");
   return web_view;
+#endif
+  return NULL;
+}
+
+#if defined(__linux__)
+static char *omni_jsc_value_to_json(JSCValue *value) {
+  if (!value) return g_strdup("null");
+  if (jsc_value_is_null(value) || jsc_value_is_undefined(value)) return g_strdup("null");
+  if (jsc_value_is_boolean(value)) return g_strdup(jsc_value_to_boolean(value) ? "true" : "false");
+  if (jsc_value_is_number(value)) return g_strdup_printf("%.17g", jsc_value_to_double(value));
+  if (jsc_value_is_string(value)) {
+    char *s = jsc_value_to_string(value);
+    char *escaped = g_strescape(s ? s : "", NULL);
+    char *json = g_strdup_printf("\"%s\"", escaped ? escaped : "");
+    g_free(escaped);
+    g_free(s);
+    return json;
+  }
+  JSCContext *context = jsc_value_get_context(value);
+  JSCValue *json = jsc_context_get_value(context, "JSON");
+  JSCValue *stringify = jsc_value_object_get_property(json, "stringify");
+  JSCValue *parameters[1] = { value };
+  JSCValue *result = jsc_value_function_callv(stringify, 1, parameters);
+  if (!result || jsc_value_is_undefined(result) || jsc_value_is_null(result)) return g_strdup("null");
+  char *s = jsc_value_to_string(result);
+  char *copy = g_strdup(s ? s : "null");
+  g_free(s);
+  return copy;
+}
+
+static void omni_webkit_script_message(WebKitUserContentManager *manager, JSCValue *value, gpointer user_data) {
+  OmniWebViewScriptHandler *handler = (OmniWebViewScriptHandler *)user_data;
+  OmniWebViewBridge *bridge = handler ? handler->bridge : NULL;
+  if (!bridge || !bridge->message_callback) return;
+  (void)manager;
+  char *json = omni_jsc_value_to_json(value);
+  bridge->message_callback(bridge->callback_context, handler->name ? handler->name : "", json ? json : "null");
+  g_free(json);
+}
+
+static void omni_webkit_script_handler_free(gpointer data, GClosure *closure) {
+  (void)closure;
+  OmniWebViewScriptHandler *handler = (OmniWebViewScriptHandler *)data;
+  if (!handler) return;
+  free(handler->name);
+  free(handler);
+}
+
+static void omni_webkit_install_message_handler(WebKitUserContentManager *manager, OmniWebViewBridge *bridge, const char *name) {
+  if (!manager || !bridge || !name || !name[0]) return;
+  if (!bridge->message_handler_ids) {
+    bridge->message_handler_ids = g_hash_table_new_full(g_str_hash, g_str_equal, free, NULL);
+  }
+  gpointer existing = g_hash_table_lookup(bridge->message_handler_ids, name);
+  if (existing) {
+    g_signal_handler_disconnect(manager, GPOINTER_TO_UINT(existing));
+    g_hash_table_remove(bridge->message_handler_ids, name);
+  }
+  webkit_user_content_manager_register_script_message_handler(manager, name, NULL);
+  OmniWebViewScriptHandler *handler = calloc(1, sizeof(OmniWebViewScriptHandler));
+  if (!handler) return;
+  handler->bridge = bridge;
+  handler->name = omni_strdup(name);
+  char *signal_name = g_strdup_printf("script-message-received::%s", name);
+  guint handler_id = (guint)g_signal_connect_data(manager, signal_name, G_CALLBACK(omni_webkit_script_message), handler, omni_webkit_script_handler_free, 0);
+  g_hash_table_replace(bridge->message_handler_ids, omni_strdup(name), GUINT_TO_POINTER(handler_id));
+  g_free(signal_name);
+}
+
+static WebKitUserContentFilterStore *omni_webkit_filter_store(void) {
+  static WebKitUserContentFilterStore *store = NULL;
+  if (store) return store;
+
+  char *directory = g_build_filename(g_get_user_cache_dir(), "omnikit", "webkit-content-filters", NULL);
+  if (!directory) return NULL;
+  g_mkdir_with_parents(directory, 0700);
+  store = webkit_user_content_filter_store_new(directory);
+  g_free(directory);
+  return store;
+}
+
+static void omni_webkit_filter_install_free(gpointer data) {
+  OmniWebViewFilterInstall *install = (OmniWebViewFilterInstall *)data;
+  if (!install) return;
+  if (install->manager) g_object_unref(install->manager);
+  free(install);
+}
+
+static char **omni_webkit_copy_string_array(const char **values, int32_t count) {
+  if (!values || count <= 0) return NULL;
+  char **copy = calloc((size_t)count, sizeof(char *));
+  if (!copy) return NULL;
+  for (int32_t i = 0; i < count; i++) {
+    copy[i] = omni_strdup(values[i]);
+  }
+  return copy;
+}
+
+static void omni_webkit_free_string_array(char **values, int32_t count) {
+  if (!values) return;
+  for (int32_t i = 0; i < count; i++) free(values[i]);
+  free(values);
+}
+
+static void omni_webkit_load_uri_with_headers(
+    WebKitWebView *web_view,
+    const char *url,
+    const char **header_names,
+    const char **header_values,
+    int32_t header_count) {
+  if (!web_view || !url || !url[0]) return;
+  if (!header_names || !header_values || header_count <= 0) {
+    webkit_web_view_load_uri(web_view, url);
+    return;
+  }
+
+  WebKitURIRequest *request = webkit_uri_request_new(url);
+  SoupMessageHeaders *headers = request ? webkit_uri_request_get_http_headers(request) : NULL;
+  if (headers) {
+    for (int32_t i = 0; i < header_count; i++) {
+      if (header_names[i] && header_names[i][0] && header_values[i]) {
+        soup_message_headers_replace(headers, header_names[i], header_values[i]);
+      }
+    }
+  }
+  if (request) {
+    webkit_web_view_load_request(web_view, request);
+    g_object_unref(request);
+  } else {
+    webkit_web_view_load_uri(web_view, url);
+  }
+}
+
+static OmniWebViewDeferredLoad *omni_webkit_deferred_load_new(
+    WebKitWebView *web_view,
+    const char *url,
+    const char *html,
+    const char *base_url,
+    const char **request_header_names,
+    const char **request_header_values,
+    int32_t request_header_count) {
+  OmniWebViewDeferredLoad *load = calloc(1, sizeof(OmniWebViewDeferredLoad));
+  if (!load) return NULL;
+  load->web_view = web_view ? WEBKIT_WEB_VIEW(g_object_ref(web_view)) : NULL;
+  load->url = omni_strdup(url);
+  load->html = omni_strdup(html);
+  load->base_url = omni_strdup(base_url);
+  load->request_header_count = request_header_count > 0 ? request_header_count : 0;
+  load->request_header_names = omni_webkit_copy_string_array(request_header_names, load->request_header_count);
+  load->request_header_values = omni_webkit_copy_string_array(request_header_values, load->request_header_count);
+  if (!load->request_header_names || !load->request_header_values) {
+    omni_webkit_free_string_array(load->request_header_names, load->request_header_count);
+    omni_webkit_free_string_array(load->request_header_values, load->request_header_count);
+    load->request_header_names = NULL;
+    load->request_header_values = NULL;
+    load->request_header_count = 0;
+  }
+  return load;
+}
+
+static void omni_webkit_deferred_load_free(OmniWebViewDeferredLoad *load) {
+  if (!load) return;
+  if (load->web_view) g_object_unref(load->web_view);
+  free(load->url);
+  free(load->html);
+  free(load->base_url);
+  omni_webkit_free_string_array(load->request_header_names, load->request_header_count);
+  omni_webkit_free_string_array(load->request_header_values, load->request_header_count);
+  free(load);
+}
+
+static void omni_webkit_deferred_load_start(OmniWebViewDeferredLoad *load) {
+  if (!load || load->did_load) return;
+  load->did_load = TRUE;
+  if (load->web_view && load->html && load->html[0]) {
+    webkit_web_view_load_html(load->web_view, load->html, load->base_url && load->base_url[0] ? load->base_url : NULL);
+  } else if (load->web_view && load->url && load->url[0]) {
+    omni_webkit_load_uri_with_headers(
+        load->web_view,
+        load->url,
+        (const char **)load->request_header_names,
+        (const char **)load->request_header_values,
+        load->request_header_count);
+  } else if (load->web_view) {
+    webkit_web_view_load_html(load->web_view, "<!doctype html><title>Blank</title>", "about:blank");
+  }
+  omni_webkit_deferred_load_free(load);
+}
+
+static void omni_webkit_deferred_load_filter_finished(OmniWebViewDeferredLoad *load) {
+  if (!load) return;
+  load->pending_filters -= 1;
+  if (load->pending_filters <= 0) {
+    omni_webkit_deferred_load_start(load);
+  }
+}
+
+static void omni_webkit_filter_saved(GObject *object, GAsyncResult *result, gpointer user_data) {
+  OmniWebViewFilterInstall *install = (OmniWebViewFilterInstall *)user_data;
+  GError *error = NULL;
+  WebKitUserContentFilter *filter = webkit_user_content_filter_store_save_finish(WEBKIT_USER_CONTENT_FILTER_STORE(object), result, &error);
+  if (filter && install && install->manager) {
+    webkit_user_content_manager_add_filter(install->manager, filter);
+    webkit_user_content_filter_unref(filter);
+  }
+  if (error) g_error_free(error);
+  OmniWebViewDeferredLoad *deferred_load = install ? install->deferred_load : NULL;
+  omni_webkit_filter_install_free(install);
+  omni_webkit_deferred_load_filter_finished(deferred_load);
+}
+
+static void omni_webkit_install_content_filters(
+    WebKitUserContentManager *manager,
+    const char **identifiers,
+    const char **sources,
+    int32_t count,
+    OmniWebViewDeferredLoad *deferred_load) {
+  if (!manager || !identifiers || !sources || count <= 0) return;
+  WebKitUserContentFilterStore *store = omni_webkit_filter_store();
+  if (!store) return;
+
+  for (int32_t i = 0; i < count; i++) {
+    if (!identifiers[i] || !identifiers[i][0] || !sources[i] || !sources[i][0]) continue;
+    GBytes *source = g_bytes_new(sources[i], strlen(sources[i]));
+    OmniWebViewFilterInstall *install = calloc(1, sizeof(OmniWebViewFilterInstall));
+    if (!source || !install) {
+      if (source) g_bytes_unref(source);
+      free(install);
+      continue;
+    }
+    install->manager = WEBKIT_USER_CONTENT_MANAGER(g_object_ref(manager));
+    install->deferred_load = deferred_load;
+    if (deferred_load) deferred_load->pending_filters += 1;
+    webkit_user_content_filter_store_save(store, identifiers[i], source, NULL, omni_webkit_filter_saved, install);
+    g_bytes_unref(source);
+  }
+}
+
+static double omni_webkit_cookie_expires_at(SoupCookie *cookie) {
+  GDateTime *expires = cookie ? soup_cookie_get_expires(cookie) : NULL;
+  return expires ? (double)g_date_time_to_unix(expires) : -1.0;
+}
+
+static WebKitCookieManager *omni_webkit_cookie_manager(void) {
+  WebKitNetworkSession *session = webkit_network_session_get_default();
+  return session ? webkit_network_session_get_cookie_manager(session) : NULL;
+}
+
+static SoupCookie *omni_webkit_cookie_new(
+    const char *name,
+    const char *value,
+    const char *domain,
+    const char *path,
+    double expires_at,
+    int32_t secure,
+    int32_t http_only) {
+  if (!name || !name[0] || !domain || !domain[0]) return NULL;
+  int max_age = -1;
+  if (expires_at > 0) {
+    gint64 now = g_get_real_time() / G_USEC_PER_SEC;
+    double remaining = expires_at - (double)now;
+    max_age = remaining > 0 ? (int)remaining : 0;
+  }
+  SoupCookie *cookie = soup_cookie_new(
+      name,
+      value ? value : "",
+      domain,
+      path && path[0] ? path : "/",
+      max_age);
+  if (!cookie) return NULL;
+  soup_cookie_set_secure(cookie, secure ? TRUE : FALSE);
+  soup_cookie_set_http_only(cookie, http_only ? TRUE : FALSE);
+  return cookie;
+}
+
+static void omni_webkit_sync_cookies_finished(GObject *object, GAsyncResult *result, gpointer user_data) {
+  OmniWebViewBridge *bridge = (OmniWebViewBridge *)user_data;
+  if (!bridge || !bridge->cookie_callback) return;
+
+  GError *error = NULL;
+  GList *cookies = webkit_cookie_manager_get_all_cookies_finish(WEBKIT_COOKIE_MANAGER(object), result, &error);
+  if (error) {
+    g_error_free(error);
+    return;
+  }
+
+  int32_t count = (int32_t)g_list_length(cookies);
+  if (count <= 0) {
+    bridge->cookie_callback(bridge->callback_context, NULL, NULL, NULL, NULL, NULL, NULL, NULL, 0);
+    g_list_free_full(cookies, (GDestroyNotify)soup_cookie_free);
+    return;
+  }
+
+  const char **names = g_new0(const char *, count);
+  const char **values = g_new0(const char *, count);
+  const char **domains = g_new0(const char *, count);
+  const char **paths = g_new0(const char *, count);
+  double *expires_at = g_new0(double, count);
+  int32_t *secure = g_new0(int32_t, count);
+  int32_t *http_only = g_new0(int32_t, count);
+
+  int32_t index = 0;
+  for (GList *item = cookies; item && index < count; item = item->next, index++) {
+    SoupCookie *cookie = (SoupCookie *)item->data;
+    names[index] = soup_cookie_get_name(cookie);
+    values[index] = soup_cookie_get_value(cookie);
+    domains[index] = soup_cookie_get_domain(cookie);
+    paths[index] = soup_cookie_get_path(cookie);
+    expires_at[index] = omni_webkit_cookie_expires_at(cookie);
+    secure[index] = soup_cookie_get_secure(cookie) ? 1 : 0;
+    http_only[index] = soup_cookie_get_http_only(cookie) ? 1 : 0;
+  }
+
+  bridge->cookie_callback(
+      bridge->callback_context,
+      names,
+      values,
+      domains,
+      paths,
+      expires_at,
+      secure,
+      http_only,
+      count);
+
+  g_free(names);
+  g_free(values);
+  g_free(domains);
+  g_free(paths);
+  g_free(expires_at);
+  g_free(secure);
+  g_free(http_only);
+  g_list_free_full(cookies, (GDestroyNotify)soup_cookie_free);
+}
+
+static void omni_webkit_sync_cookies(OmniWebViewBridge *bridge) {
+  if (!bridge || !bridge->cookie_callback) return;
+  WebKitCookieManager *cookie_manager = omni_webkit_cookie_manager();
+  if (!cookie_manager) return;
+  webkit_cookie_manager_get_all_cookies(cookie_manager, NULL, omni_webkit_sync_cookies_finished, bridge);
+}
+
+static void omni_webkit_back_forward_list_changed(WebKitBackForwardList *list, WebKitBackForwardListItem *item_added, GList *items_removed, gpointer user_data) {
+  (void)list;
+  (void)item_added;
+  (void)items_removed;
+  OmniWebViewBridge *bridge = (OmniWebViewBridge *)user_data;
+  if (bridge && bridge->navigation_callback) {
+    bridge->navigation_callback(bridge->callback_context, 3, NULL, NULL);
+  }
+}
+
+static void omni_webkit_click_pressed(GtkGestureClick *gesture, int n_press, double x, double y, gpointer user_data) {
+  (void)gesture;
+  (void)n_press;
+  (void)x;
+  (void)y;
+  GtkWidget *web_view = GTK_WIDGET(user_data);
+  if (web_view) gtk_widget_grab_focus(web_view);
+}
+
+static void omni_webkit_load_changed(WebKitWebView *web_view, WebKitLoadEvent load_event, gpointer user_data) {
+  OmniWebViewBridge *bridge = (OmniWebViewBridge *)user_data;
+  const char *uri = webkit_web_view_get_uri(web_view);
+  if (g_getenv("OMNI_WEBKITGTK_TRACE")) {
+    g_printerr("OMNI_WEBKITGTK_LOAD event=%d uri=%s\n", (int)load_event, uri ? uri : "");
+  }
+  if (!bridge || !bridge->navigation_callback) return;
+  if (load_event == WEBKIT_LOAD_STARTED) {
+    bridge->navigation_callback(bridge->callback_context, 0, uri, NULL);
+  } else if (load_event == WEBKIT_LOAD_COMMITTED) {
+    bridge->navigation_callback(bridge->callback_context, 4, uri, NULL);
+  } else if (load_event == WEBKIT_LOAD_FINISHED) {
+    bridge->navigation_callback(bridge->callback_context, 1, uri, NULL);
+    omni_webkit_sync_cookies(bridge);
+  }
+}
+
+static void omni_webkit_title_changed(WebKitWebView *web_view, GParamSpec *pspec, gpointer user_data) {
+  (void)pspec;
+  OmniWebViewBridge *bridge = (OmniWebViewBridge *)user_data;
+  if (!bridge || !bridge->title_callback) return;
+  const char *title = webkit_web_view_get_title(web_view);
+  bridge->title_callback(bridge->callback_context, title ? title : "");
+}
+
+static void omni_webkit_progress_changed(WebKitWebView *web_view, GParamSpec *pspec, gpointer user_data) {
+  (void)pspec;
+  OmniWebViewBridge *bridge = (OmniWebViewBridge *)user_data;
+  if (!bridge || !bridge->progress_callback) return;
+  bridge->progress_callback(bridge->callback_context, webkit_web_view_get_estimated_load_progress(web_view));
+}
+
+static gboolean omni_webkit_script_dialog(WebKitWebView *web_view, WebKitScriptDialog *dialog, gpointer user_data) {
+  (void)web_view;
+  OmniWebViewBridge *bridge = (OmniWebViewBridge *)user_data;
+  if (!bridge || !bridge->script_dialog_callback || !dialog) return FALSE;
+
+  int32_t handled = 0;
+  int32_t confirmed = 0;
+  WebKitScriptDialogType type = webkit_script_dialog_get_dialog_type(dialog);
+  const char *message = webkit_script_dialog_get_message(dialog);
+  const char *default_text = type == WEBKIT_SCRIPT_DIALOG_PROMPT ? webkit_script_dialog_prompt_get_default_text(dialog) : NULL;
+  char *prompt_text = bridge->script_dialog_callback(
+      bridge->callback_context,
+      (int32_t)type,
+      message ? message : "",
+      default_text ? default_text : "",
+      &handled,
+      &confirmed);
+
+  if (!handled) {
+    if (prompt_text) free(prompt_text);
+    return FALSE;
+  }
+
+  if (type == WEBKIT_SCRIPT_DIALOG_CONFIRM || type == WEBKIT_SCRIPT_DIALOG_BEFORE_UNLOAD_CONFIRM) {
+    webkit_script_dialog_confirm_set_confirmed(dialog, confirmed ? TRUE : FALSE);
+  } else if (type == WEBKIT_SCRIPT_DIALOG_PROMPT) {
+    webkit_script_dialog_prompt_set_text(dialog, prompt_text ? prompt_text : "");
+  }
+  webkit_script_dialog_close(dialog);
+  if (prompt_text) free(prompt_text);
+  return TRUE;
+}
+
+static gboolean omni_webkit_load_failed(WebKitWebView *web_view, WebKitLoadEvent load_event, const char *failing_uri, GError *error, gpointer user_data) {
+  OmniWebViewBridge *bridge = (OmniWebViewBridge *)user_data;
+  if (g_getenv("OMNI_WEBKITGTK_TRACE")) {
+    g_printerr("OMNI_WEBKITGTK_LOAD_FAILED event=%d uri=%s error=%s\n", (int)load_event, failing_uri ? failing_uri : "", error ? error->message : "");
+  }
+  if (bridge && bridge->navigation_callback) {
+    bridge->navigation_callback(bridge->callback_context, 2, failing_uri ? failing_uri : webkit_web_view_get_uri(web_view), error ? error->message : "Load failed");
+  }
+  return FALSE;
+}
+
+static int32_t omni_webkit_navigation_type(WebKitNavigationType type) {
+  switch (type) {
+    case WEBKIT_NAVIGATION_TYPE_LINK_CLICKED: return 0;
+    case WEBKIT_NAVIGATION_TYPE_FORM_SUBMITTED: return 1;
+    case WEBKIT_NAVIGATION_TYPE_BACK_FORWARD: return 2;
+    case WEBKIT_NAVIGATION_TYPE_RELOAD: return 3;
+    case WEBKIT_NAVIGATION_TYPE_FORM_RESUBMITTED: return 4;
+    case WEBKIT_NAVIGATION_TYPE_OTHER: return -1;
+    default: return -1;
+  }
+}
+
+static gboolean omni_webkit_decide_policy(WebKitWebView *web_view, WebKitPolicyDecision *decision, WebKitPolicyDecisionType type, gpointer user_data) {
+  OmniWebViewBridge *bridge = (OmniWebViewBridge *)user_data;
+  if (!bridge || !bridge->policy_callback) return FALSE;
+  if (type != WEBKIT_POLICY_DECISION_TYPE_NAVIGATION_ACTION &&
+      type != WEBKIT_POLICY_DECISION_TYPE_NEW_WINDOW_ACTION) {
+    return FALSE;
+  }
+  if (!WEBKIT_IS_NAVIGATION_POLICY_DECISION(decision)) return FALSE;
+  WebKitNavigationAction *action = webkit_navigation_policy_decision_get_navigation_action(WEBKIT_NAVIGATION_POLICY_DECISION(decision));
+  WebKitURIRequest *request = action ? webkit_navigation_action_get_request(action) : NULL;
+  const char *uri = request ? webkit_uri_request_get_uri(request) : webkit_web_view_get_uri(web_view);
+  int32_t navigation_type = action ? omni_webkit_navigation_type(webkit_navigation_action_get_navigation_type(action)) : -1;
+  int32_t is_new_window = type == WEBKIT_POLICY_DECISION_TYPE_NEW_WINDOW_ACTION ? 1 : 0;
+  int32_t allow = bridge->policy_callback(bridge->callback_context, uri ? uri : "", navigation_type, is_new_window);
+  if (allow) return FALSE;
+  webkit_policy_decision_ignore(decision);
+  return TRUE;
+}
+
+static char *omni_webkit_sanitized_user_agent_value(const char *value) {
+  if (!value || !value[0]) return NULL;
+  GString *out = g_string_new(NULL);
+  for (const unsigned char *p = (const unsigned char *)value; *p; p++) {
+    if (*p == '\r' || *p == '\n' || *p == 0x7f || *p < 0x20) continue;
+    g_string_append_c(out, (char)*p);
+  }
+  char *result = g_strstrip(g_string_free(out, FALSE));
+  if (!result || !result[0]) {
+    g_free(result);
+    return NULL;
+  }
+  return result;
+}
+
+static const char *omni_webkit_default_user_agent(WebKitWebView *web_view, WebKitSettings *settings) {
+  const char *stored = web_view ? (const char *)g_object_get_data(G_OBJECT(web_view), "omni-default-user-agent") : NULL;
+  if (stored && stored[0]) return stored;
+  const char *current = settings ? webkit_settings_get_user_agent(settings) : NULL;
+  char *copy = omni_strdup(current && current[0] ? current : "");
+  if (web_view && copy) {
+    g_object_set_data_full(G_OBJECT(web_view), "omni-default-user-agent", copy, free);
+    return (const char *)g_object_get_data(G_OBJECT(web_view), "omni-default-user-agent");
+  }
+  free(copy);
+  return current;
+}
+
+static void omni_webkit_apply_user_agent(WebKitWebView *web_view, const char *application_name, const char *custom_user_agent) {
+  if (!web_view) return;
+  WebKitSettings *settings = webkit_web_view_get_settings(web_view);
+  if (!settings) return;
+  char *custom = omni_webkit_sanitized_user_agent_value(custom_user_agent);
+  if (custom) {
+    webkit_settings_set_user_agent(settings, custom);
+    g_free(custom);
+    return;
+  }
+
+  char *suffix = omni_webkit_sanitized_user_agent_value(application_name);
+  if (suffix) {
+    const char *base = omni_webkit_default_user_agent(web_view, settings);
+    char *combined = (base && base[0]) ? g_strdup_printf("%s %s", base, suffix) : g_strdup(suffix);
+    if (combined && combined[0]) {
+      webkit_settings_set_user_agent(settings, combined);
+    }
+    g_free(combined);
+    g_free(suffix);
+    return;
+  }
+
+  webkit_settings_set_user_agent(settings, NULL);
+}
+
+static void omni_webkit_update_bridge_callbacks(
+    WebKitWebView *web_view,
+    omni_adw_web_message_callback message_callback,
+    omni_adw_web_navigation_callback navigation_callback,
+    omni_adw_web_policy_callback policy_callback,
+    omni_adw_web_title_callback title_callback,
+    omni_adw_web_progress_callback progress_callback,
+    omni_adw_web_cookie_callback cookie_callback,
+    omni_adw_web_script_dialog_callback script_dialog_callback,
+    void *callback_context) {
+  if (!web_view) return;
+  OmniWebViewBridge *bridge = (OmniWebViewBridge *)g_object_get_data(G_OBJECT(web_view), "omni-webkit-bridge");
+  if (!bridge) return;
+  bridge->message_callback = message_callback;
+  bridge->navigation_callback = navigation_callback;
+  bridge->policy_callback = policy_callback;
+  bridge->title_callback = title_callback;
+  bridge->progress_callback = progress_callback;
+  bridge->cookie_callback = cookie_callback;
+  bridge->script_dialog_callback = script_dialog_callback;
+  bridge->callback_context = callback_context;
+}
+
+static void omni_webkit_update_settings(
+    WebKitWebView *web_view,
+    const char *application_name,
+    const char *custom_user_agent,
+    double page_zoom,
+    int32_t allows_back_forward_navigation_gestures,
+    int32_t javascript_can_open_windows,
+    int32_t javascript_enabled,
+    double minimum_font_size,
+    int32_t is_inspectable,
+    int32_t allows_inline_media_playback,
+    int32_t media_playback_requires_user_gesture) {
+  if (!web_view) return;
+  WebKitSettings *settings = webkit_web_view_get_settings(web_view);
+  if (!settings) return;
+  webkit_settings_set_javascript_can_open_windows_automatically(settings, javascript_can_open_windows ? TRUE : FALSE);
+  webkit_settings_set_enable_javascript(settings, javascript_enabled ? TRUE : FALSE);
+  webkit_settings_set_minimum_font_size(settings, minimum_font_size > 0 ? (guint)minimum_font_size : 0);
+  webkit_settings_set_enable_developer_extras(settings, is_inspectable ? TRUE : FALSE);
+  webkit_settings_set_media_playback_allows_inline(settings, allows_inline_media_playback ? TRUE : FALSE);
+  webkit_settings_set_media_playback_requires_user_gesture(settings, media_playback_requires_user_gesture ? TRUE : FALSE);
+  webkit_settings_set_enable_back_forward_navigation_gestures(settings, allows_back_forward_navigation_gestures ? TRUE : FALSE);
+  omni_webkit_apply_user_agent(web_view, application_name, custom_user_agent);
+  webkit_web_view_set_zoom_level(web_view, page_zoom > 0 ? page_zoom : 1.0);
+}
+
+static void omni_webkit_load_if_needed(
+    WebKitWebView *web_view,
+    const char *url,
+    const char *html,
+    const char *base_url,
+    const char **request_header_names,
+    const char **request_header_values,
+    int32_t request_header_count) {
+  if (!web_view) return;
+  const char *target = html ? (base_url && base_url[0] ? base_url : "about:blank") : (url ? url : "about:blank");
+  const char *current = webkit_web_view_get_uri(web_view);
+  if (current && target && strcmp(current, target) == 0) return;
+  if (html) {
+    webkit_web_view_load_html(web_view, html, base_url && base_url[0] ? base_url : NULL);
+  } else if (url && url[0]) {
+    if (request_header_count > 0 && request_header_names && request_header_values) {
+      WebKitURIRequest *request = webkit_uri_request_new(url);
+      SoupMessageHeaders *headers = webkit_uri_request_get_http_headers(request);
+      for (int32_t i = 0; i < request_header_count; i++) {
+        if (request_header_names[i] && request_header_values[i]) {
+          soup_message_headers_replace(headers, request_header_names[i], request_header_values[i]);
+        }
+      }
+      webkit_web_view_load_request(web_view, request);
+      g_object_unref(request);
+    } else {
+      webkit_web_view_load_uri(web_view, url);
+    }
+  }
+}
+
+static void omni_webkit_detach_for_reuse(GtkWidget *widget) {
+  if (!widget) return;
+  GtkWidget *parent = gtk_widget_get_parent(widget);
+  if (parent) gtk_widget_unparent(widget);
+}
+
+static void omni_webkit_bridge_free(gpointer data) {
+  OmniWebViewBridge *bridge = (OmniWebViewBridge *)data;
+  if (!bridge) return;
+  if (bridge->message_handler_ids) g_hash_table_destroy(bridge->message_handler_ids);
+  free(bridge);
+}
+
+static GtkWidget *omni_create_webkit_web_view_ex(
+    const char *identity,
+    const char *url,
+    const char *html,
+    const char *base_url,
+    const char **request_header_names,
+    const char **request_header_values,
+    int32_t request_header_count,
+    const char *application_name,
+    const char *custom_user_agent,
+    double page_zoom,
+    int32_t allows_back_forward_navigation_gestures,
+    int32_t javascript_can_open_windows,
+    int32_t javascript_enabled,
+    double minimum_font_size,
+    int32_t is_inspectable,
+    int32_t allows_inline_media_playback,
+    int32_t media_playback_requires_user_gesture,
+    const char **script_sources,
+    const int32_t *script_injection_times,
+    const int32_t *script_main_frame_only,
+    int32_t script_count,
+    const char **content_rule_identifiers,
+    const char **content_rule_sources,
+    int32_t content_rule_count,
+    const char **message_handler_names,
+    int32_t message_handler_count,
+    const char **cookie_names,
+    const char **cookie_values,
+    const char **cookie_domains,
+    const char **cookie_paths,
+    const double *cookie_expires_at,
+    const int32_t *cookie_secure,
+    const int32_t *cookie_http_only,
+    int32_t cookie_count,
+    const char *accessibility_label,
+    const char *accessibility_description,
+    omni_adw_web_message_callback message_callback,
+    omni_adw_web_navigation_callback navigation_callback,
+    omni_adw_web_policy_callback policy_callback,
+    omni_adw_web_title_callback title_callback,
+    omni_adw_web_progress_callback progress_callback,
+    omni_adw_web_cookie_callback cookie_callback,
+    omni_adw_web_script_dialog_callback script_dialog_callback,
+    void *callback_context) {
+  WebKitWebView *existing = WEBKIT_WEB_VIEW(omni_webkit_lookup_view(identity));
+  if (existing) {
+    omni_webkit_detach_for_reuse(GTK_WIDGET(existing));
+    omni_webkit_update_bridge_callbacks(
+        existing,
+        message_callback,
+        navigation_callback,
+        policy_callback,
+        title_callback,
+        progress_callback,
+        cookie_callback,
+        script_dialog_callback,
+        callback_context);
+    omni_webkit_update_settings(
+        existing,
+        application_name,
+        custom_user_agent,
+        page_zoom,
+        allows_back_forward_navigation_gestures,
+        javascript_can_open_windows,
+        javascript_enabled,
+        minimum_font_size,
+        is_inspectable,
+        allows_inline_media_playback,
+        media_playback_requires_user_gesture);
+    omni_webkit_load_if_needed(
+        existing,
+        url,
+        html,
+        base_url,
+        request_header_names,
+        request_header_values,
+        request_header_count);
+    if (accessibility_label && accessibility_label[0]) omni_accessible_label(GTK_WIDGET(existing), accessibility_label);
+    if (accessibility_description && accessibility_description[0]) omni_accessible_description(GTK_WIDGET(existing), accessibility_description);
+    return GTK_WIDGET(existing);
+  }
+
+  WebKitUserContentManager *manager = webkit_user_content_manager_new();
+  GtkWidget *web_view = GTK_WIDGET(g_object_new(WEBKIT_TYPE_WEB_VIEW, "user-content-manager", manager, NULL));
+  g_object_unref(manager);
+  if (!web_view) return NULL;
+
+  manager = webkit_web_view_get_user_content_manager(WEBKIT_WEB_VIEW(web_view));
+  for (int32_t i = 0; i < script_count; i++) {
+    if (!script_sources || !script_sources[i]) continue;
+    WebKitUserScriptInjectionTime time = script_injection_times && script_injection_times[i] == 0
+        ? WEBKIT_USER_SCRIPT_INJECT_AT_DOCUMENT_START
+        : WEBKIT_USER_SCRIPT_INJECT_AT_DOCUMENT_END;
+    WebKitUserContentInjectedFrames frames = script_main_frame_only && script_main_frame_only[i]
+        ? WEBKIT_USER_CONTENT_INJECT_TOP_FRAME
+        : WEBKIT_USER_CONTENT_INJECT_ALL_FRAMES;
+    WebKitUserScript *script = webkit_user_script_new(script_sources[i], frames, time, NULL, NULL);
+    webkit_user_content_manager_add_script(manager, script);
+    webkit_user_script_unref(script);
+  }
+  OmniWebViewDeferredLoad *initial_load = omni_webkit_deferred_load_new(
+      WEBKIT_WEB_VIEW(web_view),
+      url,
+      html,
+      base_url,
+      request_header_names,
+      request_header_values,
+      request_header_count);
+  omni_webkit_install_content_filters(manager, content_rule_identifiers, content_rule_sources, content_rule_count, initial_load);
+
+  OmniWebViewBridge *bridge = calloc(1, sizeof(OmniWebViewBridge));
+  bridge->message_callback = message_callback;
+  bridge->navigation_callback = navigation_callback;
+  bridge->policy_callback = policy_callback;
+  bridge->title_callback = title_callback;
+  bridge->progress_callback = progress_callback;
+  bridge->cookie_callback = cookie_callback;
+  bridge->script_dialog_callback = script_dialog_callback;
+  bridge->callback_context = callback_context;
+
+  for (int32_t i = 0; i < message_handler_count; i++) {
+    if (!message_handler_names || !message_handler_names[i]) continue;
+    omni_webkit_install_message_handler(manager, bridge, message_handler_names[i]);
+  }
+
+  if (cookie_count > 0) {
+    WebKitCookieManager *cookie_manager = omni_webkit_cookie_manager();
+    if (cookie_manager) {
+      webkit_cookie_manager_set_accept_policy(cookie_manager, WEBKIT_COOKIE_POLICY_ACCEPT_ALWAYS);
+      for (int32_t i = 0; i < cookie_count; i++) {
+        if (!cookie_names || !cookie_values || !cookie_domains || !cookie_paths ||
+            !cookie_names[i] || !cookie_domains[i] || !cookie_paths[i]) continue;
+        SoupCookie *cookie = omni_webkit_cookie_new(
+            cookie_names[i],
+            cookie_values[i] ? cookie_values[i] : "",
+            cookie_domains[i],
+            cookie_paths[i][0] ? cookie_paths[i] : "/",
+            cookie_expires_at ? cookie_expires_at[i] : -1,
+            cookie_secure && cookie_secure[i] ? 1 : 0,
+            cookie_http_only && cookie_http_only[i] ? 1 : 0);
+        if (!cookie) continue;
+        webkit_cookie_manager_add_cookie(cookie_manager, cookie, NULL, NULL, NULL);
+        soup_cookie_free(cookie);
+      }
+    }
+  }
+
+  g_object_set_data_full(G_OBJECT(web_view), "omni-webkit-bridge", bridge, omni_webkit_bridge_free);
+  if (identity && identity[0]) {
+    char *identity_copy = omni_strdup(identity);
+    g_object_set_data_full(G_OBJECT(web_view), "omni-webkit-identity", omni_strdup(identity), free);
+    g_hash_table_replace(omni_webkit_view_registry(), omni_strdup(identity), web_view);
+    g_signal_connect_data(web_view, "destroy", G_CALLBACK(omni_webkit_unregister_identity), identity_copy, (GClosureNotify)free, 0);
+  }
+
+  omni_webkit_update_settings(
+      WEBKIT_WEB_VIEW(web_view),
+      application_name,
+      custom_user_agent,
+      page_zoom,
+      allows_back_forward_navigation_gestures,
+      javascript_can_open_windows,
+      javascript_enabled,
+      minimum_font_size,
+      is_inspectable,
+      allows_inline_media_playback,
+      media_playback_requires_user_gesture);
+
+  g_signal_connect(web_view, "load-changed", G_CALLBACK(omni_webkit_load_changed), bridge);
+  g_signal_connect(web_view, "load-failed", G_CALLBACK(omni_webkit_load_failed), bridge);
+  g_signal_connect(web_view, "decide-policy", G_CALLBACK(omni_webkit_decide_policy), bridge);
+  g_signal_connect(web_view, "notify::title", G_CALLBACK(omni_webkit_title_changed), bridge);
+  g_signal_connect(web_view, "notify::estimated-load-progress", G_CALLBACK(omni_webkit_progress_changed), bridge);
+  g_signal_connect(web_view, "script-dialog", G_CALLBACK(omni_webkit_script_dialog), bridge);
+  WebKitBackForwardList *back_forward_list = webkit_web_view_get_back_forward_list(WEBKIT_WEB_VIEW(web_view));
+  if (back_forward_list) {
+    g_signal_connect(back_forward_list, "changed", G_CALLBACK(omni_webkit_back_forward_list_changed), bridge);
+  }
+
+  GtkGesture *click_gesture = gtk_gesture_click_new();
+  g_signal_connect(click_gesture, "pressed", G_CALLBACK(omni_webkit_click_pressed), web_view);
+  gtk_widget_add_controller(web_view, GTK_EVENT_CONTROLLER(click_gesture));
+
+  if (!initial_load) {
+    if (html && html[0]) {
+      webkit_web_view_load_html(WEBKIT_WEB_VIEW(web_view), html, base_url && base_url[0] ? base_url : NULL);
+    } else if (url && url[0]) {
+      omni_webkit_load_uri_with_headers(
+          WEBKIT_WEB_VIEW(web_view),
+          url,
+          request_header_names,
+          request_header_values,
+          request_header_count);
+    } else {
+      webkit_web_view_load_html(WEBKIT_WEB_VIEW(web_view), "<!doctype html><title>Blank</title>", "about:blank");
+    }
+  } else if (initial_load->pending_filters <= 0) {
+    omni_webkit_deferred_load_start(initial_load);
+    initial_load = NULL;
+  }
+
+  gtk_widget_set_hexpand(web_view, TRUE);
+  gtk_widget_set_vexpand(web_view, TRUE);
+  gtk_widget_set_halign(web_view, GTK_ALIGN_FILL);
+  gtk_widget_set_valign(web_view, GTK_ALIGN_FILL);
+  gtk_widget_set_focusable(web_view, TRUE);
+  gtk_widget_add_css_class(web_view, "omni-web-view");
+  omni_accessible_label(web_view, accessibility_label && accessibility_label[0] ? accessibility_label : (url ? url : "Web content"));
+  omni_accessible_description(web_view, accessibility_description && accessibility_description[0] ? accessibility_description : "Web content");
+  omni_accessible_role_description(web_view, "web document");
+  gtk_accessible_update_property(
+    GTK_ACCESSIBLE(web_view),
+    GTK_ACCESSIBLE_PROPERTY_MULTI_LINE, TRUE,
+    -1
+  );
+  return web_view;
+}
+
+static void omni_webkit_evaluate_finished(GObject *object, GAsyncResult *result, gpointer user_data) {
+  OmniWebViewEvaluation *evaluation = (OmniWebViewEvaluation *)user_data;
+  if (!evaluation) return;
+  GError *error = NULL;
+  JSCValue *value = webkit_web_view_evaluate_javascript_finish(WEBKIT_WEB_VIEW(object), result, &error);
+  char *json = error ? NULL : omni_jsc_value_to_json(value);
+  if (evaluation->callback) {
+    evaluation->callback(
+        evaluation->callback_context,
+        json ? json : "null",
+        error ? error->message : NULL);
+  }
+  if (error) g_error_free(error);
+  g_free(json);
+  free(evaluation);
+}
+#endif
+
+int32_t omni_adw_web_view_load_uri(const char *identity, const char *url) {
+#if defined(__linux__)
+  WebKitWebView *web_view = WEBKIT_WEB_VIEW(omni_webkit_lookup_view(identity));
+  if (!web_view || !url || !url[0]) return 0;
+  webkit_web_view_load_uri(web_view, url);
+  return 1;
+#else
+  (void)identity; (void)url;
+  return 0;
+#endif
+}
+
+int32_t omni_adw_web_view_load_request(const char *identity, const char *url, const char **header_names, const char **header_values, int32_t header_count) {
+#if defined(__linux__)
+  WebKitWebView *web_view = WEBKIT_WEB_VIEW(omni_webkit_lookup_view(identity));
+  if (!web_view || !url || !url[0]) return 0;
+  omni_webkit_load_uri_with_headers(web_view, url, header_names, header_values, header_count);
+  return 1;
+#else
+  (void)identity; (void)url; (void)header_names; (void)header_values; (void)header_count;
+  return 0;
+#endif
+}
+
+int32_t omni_adw_web_view_load_html(const char *identity, const char *html, const char *base_url) {
+#if defined(__linux__)
+  WebKitWebView *web_view = WEBKIT_WEB_VIEW(omni_webkit_lookup_view(identity));
+  if (!web_view || !html) return 0;
+  webkit_web_view_load_html(web_view, html, base_url && base_url[0] ? base_url : NULL);
+  return 1;
+#else
+  (void)identity; (void)html; (void)base_url;
+  return 0;
+#endif
+}
+
+int32_t omni_adw_web_view_evaluate_javascript(const char *identity, const char *script, omni_adw_web_evaluate_callback callback, void *callback_context) {
+#if defined(__linux__)
+  WebKitWebView *web_view = WEBKIT_WEB_VIEW(omni_webkit_lookup_view(identity));
+  if (!web_view || !script) return 0;
+  OmniWebViewEvaluation *evaluation = calloc(1, sizeof(OmniWebViewEvaluation));
+  evaluation->callback = callback;
+  evaluation->callback_context = callback_context;
+  webkit_web_view_evaluate_javascript(web_view, script, -1, NULL, NULL, NULL, omni_webkit_evaluate_finished, evaluation);
+  return 1;
+#else
+  (void)identity; (void)script; (void)callback; (void)callback_context;
+  return 0;
+#endif
+}
+
+int32_t omni_adw_web_cookie_store_set(
+    const char *name,
+    const char *value,
+    const char *domain,
+    const char *path,
+    double expires_at,
+    int32_t secure,
+    int32_t http_only) {
+#if defined(__linux__)
+  WebKitCookieManager *cookie_manager = omni_webkit_cookie_manager();
+  if (!cookie_manager) return 0;
+  SoupCookie *cookie = omni_webkit_cookie_new(name, value, domain, path, expires_at, secure, http_only);
+  if (!cookie) return 0;
+  webkit_cookie_manager_set_accept_policy(cookie_manager, WEBKIT_COOKIE_POLICY_ACCEPT_ALWAYS);
+  webkit_cookie_manager_add_cookie(cookie_manager, cookie, NULL, NULL, NULL);
+  soup_cookie_free(cookie);
+  return 1;
+#else
+  (void)name; (void)value; (void)domain; (void)path; (void)expires_at; (void)secure; (void)http_only;
+  return 0;
+#endif
+}
+
+int32_t omni_adw_web_cookie_store_delete(
+    const char *name,
+    const char *value,
+    const char *domain,
+    const char *path,
+    double expires_at,
+    int32_t secure,
+    int32_t http_only) {
+#if defined(__linux__)
+  WebKitCookieManager *cookie_manager = omni_webkit_cookie_manager();
+  if (!cookie_manager) return 0;
+  SoupCookie *cookie = omni_webkit_cookie_new(name, value, domain, path, expires_at, secure, http_only);
+  if (!cookie) return 0;
+  webkit_cookie_manager_delete_cookie(cookie_manager, cookie, NULL, NULL, NULL);
+  soup_cookie_free(cookie);
+  return 1;
+#else
+  (void)name; (void)value; (void)domain; (void)path; (void)expires_at; (void)secure; (void)http_only;
+  return 0;
+#endif
+}
+
+int32_t omni_adw_web_view_go_back(const char *identity) {
+#if defined(__linux__)
+  WebKitWebView *web_view = WEBKIT_WEB_VIEW(omni_webkit_lookup_view(identity));
+  if (!web_view || !webkit_web_view_can_go_back(web_view)) return 0;
+  webkit_web_view_go_back(web_view);
+  return 1;
+#else
+  (void)identity;
+  return 0;
+#endif
+}
+
+int32_t omni_adw_web_view_go_forward(const char *identity) {
+#if defined(__linux__)
+  WebKitWebView *web_view = WEBKIT_WEB_VIEW(omni_webkit_lookup_view(identity));
+  if (!web_view || !webkit_web_view_can_go_forward(web_view)) return 0;
+  webkit_web_view_go_forward(web_view);
+  return 1;
+#else
+  (void)identity;
+  return 0;
+#endif
+}
+
+int32_t omni_adw_web_view_reload(const char *identity) {
+#if defined(__linux__)
+  WebKitWebView *web_view = WEBKIT_WEB_VIEW(omni_webkit_lookup_view(identity));
+  if (!web_view) return 0;
+  webkit_web_view_reload(web_view);
+  return 1;
+#else
+  (void)identity;
+  return 0;
+#endif
+}
+
+int32_t omni_adw_web_view_stop_loading(const char *identity) {
+#if defined(__linux__)
+  WebKitWebView *web_view = WEBKIT_WEB_VIEW(omni_webkit_lookup_view(identity));
+  if (!web_view) return 0;
+  webkit_web_view_stop_loading(web_view);
+  return 1;
+#else
+  (void)identity;
+  return 0;
+#endif
+}
+
+int32_t omni_adw_web_view_can_go_back(const char *identity) {
+#if defined(__linux__)
+  WebKitWebView *web_view = WEBKIT_WEB_VIEW(omni_webkit_lookup_view(identity));
+  return web_view && webkit_web_view_can_go_back(web_view) ? 1 : 0;
+#else
+  (void)identity;
+  return 0;
+#endif
+}
+
+int32_t omni_adw_web_view_can_go_forward(const char *identity) {
+#if defined(__linux__)
+  WebKitWebView *web_view = WEBKIT_WEB_VIEW(omni_webkit_lookup_view(identity));
+  return web_view && webkit_web_view_can_go_forward(web_view) ? 1 : 0;
+#else
+  (void)identity;
+  return 0;
+#endif
+}
+
+int32_t omni_adw_web_view_set_zoom(const char *identity, double page_zoom) {
+#if defined(__linux__)
+  WebKitWebView *web_view = WEBKIT_WEB_VIEW(omni_webkit_lookup_view(identity));
+  if (!web_view) return 0;
+  webkit_web_view_set_zoom_level(web_view, page_zoom > 0 ? page_zoom : 1.0);
+  return 1;
+#else
+  (void)identity; (void)page_zoom;
+  return 0;
+#endif
+}
+
+int32_t omni_adw_web_view_set_allows_back_forward_navigation_gestures(const char *identity, int32_t enabled) {
+#if defined(__linux__)
+  WebKitWebView *web_view = WEBKIT_WEB_VIEW(omni_webkit_lookup_view(identity));
+  if (!web_view) return 0;
+  WebKitSettings *settings = webkit_web_view_get_settings(web_view);
+  if (!settings) return 0;
+  webkit_settings_set_enable_back_forward_navigation_gestures(settings, enabled ? TRUE : FALSE);
+  return 1;
+#else
+  (void)identity; (void)enabled;
+  return 0;
+#endif
+}
+
+int32_t omni_adw_web_view_set_javascript_can_open_windows(const char *identity, int32_t enabled) {
+#if defined(__linux__)
+  WebKitWebView *web_view = WEBKIT_WEB_VIEW(omni_webkit_lookup_view(identity));
+  if (!web_view) return 0;
+  WebKitSettings *settings = webkit_web_view_get_settings(web_view);
+  if (!settings) return 0;
+  webkit_settings_set_javascript_can_open_windows_automatically(settings, enabled ? TRUE : FALSE);
+  return 1;
+#else
+  (void)identity; (void)enabled;
+  return 0;
+#endif
+}
+
+int32_t omni_adw_web_view_set_javascript_enabled(const char *identity, int32_t enabled) {
+#if defined(__linux__)
+  WebKitWebView *web_view = WEBKIT_WEB_VIEW(omni_webkit_lookup_view(identity));
+  if (!web_view) return 0;
+  WebKitSettings *settings = webkit_web_view_get_settings(web_view);
+  if (!settings) return 0;
+  webkit_settings_set_enable_javascript(settings, enabled ? TRUE : FALSE);
+  return 1;
+#else
+  (void)identity; (void)enabled;
+  return 0;
+#endif
+}
+
+int32_t omni_adw_web_view_set_minimum_font_size(const char *identity, double size) {
+#if defined(__linux__)
+  WebKitWebView *web_view = WEBKIT_WEB_VIEW(omni_webkit_lookup_view(identity));
+  if (!web_view) return 0;
+  WebKitSettings *settings = webkit_web_view_get_settings(web_view);
+  if (!settings) return 0;
+  webkit_settings_set_minimum_font_size(settings, size > 0 ? (guint)size : 0);
+  return 1;
+#else
+  (void)identity; (void)size;
+  return 0;
+#endif
+}
+
+int32_t omni_adw_web_view_set_inspectable(const char *identity, int32_t enabled) {
+#if defined(__linux__)
+  WebKitWebView *web_view = WEBKIT_WEB_VIEW(omni_webkit_lookup_view(identity));
+  if (!web_view) return 0;
+  WebKitSettings *settings = webkit_web_view_get_settings(web_view);
+  if (!settings) return 0;
+  webkit_settings_set_enable_developer_extras(settings, enabled ? TRUE : FALSE);
+  return 1;
+#else
+  (void)identity; (void)enabled;
+  return 0;
+#endif
+}
+
+int32_t omni_adw_web_view_set_user_agent(const char *identity, const char *application_name, const char *custom_user_agent) {
+#if defined(__linux__)
+  WebKitWebView *web_view = WEBKIT_WEB_VIEW(omni_webkit_lookup_view(identity));
+  if (!web_view) return 0;
+  omni_webkit_apply_user_agent(web_view, application_name, custom_user_agent);
+  return 1;
+#else
+  (void)identity; (void)application_name; (void)custom_user_agent;
+  return 0;
+#endif
+}
+
+int32_t omni_adw_web_view_add_user_script(const char *identity, const char *source, int32_t injection_time, int32_t main_frame_only) {
+#if defined(__linux__)
+  WebKitWebView *web_view = WEBKIT_WEB_VIEW(omni_webkit_lookup_view(identity));
+  if (!web_view || !source) return 0;
+  WebKitUserContentManager *manager = webkit_web_view_get_user_content_manager(web_view);
+  if (!manager) return 0;
+  WebKitUserScriptInjectionTime time = injection_time == 0
+      ? WEBKIT_USER_SCRIPT_INJECT_AT_DOCUMENT_START
+      : WEBKIT_USER_SCRIPT_INJECT_AT_DOCUMENT_END;
+  WebKitUserContentInjectedFrames frames = main_frame_only
+      ? WEBKIT_USER_CONTENT_INJECT_TOP_FRAME
+      : WEBKIT_USER_CONTENT_INJECT_ALL_FRAMES;
+  WebKitUserScript *script = webkit_user_script_new(source, frames, time, NULL, NULL);
+  if (!script) return 0;
+  webkit_user_content_manager_add_script(manager, script);
+  webkit_user_script_unref(script);
+  return 1;
+#else
+  (void)identity; (void)source; (void)injection_time; (void)main_frame_only;
+  return 0;
+#endif
+}
+
+int32_t omni_adw_web_view_remove_all_user_scripts(const char *identity) {
+#if defined(__linux__)
+  WebKitWebView *web_view = WEBKIT_WEB_VIEW(omni_webkit_lookup_view(identity));
+  if (!web_view) return 0;
+  WebKitUserContentManager *manager = webkit_web_view_get_user_content_manager(web_view);
+  if (!manager) return 0;
+  webkit_user_content_manager_remove_all_scripts(manager);
+  return 1;
+#else
+  (void)identity;
+  return 0;
+#endif
+}
+
+int32_t omni_adw_web_view_register_message_handler(const char *identity, const char *name) {
+#if defined(__linux__)
+  WebKitWebView *web_view = WEBKIT_WEB_VIEW(omni_webkit_lookup_view(identity));
+  if (!web_view || !name || !name[0]) return 0;
+  WebKitUserContentManager *manager = webkit_web_view_get_user_content_manager(web_view);
+  OmniWebViewBridge *bridge = (OmniWebViewBridge *)g_object_get_data(G_OBJECT(web_view), "omni-webkit-bridge");
+  if (!manager || !bridge) return 0;
+  omni_webkit_install_message_handler(manager, bridge, name);
+  return 1;
+#else
+  (void)identity; (void)name;
+  return 0;
+#endif
+}
+
+int32_t omni_adw_web_view_unregister_message_handler(const char *identity, const char *name) {
+#if defined(__linux__)
+  WebKitWebView *web_view = WEBKIT_WEB_VIEW(omni_webkit_lookup_view(identity));
+  if (!web_view || !name || !name[0]) return 0;
+  WebKitUserContentManager *manager = webkit_web_view_get_user_content_manager(web_view);
+  if (!manager) return 0;
+  OmniWebViewBridge *bridge = (OmniWebViewBridge *)g_object_get_data(G_OBJECT(web_view), "omni-webkit-bridge");
+  if (bridge && bridge->message_handler_ids) {
+    gpointer existing = g_hash_table_lookup(bridge->message_handler_ids, name);
+    if (existing) {
+      g_signal_handler_disconnect(manager, GPOINTER_TO_UINT(existing));
+      g_hash_table_remove(bridge->message_handler_ids, name);
+    }
+  }
+  webkit_user_content_manager_unregister_script_message_handler(manager, name, NULL);
+  return 1;
+#else
+  (void)identity; (void)name;
+  return 0;
+#endif
+}
+
+int32_t omni_adw_web_view_add_content_rule(const char *identity, const char *identifier, const char *source) {
+#if defined(__linux__)
+  WebKitWebView *web_view = WEBKIT_WEB_VIEW(omni_webkit_lookup_view(identity));
+  if (!web_view || !identifier || !identifier[0] || !source || !source[0]) return 0;
+  WebKitUserContentManager *manager = webkit_web_view_get_user_content_manager(web_view);
+  if (!manager) return 0;
+  omni_webkit_install_content_filters(manager, &identifier, &source, 1, NULL);
+  return 1;
+#else
+  (void)identity; (void)identifier; (void)source;
+  return 0;
+#endif
+}
+
+int32_t omni_adw_web_view_remove_all_content_rules(const char *identity) {
+#if defined(__linux__)
+  WebKitWebView *web_view = WEBKIT_WEB_VIEW(omni_webkit_lookup_view(identity));
+  if (!web_view) return 0;
+  WebKitUserContentManager *manager = webkit_web_view_get_user_content_manager(web_view);
+  if (!manager) return 0;
+  webkit_user_content_manager_remove_all_filters(manager);
+  return 1;
+#else
+  (void)identity;
+  return 0;
+#endif
+}
+
+int32_t omni_adw_web_view_focus(const char *identity) {
+#if defined(__linux__)
+  GtkWidget *web_view = GTK_WIDGET(omni_webkit_lookup_view(identity));
+  if (!web_view) return 0;
+  gtk_widget_set_focusable(web_view, TRUE);
+  gtk_widget_grab_focus(web_view);
+  return 1;
+#else
+  (void)identity;
+  return 0;
+#endif
+}
+
+int32_t omni_adw_web_view_scroll_by(const char *identity, double dx, double dy) {
+#if defined(__linux__)
+  WebKitWebView *web_view = WEBKIT_WEB_VIEW(omni_webkit_lookup_view(identity));
+  if (!web_view) return 0;
+  char *script = g_strdup_printf(
+      "(function(){"
+        "var dx=%0.17g,dy=%0.17g;"
+        "var el=document.scrollingElement||document.documentElement||document.body;"
+        "if(el){"
+          "var beforeX=el.scrollLeft,beforeY=el.scrollTop;"
+          "el.scrollLeft=beforeX+dx;el.scrollTop=beforeY+dy;"
+          "if((dx&&el.scrollLeft===beforeX)||(dy&&el.scrollTop===beforeY)){window.scrollBy({left:dx,top:dy,behavior:'auto'});}"
+        "}else{window.scrollBy({left:dx,top:dy,behavior:'auto'});}"
+      "})();",
+      dx,
+      dy);
+  if (!script) return 0;
+  webkit_web_view_evaluate_javascript(web_view, script, -1, NULL, NULL, NULL, NULL, NULL);
+  g_free(script);
+  return 1;
+#else
+  (void)identity; (void)dx; (void)dy;
+  return 0;
+#endif
+}
+
+int32_t omni_adw_web_view_scroll_page(const char *identity, int32_t direction) {
+#if defined(__linux__)
+  WebKitWebView *web_view = WEBKIT_WEB_VIEW(omni_webkit_lookup_view(identity));
+  if (!web_view) return 0;
+  char *script = g_strdup_printf(
+      "(function(){"
+        "var direction=%d;"
+        "var page=Math.max(160,Math.floor((window.innerHeight||600)*0.82));"
+        "window.scrollBy({left:0,top:(direction>=0?page:-page),behavior:'auto'});"
+      "})();",
+      direction);
+  if (!script) return 0;
+  webkit_web_view_evaluate_javascript(web_view, script, -1, NULL, NULL, NULL, NULL, NULL);
+  g_free(script);
+  return 1;
+#else
+  (void)identity; (void)direction;
+  return 0;
+#endif
 }
 
 static char *omni_sanitized_widget_name(const char *semantic_id) {
@@ -729,7 +2023,11 @@ static void omni_apply_color_scheme_from_environment(void) {
     scheme = g_getenv("OMNIUI_COLOR_SCHEME");
   }
   if (!scheme || !scheme[0]) return;
+  omni_adw_set_color_scheme(scheme);
+}
 
+void omni_adw_set_color_scheme(const char *scheme) {
+  if (!scheme || !scheme[0]) return;
   AdwStyleManager *manager = adw_style_manager_get_default();
   if (!manager) return;
 
@@ -3229,6 +4527,31 @@ int32_t omni_adw_app_run(OmniAdwApp *app, int32_t argc, char **argv) {
   return g_application_run(G_APPLICATION(app->application), argc, argv);
 }
 
+static gboolean omni_adw_tick_bridge_fire(gpointer data) {
+  OmniAdwTickBridge *bridge = (OmniAdwTickBridge *)data;
+  if (bridge && bridge->callback) bridge->callback(bridge->context);
+  return G_SOURCE_CONTINUE;
+}
+
+uint32_t omni_adw_app_add_tick_callback(OmniAdwApp *app, int32_t interval_ms, omni_adw_tick_callback callback, void *context) {
+  (void)app;
+  if (!callback) return 0;
+  OmniAdwTickBridge *bridge = calloc(1, sizeof(OmniAdwTickBridge));
+  if (!bridge) return 0;
+  bridge->callback = callback;
+  bridge->context = context;
+  return g_timeout_add_full(
+      G_PRIORITY_DEFAULT,
+      interval_ms > 0 ? (guint)interval_ms : 16,
+      omni_adw_tick_bridge_fire,
+      bridge,
+      free);
+}
+
+void omni_adw_app_remove_tick_callback(uint32_t source_id) {
+  if (source_id != 0) g_source_remove((guint)source_id);
+}
+
 void omni_adw_app_free(OmniAdwApp *app) {
   if (!app) return;
   if (app->macos_accessibility_sync_source != 0) g_source_remove(app->macos_accessibility_sync_source);
@@ -4553,6 +5876,118 @@ OmniAdwNode *omni_adw_web_view_new(const char *url, const char *fallback_text, v
   return node;
 }
 
+OmniAdwNode *omni_adw_web_view_new_ex(
+    const char *identity,
+    const char *url,
+    const char *html,
+    const char *base_url,
+    const char *fallback_text,
+    const char **request_header_names,
+    const char **request_header_values,
+    int32_t request_header_count,
+    const char *application_name,
+    const char *custom_user_agent,
+    double page_zoom,
+    int32_t allows_back_forward_navigation_gestures,
+    int32_t javascript_can_open_windows,
+    int32_t javascript_enabled,
+    double minimum_font_size,
+    int32_t is_inspectable,
+    int32_t allows_inline_media_playback,
+    int32_t media_playback_requires_user_gesture,
+    const char **script_sources,
+    const int32_t *script_injection_times,
+    const int32_t *script_main_frame_only,
+    int32_t script_count,
+    const char **content_rule_identifiers,
+    const char **content_rule_sources,
+    int32_t content_rule_count,
+    const char **message_handler_names,
+    int32_t message_handler_count,
+    const char **cookie_names,
+    const char **cookie_values,
+    const char **cookie_domains,
+    const char **cookie_paths,
+    const double *cookie_expires_at,
+    const int32_t *cookie_secure,
+    const int32_t *cookie_http_only,
+    int32_t cookie_count,
+    const char *accessibility_label,
+    const char *accessibility_description,
+    void *native_view,
+    omni_adw_web_message_callback message_callback,
+    omni_adw_web_navigation_callback navigation_callback,
+    omni_adw_web_policy_callback policy_callback,
+    omni_adw_web_title_callback title_callback,
+    omni_adw_web_progress_callback progress_callback,
+    omni_adw_web_cookie_callback cookie_callback,
+    omni_adw_web_script_dialog_callback script_dialog_callback,
+    void *callback_context) {
+  GtkWidget *web_view = NULL;
+#if defined(__APPLE__)
+  if (url && url[0]) web_view = omni_macos_web_view_new(url, native_view);
+#elif defined(__linux__)
+  web_view = omni_create_webkit_web_view_ex(
+      identity,
+      url,
+      html,
+      base_url,
+      request_header_names,
+      request_header_values,
+      request_header_count,
+      application_name,
+      custom_user_agent,
+      page_zoom,
+      allows_back_forward_navigation_gestures,
+      javascript_can_open_windows,
+      javascript_enabled,
+      minimum_font_size,
+      is_inspectable,
+      allows_inline_media_playback,
+      media_playback_requires_user_gesture,
+      script_sources,
+      script_injection_times,
+      script_main_frame_only,
+      script_count,
+      content_rule_identifiers,
+      content_rule_sources,
+      content_rule_count,
+      message_handler_names,
+      message_handler_count,
+      cookie_names,
+      cookie_values,
+      cookie_domains,
+      cookie_paths,
+      cookie_expires_at,
+      cookie_secure,
+      cookie_http_only,
+      cookie_count,
+      accessibility_label,
+      accessibility_description,
+      message_callback,
+      navigation_callback,
+      policy_callback,
+      title_callback,
+      progress_callback,
+      cookie_callback,
+      script_dialog_callback,
+      callback_context);
+#else
+  (void)identity; (void)html; (void)base_url; (void)request_header_names; (void)request_header_values; (void)request_header_count; (void)application_name; (void)custom_user_agent; (void)page_zoom; (void)allows_back_forward_navigation_gestures;
+  (void)javascript_can_open_windows; (void)javascript_enabled; (void)minimum_font_size; (void)is_inspectable; (void)allows_inline_media_playback; (void)media_playback_requires_user_gesture; (void)script_sources; (void)script_injection_times; (void)script_main_frame_only;
+  (void)script_count; (void)content_rule_identifiers; (void)content_rule_sources; (void)content_rule_count; (void)message_handler_names; (void)message_handler_count; (void)cookie_names; (void)cookie_values;
+  (void)cookie_domains; (void)cookie_paths; (void)cookie_expires_at; (void)cookie_secure; (void)cookie_http_only; (void)cookie_count; (void)accessibility_label;
+  (void)accessibility_description; (void)native_view; (void)message_callback; (void)navigation_callback; (void)policy_callback; (void)title_callback; (void)progress_callback; (void)cookie_callback; (void)script_dialog_callback; (void)callback_context;
+#endif
+  if (!web_view) {
+    return omni_adw_scrollable_text_node_new(fallback_text && fallback_text[0] ? fallback_text : (url ? url : "Web content unavailable"));
+  }
+
+  OmniAdwNode *node = calloc(1, sizeof(OmniAdwNode));
+  node->widget = web_view;
+  return node;
+}
+
 OmniAdwNode *omni_adw_button_new(const char *label, int32_t action_id) {
   OmniAdwNode *node = calloc(1, sizeof(OmniAdwNode));
   const char *value = label ? label : "Button";
@@ -4591,8 +6026,9 @@ static void omni_widget_add_css_classes(GtkWidget *widget, const char *css_class
 
 OmniAdwNode *omni_adw_click_container_new(const char *label, int32_t action_id) {
   OmniAdwNode *node = calloc(1, sizeof(OmniAdwNode));
-  node->widget = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
+  node->widget = gtk_button_new();
   gtk_widget_add_css_class(node->widget, "omni-click-container");
+  gtk_widget_add_css_class(node->widget, "flat");
   gtk_widget_set_hexpand(node->widget, TRUE);
   gtk_widget_set_halign(node->widget, GTK_ALIGN_FILL);
   gtk_widget_set_focusable(node->widget, action_id > 0);
@@ -4600,7 +6036,7 @@ OmniAdwNode *omni_adw_click_container_new(const char *label, int32_t action_id) 
   omni_accessible_label(node->widget, label && label[0] ? label : "Action");
   omni_accessible_description(node->widget, action_id > 0 ? "Button" : "Disabled button");
   omni_accessible_set_disabled(node->widget, action_id <= 0);
-  install_click_container_controller(node->widget);
+  g_signal_connect(node->widget, "clicked", G_CALLBACK(on_clicked), NULL);
   return node;
 }
 
@@ -4763,6 +6199,44 @@ OmniAdwNode *omni_adw_dropdown_new(const char *title, const char *value, const c
   if (expanded) {
     gtk_widget_grab_focus(node->widget);
   }
+  return node;
+}
+
+OmniAdwNode *omni_adw_segmented_new(const char *title, const char **labels, const int32_t *action_ids, int32_t selected_index, int32_t count) {
+  OmniAdwNode *node = calloc(1, sizeof(OmniAdwNode));
+  if (!node) return NULL;
+  GtkWidget *group = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 0);
+  gtk_widget_add_css_class(group, "linked");
+  gtk_widget_add_css_class(group, "omni-segmented-control");
+  gtk_widget_set_valign(group, GTK_ALIGN_CENTER);
+  omni_accessible_label(group, title && title[0] ? title : "Segmented control");
+  omni_accessible_role_description(group, "segmented control");
+
+  for (int32_t i = 0; i < count; i++) {
+    const char *label = labels && labels[i] ? labels[i] : "";
+    if (!label[0]) continue;
+    int32_t action_id = action_ids ? action_ids[i] : 0;
+    GtkWidget *button = gtk_button_new_with_label(label);
+    gtk_widget_add_css_class(button, "flat");
+    gtk_widget_set_focusable(button, action_id > 0);
+    gtk_widget_set_valign(button, GTK_ALIGN_CENTER);
+    omni_accessible_label(button, label);
+    omni_accessible_description(button, i == selected_index ? "Selected segmented control item" : "Segmented control item");
+    if (i == selected_index) {
+      gtk_widget_add_css_class(button, "omni-selected-segment");
+      omni_accessible_set_selected(button, TRUE);
+    }
+    if (action_id > 0) {
+      g_object_set_data(G_OBJECT(button), "omni-action-id", GINT_TO_POINTER(action_id));
+      g_signal_connect(button, "clicked", G_CALLBACK(on_clicked), NULL);
+    } else {
+      gtk_widget_set_sensitive(button, FALSE);
+      omni_accessible_set_disabled(button, TRUE);
+    }
+    gtk_box_append(GTK_BOX(group), button);
+  }
+
+  node->widget = group;
   return node;
 }
 

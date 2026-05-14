@@ -220,6 +220,29 @@ public final class AdwaitaApp<Root: View>: @unchecked Sendable {
             }
         }
         box.takeUnretainedValue().rerender = { Task { @MainActor in rerender() } }
+        #if os(Linux)
+        _omniSetAppearanceChangeHandler { [runtime, settingsRuntime, commandRuntime, box] scheme in
+            let nativeScheme: String
+            switch scheme {
+            case .some(.light):
+                nativeScheme = "light"
+            case .some(.dark):
+                nativeScheme = "dark"
+            case .none:
+                nativeScheme = "system"
+            }
+            nativeScheme.withCString { omni_adw_set_color_scheme($0) }
+            Task { @MainActor in
+                runtime._markDirtyFromExternalResource()
+                settingsRuntime._markDirtyFromExternalResource()
+                commandRuntime._markDirtyFromExternalResource()
+                box.takeUnretainedValue().rerender()
+            }
+        }
+        defer {
+            _omniSetAppearanceChangeHandler(nil)
+        }
+        #endif
         let remoteDocumentObserver = NotificationCenter.default.addObserver(
             forName: _OmniRemoteDocumentRegistry.didUpdateNotification,
             object: nil,
@@ -263,6 +286,14 @@ public final class AdwaitaApp<Root: View>: @unchecked Sendable {
             observationRenderLoop.cancel()
         }
 
+        let mainRunLoopTick: omni_adw_tick_callback = { _ in
+            _ = RunLoop.main.run(mode: .default, before: Date(timeIntervalSinceNow: 0.001))
+        }
+        let mainRunLoopTickSource = omni_adw_app_add_tick_callback(cApp, 16, mainRunLoopTick, nil)
+        defer {
+            omni_adw_app_remove_tick_callback(mainRunLoopTickSource)
+        }
+
         let argc: Int32 = 0
         _ = omni_adw_app_run(cApp, argc, nil)
     }
@@ -273,7 +304,12 @@ private enum AdwaitaSemanticDumper {
     private static var didDump = false
 
     static func dumpIfRequested(_ root: SemanticNode) {
-        guard ProcessInfo.processInfo.environment["OMNIUI_ADWAITA_DUMP_SEMANTIC"] == "1", !didDump else {
+        let environment = ProcessInfo.processInfo.environment
+        let dumpEveryFrame = environment["OMNIUI_ADWAITA_DUMP_SEMANTIC_EACH"] == "1"
+        guard environment["OMNIUI_ADWAITA_DUMP_SEMANTIC"] == "1" || dumpEveryFrame else {
+            return
+        }
+        guard dumpEveryFrame || !didDump else {
             return
         }
         didDump = true
@@ -969,6 +1005,24 @@ public enum AdwaitaReconciliation {
         }
     }
 
+    fileprivate static func segmentedItems(in node: SemanticNode) -> [(label: String, actionID: Int)] {
+        var items: [(label: String, actionID: Int)] = []
+        func collect(_ current: SemanticNode) {
+            if case .button(let actionID, _) = current.kind {
+                let label = accessibleLabel(for: current).trimmingCharacters(in: .whitespacesAndNewlines)
+                if !label.isEmpty, label != "Action" {
+                    items.append((label, actionID))
+                }
+                return
+            }
+            for child in current.children {
+                collect(child)
+            }
+        }
+        collect(node)
+        return items
+    }
+
     fileprivate static func progressUpdateText(label: String, fraction: Double?) -> String {
         let clamped = max(0, min(1, fraction ?? 0))
         let prefix = label.isEmpty ? "Progress" : label
@@ -1065,11 +1119,7 @@ enum AdwaitaNodeBuilder {
             built = omni_adw_text_new(text)
         case .image(let text):
             if let payload = _OmniWebViewRegistry.payload(for: text) {
-                #if canImport(AppKit)
-                built = omni_adw_web_view_new(payload.url.absoluteString, payload.fallbackText, payload.nativeViewPointer)
-                #else
-                built = omni_adw_web_view_new(payload.url.absoluteString, payload.fallbackText, nil)
-                #endif
+                built = webViewNode(for: payload)
             } else if let data = _OmniImageRegistry.data(for: text) {
                 built = data.withUnsafeBytes { bytes in
                     omni_adw_image_new(bytes.bindMemory(to: UInt8.self).baseAddress, Int32(data.count), "Story image")
@@ -1157,8 +1207,18 @@ enum AdwaitaNodeBuilder {
             }
             built = parent
             metadataID = "\(node.id).container"
-        case .segmentedControl:
-            built = container(vertical: false, spacing: 0, children: node.children, context: context)
+        case .segmentedControl(let title, let selectedIndex):
+            let items = AdwaitaReconciliation.segmentedItems(in: node)
+            if items.isEmpty {
+                built = container(vertical: false, spacing: 0, children: node.children, context: context)
+            } else {
+                var ids = items.map { Int32($0.actionID) }
+                built = items.map(\.label).withCStringArray { labels in
+                    ids.withUnsafeMutableBufferPointer { idBuffer in
+                        omni_adw_segmented_new(title, labels, idBuffer.baseAddress, Int32(selectedIndex), Int32(items.count))
+                    }
+                }
+            }
         case .scroll(let axis, _, let offset):
             guard let scroll = omni_adw_scroll_new(axis == .vertical ? 1 : 0, Double(offset)) else { return nil }
             if let child = container(vertical: true, spacing: 6, children: node.children, context: context) {
@@ -1309,6 +1369,158 @@ enum AdwaitaNodeBuilder {
         let visibleChildren = children.filter { !isZeroWidthFrame($0) }
         guard visibleChildren.count > 1 else { return false }
         return visibleChildren.allSatisfy(hasFlexibleHorizontalFrame)
+    }
+
+    private static func webViewNode(for payload: _OmniWebViewPayload) -> OpaquePointer? {
+        let urlString: String
+        let htmlString: String?
+        let baseURLString: String?
+        switch payload.load {
+        case .url(let url):
+            urlString = url.absoluteString
+            htmlString = nil
+            baseURLString = nil
+        case .html(let html, let baseURL):
+            urlString = baseURL?.absoluteString ?? "about:blank"
+            htmlString = html
+            baseURLString = baseURL?.absoluteString
+        }
+
+        let scriptSources = payload.userScripts.map(\.source)
+        var scriptTimes = payload.userScripts.map(\.injectionTime)
+        var scriptMainFrameOnly = payload.userScripts.map { $0.forMainFrameOnly ? Int32(1) : Int32(0) }
+        let contentRuleIdentifiers = payload.contentRules.map(\.identifier)
+        let contentRuleSources = payload.contentRules.map(\.encodedRules)
+        let handlerNames = payload.scriptMessageHandlerNames
+        let requestHeaderNames = payload.requestHeaders.map(\.name)
+        let requestHeaderValues = payload.requestHeaders.map(\.value)
+        let cookieNames = payload.cookies.map(\.name)
+        let cookieValues = payload.cookies.map(\.value)
+        let cookieDomains = payload.cookies.map(\.domain)
+        let cookiePaths = payload.cookies.map(\.path)
+        var cookieExpires = payload.cookies.map { $0.expiresAt ?? -1 }
+        var cookieSecure = payload.cookies.map { $0.isSecure ? Int32(1) : Int32(0) }
+        var cookieHTTPOnly = payload.cookies.map { $0.isHTTPOnly ? Int32(1) : Int32(0) }
+
+        return withCStringArray(scriptSources) { scriptSourcePointers in
+            withCStringArray(contentRuleIdentifiers) { contentRuleIdentifierPointers in
+                withCStringArray(contentRuleSources) { contentRuleSourcePointers in
+                    withCStringArray(handlerNames) { handlerNamePointers in
+                        withCStringArray(requestHeaderNames) { requestHeaderNamePointers in
+                            withCStringArray(requestHeaderValues) { requestHeaderValuePointers in
+                                withCStringArray(cookieNames) { cookieNamePointers in
+                                    withCStringArray(cookieValues) { cookieValuePointers in
+                                        withCStringArray(cookieDomains) { cookieDomainPointers in
+                                            withCStringArray(cookiePaths) { cookiePathPointers in
+                                                payload.stableIdentity.withCString { identityPointer in
+                                                    urlString.withCString { urlPointer in
+                                                        withOptionalCString(htmlString) { htmlPointer in
+                                                            withOptionalCString(baseURLString) { baseURLPointer in
+                                                                payload.fallbackText.withCString { fallbackPointer in
+                                                                    withOptionalCString(payload.userAgentApplicationName) { applicationNamePointer in
+                                                                        withOptionalCString(payload.customUserAgent) { customUserAgentPointer in
+                                                                            withOptionalCString(payload.accessibilityLabel) { accessibilityLabelPointer in
+                                                                                withOptionalCString(payload.accessibilityDescription) { accessibilityDescriptionPointer in
+                                                                                    scriptTimes.withUnsafeMutableBufferPointer { scriptTimeBuffer in
+                                                                                        scriptMainFrameOnly.withUnsafeMutableBufferPointer { mainFrameBuffer in
+                                                                                            cookieExpires.withUnsafeMutableBufferPointer { cookieExpiresBuffer in
+                                                                                                cookieSecure.withUnsafeMutableBufferPointer { cookieSecureBuffer in
+                                                                                                    cookieHTTPOnly.withUnsafeMutableBufferPointer { cookieHTTPOnlyBuffer in
+                                                                                                        omni_adw_web_view_new_ex(
+                                                                                                            identityPointer,
+                                                                                                            urlPointer,
+                                                                                                            htmlPointer,
+                                                                                                            baseURLPointer,
+                                                                                                            fallbackPointer,
+                                                                                                            requestHeaderNamePointers.baseAddress,
+                                                                                                            requestHeaderValuePointers.baseAddress,
+                                                                                                            Int32(requestHeaderNames.count),
+                                                                                                            applicationNamePointer,
+                                                                                                            customUserAgentPointer,
+                                                                                                            payload.pageZoom,
+                                                                                                            payload.allowsBackForwardNavigationGestures ? 1 : 0,
+                                                                                                            payload.javaScriptCanOpenWindowsAutomatically ? 1 : 0,
+                                                                                                            payload.javaScriptEnabled ? 1 : 0,
+                                                                                                            payload.minimumFontSize,
+                                                                                                            payload.isInspectable ? 1 : 0,
+                                                                                                            payload.allowsInlineMediaPlayback ? 1 : 0,
+                                                                                                            payload.mediaPlaybackRequiresUserGesture ? 1 : 0,
+                                                                                                            scriptSourcePointers.baseAddress,
+                                                                                                            scriptTimeBuffer.baseAddress,
+                                                                                                            mainFrameBuffer.baseAddress,
+                                                                                                            Int32(scriptSources.count),
+                                                                                                            contentRuleIdentifierPointers.baseAddress,
+                                                                                                            contentRuleSourcePointers.baseAddress,
+                                                                                                            Int32(contentRuleIdentifiers.count),
+                                                                                                            handlerNamePointers.baseAddress,
+                                                                                                            Int32(handlerNames.count),
+                                                                                                            cookieNamePointers.baseAddress,
+                                                                                                            cookieValuePointers.baseAddress,
+                                                                                                            cookieDomainPointers.baseAddress,
+                                                                                                            cookiePathPointers.baseAddress,
+                                                                                                            cookieExpiresBuffer.baseAddress,
+                                                                                                            cookieSecureBuffer.baseAddress,
+                                                                                                            cookieHTTPOnlyBuffer.baseAddress,
+                                                                                                            Int32(cookieNames.count),
+                                                                                                            accessibilityLabelPointer,
+                                                                                                            accessibilityDescriptionPointer,
+                                                                                                            nil,
+                                                                                                            payload.messageCallback,
+                                                                                                            payload.navigationCallback,
+                                                                                                            payload.policyCallback,
+                                                                                                            payload.titleCallback,
+                                                                                                            payload.progressCallback,
+                                                                                                            payload.cookieCallback,
+                                                                                                            payload.scriptDialogCallback,
+                                                                                                            payload.callbackContext
+                                                                                                        )
+                                                                                                    }
+                                                                                                }
+                                                                                            }
+                                                                                        }
+                                                                                    }
+                                                                                }
+                                                                            }
+                                                                        }
+                                                                    }
+                                                                }
+                                                            }
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    private static func withOptionalCString<R>(_ value: String?, _ body: (UnsafePointer<CChar>?) -> R) -> R {
+        guard let value else { return body(nil) }
+        return value.withCString(body)
+    }
+
+    private static func withCStringArray<R>(_ values: [String], _ body: (UnsafeMutableBufferPointer<UnsafePointer<CChar>?>) -> R) -> R {
+        var pointers: [UnsafePointer<CChar>?] = Array(repeating: nil, count: values.count)
+
+        func recurse(_ index: Int) -> R {
+            if index == values.count {
+                return pointers.withUnsafeMutableBufferPointer { buffer in
+                    body(buffer)
+                }
+            }
+            return values[index].withCString { pointer in
+                pointers[index] = pointer
+                return recurse(index + 1)
+            }
+        }
+
+        return recurse(0)
     }
 
     private static func hasFlexibleHorizontalFrame(_ node: SemanticNode) -> Bool {
