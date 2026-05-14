@@ -1,6 +1,12 @@
 import Testing
 import Foundation
 import OmniUICore
+#if canImport(AppKit)
+import AppKit
+#endif
+#if canImport(WebKit)
+import WebKit
+#endif
 
 struct CounterView: View {
     @State private var count: Int = 0
@@ -40,6 +46,113 @@ private enum SemanticTextProbe {
         return parts.joined(separator: " ")
     }
 }
+
+#if canImport(AppKit) && canImport(WebKit)
+private final class WebViewRepresentableCoordinatorProbe: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessageHandler {
+    static weak var latest: WebViewRepresentableCoordinatorProbe?
+    var updateCount = 0
+
+    func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage) {
+        _ = userContentController
+        _ = message
+    }
+}
+
+private struct ConfigurableWebViewRepresentableProbe: NSViewRepresentable {
+    let url: URL
+    let zoom: CGFloat
+
+    func makeCoordinator() -> WebViewRepresentableCoordinatorProbe {
+        let coordinator = WebViewRepresentableCoordinatorProbe()
+        WebViewRepresentableCoordinatorProbe.latest = coordinator
+        return coordinator
+    }
+
+    func makeNSView(context: Context) -> WKWebView {
+        let configuration = WKWebViewConfiguration()
+        configuration.applicationNameForUserAgent = "OmniKitProbe"
+        configuration.preferences.javaScriptCanOpenWindowsAutomatically = false
+        configuration.userContentController.addUserScript(
+            WKUserScript(
+                source: "window.__omniProbeInjectedStyle = true;",
+                injectionTime: .atDocumentStart,
+                forMainFrameOnly: true
+            )
+        )
+        configuration.userContentController.add(context.coordinator, name: "probeHandler")
+        let webView = WKWebView(frame: .zero, configuration: configuration)
+        webView.allowsMagnification = true
+        webView.pageZoom = zoom
+        webView.navigationDelegate = context.coordinator
+        webView.uiDelegate = context.coordinator
+        webView.loadHTMLString("<html><body>Probe</body></html>", baseURL: url)
+        return webView
+    }
+
+    func updateNSView(_ nsView: WKWebView, context: Context) {
+        context.coordinator.updateCount += 1
+        nsView.pageZoom = zoom + 0.25
+    }
+
+    static func dismantleNSView(_ nsView: WKWebView, coordinator: WebViewRepresentableCoordinatorProbe) {
+        nsView.configuration.userContentController.removeScriptMessageHandler(forName: "probeHandler")
+        nsView.navigationDelegate = nil
+        nsView.uiDelegate = nil
+        _ = coordinator
+    }
+}
+
+@Test @MainActor func representableFallbackPreservesNativeWebViewConfiguration() async throws {
+    struct V: View {
+        let zoom: CGFloat
+
+        var body: some View {
+            ConfigurableWebViewRepresentableProbe(
+                url: URL(string: "https://example.com/article")!,
+                zoom: zoom
+            )
+        }
+    }
+
+    let runtime = _UIRuntime()
+    let size = _Size(width: 80, height: 12)
+    let snapshot = runtime.semanticSnapshot(V(zoom: 1.2), size: size)
+    func webPayloads(in node: SemanticNode) -> [_OmniWebViewPayload] {
+        var payloads: [_OmniWebViewPayload] = []
+        if case .image(let name) = node.kind,
+           let payload = _OmniWebViewRegistry.payload(for: name) {
+            payloads.append(payload)
+        }
+        for child in node.children {
+            payloads.append(contentsOf: webPayloads(in: child))
+        }
+        return payloads
+    }
+    let payloads = webPayloads(in: snapshot.root)
+    let payload = try #require(payloads.first { $0.url.absoluteString == "https://example.com/article" })
+    let webView = try #require(payload.nativeView as? WKWebView)
+    let coordinator = try #require(WebViewRepresentableCoordinatorProbe.latest)
+    #expect(webView.configuration.applicationNameForUserAgent == "OmniKitProbe")
+    #expect(webView.configuration.preferences.javaScriptCanOpenWindowsAutomatically == false)
+    #expect(webView.configuration.userContentController.userScripts.count == 1)
+    #expect(webView.allowsMagnification)
+    #expect(webView.navigationDelegate === coordinator)
+    #expect(webView.uiDelegate === coordinator)
+    #expect(coordinator.updateCount == 1)
+    #expect(webView.pageZoom == 1.45)
+    #expect(payload.fallbackText == "Web content\nhttps://example.com/article")
+
+    let nextSnapshot = runtime.semanticSnapshot(V(zoom: 1.6), size: size)
+    let nextPayloads = webPayloads(in: nextSnapshot.root)
+    let nextPayload = try #require(nextPayloads.first { $0.url.absoluteString == "https://example.com/article" })
+    let nextWebView = try #require(nextPayload.nativeView as? WKWebView)
+    #expect(nextWebView === webView)
+    #expect(webView.navigationDelegate === coordinator)
+    #expect(webView.uiDelegate === coordinator)
+    #expect(coordinator.updateCount == 2)
+    #expect(webView.pageZoom == 1.85)
+}
+#endif
 
 @Test func debugSnapshot_click_increments_state() async throws {
     let runtime = _UIRuntime()
@@ -180,6 +293,32 @@ private enum SemanticTextProbe {
     }
 
     #expect(containsSecureField(semantic.root))
+}
+
+@Test func disabledSecureField_masks_debug_output_and_preserves_secure_semantics() async throws {
+    struct V: View {
+        @State var secret = "swordfish"
+
+        var body: some View {
+            SecureField("Secret", text: $secret)
+                .disabled(true)
+        }
+    }
+
+    let runtime = _UIRuntime()
+    let snapshot = runtime.debugRender(V(), size: _Size(width: 40, height: 4))
+    #expect(snapshot.text.contains("•••••••••"))
+    #expect(!snapshot.text.contains("swordfish"))
+
+    let semantic = runtime.semanticSnapshot(V(), size: _Size(width: 40, height: 4))
+    func containsDisabledSecureField(_ node: SemanticNode) -> Bool {
+        if case .disabledTextField(_, let text, let isSecure) = node.kind {
+            return isSecure && text == "swordfish"
+        }
+        return node.children.contains(where: containsDisabledSecureField)
+    }
+
+    #expect(containsDisabledSecureField(semantic.root))
 }
 
 @Test func semanticSnapshot_preserves_slider_role() async throws {
@@ -3050,6 +3189,34 @@ struct _TabViewSelectionFallbackProbe: View {
     #expect(snap.text.contains("│"))
     #expect(snap.text.contains("["))
     #expect(snap.text.contains("]"))
+}
+
+@Test func semantic_snapshot_preserves_segmented_picker_role() async throws {
+    struct SegView: View {
+        @State var choice = "B"
+        var body: some View {
+            Picker("Pick", selection: $choice, options: [("A", "A"), ("B", "B"), ("C", "C")])
+                .pickerStyle(.segmented)
+        }
+    }
+
+    func segmentedRole(in node: SemanticNode) -> (String, Int)? {
+        if case .segmentedControl(let title, let selectedIndex) = node.kind {
+            return (title, selectedIndex)
+        }
+        for child in node.children {
+            if let role = segmentedRole(in: child) {
+                return role
+            }
+        }
+        return nil
+    }
+
+    let runtime = _UIRuntime()
+    let snapshot = runtime.semanticSnapshot(SegView(), size: _Size(width: 40, height: 3))
+    let role = segmentedRole(in: snapshot.root)
+    #expect(role?.0 == "Pick")
+    #expect(role?.1 == 1)
 }
 
 // Feature #7: controlSize(.large) adds bold

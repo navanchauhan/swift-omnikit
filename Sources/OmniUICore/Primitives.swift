@@ -125,7 +125,11 @@ public struct Image: View, _PrimitiveView {
 
 #if canImport(AppKit)
     public init(nsImage: NSImage) {
-        self.name = nsImage.name() ?? "photo"
+        if let data = nsImage._omniPNGRepresentation() {
+            self.name = _OmniImageRegistry.store(data)
+        } else {
+            self.name = nsImage.name() ?? "photo"
+        }
     }
 #endif
 
@@ -2170,6 +2174,11 @@ public struct SecureField: View, _PrimitiveView {
     }
 
     func _makeNode(_ ctx: inout _BuildContext) -> _VNode {
+        let env = _currentEnvironmentValues(for: ctx)
+        guard env.isEnabled, _UIRuntime._hitTestingEnabled else {
+            return _applyControlPadding(_disabledTextFieldNode(placeholder: placeholder, text: text.wrappedValue, isSecure: true), env: env)
+        }
+
         let node = ctx.buildChild(TextField(placeholder, text: text))
         if case .textField(let id, let placeholder, _, let cursor, let isFocused, _, let style) = node {
             return .textField(id: id, placeholder: placeholder, text: text.wrappedValue, cursor: cursor, isFocused: isFocused, isSecure: true, style: style)
@@ -2258,7 +2267,10 @@ public struct Picker<SelectionValue: Hashable>: View, _PrimitiveView {
             }
             segmentNodes.append(.text("]"))
             return _applyControlPadding(
-                .stack(axis: .horizontal, spacing: 0, children: segmentNodes),
+                .tagged(
+                    value: AnyHashable(_SegmentedPickerRole(title: title, selectedIndex: selectedIndex)),
+                    label: .stack(axis: .horizontal, spacing: 0, children: segmentNodes)
+                ),
                 env: env
             )
         }
@@ -2416,6 +2428,16 @@ private func _collectTaggedPickerOptions<T: Hashable>(node: _VNode, valueType: T
             return labelText(child)
         case .clip(_, let child):
             return labelText(child)
+        case .identified(_, _, let child):
+            return labelText(child)
+        case .frame(_, _, _, _, _, _, let child):
+            return labelText(child)
+        case .edgePadding(_, _, _, _, let child):
+            return labelText(child)
+        case .offset(_, _, let child):
+            return labelText(child)
+        case .opacity(_, let child):
+            return labelText(child)
         case .shadow(let child, _, _, _, _):
             return labelText(child)
         case .group(let nodes):
@@ -2468,6 +2490,12 @@ private func _collectTaggedPickerOptions<T: Hashable>(node: _VNode, valueType: T
         case .modalOverlay(_, _, _, let child):
             walk(child)
         case .textStyled(_, let child):
+            walk(child)
+        case .identified(_, _, let child):
+            walk(child)
+        case .frame(_, _, _, _, _, _, let child):
+            walk(child)
+        case .edgePadding(_, _, _, _, let child):
             walk(child)
         case .style(_, _, let child):
             walk(child)
@@ -2597,10 +2625,17 @@ private func _disabledToggleNode(label: _VNode, isOn: Bool) -> _VNode {
     ))
 }
 
-private func _disabledTextFieldNode(placeholder: String, text: String) -> _VNode {
-    let display = text.isEmpty ? placeholder : text
+private func _disabledTextFieldNode(placeholder: String, text: String, isSecure: Bool = false) -> _VNode {
+    let display: String
+    if text.isEmpty {
+        display = placeholder
+    } else if isSecure {
+        display = String(repeating: "•", count: text.count)
+    } else {
+        display = text
+    }
     return .tagged(
-        value: AnyHashable(_DisabledControlRole.textField(placeholder: placeholder, text: text, isSecure: false)),
+        value: AnyHashable(_DisabledControlRole.textField(placeholder: placeholder, text: text, isSecure: isSecure)),
         label: .style(fg: .secondary, bg: nil, child: .text("[\(display)]"))
     )
 }
@@ -2685,6 +2720,8 @@ private func _menuLabelText(from node: _VNode) -> String {
         case .frame(_, _, _, _, _, _, let child):
             walk(child)
         case .edgePadding(_, _, _, _, let child):
+            walk(child)
+        case .identified(_, _, let child):
             walk(child)
         case .tagged(_, let label):
             walk(label)

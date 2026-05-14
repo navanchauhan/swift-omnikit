@@ -1,18 +1,32 @@
 #include "CAdwaita.h"
 
 #include <adwaita.h>
+#include <dlfcn.h>
 #include <gdk/gdkkeysyms.h>
 #if defined(__APPLE__)
 #include <objc/message.h>
 #include <objc/objc.h>
 #include <objc/runtime.h>
 #endif
+#include <ctype.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
+#if defined(__APPLE__)
+GtkWidget *omni_macos_web_view_new(const char *url, void *native_view);
+gboolean omni_macos_web_view_handle_key(guint keyval, GdkModifierType state);
+gboolean omni_macos_web_view_widget_scroll(GtkWidget *widget, double dx, double dy);
+gboolean omni_macos_web_view_widget_scroll_page(GtkWidget *widget, int direction);
+void omni_macos_web_view_set_modal_occlusion(gboolean occluded);
+void omni_macos_text_input_install(void *app);
+#endif
+
 #define OMNI_MACOS_ACCESSIBILITY_MAX_ELEMENTS 512
 #define OMNI_NATIVE_ACCESSIBILITY_ROW_UPDATE_LIMIT 2048
+#define OMNI_HEADER_ACTION_SEGMENTED 1
+#define OMNI_HEADER_ACTION_SELECTED 2
+#define OMNI_ENTRY_TEXT_COMMIT_DELAY_MS 1500
 
 struct OmniAdwApp {
   AdwApplication *application;
@@ -42,6 +56,7 @@ struct OmniAdwApp {
   GtkWidget *command_popover;
   GtkWidget *command_content;
   AdwDialog *modal_dialog;
+  GtkWidget *modal_accessibility_root;
   int32_t modal_close_action_id;
   gboolean modal_force_closing;
   char *title;
@@ -83,9 +98,89 @@ typedef struct {
   double y;
 } OmniClickStart;
 
+typedef GtkWidget *(*OmniWebKitWebViewNewFn)(void);
+typedef void (*OmniWebKitWebViewLoadURIFn)(void *web_view, const char *uri);
+
+typedef struct {
+  void *handle;
+  OmniWebKitWebViewNewFn web_view_new;
+  OmniWebKitWebViewLoadURIFn web_view_load_uri;
+  gboolean attempted;
+} OmniWebKitSymbols;
+
+static OmniWebKitSymbols omni_webkit_symbols = {0};
+
+static void omni_accessible_label(GtkWidget *widget, const char *label);
+static void omni_accessible_description(GtkWidget *widget, const char *description);
+
 static char *omni_strdup(const char *s) {
   if (!s) return strdup("");
   return strdup(s);
+}
+
+static void *omni_dlopen_first_available(const char **names) {
+  for (const char **name = names; name && *name; name++) {
+    void *handle = dlopen(*name, RTLD_LAZY | RTLD_LOCAL);
+    if (handle) return handle;
+  }
+  return NULL;
+}
+
+static gboolean omni_webkit_load_symbols(void) {
+  if (omni_webkit_symbols.attempted) {
+    return omni_webkit_symbols.handle &&
+           omni_webkit_symbols.web_view_new &&
+           omni_webkit_symbols.web_view_load_uri;
+  }
+  omni_webkit_symbols.attempted = TRUE;
+
+  const char *library_names[] = {
+    "libwebkitgtk-6.0.so.4",
+    "libwebkitgtk-6.0.so",
+    "libwebkitgtk-6.0.dylib",
+    "/opt/homebrew/lib/libwebkitgtk-6.0.dylib",
+    NULL
+  };
+
+  omni_webkit_symbols.handle = omni_dlopen_first_available(library_names);
+  if (!omni_webkit_symbols.handle) return FALSE;
+
+  omni_webkit_symbols.web_view_new =
+      (OmniWebKitWebViewNewFn)dlsym(omni_webkit_symbols.handle, "webkit_web_view_new");
+  omni_webkit_symbols.web_view_load_uri =
+      (OmniWebKitWebViewLoadURIFn)dlsym(omni_webkit_symbols.handle, "webkit_web_view_load_uri");
+
+  if (!omni_webkit_symbols.web_view_new || !omni_webkit_symbols.web_view_load_uri) {
+    dlclose(omni_webkit_symbols.handle);
+    omni_webkit_symbols.handle = NULL;
+    omni_webkit_symbols.web_view_new = NULL;
+    omni_webkit_symbols.web_view_load_uri = NULL;
+    return FALSE;
+  }
+
+  return TRUE;
+}
+
+static GtkWidget *omni_create_webkit_web_view(const char *url, void *native_view) {
+  if (!url || !url[0]) return NULL;
+#if defined(__APPLE__)
+  GtkWidget *native_web_view = omni_macos_web_view_new(url, native_view);
+  if (native_web_view) return native_web_view;
+#endif
+  if (!omni_webkit_load_symbols()) return NULL;
+
+  GtkWidget *web_view = omni_webkit_symbols.web_view_new();
+  if (!web_view) return NULL;
+
+  omni_webkit_symbols.web_view_load_uri((void *)web_view, url);
+  gtk_widget_set_hexpand(web_view, TRUE);
+  gtk_widget_set_vexpand(web_view, TRUE);
+  gtk_widget_set_halign(web_view, GTK_ALIGN_FILL);
+  gtk_widget_set_valign(web_view, GTK_ALIGN_FILL);
+  gtk_widget_add_css_class(web_view, "omni-web-view");
+  omni_accessible_label(web_view, url);
+  omni_accessible_description(web_view, "Web content");
+  return web_view;
 }
 
 static char *omni_sanitized_widget_name(const char *semantic_id) {
@@ -283,6 +378,22 @@ static void omni_accessible_placeholder(GtkWidget *widget, const char *placehold
   gtk_accessible_update_property(GTK_ACCESSIBLE(widget), GTK_ACCESSIBLE_PROPERTY_PLACEHOLDER, placeholder, -1);
 }
 
+static gboolean omni_entry_is_secure(GtkWidget *widget) {
+  return widget && GTK_IS_ENTRY(widget) && !gtk_entry_get_visibility(GTK_ENTRY(widget));
+}
+
+static char *omni_mask_text(const char *value) {
+  if (!value || !value[0]) return NULL;
+  GString *masked = g_string_new("");
+  for (const char *cursor = value; cursor && *cursor;) {
+    gunichar ch = g_utf8_get_char(cursor);
+    if (ch == 0) break;
+    g_string_append(masked, "•");
+    cursor = g_utf8_next_char(cursor);
+  }
+  return g_string_free(masked, FALSE);
+}
+
 static void omni_accessible_read_only(GtkWidget *widget, gboolean read_only) {
   if (!widget) return;
   gtk_accessible_update_property(GTK_ACCESSIBLE(widget), GTK_ACCESSIBLE_PROPERTY_READ_ONLY, read_only, -1);
@@ -295,10 +406,14 @@ static void omni_accessible_multi_line(GtkWidget *widget, gboolean multi_line) {
 
 static void omni_accessible_value_text(GtkWidget *widget, const char *value) {
   if (!widget || !value || !value[0]) return;
+  char *masked = omni_entry_is_secure(widget) ? omni_mask_text(value) : NULL;
+  const char *accessible_value = masked ? masked : value;
   const char *current = (const char *)g_object_get_data(G_OBJECT(widget), "omni-accessible-value");
-  if (current && strcmp(current, value) == 0) return;
-  g_object_set_data_full(G_OBJECT(widget), "omni-accessible-value", omni_strdup(value), free);
-  gtk_accessible_update_property(GTK_ACCESSIBLE(widget), GTK_ACCESSIBLE_PROPERTY_VALUE_TEXT, value, -1);
+  if (!current || strcmp(current, accessible_value) != 0) {
+    g_object_set_data_full(G_OBJECT(widget), "omni-accessible-value", omni_strdup(accessible_value), free);
+    gtk_accessible_update_property(GTK_ACCESSIBLE(widget), GTK_ACCESSIBLE_PROPERTY_VALUE_TEXT, accessible_value, -1);
+  }
+  free(masked);
 }
 
 static void omni_accessible_set_disabled(GtkWidget *widget, gboolean disabled) {
@@ -511,6 +626,7 @@ static void omni_install_css_once(void) {
 
   const char *css =
     ".omni-stack { padding: 0; }"
+    ".omni-overlay { padding: 0; background: transparent; }"
     ".omni-shell { background: @window_bg_color; }"
     ".omni-header { min-height: 44px; padding: 8px 12px; border-bottom: 1px solid @borders; background: @headerbar_bg_color; }"
     ".omni-title { font-weight: 700; }"
@@ -518,7 +634,7 @@ static void omni_install_css_once(void) {
     ".omni-selected-tab { min-height: 24px; padding: 2px 12px; border-radius: 7px 7px 0 0; font-weight: 600; background: @card_bg_color; border: 1px solid @borders; }"
     ".omni-inactive-tab { min-height: 24px; padding: 2px 12px; border-radius: 7px 7px 0 0; background: transparent; }"
     ".omni-body { padding: 0; }"
-    ".card { border-radius: 10px; padding: 12px; margin: 4px 0; background: @card_bg_color; }"
+    ".card { border-radius: 10px; padding: 12px; margin: 0; background: @card_bg_color; }"
     ".adw-dialog { padding: 0; margin: 0; background: transparent; }"
     ".omni-sheet-surface { padding: 18px 20px 12px 20px; margin: 0; border-radius: 18px; border: 1px solid rgba(255,255,255,0.24); background: #303036; background-color: #303036; color: #f6f6f7; }"
     ".boxed-list { border-radius: 0; padding: 0; margin: 0; background: transparent; }"
@@ -529,6 +645,13 @@ static void omni_install_css_once(void) {
     ".omni-list-row-button { min-height: 24px; padding: 0; border-radius: 0; background: transparent; box-shadow: none; }"
     ".omni-list-row-button:hover { background: rgba(255,255,255,0.06); }"
     ".omni-list-row-button label { padding: 2px 6px; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; font-size: 13px; font-weight: 500; }"
+    ".omni-complex-button { padding: 0; margin: 0; border-radius: 0; background: transparent; background-color: transparent; box-shadow: none; }"
+    ".omni-complex-button:hover { background: rgba(255,255,255,0.04); background-color: rgba(255,255,255,0.04); }"
+    ".omni-click-container { padding: 0; margin: 0; border-radius: 0; background: transparent; background-color: transparent; }"
+    ".omni-click-container:hover { background: rgba(255,255,255,0.04); background-color: rgba(255,255,255,0.04); }"
+    ".omni-inline-link-button { min-height: 18px; min-width: 0; padding: 0 3px; margin: 0 1px; border-radius: 4px; background: transparent; background-color: transparent; box-shadow: none; color: #ff6600; }"
+    ".omni-inline-link-button:hover { background: rgba(255,102,0,0.12); background-color: rgba(255,102,0,0.12); }"
+    ".omni-inline-link-button label { padding: 0; color: inherit; }"
     ".omni-sidebar-list { background: @window_bg_color; padding: 8px 0; }"
     ".omni-sidebar-list row { min-height: 25px; padding: 0; border-radius: 6px; margin: 0 6px 1px 6px; }"
     ".omni-sidebar-list row:hover { background: transparent; }"
@@ -538,17 +661,55 @@ static void omni_install_css_once(void) {
     ".omni-sidebar-disclosure-button { min-width: 22px; min-height: 24px; padding: 0; border-radius: 6px; background: transparent; box-shadow: none; }"
     ".omni-sidebar-disclosure-button:hover { background: rgba(255,255,255,0.08); }"
     ".omni-sidebar-row { padding: 1px 6px; }"
-    ".omni-sidebar-label { font-size: 13px; font-weight: 600; }"
+    ".omni-sidebar-label { font-size: 13px; font-weight: 600; line-height: 1.22; }"
     ".omni-sidebar-disclosure { min-width: 14px; opacity: 0.75; }"
     ".navigation-view { padding: 0; border-radius: 0; background: @window_bg_color; }"
     ".view { padding: 2px; }"
     ".accent { border-radius: 8px; padding: 6px 8px; background: @accent_bg_color; }"
+    ".omni-fg-clear, .omni-fg-clear label { color: transparent; }"
+    ".omni-fg-orange, .omni-fg-orange label { color: #ff9500; }"
+    ".omni-fg-orange-muted, .omni-fg-orange-muted label { color: rgba(255,149,0,0.45); }"
+    ".omni-fg-card, .omni-fg-card label { color: @view_fg_color; }"
+    ".omni-fg-accent, .omni-fg-accent label { color: @accent_color; }"
+    ".omni-fg-secondary, .omni-fg-secondary label { color: @dim_label_color; }"
+    ".omni-fg-tertiary, .omni-fg-tertiary label { color: alpha(@view_fg_color, 0.55); }"
+    ".omni-fg-quaternary, .omni-fg-quaternary label { color: alpha(@view_fg_color, 0.35); }"
+    ".omni-fg-white, .omni-fg-white label { color: white; }"
+    ".omni-fg-white-muted, .omni-fg-white-muted label { color: rgba(255,255,255,0.35); }"
+    ".omni-fg-black, .omni-fg-black label { color: black; }"
+    ".omni-fg-black-muted, .omni-fg-black-muted label { color: rgba(0,0,0,0.35); }"
+    ".omni-fg-gray, .omni-fg-gray label { color: #8e8e93; }"
+    ".omni-bg-clear { background: transparent; background-color: transparent; }"
+    ".omni-bg-orange { background: rgba(255,149,0,0.18); background-color: rgba(255,149,0,0.18); }"
+    ".omni-bg-orange-muted { background: rgba(255,149,0,0.12); background-color: rgba(255,149,0,0.12); }"
+    ".omni-bg-card { background: alpha(@view_fg_color, 0.10); background-color: alpha(@view_fg_color, 0.10); border-radius: 10px; }"
+    ".omni-bg-accent { background: alpha(@accent_bg_color, 0.18); background-color: alpha(@accent_bg_color, 0.18); border-radius: 6px; }"
+    ".omni-bg-secondary { background: alpha(@view_fg_color, 0.10); background-color: alpha(@view_fg_color, 0.10); border-radius: 6px; }"
+    ".omni-bg-tertiary { background: alpha(@view_fg_color, 0.08); background-color: alpha(@view_fg_color, 0.08); border-radius: 6px; }"
+    ".omni-bg-quaternary { background: alpha(@view_fg_color, 0.06); background-color: alpha(@view_fg_color, 0.06); border-radius: 6px; }"
+    ".omni-bg-white { background: white; background-color: white; }"
+    ".omni-bg-white-muted { background: rgba(255,255,255,0.12); background-color: rgba(255,255,255,0.12); }"
+    ".omni-bg-black { background: black; background-color: black; }"
+    ".omni-bg-black-muted { background: rgba(0,0,0,0.12); background-color: rgba(0,0,0,0.12); }"
+    ".omni-bg-gray, .omni-bg-native { background: alpha(@view_fg_color, 0.10); background-color: alpha(@view_fg_color, 0.10); }"
     ".crt { }"
-    ".omni-drawing-island { border-radius: 8px; background: @accent_bg_color; border: 1px solid @accent_bg_color; min-height: 64px; }"
+    ".omni-drawing-island { border-radius: 0; background: transparent; border: none; min-height: 0; }"
+    ".omni-fill-orange { background: #ff9500; background-color: #ff9500; }"
+    ".omni-fill-orange-subtle { background: rgba(255,149,0,0.15); background-color: rgba(255,149,0,0.15); }"
+    ".omni-fill-gray { background: rgba(142,142,147,0.35); background-color: rgba(142,142,147,0.35); }"
+    ".omni-fill-accent { background: @accent_bg_color; background-color: @accent_bg_color; }"
     "button { border-radius: 8px; font-weight: 600; }"
     ".omni-icon-button { min-width: 38px; min-height: 34px; padding: 0; font-size: 16px; }"
     ".omni-go-button { min-width: 46px; min-height: 34px; padding: 0 12px; font-weight: 700; }"
-    ".omni-static-text text, .omni-static-text { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; font-size: 13px; }"
+    ".omni-segmented-control { margin: 0 4px; }"
+    ".omni-segmented-control button { min-height: 30px; padding: 0 12px; border-radius: 0; }"
+    ".omni-segmented-control button:first-child { border-radius: 8px 0 0 8px; }"
+    ".omni-segmented-control button:last-child { border-radius: 0 8px 8px 0; }"
+    ".omni-segmented-control button.omni-selected-segment { background: @accent_bg_color; background-color: @accent_bg_color; color: @accent_fg_color; }"
+    ".omni-segmented-control button.omni-selected-segment image, .omni-segmented-control button.omni-selected-segment label { color: @accent_fg_color; }"
+    ".omni-static-text-frame { background: @view_bg_color; background-color: @view_bg_color; }"
+    ".omni-static-text, .omni-static-text text { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; font-size: 13px; color: @view_fg_color; background: @view_bg_color; background-color: @view_bg_color; }"
+    ".omni-static-text { padding: 12px; }"
     ".omni-monospace-text { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; font-size: 13px; }"
     ".omni-sidebar-toggle { min-width: 36px; min-height: 34px; padding: 0; }"
     "entry, textview, menubutton { border-radius: 8px; }";
@@ -1148,6 +1309,24 @@ static void on_sidebar_disclosure_clicked(GtkButton *button, gpointer data) {
   omni_macos_accessibility_schedule(app);
 }
 
+static void omni_sidebar_content_set_text(GtkWidget *button, const char *text) {
+  GtkWidget *label = GTK_IS_BUTTON(button) ? gtk_button_get_child(GTK_BUTTON(button)) : NULL;
+  if (GTK_IS_LABEL(label)) gtk_label_set_text(GTK_LABEL(label), text ? text : "");
+}
+
+static GtkWidget *omni_sidebar_label_new(void) {
+  GtkWidget *label = gtk_label_new("");
+  gtk_widget_add_css_class(label, "omni-sidebar-label");
+  gtk_label_set_xalign(GTK_LABEL(label), 0.0f);
+  gtk_label_set_wrap(GTK_LABEL(label), TRUE);
+  gtk_label_set_wrap_mode(GTK_LABEL(label), PANGO_WRAP_WORD_CHAR);
+  gtk_label_set_lines(GTK_LABEL(label), 3);
+  gtk_label_set_ellipsize(GTK_LABEL(label), PANGO_ELLIPSIZE_END);
+  gtk_widget_set_hexpand(label, TRUE);
+  gtk_widget_set_halign(label, GTK_ALIGN_FILL);
+  return label;
+}
+
 static void on_sidebar_list_setup(GtkSignalListItemFactory *factory, GtkListItem *list_item, gpointer data) {
   GtkWidget *box = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 6);
   gtk_widget_add_css_class(box, "omni-sidebar-row");
@@ -1171,14 +1350,7 @@ static void on_sidebar_list_setup(GtkSignalListItemFactory *factory, GtkListItem
   gtk_widget_set_halign(button, GTK_ALIGN_FILL);
   gtk_widget_set_focus_on_click(button, TRUE);
   g_signal_connect(button, "clicked", G_CALLBACK(on_virtual_list_button_clicked), NULL);
-  GtkWidget *label = gtk_label_new("");
-  gtk_widget_add_css_class(label, "omni-sidebar-label");
-  gtk_label_set_xalign(GTK_LABEL(label), 0.0f);
-  gtk_label_set_wrap(GTK_LABEL(label), FALSE);
-  gtk_label_set_ellipsize(GTK_LABEL(label), PANGO_ELLIPSIZE_END);
-  gtk_widget_set_hexpand(label, TRUE);
-  gtk_widget_set_halign(label, GTK_ALIGN_FILL);
-  gtk_button_set_child(GTK_BUTTON(button), label);
+  gtk_button_set_child(GTK_BUTTON(button), omni_sidebar_label_new());
   gtk_box_append(GTK_BOX(box), button);
 
   gtk_list_item_set_child(list_item, box);
@@ -1192,8 +1364,7 @@ static void on_sidebar_list_bind(GtkSignalListItemFactory *factory, GtkListItem 
   GtkWidget *disclosure_button = gtk_widget_get_first_child(box);
   GtkWidget *button = disclosure_button ? gtk_widget_get_next_sibling(disclosure_button) : NULL;
   GtkWidget *disclosure = GTK_IS_BUTTON(disclosure_button) ? gtk_button_get_child(GTK_BUTTON(disclosure_button)) : NULL;
-  GtkWidget *label = GTK_IS_BUTTON(button) ? gtk_button_get_child(GTK_BUTTON(button)) : NULL;
-  if (!GTK_IS_BUTTON(disclosure_button) || !GTK_IS_BUTTON(button) || !GTK_IS_LABEL(disclosure) || !GTK_IS_LABEL(label)) return;
+  if (!GTK_IS_BUTTON(disclosure_button) || !GTK_IS_BUTTON(button) || !GTK_IS_LABEL(disclosure)) return;
 
   guint position = gtk_list_item_get_position(list_item);
   OmniStringListData *list = (OmniStringListData *)data;
@@ -1214,7 +1385,7 @@ static void on_sidebar_list_bind(GtkSignalListItemFactory *factory, GtkListItem 
   gtk_widget_set_margin_start(box, depth * 16);
   gtk_widget_set_visible(disclosure_button, has_children);
   gtk_label_set_text(GTK_LABEL(disclosure), has_children ? (list->collapsed && list->collapsed[original] ? "▸" : "▾") : "");
-  gtk_label_set_text(GTK_LABEL(label), text ? text : "");
+  omni_sidebar_content_set_text(button, text ? text : "");
   if (native_accessible) {
     gtk_list_item_set_accessible_label(list_item, text ? text : "");
     gtk_list_item_set_accessible_description(list_item, has_children ? "Collapsible sidebar item" : (action_id > 0 ? "Sidebar item" : "Static sidebar item"));
@@ -1319,6 +1490,24 @@ static void on_plain_list_row_pressed(GtkGestureClick *gesture, int n_press, dou
   omni_record_click_start(gesture, x, y);
 }
 
+static int nearest_action_id_until(GtkWidget *widget, GtkWidget *stop) {
+  GtkWidget *current = widget;
+  while (current) {
+    int action_id = GPOINTER_TO_INT(g_object_get_data(G_OBJECT(current), "omni-action-id"));
+    if (action_id > 0) return action_id;
+    if (current == stop) break;
+    current = gtk_widget_get_parent(current);
+  }
+  return 0;
+}
+
+static gboolean click_targets_different_nested_action(GtkWidget *controller_widget, double x, double y, int own_action_id) {
+  if (!controller_widget || own_action_id <= 0) return FALSE;
+  GtkWidget *picked = gtk_widget_pick(controller_widget, x, y, GTK_PICK_DEFAULT);
+  int picked_action_id = nearest_action_id_until(picked, controller_widget);
+  return picked_action_id > 0 && picked_action_id != own_action_id;
+}
+
 static void on_plain_list_row_released(GtkGestureClick *gesture, int n_press, double x, double y, gpointer data) {
   if (!omni_click_is_stationary(gesture, x, y)) return;
   GtkWidget *controller_widget = gtk_event_controller_get_widget(GTK_EVENT_CONTROLLER(gesture));
@@ -1343,6 +1532,32 @@ static void on_plain_list_row_released(GtkGestureClick *gesture, int n_press, do
   if (!box_widget) return;
   OmniAdwApp *app = (OmniAdwApp *)g_object_get_data(G_OBJECT(box_widget), "omni-app");
   int action_id = GPOINTER_TO_INT(g_object_get_data(G_OBJECT(row_widget), "omni-action-id"));
+  if (click_targets_different_nested_action(controller_widget, x, y, action_id)) {
+    return;
+  }
+  if (app && app->callback && action_id > 0) {
+    app->callback(action_id, app->context);
+    omni_flush_pending_ui(app);
+    gtk_gesture_set_state(GTK_GESTURE(gesture), GTK_EVENT_SEQUENCE_CLAIMED);
+  }
+}
+
+static void on_click_container_pressed(GtkGestureClick *gesture, int n_press, double x, double y, gpointer data) {
+  (void)data;
+  if (n_press != 1) return;
+  omni_record_click_start(gesture, x, y);
+}
+
+static void on_click_container_released(GtkGestureClick *gesture, int n_press, double x, double y, gpointer data) {
+  (void)n_press;
+  (void)data;
+  if (!omni_click_is_stationary(gesture, x, y)) return;
+  GtkWidget *widget = gtk_event_controller_get_widget(GTK_EVENT_CONTROLLER(gesture));
+  int action_id = GPOINTER_TO_INT(g_object_get_data(G_OBJECT(widget), "omni-action-id"));
+  if (click_targets_different_nested_action(widget, x, y, action_id)) {
+    return;
+  }
+  OmniAdwApp *app = (OmniAdwApp *)g_object_get_data(G_OBJECT(widget), "omni-app");
   if (app && app->callback && action_id > 0) {
     app->callback(action_id, app->context);
     omni_flush_pending_ui(app);
@@ -1359,6 +1574,15 @@ static void install_row_click_controller(GtkWidget *widget) {
   gtk_widget_add_controller(widget, GTK_EVENT_CONTROLLER(click_controller));
 }
 
+static void install_click_container_controller(GtkWidget *widget) {
+  if (!widget) return;
+  GtkGesture *click_controller = gtk_gesture_click_new();
+  gtk_event_controller_set_propagation_phase(GTK_EVENT_CONTROLLER(click_controller), GTK_PHASE_BUBBLE);
+  g_signal_connect(click_controller, "pressed", G_CALLBACK(on_click_container_pressed), NULL);
+  g_signal_connect(click_controller, "released", G_CALLBACK(on_click_container_released), NULL);
+  gtk_widget_add_controller(widget, GTK_EVENT_CONTROLLER(click_controller));
+}
+
 static gboolean omni_label_looks_iconic(const char *label) {
   if (!label || !label[0]) return FALSE;
   if (strcmp(label, "Go") == 0) return FALSE;
@@ -1371,26 +1595,38 @@ static gboolean omni_label_looks_iconic(const char *label) {
   return TRUE;
 }
 
+static const char *omni_available_symbolic_icon(const char *first, const char *second, const char *third) {
+  const char *candidates[] = { first, second, third, NULL };
+  GdkDisplay *display = gdk_display_get_default();
+  GtkIconTheme *theme = display ? gtk_icon_theme_get_for_display(display) : NULL;
+  for (const char **candidate = candidates; candidate && *candidate; candidate++) {
+    if (!*candidate || !(*candidate)[0]) continue;
+    if (!theme || gtk_icon_theme_has_icon(theme, *candidate)) {
+      return *candidate;
+    }
+  }
+  return NULL;
+}
+
 static const char *omni_symbolic_icon_name_for_label(const char *label) {
   if (!label || !label[0]) return NULL;
-  if (strcmp(label, "⌂") == 0) return "user-home-symbolic";
-  if (strcmp(label, "‹") == 0) return "go-previous-symbolic";
-  if (strcmp(label, "›") == 0) return "go-next-symbolic";
-  if (strcmp(label, "↻") == 0) return "view-refresh-symbolic";
-  if (strcmp(label, "☰") == 0) return "open-menu-symbolic";
-  if (strcmp(label, "⚙") == 0) return "emblem-system-symbolic";
-  if (strcmp(label, "📄") == 0) return "text-x-generic-symbolic";
-  if (strcmp(label, "↗") == 0) return "adw-external-link-symbolic";
-  if (strcmp(label, "◆") == 0) return "bookmark-new-symbolic";
-  if (strcmp(label, "◇") == 0) return "bookmark-new-symbolic";
-  if (strcmp(label, "🌐") == 0) return "web-browser-symbolic";
-  if (strcmp(label, "◫") == 0) return "view-dual-symbolic";
-  if (strcmp(label, "⊘") == 0) return "view-hidden-symbolic";
-  if (strcmp(label, "👁") == 0) return "view-visible-symbolic";
-  if (strcmp(label, "⚠") == 0) return "dialog-warning-symbolic";
-  if (strcmp(label, "+") == 0) return "adw-tab-new-symbolic";
-  if (strcmp(label, "⌕") == 0 || strcmp(label, "🔍") == 0) return "system-search-symbolic";
-  if (strcmp(label, "✓") == 0) return "adw-entry-apply-symbolic";
+  if (strcmp(label, "⌂") == 0) return omni_available_symbolic_icon("user-home-symbolic", "go-home-symbolic", NULL);
+  if (strcmp(label, "‹") == 0) return omni_available_symbolic_icon("go-previous-symbolic", "pan-start-symbolic", NULL);
+  if (strcmp(label, "›") == 0) return omni_available_symbolic_icon("go-next-symbolic", "pan-end-symbolic", NULL);
+  if (strcmp(label, "↻") == 0) return omni_available_symbolic_icon("view-refresh-symbolic", "emblem-synchronizing-symbolic", NULL);
+  if (strcmp(label, "☰") == 0) return omni_available_symbolic_icon("open-menu-symbolic", "view-list-symbolic", NULL);
+  if (strcmp(label, "⚙") == 0) return omni_available_symbolic_icon("emblem-system-symbolic", "preferences-system-symbolic", NULL);
+  if (strcmp(label, "📄") == 0 || strcmp(label, "≣") == 0) return omni_available_symbolic_icon("text-x-generic-symbolic", "x-office-document-symbolic", NULL);
+  if (strcmp(label, "↗") == 0) return omni_available_symbolic_icon("adw-external-link-symbolic", "send-to-symbolic", "go-jump-symbolic");
+  if (strcmp(label, "◆") == 0 || strcmp(label, "◇") == 0) return omni_available_symbolic_icon("bookmark-new-symbolic", "user-bookmarks-symbolic", NULL);
+  if (strcmp(label, "🌐") == 0) return omni_available_symbolic_icon("web-browser-symbolic", "applications-internet-symbolic", "network-workgroup-symbolic");
+  if (strcmp(label, "◫") == 0) return omni_available_symbolic_icon("view-dual-symbolic", "view-grid-symbolic", "view-paged-symbolic");
+  if (strcmp(label, "⊘") == 0) return omni_available_symbolic_icon("view-hidden-symbolic", "changes-prevent-symbolic", NULL);
+  if (strcmp(label, "👁") == 0) return omni_available_symbolic_icon("view-visible-symbolic", "view-reveal-symbolic", NULL);
+  if (strcmp(label, "⚠") == 0) return omni_available_symbolic_icon("dialog-warning-symbolic", "emblem-important-symbolic", NULL);
+  if (strcmp(label, "+") == 0) return omni_available_symbolic_icon("adw-tab-new-symbolic", "list-add-symbolic", NULL);
+  if (strcmp(label, "⌕") == 0 || strcmp(label, "🔍") == 0) return omni_available_symbolic_icon("system-search-symbolic", "edit-find-symbolic", NULL);
+  if (strcmp(label, "✓") == 0) return omni_available_symbolic_icon("adw-entry-apply-symbolic", "object-select-symbolic", NULL);
   return NULL;
 }
 
@@ -1402,7 +1638,7 @@ static const char *omni_accessible_label_for_symbolic_label(const char *label) {
   if (strcmp(label, "↻") == 0) return "Refresh";
   if (strcmp(label, "☰") == 0) return "Menu";
   if (strcmp(label, "⚙") == 0) return "Settings";
-  if (strcmp(label, "📄") == 0) return "Document";
+  if (strcmp(label, "📄") == 0 || strcmp(label, "≣") == 0) return "Document";
   if (strcmp(label, "↗") == 0) return "Open externally";
   if (strcmp(label, "◆") == 0) return "Bookmark";
   if (strcmp(label, "◇") == 0) return "Bookmark";
@@ -1566,6 +1802,53 @@ static void on_dropdown_selected(GObject *object, GParamSpec *pspec, gpointer da
   }
 }
 
+static void omni_entry_cancel_pending_text_commit(GtkWidget *widget) {
+  if (!widget) return;
+  guint source = GPOINTER_TO_UINT(g_object_get_data(G_OBJECT(widget), "omni-pending-text-source"));
+  if (source != 0) {
+    g_source_remove(source);
+    g_object_set_data(G_OBJECT(widget), "omni-pending-text-source", NULL);
+  }
+}
+
+static void omni_entry_commit_text_now(GtkWidget *widget) {
+  if (!widget || !GTK_IS_EDITABLE(widget)) return;
+  omni_entry_cancel_pending_text_commit(widget);
+  if (g_object_get_data(G_OBJECT(widget), "omni-modal-native-entry") != NULL) return;
+  OmniAdwApp *app = (OmniAdwApp *)g_object_get_data(G_OBJECT(widget), "omni-app");
+  int action_id = GPOINTER_TO_INT(g_object_get_data(G_OBJECT(widget), "omni-action-id"));
+  if (!app || !app->text_callback || action_id <= 0) return;
+  const char *pending = (const char *)g_object_get_data(G_OBJECT(widget), "omni-pending-text-value");
+  const char *text = pending ? pending : gtk_editable_get_text(GTK_EDITABLE(widget));
+  if (!text) text = "";
+  app->text_callback(action_id, text, app->context);
+  g_object_set_data(G_OBJECT(widget), "omni-pending-text-value", NULL);
+}
+
+static gboolean on_entry_text_commit_timeout(gpointer data) {
+  GtkWidget *widget = GTK_WIDGET(data);
+  if (widget) {
+    g_object_set_data(G_OBJECT(widget), "omni-pending-text-source", NULL);
+    omni_entry_commit_text_now(widget);
+  }
+  return G_SOURCE_REMOVE;
+}
+
+static void omni_entry_schedule_text_commit(GtkWidget *widget) {
+  if (!widget || !GTK_IS_EDITABLE(widget)) return;
+  omni_entry_cancel_pending_text_commit(widget);
+  const char *text = gtk_editable_get_text(GTK_EDITABLE(widget));
+  g_object_set_data_full(G_OBJECT(widget), "omni-pending-text-value", g_strdup(text ? text : ""), g_free);
+  guint source = g_timeout_add_full(
+    G_PRIORITY_DEFAULT,
+    OMNI_ENTRY_TEXT_COMMIT_DELAY_MS,
+    on_entry_text_commit_timeout,
+    g_object_ref(widget),
+    g_object_unref
+  );
+  g_object_set_data(G_OBJECT(widget), "omni-pending-text-source", GUINT_TO_POINTER(source));
+}
+
 static void on_menu_option_clicked(GtkButton *button, gpointer data) {
   GtkPopover *popover = GTK_POPOVER(data);
   OmniAdwApp *app = (OmniAdwApp *)g_object_get_data(G_OBJECT(button), "omni-app");
@@ -1590,9 +1873,7 @@ static void on_entry_changed(GtkEditable *editable, gpointer data) {
   omni_accessible_value_text(GTK_WIDGET(editable), gtk_editable_get_text(editable));
   omni_macos_accessibility_schedule(app);
   if (g_object_get_data(G_OBJECT(editable), "omni-modal-native-entry") != NULL) return;
-  if (app && app->text_callback) {
-    app->text_callback(action_id, gtk_editable_get_text(editable), app->context);
-  }
+  if (app && app->text_callback && action_id > 0) omni_entry_schedule_text_commit(GTK_WIDGET(editable));
 }
 
 static void on_entry_activate(GtkEntry *entry, gpointer data) {
@@ -1602,6 +1883,7 @@ static void on_entry_activate(GtkEntry *entry, gpointer data) {
   int action_id = GPOINTER_TO_INT(g_object_get_data(G_OBJECT(widget), "omni-action-id"));
   if (action_id <= 0) action_id = app->focused_action_id;
   if (action_id > 0) app->focused_action_id = action_id;
+  omni_entry_commit_text_now(widget);
   app->key_callback(action_id, 7, 0, app->context);
   omni_flush_pending_ui(app);
 }
@@ -1651,6 +1933,29 @@ static GtkWidget *app_focused_native_text_widget(OmniAdwApp *app) {
     focus = gtk_widget_get_parent(focus);
   }
   return NULL;
+}
+
+gboolean omni_adw_app_handle_macos_text_input(void *app_ptr, const char *characters) {
+  OmniAdwApp *app = (OmniAdwApp *)app_ptr;
+  if (!app || !characters || !characters[0]) return FALSE;
+  if (!g_utf8_validate(characters, -1, NULL)) return FALSE;
+  for (const char *cursor = characters; cursor && *cursor; cursor = g_utf8_next_char(cursor)) {
+    gunichar scalar = g_utf8_get_char(cursor);
+    if (scalar < 32 || scalar == 127) return FALSE;
+  }
+
+  GtkWidget *native_text = app_focused_native_text_widget(app);
+  if (!native_text || !GTK_IS_ENTRY(native_text)) return FALSE;
+
+  int action_id = GPOINTER_TO_INT(g_object_get_data(G_OBJECT(native_text), "omni-action-id"));
+  if (action_id > 0) app->focused_action_id = action_id;
+
+  GtkEditable *editable = GTK_EDITABLE(native_text);
+  int position = gtk_editable_get_position(editable);
+  if (position < 0) position = (int)g_utf8_strlen(gtk_editable_get_text(editable), -1);
+  gtk_editable_insert_text(editable, characters, -1, &position);
+  gtk_editable_set_position(editable, position);
+  return TRUE;
 }
 
 static GtkWidget *app_modal_native_text_widget(OmniAdwApp *app) {
@@ -1745,6 +2050,7 @@ static gboolean on_key_pressed(GtkEventControllerKey *controller, guint keyval, 
         break;
     }
     if (native_kind >= 0) {
+      if (native_kind == 7) omni_entry_commit_text_now(native_text);
       app->key_callback(action_id, native_kind, 0, app->context);
       omni_flush_pending_ui(app);
       return TRUE;
@@ -1760,6 +2066,10 @@ static gboolean on_key_pressed(GtkEventControllerKey *controller, guint keyval, 
     app->key_callback(app->focused_action_id > 0 ? app->focused_action_id : 0, 8, 0, app->context);
     return TRUE;
   }
+
+#if defined(__APPLE__)
+  if (omni_macos_web_view_handle_key(keyval, state)) return TRUE;
+#endif
 
   if (app->focused_action_id <= 0) return FALSE;
 
@@ -1844,7 +2154,7 @@ static void on_window_click_released(GtkGestureClick *gesture, int n_press, doub
 
 static void wire_actions(GtkWidget *widget, OmniAdwApp *app) {
   if (!widget) return;
-  if (GTK_IS_BUTTON(widget) || GTK_IS_CHECK_BUTTON(widget) || GTK_IS_ENTRY(widget) || GTK_IS_TEXT_VIEW(widget) || GTK_IS_DROP_DOWN(widget) || GTK_IS_MENU_BUTTON(widget) || GTK_IS_SCALE(widget) || GTK_IS_SPIN_BUTTON(widget) || GTK_IS_CALENDAR(widget) || GTK_IS_LIST_VIEW(widget) || GTK_IS_LIST_BOX(widget)) {
+  if (GPOINTER_TO_INT(g_object_get_data(G_OBJECT(widget), "omni-action-id")) > 0 || GTK_IS_BUTTON(widget) || GTK_IS_CHECK_BUTTON(widget) || GTK_IS_ENTRY(widget) || GTK_IS_TEXT_VIEW(widget) || GTK_IS_DROP_DOWN(widget) || GTK_IS_MENU_BUTTON(widget) || GTK_IS_SCALE(widget) || GTK_IS_SPIN_BUTTON(widget) || GTK_IS_CALENDAR(widget) || GTK_IS_LIST_VIEW(widget) || GTK_IS_LIST_BOX(widget)) {
     g_object_set_data(G_OBJECT(widget), "omni-app", app);
   }
   if (GTK_IS_LIST_VIEW(widget) || GTK_IS_LIST_BOX(widget)) {
@@ -1987,9 +2297,27 @@ typedef struct {
 } OmniAXRect;
 
 static char omni_macos_accessibility_widget_key;
+static char omni_macos_accessibility_app_key;
+static char omni_macos_accessibility_name_key;
+static char omni_macos_accessibility_action_id_key;
+static char omni_macos_accessibility_traits_key;
 static char omni_macos_accessibility_value_key;
 
+enum {
+  OMNI_AX_TRAIT_ENTRY = 1 << 0,
+  OMNI_AX_TRAIT_TEXT_VIEW = 1 << 1,
+  OMNI_AX_TRAIT_DROPDOWN = 1 << 2,
+  OMNI_AX_TRAIT_SCROLL_AREA = 1 << 3
+};
+
 static id omni_ns_string(const char *value);
+static id omni_ns_string_or_empty(const char *value);
+static id omni_ns_number(int value);
+static int omni_ns_number_int(id value);
+static id omni_ns_mutable_array(void);
+static void omni_ns_array_add(id array, id object);
+static const char *omni_macos_widget_value(GtkWidget *widget);
+static gboolean omni_macos_accessibility_is_action_widget(GtkWidget *widget);
 
 static OmniAXRect omni_ax_rect_make(double x, double y, double width, double height) {
   OmniAXRect rect;
@@ -2030,15 +2358,162 @@ static OmniAdwApp *omni_app_for_widget(GtkWidget *widget) {
   return NULL;
 }
 
+static int omni_macos_accessibility_traits(id self) {
+  return omni_ns_number_int(objc_getAssociatedObject(self, &omni_macos_accessibility_traits_key));
+}
+
+static int omni_macos_accessibility_action_id(id self) {
+  return omni_ns_number_int(objc_getAssociatedObject(self, &omni_macos_accessibility_action_id_key));
+}
+
+static OmniAdwApp *omni_macos_accessibility_app(id self) {
+  return (OmniAdwApp *)objc_getAssociatedObject(self, &omni_macos_accessibility_app_key);
+}
+
+static GtkWidget *omni_macos_accessibility_associated_widget(id self) {
+  return (GtkWidget *)objc_getAssociatedObject(self, &omni_macos_accessibility_widget_key);
+}
+
+static GtkWidget *omni_macos_accessibility_resolve_widget(id self) {
+  OmniAdwApp *app = omni_macos_accessibility_app(self);
+  if (!app) return NULL;
+  GtkWidget *associated = omni_macos_accessibility_associated_widget(self);
+  if (associated && GTK_IS_WIDGET(associated)) return associated;
+  int actionID = omni_macos_accessibility_action_id(self);
+
+  if (actionID > 0) {
+    if (app->modal_accessibility_root && GTK_IS_WIDGET(app->modal_accessibility_root)) {
+      GtkWidget *found = find_widget_for_action(app->modal_accessibility_root, actionID);
+      if (found) return found;
+    }
+    if (app->modal_dialog && GTK_IS_WIDGET(app->modal_dialog)) {
+      GtkWidget *found = find_widget_for_action(GTK_WIDGET(app->modal_dialog), actionID);
+      if (found) return found;
+    }
+    if (app->window) {
+      GtkWidget *found = find_widget_for_action(app->window, actionID);
+      if (found) return found;
+    }
+  }
+
+  id nameObject = objc_getAssociatedObject(self, &omni_macos_accessibility_name_key);
+  const char *name = nameObject ? ((const char *(*)(id, SEL))objc_msgSend)(nameObject, sel_registerName("UTF8String")) : NULL;
+  if (name && name[0]) {
+    if (app->modal_accessibility_root && GTK_IS_WIDGET(app->modal_accessibility_root)) {
+      GtkWidget *found = find_widget_for_name(app->modal_accessibility_root, name);
+      if (found) return found;
+    }
+    if (app->modal_dialog && GTK_IS_WIDGET(app->modal_dialog)) {
+      GtkWidget *found = find_widget_for_name(GTK_WIDGET(app->modal_dialog), name);
+      if (found) return found;
+    }
+    if (app->window) {
+      GtkWidget *found = find_widget_for_name(app->window, name);
+      if (found) return found;
+    }
+  }
+
+  return NULL;
+}
+
+static double omni_macos_accessibility_clamp_adjustment(GtkAdjustment *adjustment, double value) {
+  double lower = gtk_adjustment_get_lower(adjustment);
+  double upper = gtk_adjustment_get_upper(adjustment);
+  double page_size = gtk_adjustment_get_page_size(adjustment);
+  double max_value = upper - page_size;
+  if (max_value < lower) max_value = lower;
+  if (value < lower) return lower;
+  if (value > max_value) return max_value;
+  return value;
+}
+
+static BOOL omni_macos_accessibility_scroll_adjustment(GtkAdjustment *adjustment, int direction) {
+  if (!adjustment) return NO;
+  double value = gtk_adjustment_get_value(adjustment);
+  double page = gtk_adjustment_get_page_increment(adjustment);
+  if (page <= 0.0) page = gtk_adjustment_get_page_size(adjustment) * 0.82;
+  if (page <= 0.0) page = 160.0;
+  double next = omni_macos_accessibility_clamp_adjustment(
+    adjustment,
+    value + (direction >= 0 ? page : -page)
+  );
+  if (next == value) return NO;
+  gtk_adjustment_set_value(adjustment, next);
+  return YES;
+}
+
+static BOOL omni_macos_accessibility_scroll_widget(GtkWidget *widget, int direction, gboolean horizontal) {
+  if (!widget) return NO;
+  if (g_object_get_data(G_OBJECT(widget), "omni-macos-web-view")) {
+    if (horizontal) return omni_macos_web_view_widget_scroll(widget, direction >= 0 ? 320.0 : -320.0, 0.0) ? YES : NO;
+    return omni_macos_web_view_widget_scroll_page(widget, direction) ? YES : NO;
+  }
+  if (!GTK_IS_SCROLLED_WINDOW(widget)) return NO;
+  GtkAdjustment *adjustment = horizontal
+    ? gtk_scrolled_window_get_hadjustment(GTK_SCROLLED_WINDOW(widget))
+    : gtk_scrolled_window_get_vadjustment(GTK_SCROLLED_WINDOW(widget));
+  return omni_macos_accessibility_scroll_adjustment(adjustment, direction);
+}
+
+static BOOL omni_macos_accessibility_perform_scroll(id self, int direction, gboolean horizontal) {
+  GtkWidget *widget = omni_macos_accessibility_associated_widget(self);
+  BOOL didScroll = omni_macos_accessibility_scroll_widget(widget, direction, horizontal);
+  if (!didScroll) {
+    widget = omni_macos_accessibility_resolve_widget(self);
+    didScroll = omni_macos_accessibility_scroll_widget(widget, direction, horizontal);
+  }
+  OmniAdwApp *app = omni_macos_accessibility_app(self);
+  if (!app && widget) app = omni_app_for_widget(widget);
+  if (didScroll && app) omni_macos_accessibility_schedule_after_scroll(app);
+  return didScroll;
+}
+
+static BOOL omni_macos_accessibility_perform_scroll_down(id self, SEL _cmd) {
+  (void)_cmd;
+  return omni_macos_accessibility_perform_scroll(self, 1, FALSE);
+}
+
+static BOOL omni_macos_accessibility_perform_scroll_up(id self, SEL _cmd) {
+  (void)_cmd;
+  return omni_macos_accessibility_perform_scroll(self, -1, FALSE);
+}
+
+static BOOL omni_macos_accessibility_perform_scroll_right(id self, SEL _cmd) {
+  (void)_cmd;
+  return omni_macos_accessibility_perform_scroll(self, 1, TRUE);
+}
+
+static BOOL omni_macos_accessibility_perform_scroll_left(id self, SEL _cmd) {
+  (void)_cmd;
+  return omni_macos_accessibility_perform_scroll(self, -1, TRUE);
+}
+
+static BOOL omni_macos_accessibility_perform_increment(id self, SEL _cmd) {
+  (void)_cmd;
+  return omni_macos_accessibility_perform_scroll(self, 1, FALSE);
+}
+
+static BOOL omni_macos_accessibility_perform_decrement(id self, SEL _cmd) {
+  (void)_cmd;
+  return omni_macos_accessibility_perform_scroll(self, -1, FALSE);
+}
+
 static BOOL omni_macos_accessibility_perform_press(id self, SEL _cmd) {
   (void)_cmd;
-  GtkWidget *widget = (GtkWidget *)objc_getAssociatedObject(self, &omni_macos_accessibility_widget_key);
-  if (!widget) return NO;
+  GtkWidget *widget = omni_macos_accessibility_resolve_widget(self);
+  OmniAdwApp *app = omni_macos_accessibility_app(self);
+  if (!widget) {
+    int actionID = omni_macos_accessibility_action_id(self);
+    if (!app || !app->callback || actionID <= 0) return NO;
+    app->callback(actionID, app->context);
+    omni_flush_pending_ui(app);
+    return YES;
+  }
   if (GTK_IS_ENTRY(widget) || GTK_IS_TEXT_VIEW(widget)) {
     gtk_widget_grab_focus(widget);
     return YES;
   }
-  OmniAdwApp *app = omni_app_for_widget(widget);
+  if (!app) app = omni_app_for_widget(widget);
   if (GTK_IS_BUTTON(widget)) {
     g_signal_emit_by_name(widget, "clicked");
     if (app) omni_flush_pending_ui(app);
@@ -2046,6 +2521,12 @@ static BOOL omni_macos_accessibility_perform_press(id self, SEL _cmd) {
   }
   if (GTK_IS_MENU_BUTTON(widget)) {
     gtk_menu_button_popup(GTK_MENU_BUTTON(widget));
+    return YES;
+  }
+  if (GTK_IS_DROP_DOWN(widget)) {
+    gtk_widget_grab_focus(widget);
+    gtk_widget_activate(widget);
+    if (app) omni_macos_accessibility_schedule(app);
     return YES;
   }
   if (GTK_IS_CHECK_BUTTON(widget)) {
@@ -2063,28 +2544,205 @@ static BOOL omni_macos_accessibility_perform_press(id self, SEL _cmd) {
 
 static void omni_macos_accessibility_set_value(id self, SEL _cmd, id value) {
   (void)_cmd;
-  objc_setAssociatedObject(self, &omni_macos_accessibility_value_key, value, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-  GtkWidget *widget = (GtkWidget *)objc_getAssociatedObject(self, &omni_macos_accessibility_widget_key);
+  GtkWidget *widget = omni_macos_accessibility_resolve_widget(self);
   if (!widget || !value) return;
   const char *text = ((const char *(*)(id, SEL))objc_msgSend)(value, sel_registerName("UTF8String"));
   if (!text) text = "";
-  if (GTK_IS_ENTRY(widget)) {
+  int traits = omni_macos_accessibility_traits(self);
+  if ((traits & OMNI_AX_TRAIT_ENTRY) && omni_entry_is_secure(widget)) {
+    char *masked = omni_mask_text(text);
+    objc_setAssociatedObject(self, &omni_macos_accessibility_value_key, omni_ns_string_or_empty(masked), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    free(masked);
+  } else {
+    objc_setAssociatedObject(self, &omni_macos_accessibility_value_key, value, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+  }
+  if ((traits & OMNI_AX_TRAIT_ENTRY) && GTK_IS_EDITABLE(widget)) {
     gtk_editable_set_text(GTK_EDITABLE(widget), text);
+    gtk_widget_grab_focus(widget);
     omni_accessible_value_text(widget, text);
-    OmniAdwApp *app = omni_app_for_widget(widget);
+    OmniAdwApp *app = omni_macos_accessibility_app(self);
+    if (!app) app = omni_app_for_widget(widget);
+    omni_entry_commit_text_now(widget);
     if (app) omni_macos_accessibility_schedule(app);
-  } else if (GTK_IS_TEXT_VIEW(widget)) {
+  } else if ((traits & OMNI_AX_TRAIT_TEXT_VIEW) && GTK_IS_TEXT_VIEW(widget)) {
     GtkTextBuffer *buffer = gtk_text_view_get_buffer(GTK_TEXT_VIEW(widget));
     gtk_text_buffer_set_text(buffer, text, -1);
+    gtk_widget_grab_focus(widget);
     omni_accessible_value_text(widget, text);
-    OmniAdwApp *app = omni_app_for_widget(widget);
+    OmniAdwApp *app = omni_macos_accessibility_app(self);
+    if (!app) app = omni_app_for_widget(widget);
+    int action_id = GPOINTER_TO_INT(g_object_get_data(G_OBJECT(widget), "omni-action-id"));
+    if (app && app->text_callback && action_id > 0) app->text_callback(action_id, text, app->context);
     if (app) omni_macos_accessibility_schedule(app);
+  } else if ((traits & OMNI_AX_TRAIT_DROPDOWN) && GTK_IS_DROP_DOWN(widget)) {
+    GListModel *model = gtk_drop_down_get_model(GTK_DROP_DOWN(widget));
+    if (!GTK_IS_STRING_LIST(model)) return;
+    guint count = g_list_model_get_n_items(model);
+    for (guint i = 0; i < count; i++) {
+      const char *item = gtk_string_list_get_string(GTK_STRING_LIST(model), i);
+      if (item && strcmp(item, text) == 0) {
+        OmniAdwApp *app = omni_macos_accessibility_app(self);
+        if (!app) app = omni_app_for_widget(widget);
+        int32_t action_id = 0;
+        int32_t *action_ids = (int32_t *)g_object_get_data(G_OBJECT(widget), "omni-action-ids");
+        int action_count = GPOINTER_TO_INT(g_object_get_data(G_OBJECT(widget), "omni-action-count"));
+        if (action_ids && i < (guint)action_count) action_id = action_ids[i];
+        if (gtk_drop_down_get_selected(GTK_DROP_DOWN(widget)) != i) {
+          g_object_set_data(G_OBJECT(widget), "omni-updating", GINT_TO_POINTER(1));
+          gtk_drop_down_set_selected(GTK_DROP_DOWN(widget), i);
+          g_object_set_data(G_OBJECT(widget), "omni-updating", NULL);
+        }
+        omni_accessible_value_text(widget, item);
+        if (app && app->callback && action_id > 0) {
+          app->callback(action_id, app->context);
+          omni_flush_pending_ui(app);
+        } else if (app) {
+          omni_macos_accessibility_schedule(app);
+        }
+        break;
+      }
+    }
   }
 }
 
 static id omni_macos_accessibility_value(id self, SEL _cmd) {
   (void)_cmd;
+  GtkWidget *widget = omni_macos_accessibility_resolve_widget(self);
+  int traits = omni_macos_accessibility_traits(self);
+  if (widget && (traits & OMNI_AX_TRAIT_ENTRY) && GTK_IS_EDITABLE(widget)) {
+    if (omni_entry_is_secure(widget)) {
+      const char *masked = omni_macos_widget_value(widget);
+      return omni_ns_string_or_empty(masked);
+    }
+    return omni_ns_string_or_empty(gtk_editable_get_text(GTK_EDITABLE(widget)));
+  }
+  if (widget && (traits & OMNI_AX_TRAIT_TEXT_VIEW) && GTK_IS_TEXT_VIEW(widget)) {
+    GtkTextBuffer *buffer = gtk_text_view_get_buffer(GTK_TEXT_VIEW(widget));
+    GtkTextIter start;
+    GtkTextIter end;
+    gtk_text_buffer_get_start_iter(buffer, &start);
+    gtk_text_buffer_get_end_iter(buffer, &end);
+    char *text = gtk_text_buffer_get_text(buffer, &start, &end, FALSE);
+    id value = omni_ns_string_or_empty(text);
+    g_free(text);
+    return value;
+  }
+  if (widget && (traits & OMNI_AX_TRAIT_DROPDOWN) && GTK_IS_DROP_DOWN(widget)) {
+    const char *value = omni_macos_widget_value(widget);
+    return omni_ns_string_or_empty(value);
+  }
   return objc_getAssociatedObject(self, &omni_macos_accessibility_value_key);
+}
+
+static BOOL omni_macos_accessibility_is_attribute_settable(id self, SEL _cmd, id attribute) {
+  (void)_cmd;
+  if (!attribute) return NO;
+  const char *name = ((const char *(*)(id, SEL))objc_msgSend)(attribute, sel_registerName("UTF8String"));
+  if (!name || strcmp(name, "AXValue") != 0) return NO;
+  int traits = omni_macos_accessibility_traits(self);
+  return (traits & (OMNI_AX_TRAIT_ENTRY | OMNI_AX_TRAIT_TEXT_VIEW | OMNI_AX_TRAIT_DROPDOWN)) != 0;
+}
+
+static id omni_macos_accessibility_attribute_value(id self, SEL _cmd, id attribute) {
+  (void)_cmd;
+  if (!attribute) return nil;
+  const char *name = ((const char *(*)(id, SEL))objc_msgSend)(attribute, sel_registerName("UTF8String"));
+  if (name && strcmp(name, "AXValue") == 0) {
+    return omni_macos_accessibility_value(self, sel_registerName("accessibilityValue"));
+  }
+  return nil;
+}
+
+static void omni_macos_accessibility_set_attribute_value(id self, SEL _cmd, id value, id attribute) {
+  (void)_cmd;
+  if (!attribute) return;
+  const char *name = ((const char *(*)(id, SEL))objc_msgSend)(attribute, sel_registerName("UTF8String"));
+  if (name && strcmp(name, "AXValue") == 0) {
+    omni_macos_accessibility_set_value(self, sel_registerName("setAccessibilityValue:"), value);
+  }
+}
+
+static id omni_macos_accessibility_attribute_names(id self, SEL _cmd) {
+  (void)_cmd;
+  id names = omni_ns_mutable_array();
+  if (!names) return nil;
+  omni_ns_array_add(names, omni_ns_string("AXRole"));
+  omni_ns_array_add(names, omni_ns_string("AXTitle"));
+  omni_ns_array_add(names, omni_ns_string("AXDescription"));
+  omni_ns_array_add(names, omni_ns_string("AXHelp"));
+  omni_ns_array_add(names, omni_ns_string("AXEnabled"));
+  omni_ns_array_add(names, omni_ns_string("AXFocused"));
+  omni_ns_array_add(names, omni_ns_string("AXIdentifier"));
+  omni_ns_array_add(names, omni_ns_string("AXParent"));
+  omni_ns_array_add(names, omni_ns_string("AXPosition"));
+  omni_ns_array_add(names, omni_ns_string("AXSize"));
+  int traits = omni_macos_accessibility_traits(self);
+  if ((traits & (OMNI_AX_TRAIT_ENTRY | OMNI_AX_TRAIT_TEXT_VIEW | OMNI_AX_TRAIT_DROPDOWN)) != 0) {
+    omni_ns_array_add(names, omni_ns_string("AXValue"));
+  }
+  if ((traits & OMNI_AX_TRAIT_SCROLL_AREA) != 0) {
+    omni_ns_array_add(names, omni_ns_string("AXVerticalScrollBar"));
+    omni_ns_array_add(names, omni_ns_string("AXHorizontalScrollBar"));
+  }
+  return names;
+}
+
+static void omni_macos_accessibility_add_action_name(id actions, const char *name) {
+  id value = omni_ns_string(name);
+  if (value) omni_ns_array_add(actions, value);
+}
+
+static const char *omni_macos_accessibility_action_name(id action) {
+  return action ? ((const char *(*)(id, SEL))objc_msgSend)(action, sel_registerName("UTF8String")) : NULL;
+}
+
+static gboolean omni_macos_accessibility_widget_can_press(GtkWidget *widget) {
+  if (!widget) return FALSE;
+  return omni_macos_accessibility_is_action_widget(widget) ||
+    GTK_IS_EDITABLE(widget) ||
+    GTK_IS_TEXT_VIEW(widget) ||
+    GPOINTER_TO_INT(g_object_get_data(G_OBJECT(widget), "omni-action-id")) > 0;
+}
+
+static id omni_macos_accessibility_action_names(id self, SEL _cmd) {
+  (void)_cmd;
+  id actions = omni_ns_mutable_array();
+  GtkWidget *widget = omni_macos_accessibility_resolve_widget(self);
+  if (!widget) widget = omni_macos_accessibility_associated_widget(self);
+  int traits = omni_macos_accessibility_traits(self);
+  if ((traits & OMNI_AX_TRAIT_SCROLL_AREA) != 0) {
+    omni_macos_accessibility_add_action_name(actions, "AXScrollDown");
+    omni_macos_accessibility_add_action_name(actions, "AXScrollUp");
+    omni_macos_accessibility_add_action_name(actions, "AXScrollRight");
+    omni_macos_accessibility_add_action_name(actions, "AXScrollLeft");
+    omni_macos_accessibility_add_action_name(actions, "AXIncrement");
+    omni_macos_accessibility_add_action_name(actions, "AXDecrement");
+  }
+  if (omni_macos_accessibility_widget_can_press(widget)) {
+    omni_macos_accessibility_add_action_name(actions, "AXPress");
+  }
+  return actions;
+}
+
+static void omni_macos_accessibility_perform_action(id self, SEL _cmd, id action) {
+  (void)_cmd;
+  const char *name = omni_macos_accessibility_action_name(action);
+  if (!name) return;
+  if (strcmp(name, "AXScrollDown") == 0) {
+    (void)omni_macos_accessibility_perform_scroll(self, 1, FALSE);
+  } else if (strcmp(name, "AXScrollUp") == 0) {
+    (void)omni_macos_accessibility_perform_scroll(self, -1, FALSE);
+  } else if (strcmp(name, "AXScrollRight") == 0) {
+    (void)omni_macos_accessibility_perform_scroll(self, 1, TRUE);
+  } else if (strcmp(name, "AXScrollLeft") == 0) {
+    (void)omni_macos_accessibility_perform_scroll(self, -1, TRUE);
+  } else if (strcmp(name, "AXIncrement") == 0) {
+    (void)omni_macos_accessibility_perform_scroll(self, 1, FALSE);
+  } else if (strcmp(name, "AXDecrement") == 0) {
+    (void)omni_macos_accessibility_perform_scroll(self, -1, FALSE);
+  } else if (strcmp(name, "AXPress") == 0) {
+    (void)omni_macos_accessibility_perform_press(self, sel_registerName("accessibilityPerformPress"));
+  }
 }
 
 static id omni_macos_accessibility_element_class(void) {
@@ -2101,6 +2759,54 @@ static id omni_macos_accessibility_element_class(void) {
     );
     class_addMethod(
       customClass,
+      sel_registerName("accessibilityActionNames"),
+      (IMP)omni_macos_accessibility_action_names,
+      "@@:"
+    );
+    class_addMethod(
+      customClass,
+      sel_registerName("accessibilityPerformAction:"),
+      (IMP)omni_macos_accessibility_perform_action,
+      "v@:@"
+    );
+    class_addMethod(
+      customClass,
+      sel_registerName("accessibilityPerformScrollDown"),
+      (IMP)omni_macos_accessibility_perform_scroll_down,
+      "c@:"
+    );
+    class_addMethod(
+      customClass,
+      sel_registerName("accessibilityPerformScrollUp"),
+      (IMP)omni_macos_accessibility_perform_scroll_up,
+      "c@:"
+    );
+    class_addMethod(
+      customClass,
+      sel_registerName("accessibilityPerformScrollRight"),
+      (IMP)omni_macos_accessibility_perform_scroll_right,
+      "c@:"
+    );
+    class_addMethod(
+      customClass,
+      sel_registerName("accessibilityPerformScrollLeft"),
+      (IMP)omni_macos_accessibility_perform_scroll_left,
+      "c@:"
+    );
+    class_addMethod(
+      customClass,
+      sel_registerName("accessibilityPerformIncrement"),
+      (IMP)omni_macos_accessibility_perform_increment,
+      "c@:"
+    );
+    class_addMethod(
+      customClass,
+      sel_registerName("accessibilityPerformDecrement"),
+      (IMP)omni_macos_accessibility_perform_decrement,
+      "c@:"
+    );
+    class_addMethod(
+      customClass,
       sel_registerName("setAccessibilityValue:"),
       (IMP)omni_macos_accessibility_set_value,
       "v@:@"
@@ -2111,6 +2817,42 @@ static id omni_macos_accessibility_element_class(void) {
       (IMP)omni_macos_accessibility_value,
       "@@:"
     );
+	    class_addMethod(
+	      customClass,
+	      sel_registerName("accessibilityIsAttributeSettable:"),
+	      (IMP)omni_macos_accessibility_is_attribute_settable,
+	      "c@:@"
+	    );
+	    class_addMethod(
+	      customClass,
+	      sel_registerName("isAccessibilityAttributeSettable:"),
+	      (IMP)omni_macos_accessibility_is_attribute_settable,
+	      "c@:@"
+	    );
+	    class_addMethod(
+	      customClass,
+	      sel_registerName("accessibilityAttributeValue:"),
+	      (IMP)omni_macos_accessibility_attribute_value,
+	      "@@:@"
+	    );
+	    class_addMethod(
+	      customClass,
+	      sel_registerName("accessibilityAttributeNames"),
+	      (IMP)omni_macos_accessibility_attribute_names,
+	      "@@:"
+	    );
+	    class_addMethod(
+	      customClass,
+	      sel_registerName("accessibilitySetValue:forAttribute:"),
+	      (IMP)omni_macos_accessibility_set_attribute_value,
+	      "v@:@@"
+	    );
+	    class_addMethod(
+	      customClass,
+	      sel_registerName("setAccessibilityValue:forAttribute:"),
+	      (IMP)omni_macos_accessibility_set_attribute_value,
+	      "v@:@@"
+	    );
     objc_registerClassPair(customClass);
     elementClass = (id)customClass;
   } else {
@@ -2123,6 +2865,23 @@ static id omni_ns_string(const char *value) {
   if (!value || !value[0]) return nil;
   id stringClass = (id)objc_getClass("NSString");
   return ((id (*)(id, SEL, const char *))objc_msgSend)(stringClass, sel_registerName("stringWithUTF8String:"), value);
+}
+
+static id omni_ns_string_or_empty(const char *value) {
+  id stringClass = (id)objc_getClass("NSString");
+  if (!stringClass) return nil;
+  return ((id (*)(id, SEL, const char *))objc_msgSend)(stringClass, sel_registerName("stringWithUTF8String:"), value ? value : "");
+}
+
+static id omni_ns_number(int value) {
+  id numberClass = (id)objc_getClass("NSNumber");
+  if (!numberClass) return nil;
+  return ((id (*)(id, SEL, int))objc_msgSend)(numberClass, sel_registerName("numberWithInt:"), value);
+}
+
+static int omni_ns_number_int(id value) {
+  if (!value) return 0;
+  return ((int (*)(id, SEL))objc_msgSend)(value, sel_registerName("intValue"));
 }
 
 static id omni_ns_mutable_array(void) {
@@ -2154,12 +2913,16 @@ static id omni_macos_accessibility_window(OmniAdwApp *app) {
 
 static const char *omni_macos_accessibility_role(GtkWidget *widget) {
   if (!widget) return "AXGroup";
-  if (GTK_IS_ENTRY(widget)) return "AXTextField";
+  if (g_object_get_data(G_OBJECT(widget), "omni-macos-web-view")) return "AXScrollArea";
+  if (GTK_IS_EDITABLE(widget)) return "AXTextField";
   if (GTK_IS_TEXT_VIEW(widget)) return "AXTextArea";
   if (GTK_IS_CHECK_BUTTON(widget)) return "AXCheckBox";
+  if (GTK_IS_DROP_DOWN(widget)) return "AXPopUpButton";
   if (GTK_IS_BUTTON(widget) || GTK_IS_MENU_BUTTON(widget)) return "AXButton";
+  if (GPOINTER_TO_INT(g_object_get_data(G_OBJECT(widget), "omni-action-id")) > 0) return "AXButton";
   if (GTK_IS_LIST_BOX_ROW(widget) && GPOINTER_TO_INT(g_object_get_data(G_OBJECT(widget), "omni-action-id")) > 0) return "AXButton";
   if (GTK_IS_LIST_BOX_ROW(widget)) return "AXRow";
+  if (GTK_IS_SCROLLED_WINDOW(widget)) return "AXScrollArea";
   if (GTK_IS_LIST_VIEW(widget) || GTK_IS_LIST_BOX(widget)) return "AXList";
   if (GTK_IS_LABEL(widget)) return "AXStaticText";
   if (GTK_IS_SEPARATOR(widget)) return "AXSplitter";
@@ -2169,7 +2932,7 @@ static const char *omni_macos_accessibility_role(GtkWidget *widget) {
 static gboolean omni_macos_accessibility_is_action_widget(GtkWidget *widget) {
   if (!widget) return FALSE;
   if (GPOINTER_TO_INT(g_object_get_data(G_OBJECT(widget), "omni-action-id")) > 0) return TRUE;
-  return GTK_IS_BUTTON(widget) || GTK_IS_MENU_BUTTON(widget) || GTK_IS_CHECK_BUTTON(widget);
+  return GTK_IS_BUTTON(widget) || GTK_IS_MENU_BUTTON(widget) || GTK_IS_DROP_DOWN(widget) || GTK_IS_CHECK_BUTTON(widget);
 }
 
 static gboolean omni_macos_accessibility_has_exported_action_ancestor(GtkWidget *widget) {
@@ -2194,16 +2957,17 @@ static gboolean omni_macos_accessibility_has_exported_row_ancestor(GtkWidget *wi
 
 static gboolean omni_macos_accessibility_should_export(GtkWidget *widget) {
   if (!widget || !gtk_widget_get_visible(widget) || !gtk_widget_get_mapped(widget)) return FALSE;
+  if (g_object_get_data(G_OBJECT(widget), "omni-macos-web-view")) return TRUE;
   if (GPOINTER_TO_INT(g_object_get_data(G_OBJECT(widget), "omni-action-id")) > 0) return TRUE;
+  if (GTK_IS_EDITABLE(widget) || GTK_IS_TEXT_VIEW(widget) || GTK_IS_BUTTON(widget) || GTK_IS_MENU_BUTTON(widget) || GTK_IS_DROP_DOWN(widget) || GTK_IS_CHECK_BUTTON(widget)) return TRUE;
+  if (GTK_IS_SCROLLED_WINDOW(widget) || GTK_IS_LIST_VIEW(widget) || GTK_IS_LIST_BOX(widget) || GTK_IS_LIST_BOX_ROW(widget)) return TRUE;
   const char *label = (const char *)g_object_get_data(G_OBJECT(widget), "omni-accessible-label");
   if (label != NULL) {
     if (GTK_IS_LABEL(widget) && omni_macos_accessibility_has_exported_action_ancestor(widget)) return FALSE;
     if (GTK_IS_LABEL(widget) && omni_macos_accessibility_has_exported_row_ancestor(widget)) return FALSE;
-    if (!GTK_IS_ENTRY(widget) && !GTK_IS_TEXT_VIEW(widget) && !GTK_IS_BUTTON(widget) && !GTK_IS_MENU_BUTTON(widget) && !GTK_IS_CHECK_BUTTON(widget) && !GTK_IS_LIST_VIEW(widget) && !GTK_IS_LIST_BOX(widget) && !GTK_IS_LIST_BOX_ROW(widget) && strlen(label) > 160) return FALSE;
-    return TRUE;
+    if (GTK_IS_LABEL(widget)) return TRUE;
+    return FALSE;
   }
-  if (GTK_IS_ENTRY(widget) || GTK_IS_TEXT_VIEW(widget) || GTK_IS_BUTTON(widget) || GTK_IS_MENU_BUTTON(widget) || GTK_IS_CHECK_BUTTON(widget)) return TRUE;
-  if (GTK_IS_LIST_VIEW(widget) || GTK_IS_LIST_BOX(widget) || GTK_IS_LIST_BOX_ROW(widget)) return TRUE;
   return FALSE;
 }
 
@@ -2230,7 +2994,13 @@ static const char *omni_macos_widget_label(GtkWidget *widget) {
 }
 
 static const char *omni_macos_widget_value(GtkWidget *widget) {
-  if (GTK_IS_ENTRY(widget)) return gtk_editable_get_text(GTK_EDITABLE(widget));
+  if (GTK_IS_EDITABLE(widget)) {
+    if (omni_entry_is_secure(widget)) {
+      const char *masked = (const char *)g_object_get_data(G_OBJECT(widget), "omni-accessible-value");
+      return masked && masked[0] ? masked : NULL;
+    }
+    return gtk_editable_get_text(GTK_EDITABLE(widget));
+  }
   const char *value = (const char *)g_object_get_data(G_OBJECT(widget), "omni-accessible-value");
   return value && value[0] ? value : NULL;
 }
@@ -2265,19 +3035,35 @@ static void omni_macos_accessibility_add_widget(
           parent
         );
         if (element) {
-          objc_setAssociatedObject(element, &omni_macos_accessibility_widget_key, (id)widget, OBJC_ASSOCIATION_ASSIGN);
           const char *description = (const char *)g_object_get_data(G_OBJECT(widget), "omni-accessible-description");
           const char *name = gtk_widget_get_name(widget);
           const char *value = omni_macos_widget_value(widget);
           int actionID = GPOINTER_TO_INT(g_object_get_data(G_OBJECT(widget), "omni-action-id"));
+          int traits = 0;
+          if (GTK_IS_EDITABLE(widget)) traits |= OMNI_AX_TRAIT_ENTRY;
+          if (GTK_IS_TEXT_VIEW(widget)) traits |= OMNI_AX_TRAIT_TEXT_VIEW;
+          if (GTK_IS_DROP_DOWN(widget)) traits |= OMNI_AX_TRAIT_DROPDOWN;
+          if (GTK_IS_SCROLLED_WINDOW(widget) || g_object_get_data(G_OBJECT(widget), "omni-macos-web-view")) traits |= OMNI_AX_TRAIT_SCROLL_AREA;
+          OmniAdwApp *widgetApp = omni_app_for_widget(widget);
+          objc_setAssociatedObject(element, &omni_macos_accessibility_widget_key, (id)widget, OBJC_ASSOCIATION_ASSIGN);
+          objc_setAssociatedObject(element, &omni_macos_accessibility_app_key, (id)widgetApp, OBJC_ASSOCIATION_ASSIGN);
+          objc_setAssociatedObject(element, &omni_macos_accessibility_action_id_key, omni_ns_number(actionID), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+          objc_setAssociatedObject(element, &omni_macos_accessibility_traits_key, omni_ns_number(traits), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+          if (name && name[0]) {
+            objc_setAssociatedObject(element, &omni_macos_accessibility_name_key, omni_ns_string(name), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+          }
           if (description && description[0]) omni_objc_send_void_id(element, "setAccessibilityHelp:", omni_ns_string(description));
           if (name && name[0]) omni_objc_send_void_id(element, "setAccessibilityIdentifier:", omni_ns_string(name));
-          if (GTK_IS_ENTRY(widget) || GTK_IS_TEXT_VIEW(widget) || (value && value[0])) {
-            objc_setAssociatedObject(element, &omni_macos_accessibility_value_key, omni_ns_string(value ? value : ""), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+          if (GTK_IS_EDITABLE(widget) || GTK_IS_TEXT_VIEW(widget) || (value && value[0])) {
+            objc_setAssociatedObject(element, &omni_macos_accessibility_value_key, omni_ns_string_or_empty(value), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
           }
           omni_objc_send_void_bool(element, "setAccessibilityEnabled:", gtk_widget_get_sensitive(widget) && actionID >= 0);
           omni_objc_send_void_bool(element, "setAccessibilitySelected:", GTK_IS_LIST_BOX_ROW(widget) && gtk_list_box_row_is_selected(GTK_LIST_BOX_ROW(widget)));
-          if (GTK_IS_BUTTON(widget) || GTK_IS_MENU_BUTTON(widget) || GTK_IS_CHECK_BUTTON(widget) || GTK_IS_LIST_BOX_ROW(widget)) {
+          if (traits & OMNI_AX_TRAIT_SCROLL_AREA) {
+            omni_objc_send_void_id(element, "setAccessibilityRoleDescription:", omni_ns_string("scroll area"));
+          } else if (GTK_IS_DROP_DOWN(widget)) {
+            omni_objc_send_void_id(element, "setAccessibilityRoleDescription:", omni_ns_string("pop-up button"));
+          } else if (GTK_IS_BUTTON(widget) || GTK_IS_MENU_BUTTON(widget) || GTK_IS_CHECK_BUTTON(widget) || GTK_IS_LIST_BOX_ROW(widget)) {
             omni_objc_send_void_id(element, "setAccessibilityRoleDescription:", omni_ns_string(actionID > 0 ? "button" : "row"));
           }
           omni_ns_array_add(elements, element);
@@ -2306,10 +3092,19 @@ static void omni_macos_accessibility_sync(OmniAdwApp *app) {
 
   id elements = omni_ns_mutable_array();
   int count = 0;
-  if (app->modal_dialog && GTK_IS_WIDGET(app->modal_dialog)) {
-    omni_macos_accessibility_add_widget(GTK_WIDGET(app->modal_dialog), GTK_WIDGET(app->modal_dialog), window, elements, windowFrame, contentFrame, &count);
+  gboolean exported_modal = FALSE;
+  if (app->modal_accessibility_root && GTK_IS_WIDGET(app->modal_accessibility_root)) {
+    omni_macos_accessibility_add_widget(app->modal_accessibility_root, app->modal_accessibility_root, window, elements, windowFrame, contentFrame, &count);
+    exported_modal = TRUE;
+  } else if (app->modal_dialog) {
+    if (GTK_IS_WIDGET(app->modal_dialog)) {
+      omni_macos_accessibility_add_widget(GTK_WIDGET(app->modal_dialog), GTK_WIDGET(app->modal_dialog), window, elements, windowFrame, contentFrame, &count);
+      exported_modal = TRUE;
+    }
   }
-  omni_macos_accessibility_add_widget(app->window, app->window, window, elements, windowFrame, contentFrame, &count);
+  if (!exported_modal) {
+    omni_macos_accessibility_add_widget(app->window, app->window, window, elements, windowFrame, contentFrame, &count);
+  }
 
   omni_objc_send_void_bool(contentView, "setAccessibilityElement:", YES);
   omni_objc_send_void_id(contentView, "setAccessibilityRole:", omni_ns_string("AXGroup"));
@@ -2337,6 +3132,18 @@ static void omni_macos_accessibility_schedule(OmniAdwApp *app) {
   app->macos_accessibility_sync_source = g_idle_add(omni_macos_accessibility_sync_idle, app);
 }
 
+static gboolean omni_macos_accessibility_sync_delayed(gpointer data) {
+  omni_macos_accessibility_schedule((OmniAdwApp *)data);
+  return G_SOURCE_REMOVE;
+}
+
+static void omni_macos_accessibility_schedule_after_map(OmniAdwApp *app) {
+  if (!app) return;
+  omni_macos_accessibility_schedule(app);
+  g_timeout_add(75, omni_macos_accessibility_sync_delayed, app);
+  g_timeout_add(200, omni_macos_accessibility_sync_delayed, app);
+}
+
 static void omni_macos_accessibility_schedule_after_scroll(OmniAdwApp *app) {
   if (!app) return;
   if (app->macos_accessibility_sync_source != 0) return;
@@ -2355,6 +3162,10 @@ static void omni_macos_accessibility_cancel_pending(OmniAdwApp *app) {
 }
 
 static void omni_macos_accessibility_schedule(OmniAdwApp *app) {
+  (void)app;
+}
+
+static void omni_macos_accessibility_schedule_after_map(OmniAdwApp *app) {
   (void)app;
 }
 
@@ -2479,8 +3290,8 @@ static void omni_clear_header_action_box(GtkWidget *box) {
   }
 }
 
-static void omni_append_header_action(GtkWidget *box, OmniAdwApp *app, const char *label, int32_t action_id) {
-  if (!box || !app || !label || !label[0] || action_id <= 0) return;
+static GtkWidget *omni_create_header_action_button(OmniAdwApp *app, const char *label, int32_t action_id, gboolean selected, const char *description) {
+  if (!app || !label || !label[0]) return NULL;
   GtkWidget *button = gtk_button_new();
   const char *icon_name = omni_symbolic_icon_name_for_label(label);
   const char *accessible = omni_accessible_label_for_symbolic_label(label);
@@ -2495,24 +3306,85 @@ static void omni_append_header_action(GtkWidget *box, OmniAdwApp *app, const cha
   gtk_widget_set_valign(button, GTK_ALIGN_CENTER);
   gtk_widget_set_tooltip_text(button, accessible ? accessible : label);
   omni_accessible_label(button, accessible ? accessible : label);
-  omni_accessible_description(button, "Toolbar action");
-  g_object_set_data(G_OBJECT(button), "omni-app", app);
-  g_object_set_data(G_OBJECT(button), "omni-action-id", GINT_TO_POINTER(action_id));
-  g_signal_connect(button, "clicked", G_CALLBACK(on_clicked), NULL);
+  omni_accessible_description(button, description ? description : "Toolbar action");
+  if (selected) {
+    gtk_widget_add_css_class(button, "omni-selected-segment");
+    omni_accessible_set_selected(button, TRUE);
+  }
+  if (action_id > 0) {
+    g_object_set_data(G_OBJECT(button), "omni-app", app);
+    g_object_set_data(G_OBJECT(button), "omni-action-id", GINT_TO_POINTER(action_id));
+    g_signal_connect(button, "clicked", G_CALLBACK(on_clicked), NULL);
+  } else {
+    gtk_widget_set_sensitive(button, FALSE);
+    omni_accessible_set_disabled(button, TRUE);
+  }
+  return button;
+}
+
+static void omni_append_header_action(GtkWidget *box, OmniAdwApp *app, const char *label, int32_t action_id) {
+  if (!box) return;
+  GtkWidget *button = omni_create_header_action_button(app, label, action_id, FALSE, "Toolbar action");
+  if (!button) return;
   gtk_box_append(GTK_BOX(box), button);
 }
 
-void omni_adw_app_set_header_actions(OmniAdwApp *app, const char **labels, const int32_t *action_ids, const int32_t *placements, int32_t count) {
+static int32_t omni_append_header_segmented_actions(GtkWidget *box, OmniAdwApp *app, const char **labels, const int32_t *action_ids, const int32_t *placements, const int32_t *styles, int32_t start, int32_t count) {
+  if (!box || !app || start >= count) return 0;
+  int32_t placement = placements ? placements[start] : 1;
+  GtkWidget *group = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 0);
+  gtk_widget_add_css_class(group, "linked");
+  gtk_widget_add_css_class(group, "omni-segmented-control");
+  gtk_widget_set_valign(group, GTK_ALIGN_CENTER);
+  omni_accessible_label(group, "View mode");
+  omni_accessible_role_description(group, "segmented control");
+
+  int32_t appended = 0;
+  for (int32_t i = start; i < count; i++) {
+    int32_t style = styles ? styles[i] : 0;
+    int32_t item_placement = placements ? placements[i] : 1;
+    if ((style & OMNI_HEADER_ACTION_SEGMENTED) == 0 || item_placement != placement) break;
+    const char *label = labels ? labels[i] : NULL;
+    int32_t action_id = action_ids ? action_ids[i] : 0;
+    gboolean selected = (style & OMNI_HEADER_ACTION_SELECTED) != 0;
+    GtkWidget *button = omni_create_header_action_button(app, label, action_id, selected, selected ? "Selected segmented control item" : "Segmented control item");
+    if (button) {
+      gtk_box_append(GTK_BOX(group), button);
+      appended++;
+    }
+  }
+
+  if (appended > 0) {
+    gtk_box_append(GTK_BOX(box), group);
+  } else {
+    g_object_unref(group);
+  }
+  return appended;
+}
+
+void omni_adw_app_set_header_actions(OmniAdwApp *app, const char **labels, const int32_t *action_ids, const int32_t *placements, const int32_t *styles, int32_t count) {
   if (!app) return;
   if (app->header) ensure_header_title_widget(app);
   omni_clear_header_action_box(app->header_start_actions);
   omni_clear_header_action_box(app->header_end_actions);
   int32_t start_count = 0;
   int32_t end_count = 0;
-  for (int32_t i = 0; i < count; i++) {
+  for (int32_t i = 0; i < count;) {
     const char *label = labels ? labels[i] : NULL;
     int32_t action_id = action_ids ? action_ids[i] : 0;
     int32_t placement = placements ? placements[i] : 1;
+    int32_t style = styles ? styles[i] : 0;
+    if ((style & OMNI_HEADER_ACTION_SEGMENTED) != 0) {
+      GtkWidget *target = placement == 0 ? app->header_start_actions : app->header_end_actions;
+      int32_t appended = omni_append_header_segmented_actions(target, app, labels, action_ids, placements, styles, i, count);
+      if (placement == 0) {
+        start_count += appended;
+      } else {
+        end_count += appended;
+      }
+      i += appended > 0 ? appended : 1;
+      continue;
+    }
     if (placement == 0) {
       omni_append_header_action(app->header_start_actions, app, label, action_id);
       start_count++;
@@ -2520,6 +3392,7 @@ void omni_adw_app_set_header_actions(OmniAdwApp *app, const char **labels, const
       omni_append_header_action(app->header_end_actions, app, label, action_id);
       end_count++;
     }
+    i++;
   }
   if (app->header_start_actions) gtk_widget_set_visible(app->header_start_actions, start_count > 0);
   if (app->header_end_actions) gtk_widget_set_visible(app->header_end_actions, end_count > 0);
@@ -2672,8 +3545,12 @@ static void on_alert_response(AdwAlertDialog *dialog, const char *response, gpoi
   }
   if (app && app->modal_dialog == ADW_DIALOG(dialog)) {
     app->modal_dialog = NULL;
+    app->modal_accessibility_root = NULL;
     app->modal_close_action_id = 0;
     app->modal_force_closing = FALSE;
+#if defined(__APPLE__)
+    omni_macos_web_view_set_modal_occlusion(FALSE);
+#endif
   }
 }
 
@@ -2713,6 +3590,17 @@ static GtkWidget *find_first_entry_widget(GtkWidget *widget) {
   return NULL;
 }
 
+static int count_entry_widgets(GtkWidget *widget) {
+  if (!widget) return 0;
+  int count = GTK_IS_ENTRY(widget) ? 1 : 0;
+  GtkWidget *child = gtk_widget_get_first_child(widget);
+  while (child) {
+    count += count_entry_widgets(child);
+    child = gtk_widget_get_next_sibling(child);
+  }
+  return count;
+}
+
 static gboolean modal_button_label_is_close(const char *label) {
   return label && g_ascii_strcasecmp(label, "Close") == 0;
 }
@@ -2725,6 +3613,19 @@ static gboolean modal_button_label_is_search(const char *label) {
   return label && g_ascii_strcasecmp(label, "Search") == 0;
 }
 
+static gboolean modal_summary_contains_search_action(OmniModalSummary *summary) {
+  if (!summary) return FALSE;
+  for (guint i = 0; i < summary->button_labels->len; i++) {
+    const char *label = (const char *)g_ptr_array_index(summary->button_labels, i);
+    if (modal_button_label_is_search(label)) return TRUE;
+  }
+  return FALSE;
+}
+
+static gboolean modal_should_collapse_to_entry_prompt(OmniModalSummary *summary, int entry_count) {
+  return entry_count == 1 && modal_summary_contains_search_action(summary);
+}
+
 static void on_sheet_closed(AdwDialog *dialog, gpointer data) {
   OmniAdwApp *app = (OmniAdwApp *)data;
   if (!app) return;
@@ -2732,8 +3633,12 @@ static void on_sheet_closed(AdwDialog *dialog, gpointer data) {
   int action_id = app->modal_close_action_id;
   gboolean force_closing = app->modal_force_closing;
   app->modal_dialog = NULL;
+  app->modal_accessibility_root = NULL;
   app->modal_close_action_id = 0;
   app->modal_force_closing = FALSE;
+#if defined(__APPLE__)
+  omni_macos_web_view_set_modal_occlusion(FALSE);
+#endif
   if (!force_closing && action_id > 0 && app->callback) {
     app->callback(action_id, app->context);
   }
@@ -2745,35 +3650,67 @@ static void on_sheet_close_attempt(AdwDialog *dialog, gpointer data) {
   adw_dialog_close(dialog);
 }
 
-static void present_sheet_dialog(OmniAdwApp *app, OmniAdwNode *modal, OmniModalSummary *summary, int close_action_id) {
-  int effective_close_action_id = close_action_id > 0 ? close_action_id : modal_cancel_action_id(summary);
-  const char *heading = summary && summary->labels->len > 0
-    ? (const char *)g_ptr_array_index(summary->labels, 0)
-    : "Sheet";
-  AdwDialog *dialog = adw_alert_dialog_new(heading, NULL);
-  AdwAlertDialog *alert = ADW_ALERT_DIALOG(dialog);
-  adw_dialog_set_title(dialog, "Sheet");
-  adw_dialog_set_can_close(dialog, effective_close_action_id > 0);
-  adw_dialog_set_content_width(dialog, 560);
-  adw_dialog_set_content_height(dialog, 360);
-  adw_dialog_set_presentation_mode(dialog, ADW_DIALOG_FLOATING);
-  adw_alert_dialog_set_prefer_wide_layout(alert, TRUE);
-  omni_accessible_label(GTK_WIDGET(dialog), "Sheet");
-  omni_accessible_description(GTK_WIDGET(dialog), "Modal sheet");
-  gtk_accessible_update_property(GTK_ACCESSIBLE(dialog), GTK_ACCESSIBLE_PROPERTY_MODAL, TRUE, -1);
-  app->modal_dialog = dialog;
-  app->modal_close_action_id = effective_close_action_id;
-  app->modal_force_closing = FALSE;
-  wire_actions(modal->widget, app);
-
-  GtkWidget *source_entry = find_first_entry_widget(modal->widget);
-  GtkWidget *sheet_entry = NULL;
+static GtkWidget *omni_sheet_surface_new(void) {
   GtkWidget *surface = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
   gtk_widget_add_css_class(surface, "omni-sheet-surface");
   gtk_widget_set_hexpand(surface, TRUE);
   gtk_widget_set_halign(surface, GTK_ALIGN_CENTER);
   gtk_widget_set_vexpand(surface, FALSE);
   gtk_widget_set_valign(surface, GTK_ALIGN_CENTER);
+  omni_accessible_label(surface, "Sheet");
+  omni_accessible_description(surface, "Modal sheet");
+  return surface;
+}
+
+static gboolean update_presented_sheet_dialog(OmniAdwApp *app, OmniAdwNode *modal) {
+  if (!app || !app->modal_dialog || !modal || !modal->widget) return FALSE;
+  if (!ADW_IS_ALERT_DIALOG(app->modal_dialog)) return FALSE;
+  if (g_object_get_data(G_OBJECT(app->modal_dialog), "omni-modal-simple-entry-prompt") != NULL) {
+    return TRUE;
+  }
+
+  wire_actions(modal->widget, app);
+  GtkWidget *surface = omni_sheet_surface_new();
+  gtk_box_append(GTK_BOX(surface), modal->widget);
+  modal->widget = NULL;
+  adw_alert_dialog_set_extra_child(ADW_ALERT_DIALOG(app->modal_dialog), surface);
+  g_object_set_data(G_OBJECT(app->modal_dialog), "omni-sheet-content-widget", surface);
+  app->modal_accessibility_root = surface;
+  omni_macos_accessibility_schedule_after_map(app);
+  return TRUE;
+}
+
+static void present_sheet_dialog(OmniAdwApp *app, OmniAdwNode *modal, OmniModalSummary *summary, int close_action_id) {
+  int effective_close_action_id = close_action_id > 0 ? close_action_id : modal_cancel_action_id(summary);
+  int entry_count = count_entry_widgets(modal->widget);
+  gboolean simple_entry_prompt = modal_should_collapse_to_entry_prompt(summary, entry_count);
+  const char *heading = simple_entry_prompt && summary && summary->labels->len > 0
+    ? (const char *)g_ptr_array_index(summary->labels, 0)
+    : NULL;
+  AdwDialog *dialog = adw_alert_dialog_new(heading, NULL);
+  AdwAlertDialog *alert = ADW_ALERT_DIALOG(dialog);
+  adw_dialog_set_title(dialog, "Sheet");
+  adw_dialog_set_can_close(dialog, effective_close_action_id > 0);
+  adw_dialog_set_content_width(dialog, 560);
+  adw_dialog_set_content_height(dialog, simple_entry_prompt ? 360 : 560);
+  adw_dialog_set_presentation_mode(dialog, ADW_DIALOG_FLOATING);
+#if ADW_CHECK_VERSION(1, 6, 0)
+  adw_alert_dialog_set_prefer_wide_layout(alert, TRUE);
+#endif
+  omni_accessible_label(GTK_WIDGET(dialog), "Sheet");
+  omni_accessible_description(GTK_WIDGET(dialog), "Modal sheet");
+  gtk_accessible_update_property(GTK_ACCESSIBLE(dialog), GTK_ACCESSIBLE_PROPERTY_MODAL, TRUE, -1);
+  app->modal_dialog = dialog;
+  app->modal_close_action_id = effective_close_action_id;
+  app->modal_force_closing = FALSE;
+#if defined(__APPLE__)
+  omni_macos_web_view_set_modal_occlusion(TRUE);
+#endif
+  wire_actions(modal->widget, app);
+
+  GtkWidget *source_entry = simple_entry_prompt ? find_first_entry_widget(modal->widget) : NULL;
+  GtkWidget *sheet_entry = NULL;
+  GtkWidget *surface = omni_sheet_surface_new();
   if (source_entry) {
     GtkWidget *entry = gtk_entry_new();
     const char *placeholder = gtk_entry_get_placeholder_text(GTK_ENTRY(source_entry));
@@ -2804,10 +3741,14 @@ static void present_sheet_dialog(OmniAdwApp *app, OmniAdwNode *modal, OmniModalS
   }
   adw_alert_dialog_set_extra_child(alert, surface);
   g_object_set_data(G_OBJECT(dialog), "omni-sheet-content-widget", surface);
+  app->modal_accessibility_root = surface;
+  if (simple_entry_prompt) {
+    g_object_set_data(G_OBJECT(dialog), "omni-modal-simple-entry-prompt", GINT_TO_POINTER(1));
+  }
 
   char default_response[16] = "";
   char close_response[16] = "";
-  if (summary) {
+  if (summary && simple_entry_prompt) {
     for (guint i = 0; i < summary->button_labels->len; i++) {
       const char *label = (const char *)g_ptr_array_index(summary->button_labels, i);
       if (!label || !label[0] || modal_button_label_is_close(label)) continue;
@@ -2850,7 +3791,7 @@ static void present_sheet_dialog(OmniAdwApp *app, OmniAdwNode *modal, OmniModalS
       }
       gtk_widget_grab_focus(sheet_entry);
     }
-    omni_macos_accessibility_schedule(app);
+    omni_macos_accessibility_schedule_after_map(app);
   }
   free_modal_summary(summary);
 }
@@ -2858,6 +3799,10 @@ static void present_sheet_dialog(OmniAdwApp *app, OmniAdwNode *modal, OmniModalS
 void omni_adw_app_present_modal(OmniAdwApp *app, OmniAdwNode *modal, const char *title) {
   if (!app || !modal) return;
   if (app->modal_dialog) {
+    if (update_presented_sheet_dialog(app, modal)) {
+      omni_adw_node_free(modal);
+      return;
+    }
     omni_adw_node_free(modal);
     return;
   }
@@ -2891,6 +3836,9 @@ void omni_adw_app_present_modal(OmniAdwApp *app, OmniAdwNode *modal, const char 
   }
   g_signal_connect(dialog, "response", G_CALLBACK(on_alert_response), app);
   app->modal_dialog = base_dialog;
+#if defined(__APPLE__)
+  omni_macos_web_view_set_modal_occlusion(TRUE);
+#endif
   if (app->window) {
     adw_dialog_present(base_dialog, app->window);
     omni_macos_accessibility_schedule(app);
@@ -2903,8 +3851,81 @@ void omni_adw_app_dismiss_modal(OmniAdwApp *app) {
   app->modal_force_closing = TRUE;
   adw_dialog_force_close(app->modal_dialog);
   app->modal_dialog = NULL;
+  app->modal_accessibility_root = NULL;
   app->modal_close_action_id = 0;
   app->modal_force_closing = FALSE;
+#if defined(__APPLE__)
+  omni_macos_web_view_set_modal_occlusion(FALSE);
+#endif
+}
+
+static gboolean omni_text_needs_scrollable_static_view(const char *value) {
+  if (!value) return FALSE;
+  size_t length = strlen(value);
+  if (length > 16384) return TRUE;
+  if (g_str_has_prefix(value, "Loading web content")) return TRUE;
+  if (g_str_has_prefix(value, "Web content\n")) return TRUE;
+  return FALSE;
+}
+
+static GtkTextView *omni_text_view_from_static_text_widget(GtkWidget *widget) {
+  if (!widget) return NULL;
+  if (GTK_IS_TEXT_VIEW(widget)) return GTK_TEXT_VIEW(widget);
+  if (GTK_IS_SCROLLED_WINDOW(widget)) {
+    GtkWidget *child = gtk_scrolled_window_get_child(GTK_SCROLLED_WINDOW(widget));
+    if (GTK_IS_TEXT_VIEW(child)) return GTK_TEXT_VIEW(child);
+  }
+  return NULL;
+}
+
+static void omni_update_static_text_view(GtkTextView *view, const char *value) {
+  if (!view) return;
+  const char *text = value ? value : "";
+  GtkTextBuffer *buffer = gtk_text_view_get_buffer(view);
+  GtkTextIter start;
+  GtkTextIter end;
+  gtk_text_buffer_get_start_iter(buffer, &start);
+  gtk_text_buffer_get_end_iter(buffer, &end);
+  char *existing = gtk_text_buffer_get_text(buffer, &start, &end, FALSE);
+  if (!existing || strcmp(existing, text) != 0) {
+    gtk_text_buffer_set_text(buffer, text, -1);
+  }
+  omni_accessible_value_text(GTK_WIDGET(view), text);
+  omni_accessible_label(GTK_WIDGET(view), text);
+  g_free(existing);
+}
+
+static OmniAdwNode *omni_adw_scrollable_text_node_new(const char *text) {
+  OmniAdwNode *node = calloc(1, sizeof(OmniAdwNode));
+  const char *value = text ? text : "";
+
+  GtkWidget *text_view = gtk_text_view_new();
+  gtk_text_view_set_wrap_mode(GTK_TEXT_VIEW(text_view), GTK_WRAP_WORD_CHAR);
+  gtk_text_view_set_editable(GTK_TEXT_VIEW(text_view), FALSE);
+  gtk_text_view_set_cursor_visible(GTK_TEXT_VIEW(text_view), FALSE);
+  gtk_text_view_set_monospace(GTK_TEXT_VIEW(text_view), TRUE);
+  omni_update_static_text_view(GTK_TEXT_VIEW(text_view), value);
+  gtk_widget_add_css_class(text_view, "omni-static-text");
+  gtk_widget_set_hexpand(text_view, TRUE);
+  gtk_widget_set_vexpand(text_view, TRUE);
+  gtk_widget_set_halign(text_view, GTK_ALIGN_FILL);
+  gtk_widget_set_valign(text_view, GTK_ALIGN_FILL);
+  omni_accessible_read_only(text_view, TRUE);
+  omni_accessible_multi_line(text_view, TRUE);
+
+  GtkWidget *scroll = gtk_scrolled_window_new();
+  gtk_scrolled_window_set_policy(GTK_SCROLLED_WINDOW(scroll), GTK_POLICY_AUTOMATIC, GTK_POLICY_AUTOMATIC);
+  gtk_scrolled_window_set_propagate_natural_height(GTK_SCROLLED_WINDOW(scroll), FALSE);
+  gtk_scrolled_window_set_child(GTK_SCROLLED_WINDOW(scroll), text_view);
+  gtk_widget_add_css_class(scroll, "omni-static-text-frame");
+  gtk_widget_set_hexpand(scroll, TRUE);
+  gtk_widget_set_vexpand(scroll, TRUE);
+  gtk_widget_set_halign(scroll, GTK_ALIGN_FILL);
+  gtk_widget_set_valign(scroll, GTK_ALIGN_FILL);
+  omni_accessible_label(scroll, value);
+  omni_accessible_value_text(scroll, value);
+  node->widget = scroll;
+  return node;
 }
 
 int32_t omni_adw_app_update_node(OmniAdwApp *app, const char *semantic_id, int32_t kind, const char *text, int32_t active) {
@@ -2917,9 +3938,16 @@ int32_t omni_adw_app_update_node(OmniAdwApp *app, const char *semantic_id, int32
   const char *value = text ? text : "";
   switch (kind) {
     case 0:
-      if (!GTK_IS_LABEL(widget)) return 0;
-      gtk_label_set_text(GTK_LABEL(widget), value);
-      omni_accessible_label(widget, value);
+      if (GTK_IS_LABEL(widget)) {
+        gtk_label_set_text(GTK_LABEL(widget), value);
+        omni_accessible_label(widget, value);
+      } else {
+        GtkTextView *view = omni_text_view_from_static_text_widget(widget);
+        if (!view) return 0;
+        omni_update_static_text_view(view, value);
+        omni_accessible_label(widget, value);
+        omni_accessible_value_text(widget, value);
+      }
       break;
     case 1:
       if (!GTK_IS_BUTTON(widget)) return 0;
@@ -3221,6 +4249,20 @@ OmniAdwNode *omni_adw_box_new(int32_t vertical, int32_t spacing) {
   return node;
 }
 
+void omni_adw_box_set_homogeneous(OmniAdwNode *node, int32_t homogeneous) {
+  if (!node || !node->widget || !GTK_IS_BOX(node->widget)) return;
+  gtk_box_set_homogeneous(GTK_BOX(node->widget), homogeneous != 0);
+}
+
+OmniAdwNode *omni_adw_overlay_new(void) {
+  OmniAdwNode *node = calloc(1, sizeof(OmniAdwNode));
+  node->widget = gtk_overlay_new();
+  gtk_widget_add_css_class(node->widget, "omni-overlay");
+  omni_widget_expand(node->widget, TRUE);
+  omni_accessible_role_description(node->widget, "overlay group");
+  return node;
+}
+
 OmniAdwNode *omni_adw_list_new(void) {
   OmniAdwNode *node = calloc(1, sizeof(OmniAdwNode));
   node->widget = gtk_list_box_new();
@@ -3413,13 +4455,8 @@ OmniAdwNode *omni_adw_sidebar_list_new(const char **labels, const int32_t *actio
     gtk_widget_set_halign(button, GTK_ALIGN_FILL);
     gtk_widget_set_focus_on_click(button, TRUE);
     g_signal_connect(button, "clicked", G_CALLBACK(on_virtual_list_button_clicked), NULL);
-    GtkWidget *label = gtk_label_new(text);
-    gtk_widget_add_css_class(label, "omni-sidebar-label");
-    gtk_label_set_xalign(GTK_LABEL(label), 0.0f);
-    gtk_label_set_ellipsize(GTK_LABEL(label), PANGO_ELLIPSIZE_END);
-    gtk_widget_set_hexpand(label, TRUE);
-    gtk_widget_set_halign(label, GTK_ALIGN_FILL);
-    gtk_button_set_child(GTK_BUTTON(button), label);
+    gtk_button_set_child(GTK_BUTTON(button), omni_sidebar_label_new());
+    omni_sidebar_content_set_text(button, text);
     gtk_box_append(GTK_BOX(box), button);
 
     gtk_list_box_row_set_child(GTK_LIST_BOX_ROW(row), box);
@@ -3433,7 +4470,6 @@ OmniAdwNode *omni_adw_sidebar_list_new(const char **labels, const int32_t *actio
     omni_accessible_label(disclosure_button, has_children ? "Collapse" : "");
     omni_accessible_description(disclosure_button, has_children ? "Expands or collapses this sidebar group" : "");
     omni_accessible_set_expanded(disclosure_button, has_children);
-    omni_accessible_label(label, text);
     int32_t action_id = action_ids ? action_ids[i] : 0;
     g_object_set_data(G_OBJECT(button), "omni-action-id", GINT_TO_POINTER(action_id));
     gtk_list_box_row_set_activatable(GTK_LIST_BOX_ROW(row), FALSE);
@@ -3476,9 +4512,9 @@ OmniAdwNode *omni_adw_split_new(void) {
   adw_overlay_split_view_set_show_sidebar(ADW_OVERLAY_SPLIT_VIEW(node->widget), TRUE);
   adw_overlay_split_view_set_enable_show_gesture(ADW_OVERLAY_SPLIT_VIEW(node->widget), TRUE);
   adw_overlay_split_view_set_enable_hide_gesture(ADW_OVERLAY_SPLIT_VIEW(node->widget), TRUE);
-  adw_overlay_split_view_set_min_sidebar_width(ADW_OVERLAY_SPLIT_VIEW(node->widget), 220);
-  adw_overlay_split_view_set_max_sidebar_width(ADW_OVERLAY_SPLIT_VIEW(node->widget), 320);
-  adw_overlay_split_view_set_sidebar_width_fraction(ADW_OVERLAY_SPLIT_VIEW(node->widget), 0.28);
+  adw_overlay_split_view_set_min_sidebar_width(ADW_OVERLAY_SPLIT_VIEW(node->widget), 280);
+  adw_overlay_split_view_set_max_sidebar_width(ADW_OVERLAY_SPLIT_VIEW(node->widget), 420);
+  adw_overlay_split_view_set_sidebar_width_fraction(ADW_OVERLAY_SPLIT_VIEW(node->widget), 0.32);
   omni_accessible_label(node->widget, "Navigation split view");
   omni_accessible_description(node->widget, "Sidebar and content");
   omni_accessible_role_description(node->widget, "navigation split view");
@@ -3488,17 +4524,9 @@ OmniAdwNode *omni_adw_split_new(void) {
 OmniAdwNode *omni_adw_text_new(const char *text) {
   OmniAdwNode *node = calloc(1, sizeof(OmniAdwNode));
   const char *value = text ? text : "";
-  if (strlen(value) > 16384) {
-    node->widget = gtk_text_view_new();
-    gtk_text_view_set_wrap_mode(GTK_TEXT_VIEW(node->widget), GTK_WRAP_WORD_CHAR);
-    gtk_text_view_set_editable(GTK_TEXT_VIEW(node->widget), FALSE);
-    gtk_text_view_set_cursor_visible(GTK_TEXT_VIEW(node->widget), FALSE);
-    gtk_text_view_set_monospace(GTK_TEXT_VIEW(node->widget), TRUE);
-    GtkTextBuffer *buffer = gtk_text_view_get_buffer(GTK_TEXT_VIEW(node->widget));
-    gtk_text_buffer_set_text(buffer, value, -1);
-    gtk_widget_add_css_class(node->widget, "omni-static-text");
-    omni_accessible_read_only(node->widget, TRUE);
-    omni_accessible_multi_line(node->widget, TRUE);
+  if (omni_text_needs_scrollable_static_view(value)) {
+    free(node);
+    node = omni_adw_scrollable_text_node_new(value);
   } else {
     node->widget = gtk_label_new(value);
     gtk_label_set_xalign(GTK_LABEL(node->widget), 0.0f);
@@ -3511,6 +4539,17 @@ OmniAdwNode *omni_adw_text_new(const char *text) {
   gtk_widget_set_hexpand(node->widget, TRUE);
   gtk_widget_set_halign(node->widget, GTK_ALIGN_FILL);
   omni_accessible_label(node->widget, value);
+  return node;
+}
+
+OmniAdwNode *omni_adw_web_view_new(const char *url, const char *fallback_text, void *native_view) {
+  GtkWidget *web_view = omni_create_webkit_web_view(url, native_view);
+  if (!web_view) {
+    return omni_adw_scrollable_text_node_new(fallback_text && fallback_text[0] ? fallback_text : (url ? url : "Web content unavailable"));
+  }
+
+  OmniAdwNode *node = calloc(1, sizeof(OmniAdwNode));
+  node->widget = web_view;
   return node;
 }
 
@@ -3535,6 +4574,50 @@ OmniAdwNode *omni_adw_button_new(const char *label, int32_t action_id) {
   omni_accessible_description(node->widget, action_id > 0 ? "Button" : "Disabled button");
   omni_accessible_set_disabled(node->widget, action_id <= 0);
   g_object_set_data(G_OBJECT(node->widget), "omni-action-id", GINT_TO_POINTER(action_id));
+  g_signal_connect(node->widget, "clicked", G_CALLBACK(on_clicked), NULL);
+  return node;
+}
+
+static void omni_widget_add_css_classes(GtkWidget *widget, const char *css_classes) {
+  if (!widget || !css_classes || !css_classes[0]) return;
+  char *copy = omni_strdup(css_classes);
+  char *token = strtok(copy, " ");
+  while (token) {
+    gtk_widget_add_css_class(widget, token);
+    token = strtok(NULL, " ");
+  }
+  free(copy);
+}
+
+OmniAdwNode *omni_adw_click_container_new(const char *label, int32_t action_id) {
+  OmniAdwNode *node = calloc(1, sizeof(OmniAdwNode));
+  node->widget = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
+  gtk_widget_add_css_class(node->widget, "omni-click-container");
+  gtk_widget_set_hexpand(node->widget, TRUE);
+  gtk_widget_set_halign(node->widget, GTK_ALIGN_FILL);
+  gtk_widget_set_focusable(node->widget, action_id > 0);
+  g_object_set_data(G_OBJECT(node->widget), "omni-action-id", GINT_TO_POINTER(action_id));
+  omni_accessible_label(node->widget, label && label[0] ? label : "Action");
+  omni_accessible_description(node->widget, action_id > 0 ? "Button" : "Disabled button");
+  omni_accessible_set_disabled(node->widget, action_id <= 0);
+  install_click_container_controller(node->widget);
+  return node;
+}
+
+OmniAdwNode *omni_adw_inline_button_new(const char *label, int32_t action_id, const char *css_classes) {
+  OmniAdwNode *node = calloc(1, sizeof(OmniAdwNode));
+  const char *value = label ? label : "Button";
+  node->widget = gtk_button_new_with_label(value);
+  gtk_widget_add_css_class(node->widget, "flat");
+  gtk_widget_add_css_class(node->widget, "omni-inline-link-button");
+  omni_widget_add_css_classes(node->widget, css_classes);
+  gtk_widget_set_halign(node->widget, GTK_ALIGN_START);
+  gtk_widget_set_valign(node->widget, GTK_ALIGN_CENTER);
+  gtk_widget_set_focusable(node->widget, action_id > 0);
+  g_object_set_data(G_OBJECT(node->widget), "omni-action-id", GINT_TO_POINTER(action_id));
+  omni_accessible_label(node->widget, value);
+  omni_accessible_description(node->widget, action_id > 0 ? "Inline button" : "Disabled inline button");
+  omni_accessible_set_disabled(node->widget, action_id <= 0);
   g_signal_connect(node->widget, "clicked", G_CALLBACK(on_clicked), NULL);
   return node;
 }
@@ -3577,7 +4660,44 @@ OmniAdwNode *omni_adw_secure_entry_new(const char *placeholder, const char *text
   if (node && node->widget && GTK_IS_ENTRY(node->widget)) {
     gtk_entry_set_visibility(GTK_ENTRY(node->widget), FALSE);
     gtk_entry_set_invisible_char(GTK_ENTRY(node->widget), 0x2022);
+    omni_accessible_value_text(node->widget, text);
   }
+  return node;
+}
+
+OmniAdwNode *omni_adw_image_new(const uint8_t *data, int32_t length, const char *alternative_text) {
+  OmniAdwNode *node = calloc(1, sizeof(OmniAdwNode));
+  const char *alt = alternative_text ? alternative_text : "Image";
+  if (!data || length <= 0) {
+    node->widget = gtk_label_new(alt);
+    gtk_label_set_xalign(GTK_LABEL(node->widget), 0.0f);
+    omni_accessible_label(node->widget, alt);
+    return node;
+  }
+
+  GBytes *bytes = g_bytes_new(data, (gsize)length);
+  GError *error = NULL;
+  GdkTexture *texture = gdk_texture_new_from_bytes(bytes, &error);
+  g_bytes_unref(bytes);
+  if (!texture) {
+    if (error) g_error_free(error);
+    node->widget = gtk_label_new(alt);
+    gtk_label_set_xalign(GTK_LABEL(node->widget), 0.0f);
+    omni_accessible_label(node->widget, alt);
+    return node;
+  }
+
+  node->widget = gtk_picture_new_for_paintable(GDK_PAINTABLE(texture));
+  gtk_picture_set_content_fit(GTK_PICTURE(node->widget), GTK_CONTENT_FIT_COVER);
+  gtk_picture_set_can_shrink(GTK_PICTURE(node->widget), TRUE);
+  gtk_widget_set_hexpand(node->widget, TRUE);
+  gtk_widget_set_vexpand(node->widget, TRUE);
+  gtk_widget_set_halign(node->widget, GTK_ALIGN_FILL);
+  gtk_widget_set_valign(node->widget, GTK_ALIGN_FILL);
+  gtk_widget_add_css_class(node->widget, "omni-image");
+  gtk_picture_set_alternative_text(GTK_PICTURE(node->widget), alt);
+  omni_accessible_label(node->widget, alt);
+  g_object_unref(texture);
   return node;
 }
 
@@ -3603,32 +4723,26 @@ OmniAdwNode *omni_adw_text_view_new(const char *text, int32_t action_id) {
 
 OmniAdwNode *omni_adw_dropdown_new(const char *title, const char *value, const char **labels, const int32_t *action_ids, int32_t count, int32_t expanded) {
   OmniAdwNode *node = calloc(1, sizeof(OmniAdwNode));
-  node->widget = gtk_menu_button_new();
-  GtkWidget *popover = gtk_popover_new();
-  GtkWidget *box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 4);
-  gtk_popover_set_child(GTK_POPOVER(popover), box);
-  const char *selected_label = NULL;
+  GtkStringList *model = gtk_string_list_new(NULL);
+  guint selected_index = GTK_INVALID_LIST_POSITION;
   for (int32_t i = 0; i < count; i++) {
     const char *label = labels && labels[i] ? labels[i] : "";
-    GtkWidget *item = gtk_button_new_with_label(label);
-    gtk_widget_set_halign(item, GTK_ALIGN_FILL);
-    gtk_widget_set_hexpand(item, TRUE);
-    omni_accessible_label(item, label);
-    omni_accessible_description(item, "Menu option");
-    omni_accessible_list_position(item, i + 1, count);
-    g_object_set_data(G_OBJECT(item), "omni-owner", node->widget);
-    g_object_set_data(G_OBJECT(item), "omni-action-id", GINT_TO_POINTER(action_ids ? action_ids[i] : 0));
-    g_signal_connect(item, "clicked", G_CALLBACK(on_menu_option_clicked), popover);
-    gtk_box_append(GTK_BOX(box), item);
-    if (value && strcmp(value, label) == 0) selected_label = label;
+    gtk_string_list_append(model, label);
+    if (value && strcmp(value, label) == 0) selected_index = (guint)i;
+  }
+  node->widget = gtk_drop_down_new(G_LIST_MODEL(model), NULL);
+  if (selected_index != GTK_INVALID_LIST_POSITION) {
+    g_object_set_data(G_OBJECT(node->widget), "omni-updating", GINT_TO_POINTER(1));
+    gtk_drop_down_set_selected(GTK_DROP_DOWN(node->widget), selected_index);
+    g_object_set_data(G_OBJECT(node->widget), "omni-updating", NULL);
   }
   gtk_widget_set_hexpand(node->widget, TRUE);
   gtk_widget_set_vexpand(node->widget, FALSE);
   gtk_widget_set_halign(node->widget, GTK_ALIGN_FILL);
   gtk_widget_set_valign(node->widget, GTK_ALIGN_CENTER);
-  gtk_menu_button_set_label(GTK_MENU_BUTTON(node->widget), selected_label ? selected_label : (title && title[0] ? title : "Select"));
-  gtk_menu_button_set_popover(GTK_MENU_BUTTON(node->widget), popover);
-  omni_accessible_label(node->widget, title && title[0] ? title : selected_label);
+  g_signal_connect(node->widget, "notify::selected", G_CALLBACK(on_dropdown_selected), NULL);
+  const char *selected_label = selected_index != GTK_INVALID_LIST_POSITION && labels && labels[selected_index] ? labels[selected_index] : "";
+  omni_accessible_label(node->widget, title && title[0] ? title : "Select");
   omni_accessible_value_text(node->widget, selected_label);
   gtk_accessible_update_property(GTK_ACCESSIBLE(node->widget), GTK_ACCESSIBLE_PROPERTY_HAS_POPUP, TRUE, -1);
   if (title && title[0]) {
@@ -3647,7 +4761,7 @@ OmniAdwNode *omni_adw_dropdown_new(const char *title, const char *value, const c
   g_object_set_data_full(G_OBJECT(node->widget), "omni-labels", label_copies, free_label_array);
   g_object_set_data(G_OBJECT(node->widget), "omni-action-count", GINT_TO_POINTER(count));
   if (expanded) {
-    g_object_set_data(G_OBJECT(node->widget), "omni-menu-expanded", GINT_TO_POINTER(1));
+    gtk_widget_grab_focus(node->widget);
   }
   return node;
 }
@@ -3822,11 +4936,22 @@ OmniAdwNode *omni_adw_separator_new(void) {
   return node;
 }
 
-OmniAdwNode *omni_adw_drawing_new(const char *label) {
+OmniAdwNode *omni_adw_drawing_new(const char *label, const char *fill_color) {
   OmniAdwNode *node = calloc(1, sizeof(OmniAdwNode));
   node->widget = gtk_drawing_area_new();
-  gtk_widget_set_size_request(node->widget, 96, 64);
+  gtk_widget_set_size_request(node->widget, 1, 1);
   gtk_widget_add_css_class(node->widget, "omni-drawing-island");
+  if (fill_color && fill_color[0] && !g_str_has_prefix(fill_color, "clear|")) {
+    if (g_str_has_prefix(fill_color, "orange|0.")) {
+      gtk_widget_add_css_class(node->widget, "omni-fill-orange-subtle");
+    } else if (g_str_has_prefix(fill_color, "orange|") || strcmp(fill_color, "orange") == 0) {
+      gtk_widget_add_css_class(node->widget, "omni-fill-orange");
+    } else if (g_str_has_prefix(fill_color, "gray|") || strcmp(fill_color, "gray") == 0) {
+      gtk_widget_add_css_class(node->widget, "omni-fill-gray");
+    } else {
+      gtk_widget_add_css_class(node->widget, "omni-fill-accent");
+    }
+  }
   omni_accessible_label(node->widget, label ? label : "OmniUI drawing island");
   gtk_widget_set_tooltip_text(node->widget, label ? label : "OmniUI drawing island");
   return node;
@@ -3844,16 +4969,16 @@ OmniAdwNode *omni_adw_frame_new(const char *css_classes, int32_t spacing) {
     }
     free(copy);
   }
-  omni_widget_expand(node->widget, TRUE);
+  omni_widget_expand(node->widget, FALSE);
   return node;
 }
 
 void omni_adw_node_apply_layout(OmniAdwNode *node, int32_t width, int32_t height, int32_t min_width, int32_t min_height, int32_t margin_top, int32_t margin_start, int32_t margin_bottom, int32_t margin_end, double opacity) {
   if (!node || !node->widget) return;
-  int request_width = width > 0 ? width : min_width;
-  int request_height = height > 0 ? height : min_height;
-  if (request_width > 0 || request_height > 0) {
-    gtk_widget_set_size_request(node->widget, request_width > 0 ? request_width : -1, request_height > 0 ? request_height : -1);
+  int request_width = width >= 0 ? width : min_width;
+  int request_height = height >= 0 ? height : min_height;
+  if (request_width >= 0 || request_height >= 0) {
+    gtk_widget_set_size_request(node->widget, request_width >= 0 ? request_width : -1, request_height >= 0 ? request_height : -1);
   }
   if (margin_top >= 0) gtk_widget_set_margin_top(node->widget, margin_top);
   if (margin_start >= 0) gtk_widget_set_margin_start(node->widget, margin_start);
@@ -3876,6 +5001,11 @@ void omni_adw_node_set_expand(OmniAdwNode *node, int32_t horizontal, int32_t ver
   }
 }
 
+void omni_adw_node_set_visible(OmniAdwNode *node, int32_t visible) {
+  if (!node || !node->widget) return;
+  gtk_widget_set_visible(node->widget, visible != 0);
+}
+
 void omni_adw_node_set_sensitive(OmniAdwNode *node, int32_t sensitive) {
   if (!node || !node->widget) return;
   gtk_widget_set_sensitive(node->widget, sensitive != 0);
@@ -3894,10 +5024,22 @@ void omni_adw_node_set_metadata(OmniAdwNode *node, const char *semantic_id, cons
   }
 }
 
+void omni_adw_node_add_css_class(OmniAdwNode *node, const char *css_class) {
+  if (!node || !node->widget || !css_class || !css_class[0]) return;
+  omni_widget_add_css_classes(node->widget, css_class);
+}
+
 void omni_adw_node_append(OmniAdwNode *parent, OmniAdwNode *child) {
   if (!parent || !child || !parent->widget || !child->widget) return;
   if (GTK_IS_BOX(parent->widget)) {
     gtk_box_append(GTK_BOX(parent->widget), child->widget);
+  } else if (GTK_IS_OVERLAY(parent->widget)) {
+    omni_widget_expand(child->widget, TRUE);
+    if (!gtk_overlay_get_child(GTK_OVERLAY(parent->widget))) {
+      gtk_overlay_set_child(GTK_OVERLAY(parent->widget), child->widget);
+    } else {
+      gtk_overlay_add_overlay(GTK_OVERLAY(parent->widget), child->widget);
+    }
   } else if (GTK_IS_LIST_BOX(parent->widget)) {
     GtkWidget *row = gtk_list_box_row_new();
     gtk_widget_set_hexpand(child->widget, TRUE);
@@ -3926,6 +5068,7 @@ void omni_adw_node_append(OmniAdwNode *parent, OmniAdwNode *child) {
   } else if (ADW_IS_OVERLAY_SPLIT_VIEW(parent->widget)) {
     const gboolean sidebar = parent->split_child_count == 0;
     GtkWidget *child_widget = child->widget;
+    omni_widget_expand(child_widget, TRUE);
     if (sidebar) {
       gtk_widget_set_size_request(child_widget, 280, -1);
       adw_overlay_split_view_set_sidebar(ADW_OVERLAY_SPLIT_VIEW(parent->widget), child_widget);
@@ -3936,6 +5079,7 @@ void omni_adw_node_append(OmniAdwNode *parent, OmniAdwNode *child) {
   } else if (ADW_IS_NAVIGATION_SPLIT_VIEW(parent->widget)) {
     const gboolean sidebar = parent->split_child_count == 0;
     GtkWidget *child_widget = child->widget;
+    omni_widget_expand(child_widget, TRUE);
     AdwNavigationPage *page = adw_navigation_page_new(child_widget, sidebar ? "Sidebar" : "Content");
     if (sidebar) {
       gtk_widget_set_size_request(child_widget, 280, -1);
@@ -3948,6 +5092,12 @@ void omni_adw_node_append(OmniAdwNode *parent, OmniAdwNode *child) {
     gtk_scrolled_window_set_child(GTK_SCROLLED_WINDOW(parent->widget), child->widget);
     apply_initial_scroll_offset(GTK_SCROLLED_WINDOW(parent->widget));
   } else if (GTK_IS_BUTTON(parent->widget)) {
+    gtk_widget_add_css_class(parent->widget, "flat");
+    gtk_widget_add_css_class(parent->widget, "omni-complex-button");
+    gtk_widget_set_hexpand(parent->widget, TRUE);
+    gtk_widget_set_halign(parent->widget, GTK_ALIGN_FILL);
+    gtk_widget_set_hexpand(child->widget, TRUE);
+    gtk_widget_set_halign(child->widget, GTK_ALIGN_FILL);
     gtk_button_set_child(GTK_BUTTON(parent->widget), child->widget);
   }
   child->widget = NULL;

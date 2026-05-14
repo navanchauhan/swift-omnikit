@@ -2504,7 +2504,9 @@ public struct _OnChange<V: Equatable>: View, _PrimitiveView {
     func _makeNode(_ ctx: inout _BuildContext) -> _VNode {
         let change = ctx.runtime._consumeOnChange(path: ctx.path, value: value, initial: false)
         if change.shouldFire {
-            action(change.oldValue, value)
+            _runOnChangeAction(ctx) {
+                action(change.oldValue, value)
+            }
         }
         return ctx.buildChild(content)
     }
@@ -2521,7 +2523,9 @@ public struct _OnChangeSimple<V: Equatable>: View, _PrimitiveView {
     func _makeNode(_ ctx: inout _BuildContext) -> _VNode {
         let change = ctx.runtime._consumeOnChange(path: ctx.path, value: value, initial: initial)
         if change.shouldFire {
-            action()
+            _runOnChangeAction(ctx) {
+                action()
+            }
         }
         return ctx.buildChild(content)
     }
@@ -2538,9 +2542,20 @@ public struct _OnChangeWithInitial<V: Equatable>: View, _PrimitiveView {
     func _makeNode(_ ctx: inout _BuildContext) -> _VNode {
         let change = ctx.runtime._consumeOnChange(path: ctx.path, value: value, initial: initial)
         if change.shouldFire {
-            action(change.oldValue, value)
+            _runOnChangeAction(ctx) {
+                action(change.oldValue, value)
+            }
         }
         return ctx.buildChild(content)
+    }
+}
+
+private func _runOnChangeAction(_ ctx: _BuildContext, _ action: () -> Void) {
+    let env = _UIRuntime._currentEnvironment ?? ctx.runtime._baseEnvironment
+    _UIRuntime.$_currentEnvironment.withValue(env) {
+        _BuildContext.withRuntime(ctx.runtime, path: ctx.path) {
+            action()
+        }
     }
 }
 

@@ -171,6 +171,11 @@ struct _DatePickerRole: Hashable, Sendable {
     let setActionID: Int?
 }
 
+struct _SegmentedPickerRole: Hashable, Sendable {
+    let title: String
+    let selectedIndex: Int
+}
+
 public struct _StyledTextSegment {
     let content: String
     let fg: Color?

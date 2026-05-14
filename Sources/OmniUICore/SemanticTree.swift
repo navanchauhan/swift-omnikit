@@ -48,6 +48,7 @@ public struct SemanticNode: Sendable, Identifiable {
         case slider(label: String, value: Double, lowerBound: Double, upperBound: Double, step: Double?, decrementActionID: Int?, incrementActionID: Int?)
         case stepper(label: String, value: Double?, decrementActionID: Int?, incrementActionID: Int?)
         case datePicker(label: String, value: String, timestamp: Double, setActionID: Int?, decrementActionID: Int?, incrementActionID: Int?)
+        case segmentedControl(title: String, selectedIndex: Int)
         case divider
         case drawingIsland(SemanticDrawingKind)
         case container(SemanticContainerRole)
@@ -128,7 +129,7 @@ public enum SemanticAxis: Sendable, Equatable {
 }
 
 public enum SemanticDrawingKind: Sendable, Equatable {
-    case shape(String)
+    case shape(String, fill: String?, stroke: String?)
     case gradient
     case canvas
 }
@@ -225,6 +226,9 @@ enum SemanticLowerer {
             if let identifier = value.base as? _AccessibilityIdentifier {
                 return SemanticNode(id: path, kind: .modifier(.accessibilityIdentifier(identifier.value)), children: [lower(child, path: path + ".content")])
             }
+            if let segmented = value.base as? _SegmentedPickerRole {
+                return SemanticNode(id: path, kind: .segmentedControl(title: segmented.title, selectedIndex: segmented.selectedIndex), children: [lower(child, path: path + ".content")])
+            }
             if let role = value.base as? _TextInputRole, role == .textEditor {
                 let lowered = lower(child, path: path + ".content")
                 if case .textField(let actionID, _, let text, let cursor, let isFocused, _) = lowered.kind {
@@ -286,13 +290,20 @@ enum SemanticLowerer {
         case .divider:
             return SemanticNode(id: path, kind: .divider)
         case .shape(let shape):
-            return SemanticNode(id: path, kind: .drawingIsland(.shape(shape.kind.semanticName)))
+            return SemanticNode(
+                id: path,
+                kind: .drawingIsland(.shape(
+                    shape.kind.semanticName,
+                    fill: shape.fillColor?.rawValue,
+                    stroke: shape.strokeColor?.rawValue
+                ))
+            )
         case .gradient:
             return SemanticNode(id: path, kind: .drawingIsland(.gradient))
         case .background(let child, let background):
             return SemanticNode(id: path, kind: .modifier(.background("native/adwaita")), children: [lower(background, path: path + ".background"), lower(child, path: path + ".content")])
         case .style(let fg, let bg, let child):
-            let mod: SemanticModifier = fg.map { .foreground($0.name) } ?? bg.map { .background($0.name) } ?? .noOp("empty-style")
+            let mod: SemanticModifier = fg.map { .foreground($0.rawValue) } ?? bg.map { .background($0.rawValue) } ?? .noOp("empty-style")
             return SemanticNode(id: path, kind: .modifier(mod), children: [lower(child, path: path + ".content")])
         case .frame(let w, let h, let minW, let maxW, let minH, let maxH, let child):
             return SemanticNode(id: path, kind: .modifier(.frame(width: w, height: h, minWidth: minW, maxWidth: maxW, minHeight: minH, maxHeight: maxH)), children: [lower(child, path: path + ".content")])

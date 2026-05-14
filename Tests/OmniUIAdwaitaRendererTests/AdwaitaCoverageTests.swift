@@ -69,11 +69,14 @@ import Testing
     #expect(!omniUIFacade.contains("OMNIKIT_RENDERER"))
     #expect(header.contains("OmniAdwApp *omni_adw_app_new"))
     #expect(header.contains("OmniAdwNode *omni_adw_button_new"))
+    #expect(header.contains("OmniAdwNode *omni_adw_overlay_new"))
     #expect(header.contains("OmniAdwNode *omni_adw_drawing_new"))
     #expect(header.contains("omni_adw_app_share_url"))
     #expect(shim.contains("adw_application_new"))
     #expect(shim.contains("adw_application_window_new"))
     #expect(shim.contains("gtk_button_new_with_label"))
+    #expect(shim.contains("gtk_overlay_new"))
+    #expect(shim.contains("gtk_overlay_add_overlay"))
     #expect(shim.contains("gtk_drawing_area_new"))
     #expect(renderer.contains("import CAdwaita"))
     #expect(renderer.contains("omni_adw_app_new"))
@@ -174,6 +177,44 @@ import Testing
     #expect(shim.contains("default_height"))
     #expect(shim.contains("gtk_window_set_default_size(GTK_WINDOW(app->window), app->default_width, app->default_height)"))
     #expect(header.contains("omni_adw_app_set_default_size"))
+}
+
+@Test func adwaitaHeaderActionsPreserveSegmentedPickerState() throws {
+    let coreNodes = try readRepositoryFile("Sources/OmniUICore/Nodes.swift")
+    let corePrimitives = try readRepositoryFile("Sources/OmniUICore/Primitives.swift")
+    let semantic = try readRepositoryFile("Sources/OmniUICore/SemanticTree.swift")
+    let renderer = try readRepositoryFile("Sources/OmniUIAdwaitaRenderer/AdwaitaRenderer.swift")
+    let header = try readRepositoryFile("Sources/CAdwaita/include/CAdwaita.h")
+    let shim = try readRepositoryFile("Sources/CAdwaita/shim.c")
+
+    #expect(coreNodes.contains("_SegmentedPickerRole"))
+    #expect(corePrimitives.contains("_SegmentedPickerRole(title: title, selectedIndex: selectedIndex)"))
+    #expect(semantic.contains("case segmentedControl(title: String, selectedIndex: Int)"))
+    #expect(renderer.contains("isSegmented: Bool = false"))
+    #expect(renderer.contains("isSelected: Bool = false"))
+    #expect(renderer.contains("case .segmentedControl(_, let selectedIndex)"))
+    #expect(renderer.contains("styleBuffer.baseAddress"))
+    #expect(header.contains("const int32_t *styles"))
+    #expect(shim.contains("OMNI_HEADER_ACTION_SEGMENTED"))
+    #expect(shim.contains("OMNI_HEADER_ACTION_SELECTED"))
+    #expect(shim.contains("omni-segmented-control"))
+    #expect(shim.contains("omni-selected-segment"))
+}
+
+@Test func adwaitaSidebarAndToolbarPolishUsesGenericNativeBehavior() throws {
+    let renderer = try readRepositoryFile("Sources/OmniUIAdwaitaRenderer/AdwaitaRenderer.swift")
+    let shim = try readRepositoryFile("Sources/CAdwaita/shim.c")
+
+    #expect(renderer.contains("case .disabledButton:"))
+    #expect(renderer.contains("actions.append(Action(label: label, actionID: 0, placement: placement))"))
+    #expect(shim.contains("omni_sidebar_content_set_text"))
+    #expect(shim.contains("omni_sidebar_label_new"))
+    #expect(shim.contains("gtk_label_set_wrap(GTK_LABEL(label), TRUE)"))
+    #expect(shim.contains("gtk_label_set_lines(GTK_LABEL(label), 3)"))
+    #expect(shim.contains("omni_available_symbolic_icon"))
+    #expect(shim.contains("gtk_icon_theme_has_icon"))
+    #expect(shim.contains("gtk_widget_set_sensitive(button, FALSE)"))
+    #expect(shim.contains("omni_accessible_set_disabled(button, TRUE)"))
 }
 
 @Test func adwaitaSceneInitializerInstallsNativeSettingsAndCommandsChrome() throws {
@@ -545,7 +586,12 @@ import Testing
     #expect(shim.contains("setAccessibilityValue:"))
     #expect(shim.contains("accessibilityValue"))
     #expect(shim.contains("omni_macos_accessibility_value_key"))
-    #expect(shim.contains("GTK_IS_ENTRY(widget) || GTK_IS_TEXT_VIEW(widget) || (value && value[0])"))
+    #expect(shim.contains("accessibilityAttributeNames"))
+    #expect(shim.contains("isAccessibilityAttributeSettable:"))
+    #expect(shim.contains("setAccessibilityValue:forAttribute:"))
+    #expect(shim.contains("GtkWidget *widget = omni_macos_accessibility_associated_widget(self);\n  BOOL didScroll = omni_macos_accessibility_scroll_widget(widget, direction, horizontal);"))
+    #expect(shim.contains("omni_ns_string_or_empty(gtk_editable_get_text(GTK_EDITABLE(widget)))"))
+    #expect(shim.contains("GTK_IS_EDITABLE(widget) || GTK_IS_TEXT_VIEW(widget) || (value && value[0])"))
     #expect(shim.contains("gtk_editable_set_text(GTK_EDITABLE(widget), text)"))
     #expect(shim.contains("adw_dialog_force_close(app->modal_dialog)"))
     #expect(shim.contains("gtk_button_get_label(GTK_BUTTON(widget))"))
@@ -645,11 +691,11 @@ import Testing
     #expect(drawing.contains("commands.append(.fillShape(node))"))
     #expect(drawing.contains("return nodes.isEmpty ? .empty : .group(nodes)"))
     #expect(semantic.contains("case .shape(let shape):"))
-    #expect(semantic.contains("kind: .drawingIsland(.shape(shape.kind.semanticName))"))
+    #expect(semantic.contains("kind: .drawingIsland(.shape("))
     #expect(semantic.contains("case .gradient:"))
     #expect(semantic.contains("kind: .drawingIsland(.gradient)"))
     #expect(renderer.contains("case .drawingIsland(let kind):"))
-    #expect(renderer.contains("omni_adw_drawing_new(\"OmniUI \\(kind)"))
+    #expect(renderer.contains("omni_adw_drawing_new(\"OmniUI shape(\\(name))\", fill)"))
     #expect(shim.contains("gtk_drawing_area_new()"))
     #expect(shim.contains("gtk_widget_add_css_class(node->widget, \"omni-drawing-island\")"))
     #expect(shim.contains("gtk_widget_set_tooltip_text(node->widget"))
@@ -714,10 +760,80 @@ import Testing
     #expect(shim.contains("omni_macos_accessibility_sync_idle"))
     #expect(shim.contains("on_scroll_adjustment_value_changed"))
     #expect(shim.contains("g_signal_connect(vadjustment, \"value-changed\", G_CALLBACK(on_scroll_adjustment_value_changed), app)"))
-    #expect(shim.contains("if (GTK_IS_ENTRY(widget)) return \"AXTextField\";"))
+    #expect(shim.contains("if (GTK_IS_EDITABLE(widget)) return \"AXTextField\";"))
     #expect(shim.contains("if (GTK_IS_BUTTON(widget) || GTK_IS_MENU_BUTTON(widget)) return \"AXButton\";"))
+    #expect(shim.contains("if (GPOINTER_TO_INT(g_object_get_data(G_OBJECT(widget), \"omni-action-id\")) > 0) return \"AXButton\";"))
     #expect(shim.contains("if (GTK_IS_LIST_BOX_ROW(widget) && GPOINTER_TO_INT(g_object_get_data(G_OBJECT(widget), \"omni-action-id\")) > 0) return \"AXButton\";"))
     #expect(shim.contains("if (GTK_IS_LIST_VIEW(widget) || GTK_IS_LIST_BOX(widget)) return \"AXList\";"))
+}
+
+@Test func adwaitaComplexTapTargetsPreserveNestedInlineActions() throws {
+    let renderer = try readRepositoryFile("Sources/OmniUIAdwaitaRenderer/AdwaitaRenderer.swift")
+    let shim = try readRepositoryFile("Sources/CAdwaita/shim.c")
+    let header = try readRepositoryFile("Sources/CAdwaita/include/CAdwaita.h")
+
+    #expect(header.contains("omni_adw_click_container_new"))
+    #expect(header.contains("omni_adw_inline_button_new"))
+    #expect(renderer.contains("rendersAsInlineButton(node, context: context)"))
+    #expect(renderer.contains("return context == .inline"))
+    #expect(renderer.contains("built = omni_adw_inline_button_new(label, Int32(actionID), foregroundCSSClass(in: node) ?? \"\")"))
+    #expect(renderer.contains("built = omni_adw_click_container_new(label, Int32(actionID))"))
+    #expect(renderer.contains("build(child, context: .inline)"))
+    #expect(shim.contains("click_targets_different_nested_action"))
+    #expect(shim.contains("install_click_container_controller"))
+    #expect(shim.contains(".omni-inline-link-button"))
+    #expect(shim.contains(".omni-click-container"))
+}
+
+@Test func adwaitaCardRowsSeeFlexibleFramesThroughTapAndShadowWrappers() throws {
+    let renderer = try readRepositoryFile("Sources/OmniUIAdwaitaRenderer/AdwaitaRenderer.swift")
+
+    #expect(renderer.contains("case .button:\n            return node.children.contains(where: hasFlexibleHorizontalFrame)"))
+    #expect(renderer.contains("case .group, .zstack, .stack, .container:\n            return node.children.contains(where: hasFlexibleHorizontalFrame)"))
+    #expect(renderer.contains("case .opacity, .clip, .background, .padding, .accessibilityLabel, .accessibilityIdentifier, .noOp, .foreground, .shadow, .glass, .crt:"))
+    #expect(renderer.contains("omni_adw_box_set_homogeneous(parent, 1)"))
+    #expect(renderer.contains("let homogeneousHorizontal = !vertical && shouldUseHomogeneousHorizontalBox(children)"))
+    #expect(renderer.contains("if homogeneousHorizontal, !isZeroWidthFrame(child)"))
+    #expect(!renderer.contains("if maxHeight == Int.max { return true }"))
+}
+
+@Test func macosWebViewBridgeAcceptsPointerScrollEvents() throws {
+    let source = try readRepositoryFile("Sources/CAdwaita/macos_webview.m")
+    let shim = try readRepositoryFile("Sources/CAdwaita/shim.c")
+
+    #expect(source.contains("@interface OmniMacosWebViewContainer : NSView"))
+    #expect(source.contains("- (BOOL)acceptsFirstMouse:(NSEvent *)event"))
+    #expect(source.contains("- (NSView *)hitTest:(NSPoint)point"))
+    #expect(source.contains("- (void)scrollWheel:(NSEvent *)event"))
+    #expect(source.contains("omni_macos_web_view_scroll_by(self.webViewData, -dx, -dy);"))
+    #expect(source.contains("[self.window makeFirstResponder:self.embeddedView];"))
+    #expect(source.contains("@property(nonatomic, weak) NSView *embeddedView;"))
+    #expect(source.contains("void *native_view;"))
+    #expect(source.contains("GtkWidget *omni_macos_web_view_new(const char *url, void *native_view)"))
+    #expect(source.contains("omni_macos_web_view_handle_key"))
+    #expect(source.contains("omni_macos_web_view_gtk_scroll"))
+    #expect(source.contains("omni_macos_web_view_widget_scroll_page"))
+    #expect(source.contains("@interface OmniMacosWebViewNavigationDelegate : NSObject <WKNavigationDelegate>"))
+    #expect(source.contains("omni_macos_web_view_set_modal_occlusion"))
+    #expect(source.contains("omni_web_views_occluded_by_modal"))
+    #expect(source.contains("container_view.hidden = omni_web_views_occluded_by_modal ||"))
+    #expect(!source.contains("omni_macos_web_view_inject_hn_chrome"))
+    #expect(source.contains("\"omni-accessible-label\", g_strdup(url), g_free"))
+    #expect(source.contains("\"omni-accessible-description\", g_strdup(\"Web content\"), g_free"))
+    #expect(source.contains("omni_macos_single_visible_web_view"))
+    #expect(source.contains("document.scrollingElement||document.documentElement||document.body"))
+    #expect(source.contains("window.scrollBy({left:dx,top:dy,behavior:'auto'});"))
+    #expect(source.contains("((OmniMacosWebViewContainer *)container_view).webView = web_view;"))
+    #expect(source.contains("((OmniMacosWebViewContainer *)container_view).webViewData = data;"))
+    #expect(shim.contains("gboolean omni_macos_web_view_handle_key(guint keyval, GdkModifierType state);"))
+    #expect(shim.contains("gboolean omni_macos_web_view_widget_scroll_page(GtkWidget *widget, int direction);"))
+    #expect(shim.contains("OMNI_AX_TRAIT_SCROLL_AREA"))
+    #expect(shim.contains("accessibilityActionNames"))
+    #expect(shim.contains("accessibilityPerformAction:"))
+    #expect(shim.contains("\"AXScrollDown\""))
+    #expect(shim.contains("accessibilityPerformScrollDown"))
+    #expect(shim.contains("if (g_object_get_data(G_OBJECT(widget), \"omni-macos-web-view\")) return \"AXScrollArea\";"))
+    #expect(shim.contains("if (omni_macos_web_view_handle_key(keyval, state)) return TRUE;"))
 }
 
 @Test func cAdwaitaShimCanReplaceNamedSemanticSubtrees() throws {
@@ -774,6 +890,19 @@ import Testing
     #expect(shim.contains("action_id > 0 && app->focused_action_id != action_id"))
     #expect(shim.contains("if (app->focus_callback) app->focus_callback(action_id, app->context);"))
     #expect(shim.contains("handle_entry_readline_key"))
+    #expect(shim.contains("OMNI_ENTRY_TEXT_COMMIT_DELAY_MS"))
+    #expect(shim.contains("#define OMNI_ENTRY_TEXT_COMMIT_DELAY_MS 1500"))
+    #expect(shim.contains("on_entry_text_commit_timeout"))
+    #expect(shim.contains("g_timeout_add_full"))
+    #expect(shim.contains("omni_entry_commit_text_now(widget)"))
+    #expect(shim.contains("omni_macos_text_input_install(app)"))
+    #expect(shim.contains("omni_adw_app_handle_macos_text_input"))
+    #expect(shim.contains("gtk_editable_insert_text"))
+    #expect(shim.contains("gtk_widget_grab_focus(widget);"))
+    let macosWebView = try readRepositoryFile("Sources/CAdwaita/macos_webview.m")
+    #expect(macosWebView.contains("addLocalMonitorForEventsMatchingMask:NSEventMaskKeyDown"))
+    #expect(macosWebView.contains("NSEventModifierFlagCommand | NSEventModifierFlagControl | NSEventModifierFlagOption"))
+    #expect(macosWebView.contains("event.characters"))
     #expect(shim.contains("GDK_KEY_e"))
     #expect(shim.contains("GDK_KEY_k"))
     #expect(shim.contains("controller_native_text_widget(controller)"))
@@ -826,7 +955,9 @@ import Testing
     }
 
     let rendererTerms = [
-        "case .foreground, .background, .shadow, .glass, .crt, .clip, .accessibilityLabel, .noOp:",
+        "case .foreground(let color):",
+        "case .background(let color):",
+        "colorCSSClass(prefix:",
         "return primaryContent()",
         "case .badge:",
         "css = \"accent\"",
@@ -834,6 +965,8 @@ import Testing
         "AdwaitaHeaderEntry.extract",
         "omni_adw_app_set_header_entry",
         "metadataID = identifier",
+        "_ = box.runtime.focusByRawActionID(rawID)",
+        "_ = box.settingsRuntime.focusByRawActionID(settingsRawID)",
         "case .frame, .padding, .opacity, .offset:",
         "applyLayoutModifier(modifier, to: parent)",
         "case .accessibilityLabel(let label)",
@@ -855,6 +988,9 @@ import Testing
         "gtk_accessible_update_relation(",
         "GDK_KEY_Return",
         "GDK_KEY_Escape",
+        ".omni-fg-orange",
+        ".omni-bg-orange",
+        ".omni-bg-card",
     ]
     for term in shimTerms {
         #expect(shim.contains(term))
@@ -863,6 +999,22 @@ import Testing
     #expect(supportDoc.contains("Common layout modifiers such as frame, padding, opacity, and positive offset map to native GTK"))
     #expect(supportDoc.contains("Accessibility labels and identifiers are preserved in the semantic tree"))
     #expect(supportDoc.contains("Native Return and Escape key presses invoke OmniUI"))
+}
+
+@Test func adwaitaRendererMapsSemanticColorsWithoutAppSpecificBranches() throws {
+    let renderer = try readRepositoryFile("Sources/OmniUIAdwaitaRenderer/AdwaitaRenderer.swift")
+    let shim = try readRepositoryFile("Sources/CAdwaita/shim.c")
+
+    #expect(!renderer.contains("private enum AppAccent"))
+    #expect(!renderer.contains("Assets.xcassets"))
+    #expect(renderer.contains("backgroundShapeCSSClass(from: children)"))
+    #expect(renderer.contains("firstBackgroundShapeColor(in: background)"))
+    #expect(renderer.contains("return \"\\(prefix)-accent\""))
+    #expect(renderer.contains("return alpha < 0.5 ? \"\\(prefix)-orange-muted\" : \"\\(prefix)-orange\""))
+    #expect(shim.contains(".omni-complex-button"))
+    #expect(shim.contains(".omni-bg-orange"))
+    #expect(shim.contains(".omni-fg-orange-muted"))
+    #expect(shim.contains(".omni-bg-card"))
 }
 
 @Test func iGopherAdwaitaParityFixesStayCovered() throws {

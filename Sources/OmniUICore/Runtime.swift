@@ -9,6 +9,7 @@ import Observation
 // single-threaded ownership for mutation.
 public final class _UIRuntime: @unchecked Sendable {
     private static let _overlayPathSentinel = Int.min
+    private static let _maxSynchronousRenderPasses = 4
 
     /// Build-time ambient runtime. Set by `_BuildContext.withRuntime`.
     @TaskLocal public static var _current: _UIRuntime?
@@ -654,6 +655,10 @@ public final class _UIRuntime: @unchecked Sendable {
             return "dirty-paths:\(_pendingDirtyPaths.count):\(preview)"
         }
         return nil
+    }
+
+    private var _hasPendingSynchronousInvalidation: Bool {
+        _pendingDirtyEverything || !_pendingDirtyPaths.isEmpty
     }
 
     private func _setGlobalEditMode(_ mode: EditMode) {
@@ -1627,6 +1632,7 @@ public final class _UIRuntime: @unchecked Sendable {
         if let old = state[key] as? AnyHashable, let new = value as? AnyHashable, old == new {
             return
         }
+        traceStateSet(path: path, key: key, value: value)
         state[key] = value
         _markDirtyForState(stateKey: key, ownerPath: path)
     }
@@ -1636,8 +1642,17 @@ public final class _UIRuntime: @unchecked Sendable {
         if let existing = state[key] as? Value, existing == value {
             return
         }
+        traceStateSet(path: path, key: key, value: value)
         state[key] = value
         _markDirtyForState(stateKey: key, ownerPath: path)
+    }
+
+    private func traceStateSet<Value>(path: [Int], key: String, value: Value) {
+        guard ProcessInfo.processInfo.environment["OMNIUI_STATE_TRACE"] == "1" else { return }
+        let pathText = path.map(String.init).joined(separator: ".")
+        FileHandle.standardError.write(
+            Data("OmniUI state: path=\(pathText) key=\(key) \(String(reflecting: Value.self))=\(value)\n".utf8)
+        )
     }
 
     private func _stateKey(seed: _StateSeed, path: [Int]) -> String {
@@ -1672,6 +1687,7 @@ public final class _UIRuntime: @unchecked Sendable {
 
             modifierState[key] = state
             if shouldFire {
+                traceOnChange(path: path, oldValue: oldValue, newValue: value)
                 _noteBuildSideEffect()
             }
             return (shouldFire, oldValue)
@@ -1679,9 +1695,18 @@ public final class _UIRuntime: @unchecked Sendable {
 
         modifierState[key] = _OnChangeRuntimeState(value: value, firedInitial: initial)
         if initial {
+            traceOnChange(path: path, oldValue: value, newValue: value)
             _noteBuildSideEffect()
         }
         return (initial, value)
+    }
+
+    private func traceOnChange<Value>(path: [Int], oldValue: Value, newValue: Value) {
+        guard ProcessInfo.processInfo.environment["OMNIUI_ONCHANGE_TRACE"] == "1" else { return }
+        let pathText = path.map(String.init).joined(separator: ".")
+        FileHandle.standardError.write(
+            Data("OmniUI onChange: path=\(pathText) \(String(reflecting: Value.self)) \(oldValue) -> \(newValue)\n".utf8)
+        )
     }
 
     func _replaceModifierValue<Value>(
@@ -1697,38 +1722,46 @@ public final class _UIRuntime: @unchecked Sendable {
 
     public func debugRender<V: View>(_ root: V, size: _Size, renderShapeGlyphs: Bool = true) -> DebugSnapshot {
         let runtime = self
-        runtime._prepareRuntimeRegistriesForFrame()
-        runtime._beginFrameBuild(size: size)
-        var node = runtime._buildRootNode(root, size: size)
-        node = runtime._applyOverlays(to: node)
-        runtime._finalizePostBuildState()
+        var laidOut: _DebugLayout.Result?
+        var pass = 0
+        repeat {
+            pass += 1
+            runtime._prepareRuntimeRegistriesForFrame()
+            runtime._beginFrameBuild(size: size)
+            var node = runtime._buildRootNode(root, size: size)
+            node = runtime._applyOverlays(to: node)
+            runtime._finalizePostBuildState()
 
-        let laidOut = _DebugLayout.layout(
-            node: node,
-            in: _Rect(origin: _Point(x: 0, y: 0), size: size),
-            renderShapeGlyphs: renderShapeGlyphs
-        )
-        runtime._updateScrollTargets(laidOut.scrollTargets)
-        runtime._updateLastInteractionRegions(
-            hitRegions: laidOut.hitRegions,
-            scrollRegions: laidOut.scrollRegions
-        )
-        runtime._firePreferenceCallbacks()
-        runtime._finishFrameBuild(size: size)
+            let current = _DebugLayout.layout(
+                node: node,
+                in: _Rect(origin: _Point(x: 0, y: 0), size: size),
+                renderShapeGlyphs: renderShapeGlyphs
+            )
+            runtime._updateScrollTargets(current.scrollTargets)
+            runtime._updateLastInteractionRegions(
+                hitRegions: current.hitRegions,
+                scrollRegions: current.scrollRegions
+            )
+            runtime._firePreferenceCallbacks()
+            runtime._finishFrameBuild(size: size)
+            laidOut = current
+        } while runtime._hasPendingSynchronousInvalidation && pass < Self._maxSynchronousRenderPasses
+
+        let finalLayout = laidOut!
         let focusedRect: _Rect? = {
             guard let raw = focusedActionRawID() else { return nil }
-            return laidOut.hitRegions.last(where: { $0.1.raw == raw })?.0
+            return finalLayout.hitRegions.last(where: { $0.1.raw == raw })?.0
         }()
         return DebugSnapshot(
             size: size,
-            lines: laidOut.lines,
-            cells: laidOut.cells,
-            styledCells: laidOut.styledCells,
+            lines: finalLayout.lines,
+            cells: finalLayout.cells,
+            styledCells: finalLayout.styledCells,
             focusedRect: focusedRect,
-            shapeRegions: laidOut.shapeRegions,
-            hitRegions: laidOut.hitRegions,
-            hoverRegions: laidOut.hoverRegions,
-            scrollRegions: laidOut.scrollRegions,
+            shapeRegions: finalLayout.shapeRegions,
+            hitRegions: finalLayout.hitRegions,
+            hoverRegions: finalLayout.hoverRegions,
+            scrollRegions: finalLayout.scrollRegions,
             runtime: runtime
         )
     }
@@ -1736,6 +1769,10 @@ public final class _UIRuntime: @unchecked Sendable {
 
 extension _UIRuntime {
     func _markDirtyFromModelContext() {
+        _markDirty()
+    }
+
+    public func _markDirtyFromExternalResource() {
         _markDirty()
     }
 
@@ -1825,66 +1862,78 @@ extension _UIRuntime {
 extension _UIRuntime {
     public func render<V: View>(_ root: V, size: _Size) -> RenderSnapshot {
         let runtime = self
+        var laidOut: _RenderLayout.Result?
+        var pass = 0
+        repeat {
+            pass += 1
+            runtime._prepareRuntimeRegistriesForFrame()
+            runtime._beginFrameBuild(size: size)
+            var node = runtime._buildRootNode(root, size: size)
+            node = runtime._applyOverlays(to: node)
+            runtime._finalizePostBuildState()
 
-        runtime._prepareRuntimeRegistriesForFrame()
-        runtime._beginFrameBuild(size: size)
-        var node = runtime._buildRootNode(root, size: size)
-        node = runtime._applyOverlays(to: node)
-        runtime._finalizePostBuildState()
+            let current = _RenderLayout.layout(node: node, size: size)
+            runtime._updateScrollTargets(current.scrollTargets)
+            runtime._updateLastInteractionRegions(
+                hitRegions: current.hitRegions,
+                scrollRegions: current.scrollRegions
+            )
+            runtime._firePreferenceCallbacks()
+            runtime._finishFrameBuild(size: size)
+            laidOut = current
+        } while runtime._hasPendingSynchronousInvalidation && pass < Self._maxSynchronousRenderPasses
 
-        let laidOut = _RenderLayout.layout(node: node, size: size)
-        runtime._updateScrollTargets(laidOut.scrollTargets)
-        runtime._updateLastInteractionRegions(
-            hitRegions: laidOut.hitRegions,
-            scrollRegions: laidOut.scrollRegions
-        )
-        runtime._firePreferenceCallbacks()
-        runtime._finishFrameBuild(size: size)
+        let finalLayout = laidOut!
         let focusedRect: _Rect? = {
             guard let raw = focusedActionRawID() else { return nil }
-            return laidOut.hitRegions.last(where: { $0.1.raw == raw })?.0
+            return finalLayout.hitRegions.last(where: { $0.1.raw == raw })?.0
         }()
         return RenderSnapshot(
             size: size,
-            ops: laidOut.ops,
+            ops: finalLayout.ops,
             focusedRect: focusedRect,
-            shapeRegions: laidOut.shapeRegions,
-            cursorPosition: laidOut.cursorPosition,
-            activeMenu: laidOut.activeMenu,
-            activePicker: laidOut.activePicker,
-            activeTextField: laidOut.activeTextField,
-            hitRegions: laidOut.hitRegions,
-            hoverRegions: laidOut.hoverRegions,
-            scrollRegions: laidOut.scrollRegions,
+            shapeRegions: finalLayout.shapeRegions,
+            cursorPosition: finalLayout.cursorPosition,
+            activeMenu: finalLayout.activeMenu,
+            activePicker: finalLayout.activePicker,
+            activeTextField: finalLayout.activeTextField,
+            hitRegions: finalLayout.hitRegions,
+            hoverRegions: finalLayout.hoverRegions,
+            scrollRegions: finalLayout.scrollRegions,
             runtime: runtime
         )
     }
 
     public func semanticSnapshot<V: View>(_ root: V, size: _Size) -> SemanticSnapshot {
         let runtime = self
-
-        runtime._prepareRuntimeRegistriesForFrame()
-        runtime._beginFrameBuild(size: size)
-        var node = runtime._buildRootNode(root, size: size)
-        node = runtime._applyOverlays(to: node)
-        runtime._finalizePostBuildState()
-        if !runtime.pendingScrollRequests.isEmpty || runtime._containsScrollReaderTarget(node) {
-            let firstLayout = _RenderLayout.layout(node: node, size: size)
-            if runtime._updateScrollTargets(firstLayout.scrollTargets) {
-                runtime._prepareRuntimeRegistriesForFrame()
-                node = runtime._buildRootNode(root, size: size)
-                node = runtime._applyOverlays(to: node)
-                runtime._finalizePostBuildState()
-                let secondLayout = _RenderLayout.layout(node: node, size: size)
-                runtime._updateScrollTargets(secondLayout.scrollTargets)
+        var node: _VNode?
+        var pass = 0
+        repeat {
+            pass += 1
+            runtime._prepareRuntimeRegistriesForFrame()
+            runtime._beginFrameBuild(size: size)
+            var current = runtime._buildRootNode(root, size: size)
+            current = runtime._applyOverlays(to: current)
+            runtime._finalizePostBuildState()
+            if !runtime.pendingScrollRequests.isEmpty || runtime._containsScrollReaderTarget(current) {
+                let firstLayout = _RenderLayout.layout(node: current, size: size)
+                if runtime._updateScrollTargets(firstLayout.scrollTargets) {
+                    runtime._prepareRuntimeRegistriesForFrame()
+                    current = runtime._buildRootNode(root, size: size)
+                    current = runtime._applyOverlays(to: current)
+                    runtime._finalizePostBuildState()
+                    let secondLayout = _RenderLayout.layout(node: current, size: size)
+                    runtime._updateScrollTargets(secondLayout.scrollTargets)
+                }
             }
-        }
 
-        runtime._firePreferenceCallbacks()
-        runtime._finishFrameBuild(size: size)
+            runtime._firePreferenceCallbacks()
+            runtime._finishFrameBuild(size: size)
+            node = current
+        } while runtime._hasPendingSynchronousInvalidation && pass < Self._maxSynchronousRenderPasses
 
         return SemanticSnapshot(
-            root: SemanticLowerer.lower(node),
+            root: SemanticLowerer.lower(node!),
             size: size,
             focusedActionID: focusedActionRawID(),
             activeMenu: nil,

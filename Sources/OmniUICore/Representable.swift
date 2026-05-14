@@ -36,9 +36,8 @@ public extension NSViewRepresentable where Coordinator == Void {
 
 @inline(__always)
 func _makeNode<V: NSViewRepresentable>(_ view: V, _ ctx: inout _BuildContext) -> _VNode {
-    _ = view.makeCoordinator()
-    _ = ctx
-    return .style(fg: .secondary, bg: nil, child: .text("NSView: \(String(describing: V.NSViewType.self))"))
+    _OmniRepresentableFallback.node(for: view, path: ctx.path)
+        ?? .style(fg: .secondary, bg: nil, child: .text("NSView: \(String(describing: V.NSViewType.self))"))
 }
 #endif
 

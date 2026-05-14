@@ -1,6 +1,9 @@
 import CAdwaita
 import Foundation
 import OmniUICore
+#if canImport(AppKit)
+import AppKit
+#endif
 
 private let adwaitaCommandActionOffset = 1_000_000
 private let adwaitaSettingsActionOffset = 2_000_000
@@ -66,6 +69,7 @@ public final class AdwaitaApp<Root: View>: @unchecked Sendable {
                     return
                 }
                 let previous = box.textValuesByActionID[rawID] ?? ""
+                _ = box.settingsRuntime.focusByRawActionID(settingsRawID)
                 box.settingsRuntime.replaceTextForRawActionID(settingsRawID, previous: previous, next: next)
                 box.textValuesByActionID[rawID] = next
                 box.rerender()
@@ -76,6 +80,7 @@ public final class AdwaitaApp<Root: View>: @unchecked Sendable {
                 return
             }
             let previous = box.textValuesByActionID[rawID] ?? ""
+            _ = box.runtime.focusByRawActionID(rawID)
             box.runtime.replaceTextForRawActionID(rawID, previous: previous, next: next)
             box.textValuesByActionID[rawID] = next
             box.rerender()
@@ -147,7 +152,14 @@ public final class AdwaitaApp<Root: View>: @unchecked Sendable {
         }
 
         let rerender: @MainActor () -> Void = { [runtime, root, renderSize] in
+            let traceRenders = ProcessInfo.processInfo.environment["OMNIUI_ADWAITA_RENDER_TRACE"] == "1"
+            if traceRenders {
+                print("OmniUI Adwaita rerender: begin")
+            }
             let snapshot = runtime.semanticSnapshot(root(), size: renderSize)
+            if traceRenders {
+                print("OmniUI Adwaita rerender: semantic snapshot ready")
+            }
             let presentation = AdwaitaPresentationExtractor.extract(from: snapshot.root)
             let displaySnapshot = SemanticSnapshot(
                 root: presentation.root,
@@ -169,6 +181,9 @@ public final class AdwaitaApp<Root: View>: @unchecked Sendable {
             let changes = callbackBox.previousSnapshot.map {
                 SemanticDiff.changes(from: $0, to: displaySnapshot)
             } ?? []
+            if traceRenders {
+                print("OmniUI Adwaita rerender: changes=\(changes.count)")
+            }
             callbackBox.lastChanges = changes
             callbackBox.textValuesByActionID = AdwaitaNodeBuilder.textValues(in: displaySnapshot.root)
             if changes.isEmpty, callbackBox.previousSnapshot != nil {
@@ -200,21 +215,44 @@ public final class AdwaitaApp<Root: View>: @unchecked Sendable {
             omni_adw_app_set_root_focused(cApp, node, Int32(displaySnapshot.focusedActionID ?? 0))
             syncNativePresentation(presentation.modal, app: cApp)
             callbackBox.previousSnapshot = displaySnapshot
+            if traceRenders {
+                print("OmniUI Adwaita rerender: full root set")
+            }
         }
         box.takeUnretainedValue().rerender = { Task { @MainActor in rerender() } }
+        let remoteDocumentObserver = NotificationCenter.default.addObserver(
+            forName: _OmniRemoteDocumentRegistry.didUpdateNotification,
+            object: nil,
+            queue: nil
+        ) { [runtime] _ in
+            Task { @MainActor in
+                runtime._markDirtyFromExternalResource()
+                rerender()
+            }
+        }
+        defer {
+            NotificationCenter.default.removeObserver(remoteDocumentObserver)
+        }
         rerender()
         let observationRenderLoop = Task { @MainActor [runtime, renderSize] in
             let traceRenders = ProcessInfo.processInfo.environment["OMNIUI_ADWAITA_RENDER_TRACE"] == "1"
+            var remoteDocumentVersion = _OmniRemoteDocumentRegistry.version
             while !Task.isCancelled {
                 try? await Task.sleep(nanoseconds: 33_000_000)
                 let hadActiveAnimations = runtime._hasActiveAnimations
                 if hadActiveAnimations {
                     _ = runtime._tickAnimations()
                 }
+                let latestRemoteDocumentVersion = _OmniRemoteDocumentRegistry.version
+                let hadRemoteDocumentUpdate = latestRemoteDocumentVersion != remoteDocumentVersion
+                if hadRemoteDocumentUpdate {
+                    remoteDocumentVersion = latestRemoteDocumentVersion
+                    runtime._markDirtyFromExternalResource()
+                }
                 let invalidationReason = runtime.renderInvalidationReason(size: renderSize)
-                if hadActiveAnimations || invalidationReason != nil {
+                if hadActiveAnimations || invalidationReason != nil || hadRemoteDocumentUpdate {
                     if traceRenders {
-                        let reason = hadActiveAnimations ? "animation" : (invalidationReason ?? "unknown")
+                        let reason = hadRemoteDocumentUpdate ? "remote-document" : (hadActiveAnimations ? "animation" : (invalidationReason ?? "unknown"))
                         print("OmniUI Adwaita render invalidation: \(reason)")
                     }
                     rerender()
@@ -382,6 +420,9 @@ private struct AdwaitaPresentation {
 }
 
 private struct AdwaitaHeaderToolbar {
+    private static let segmentedStyleFlag: Int32 = 1 << 0
+    private static let selectedStyleFlag: Int32 = 1 << 1
+
     struct Action {
         enum Placement: Int32 {
             case start = 0
@@ -391,6 +432,13 @@ private struct AdwaitaHeaderToolbar {
         var label: String
         var actionID: Int
         var placement: Placement
+        var isSegmented: Bool = false
+        var isSelected: Bool = false
+
+        var styleFlags: Int32 {
+            (isSegmented ? segmentedStyleFlag : 0) |
+            (isSelected ? selectedStyleFlag : 0)
+        }
     }
 
     var title: String?
@@ -445,15 +493,21 @@ private struct AdwaitaHeaderToolbar {
         var actions: [Action] = []
         func visit(_ node: SemanticNode) {
             switch node.kind {
+            case .segmentedControl(_, let selectedIndex):
+                actions.append(contentsOf: segmentedActions(in: node, placement: placement, selectedIndex: selectedIndex))
             case .button(let actionID, _):
                 let label = AdwaitaReconciliation.accessibleLabel(for: node).trimmingCharacters(in: .whitespacesAndNewlines)
                 guard !label.isEmpty, label != "Action", label != "☰" else { return }
                 actions.append(Action(label: label, actionID: actionID, placement: placement))
+            case .disabledButton:
+                let label = AdwaitaReconciliation.accessibleLabel(for: node).trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !label.isEmpty, label != "Action", label != "☰" else { return }
+                actions.append(Action(label: label, actionID: 0, placement: placement))
             case .menu(let actionID, let title, let value, _):
                 let label = value.isEmpty ? title : value
                 guard !label.isEmpty else { return }
                 actions.append(Action(label: label, actionID: actionID, placement: placement))
-            case .disabledButton, .disabledToggle, .disabledMenu, .disabledTextField:
+            case .disabledToggle, .disabledMenu, .disabledTextField:
                 return
             case .stack, .group, .zstack, .container, .modifier:
                 for child in node.children {
@@ -467,6 +521,36 @@ private struct AdwaitaHeaderToolbar {
             visit(node)
         }
         return actions
+    }
+
+    private static func segmentedActions(in node: SemanticNode, placement: Action.Placement, selectedIndex: Int) -> [Action] {
+        var buttons: [(label: String, actionID: Int)] = []
+        func collect(_ current: SemanticNode) {
+            if case .button(let actionID, _) = current.kind {
+                let label = AdwaitaReconciliation.accessibleLabel(for: current).trimmingCharacters(in: .whitespacesAndNewlines)
+                if !label.isEmpty, label != "Action" {
+                    buttons.append((label, actionID))
+                }
+                return
+            }
+            for child in current.children {
+                collect(child)
+            }
+        }
+        collect(node)
+        return buttons.enumerated().map { index, button in
+            Action(
+                label: toolbarSegmentLabel(button.label),
+                actionID: button.actionID,
+                placement: placement,
+                isSegmented: true,
+                isSelected: index == selectedIndex
+            )
+        }
+    }
+
+    private static func toolbarSegmentLabel(_ label: String) -> String {
+        label == "both" ? "\u{25EB}" : label
     }
 
     private static func textLabel(in nodes: [SemanticNode]) -> String {
@@ -538,7 +622,52 @@ private enum AdwaitaPresentationExtractor {
         guard case .modifier(.background("adw-dialog")) = node.kind else {
             return node
         }
-        return node.children.first(where: { $0.id.hasSuffix(".content") }) ?? node
+        let content = node.children.first(where: { $0.id.hasSuffix(".content") }) ?? node
+        return presentationChromeContent(from: content) ?? content
+    }
+
+    private static func presentationChromeContent(from node: SemanticNode) -> SemanticNode? {
+        if case .scroll(axis: .vertical, _, _) = node.kind {
+            return node.children.first
+        }
+
+        if case .stack(axis: .vertical, _) = node.kind,
+           let scroll = node.children.first(where: isVerticalScroll) {
+            return scroll.children.first ?? scroll
+        }
+
+        if isTransparentPresentationWrapper(node) {
+            for child in node.children {
+                if let content = presentationChromeContent(from: child) {
+                    return content
+                }
+            }
+        }
+
+        return nil
+    }
+
+    private static func isVerticalScroll(_ node: SemanticNode) -> Bool {
+        if case .scroll(axis: .vertical, _, _) = node.kind {
+            return true
+        }
+        return false
+    }
+
+    private static func isTransparentPresentationWrapper(_ node: SemanticNode) -> Bool {
+        switch node.kind {
+        case .group, .zstack:
+            return true
+        case .modifier(let modifier):
+            switch modifier {
+            case .background, .frame, .padding, .clip, .shadow, .glass, .opacity, .offset, .noOp:
+                return true
+            default:
+                return false
+            }
+        default:
+            return false
+        }
     }
 }
 
@@ -560,16 +689,20 @@ private func syncNativeHeaderActions(_ actions: [AdwaitaHeaderToolbar.Action], a
     let labels = actions.map(\.label)
     var ids = actions.map { Int32($0.actionID) }
     var placements = actions.map { $0.placement.rawValue }
+    var styles = actions.map(\.styleFlags)
     labels.withCStringArray { labelPointers in
         ids.withUnsafeMutableBufferPointer { idBuffer in
             placements.withUnsafeMutableBufferPointer { placementBuffer in
-                omni_adw_app_set_header_actions(
-                    app,
-                    labelPointers,
-                    idBuffer.baseAddress,
-                    placementBuffer.baseAddress,
-                    Int32(actions.count)
-                )
+                styles.withUnsafeMutableBufferPointer { styleBuffer in
+                    omni_adw_app_set_header_actions(
+                        app,
+                        labelPointers,
+                        idBuffer.baseAddress,
+                        placementBuffer.baseAddress,
+                        styleBuffer.baseAddress,
+                        Int32(actions.count)
+                    )
+                }
             }
         }
     }
@@ -721,7 +854,12 @@ public enum AdwaitaReconciliation {
 
     private static func nativeLeafUpdate(for node: SemanticNode) -> AdwaitaNativeLeafUpdate? {
         switch node.kind {
-        case .text(let text), .image(let text):
+        case .text(let text):
+            return AdwaitaNativeLeafUpdate(id: node.id, kind: .text, text: text)
+        case .image(let text):
+            if _OmniWebViewRegistry.payload(for: text) != nil {
+                return nil
+            }
             return AdwaitaNativeLeafUpdate(id: node.id, kind: .text, text: text)
         case .button:
             return AdwaitaNativeLeafUpdate(id: node.id, kind: .button, text: accessibleLabel(for: node))
@@ -744,6 +882,8 @@ public enum AdwaitaReconciliation {
             return AdwaitaNativeLeafUpdate(id: node.id, kind: .stepper, text: "\(value ?? 0)\n\(label)")
         case .datePicker(let label, let value, let timestamp, _, _, _):
             return AdwaitaNativeLeafUpdate(id: node.id, kind: .datePicker, text: "\(timestamp)\n\(value)\n\(label)")
+        case .segmentedControl:
+            return nil
         case .scroll(_, _, let offset):
             return AdwaitaNativeLeafUpdate(id: node.id, kind: .scroll, text: "\(offset)")
         default:
@@ -765,6 +905,9 @@ public enum AdwaitaReconciliation {
             return text
         }
         if case .image(let text) = node.kind {
+            if let payload = _OmniWebViewRegistry.payload(for: text) {
+                return payload.url.absoluteString
+            }
             return SFSymbolMap.unicode(for: text) ?? text
         }
         let collected = accessibilityText(in: node)
@@ -788,7 +931,11 @@ public enum AdwaitaReconciliation {
         case .text(let text):
             parts.append(text)
         case .image(let text):
-            parts.append(SFSymbolMap.unicode(for: text) ?? text)
+            if let payload = _OmniWebViewRegistry.payload(for: text) {
+                parts.append(payload.url.absoluteString)
+            } else {
+                parts.append(SFSymbolMap.unicode(for: text) ?? text)
+            }
         case .disabledButton(let label), .disabledTextField(_, let label, _):
             parts.append(label)
         case .disabledToggle(let label, _), .disabledMenu(let label, _):
@@ -834,6 +981,7 @@ enum AdwaitaNodeBuilder {
     private enum BuildContext: Equatable {
         case normal
         case sidebar
+        case inline
     }
 
     static func offsetActionIDs(in node: SemanticNode, by offset: Int) -> SemanticNode {
@@ -877,6 +1025,8 @@ enum AdwaitaNodeBuilder {
                 decrementActionID: decrementActionID.map { $0 + offset },
                 incrementActionID: incrementActionID.map { $0 + offset }
             )
+        case .segmentedControl:
+            kind = node.kind
         default:
             kind = node.kind
         }
@@ -906,7 +1056,7 @@ enum AdwaitaNodeBuilder {
         case .group:
             built = container(vertical: true, spacing: 6, children: node.children, context: context)
         case .zstack:
-            built = container(vertical: true, spacing: 6, children: visibleChildren(forOverlayChildren: node.children), context: context)
+            built = overlay(children: visibleChildren(forOverlayChildren: node.children), context: context)
         case .spacer:
             built = omni_adw_box_new(1, 0)
         case .stack(let axis, let spacing):
@@ -914,10 +1064,29 @@ enum AdwaitaNodeBuilder {
         case .text(let text):
             built = omni_adw_text_new(text)
         case .image(let text):
-            built = omni_adw_text_new(SFSymbolMap.unicode(for: text) ?? text)
+            if let payload = _OmniWebViewRegistry.payload(for: text) {
+                #if canImport(AppKit)
+                built = omni_adw_web_view_new(payload.url.absoluteString, payload.fallbackText, payload.nativeViewPointer)
+                #else
+                built = omni_adw_web_view_new(payload.url.absoluteString, payload.fallbackText, nil)
+                #endif
+            } else if let data = _OmniImageRegistry.data(for: text) {
+                built = data.withUnsafeBytes { bytes in
+                    omni_adw_image_new(bytes.bindMemory(to: UInt8.self).baseAddress, Int32(data.count), "Story image")
+                }
+            } else {
+                built = omni_adw_text_new(SFSymbolMap.unicode(for: text) ?? text)
+            }
         case .button(let actionID, _):
-            built = omni_adw_button_new(accessibleLabel(for: node), Int32(actionID))
-            if let built, rendersComplexButtonContent(node), let child = node.children.first, let childNode = build(child, context: context) {
+            let label = accessibleLabel(for: node)
+            if rendersAsInlineButton(node, context: context) {
+                built = omni_adw_inline_button_new(label, Int32(actionID), foregroundCSSClass(in: node) ?? "")
+            } else if rendersComplexButtonContent(node) {
+                built = omni_adw_click_container_new(label, Int32(actionID))
+            } else {
+                built = omni_adw_button_new(label, Int32(actionID))
+            }
+            if let built, rendersComplexButtonContent(node), let child = node.children.first, let childNode = build(child, context: .inline) {
                 omni_adw_node_append(built, childNode)
             }
         case .toggle(let actionID, _, let isOn):
@@ -988,6 +1157,8 @@ enum AdwaitaNodeBuilder {
             }
             built = parent
             metadataID = "\(node.id).container"
+        case .segmentedControl:
+            built = container(vertical: false, spacing: 0, children: node.children, context: context)
         case .scroll(let axis, _, let offset):
             guard let scroll = omni_adw_scroll_new(axis == .vertical ? 1 : 0, Double(offset)) else { return nil }
             if let child = container(vertical: true, spacing: 6, children: node.children, context: context) {
@@ -997,7 +1168,14 @@ enum AdwaitaNodeBuilder {
         case .divider:
             built = omni_adw_separator_new()
         case .drawingIsland(let kind):
-            built = omni_adw_drawing_new("OmniUI \(kind)")
+            switch kind {
+            case .shape(let name, let fill, _):
+                built = omni_adw_drawing_new("OmniUI shape(\(name))", fill)
+            case .gradient:
+                built = omni_adw_drawing_new("OmniUI gradient", nil)
+            case .canvas:
+                built = omni_adw_drawing_new("OmniUI canvas", nil)
+            }
         case .container(let role):
             built = semanticContainer(role, children: node.children, context: context)
         case .modifier(let modifier):
@@ -1015,8 +1193,12 @@ enum AdwaitaNodeBuilder {
     static func applyLeafUpdates(changes: [SemanticChange], snapshot: SemanticSnapshot, app: OpaquePointer?) -> Bool {
         guard let app else { return false }
         guard let updates = AdwaitaReconciliation.leafUpdates(changes: changes, snapshot: snapshot) else { return false }
+        let traceDiff = ProcessInfo.processInfo.environment["OMNIUI_ADWAITA_DIFF_TRACE"] == "1"
         for update in updates {
             let applied = omni_adw_app_update_node(app, update.id, update.kind.rawValue, update.text, update.active ? 1 : 0)
+            if traceDiff {
+                print("OmniUI Adwaita leaf update: id=\(update.id) kind=\(update.kind.rawValue) bytes=\(update.text.utf8.count) applied=\(applied)")
+            }
             if applied == 0 {
                 return false
             }
@@ -1057,6 +1239,10 @@ enum AdwaitaNodeBuilder {
 
     private static func container(vertical: Bool, spacing: Int32, children: [SemanticNode], context: BuildContext) -> OpaquePointer? {
         guard let parent = omni_adw_box_new(vertical ? 1 : 0, spacing) else { return nil }
+        let homogeneousHorizontal = !vertical && shouldUseHomogeneousHorizontalBox(children)
+        if homogeneousHorizontal {
+            omni_adw_box_set_homogeneous(parent, 1)
+        }
         for child in children {
             let built: OpaquePointer?
             if case .spacer = child.kind {
@@ -1068,10 +1254,100 @@ enum AdwaitaNodeBuilder {
                 built = build(child, context: context)
             }
             if let built {
+                if homogeneousHorizontal, !isZeroWidthFrame(child) {
+                    omni_adw_node_set_expand(built, 1, -1)
+                }
+                if shouldExpandVertically(child) {
+                    omni_adw_node_set_expand(built, -1, 1)
+                }
                 omni_adw_node_append(parent, built)
             }
         }
+        if children.contains(where: shouldExpandVertically) {
+            omni_adw_node_set_expand(parent, -1, 1)
+        }
         return parent
+    }
+
+    private static func overlay(children: [SemanticNode], context: BuildContext) -> OpaquePointer? {
+        if children.count == 1, let child = children.first {
+            return build(child, context: context)
+        }
+        guard let parent = omni_adw_overlay_new() else { return nil }
+        for child in children {
+            if let built = build(child, context: context) {
+                omni_adw_node_append(parent, built)
+            }
+        }
+        if children.contains(where: shouldExpandVertically) {
+            omni_adw_node_set_expand(parent, -1, 1)
+        }
+        return parent
+    }
+
+    private static func shouldExpandVertically(_ node: SemanticNode) -> Bool {
+        switch node.kind {
+        case .scroll(let axis, _, _):
+            return axis == .vertical
+        case .image(let text):
+            return _OmniWebViewRegistry.payload(for: text) != nil
+        case .button:
+            return node.children.contains(where: shouldExpandVertically)
+        case .modifier(.frame(_, let height, _, _, _, let maxHeight)):
+            if height != nil || maxHeight == 0 { return false }
+            return node.children.contains(where: shouldExpandVertically)
+        case .modifier(let modifier) where modifierAllowsLayoutDescent(modifier):
+            return node.children.contains(where: shouldExpandVertically)
+        case .group, .zstack, .stack, .container:
+            return node.children.contains(where: shouldExpandVertically)
+        default:
+            return false
+        }
+    }
+
+    private static func shouldUseHomogeneousHorizontalBox(_ children: [SemanticNode]) -> Bool {
+        let visibleChildren = children.filter { !isZeroWidthFrame($0) }
+        guard visibleChildren.count > 1 else { return false }
+        return visibleChildren.allSatisfy(hasFlexibleHorizontalFrame)
+    }
+
+    private static func hasFlexibleHorizontalFrame(_ node: SemanticNode) -> Bool {
+        switch node.kind {
+        case .modifier(.frame(_, _, _, let maxWidth, _, _)):
+            return maxWidth == Int.max
+        case .button:
+            return node.children.contains(where: hasFlexibleHorizontalFrame)
+        case .modifier(let modifier) where modifierAllowsLayoutDescent(modifier):
+            return node.children.contains(where: hasFlexibleHorizontalFrame)
+        case .group, .zstack, .stack, .container:
+            return node.children.contains(where: hasFlexibleHorizontalFrame)
+        default:
+            return false
+        }
+    }
+
+    private static func isZeroWidthFrame(_ node: SemanticNode) -> Bool {
+        switch node.kind {
+        case .modifier(.frame(let width, _, _, let maxWidth, _, _)):
+            return width == 0 || maxWidth == 0
+        case .button:
+            return node.children.contains(where: isZeroWidthFrame)
+        case .modifier(let modifier) where modifierAllowsLayoutDescent(modifier):
+            return node.children.contains(where: isZeroWidthFrame)
+        case .group, .zstack, .stack, .container:
+            return node.children.contains(where: isZeroWidthFrame)
+        default:
+            return false
+        }
+    }
+
+    private static func modifierAllowsLayoutDescent(_ modifier: SemanticModifier) -> Bool {
+        switch modifier {
+        case .opacity, .clip, .background, .padding, .accessibilityLabel, .accessibilityIdentifier, .noOp, .foreground, .shadow, .glass, .crt:
+            return true
+        default:
+            return false
+        }
     }
 
     private static func modifiedContainer(_ modifier: SemanticModifier, children: [SemanticNode], context: BuildContext) -> OpaquePointer? {
@@ -1093,11 +1369,28 @@ enum AdwaitaNodeBuilder {
             return nil
         }
 
+        if case .background("native/adwaita") = modifier {
+            guard let css = backgroundShapeCSSClass(from: children), css != "omni-bg-clear" else {
+                return primaryContent()
+            }
+            guard let parent = omni_adw_frame_new(css, 0) else { return nil }
+            for child in visibleChildren(forOverlayChildren: children) {
+                if let built = build(child, context: context) {
+                    omni_adw_node_append(parent, built)
+                }
+            }
+            return parent
+        }
+
         let css: String
         switch modifier {
         case .background("adw-dialog"):
             css = "card adw-dialog"
-        case .foreground, .background, .shadow, .glass, .crt, .clip, .accessibilityLabel, .noOp:
+        case .foreground(let color):
+            css = colorCSSClass(prefix: "omni-fg", color: color)
+        case .background(let color):
+            css = colorCSSClass(prefix: "omni-bg", color: color)
+        case .shadow, .glass, .crt, .clip, .accessibilityLabel, .noOp:
             return primaryContent()
         case .badge:
             css = "accent"
@@ -1121,6 +1414,73 @@ enum AdwaitaNodeBuilder {
             }
         }
         return parent
+    }
+
+    private static func backgroundShapeCSSClass(from children: [SemanticNode]) -> String? {
+        guard let background = children.first(where: { $0.id.hasSuffix(".background") }),
+              let color = firstBackgroundShapeColor(in: background)
+        else {
+            return nil
+        }
+        return colorCSSClass(prefix: "omni-bg", color: color)
+    }
+
+    private static func firstBackgroundShapeColor(in node: SemanticNode) -> String? {
+        switch node.kind {
+        case .drawingIsland(.shape(_, let fill, let stroke)):
+            return fill ?? stroke
+        case .modifier(.opacity(let alpha)):
+            guard let color = node.children.lazy.compactMap(firstBackgroundShapeColor).first else { return nil }
+            return colorString(color, multiplyingAlphaBy: alpha)
+        default:
+            return node.children.lazy.compactMap(firstBackgroundShapeColor).first
+        }
+    }
+
+    private static func colorString(_ color: String, multiplyingAlphaBy alpha: Double) -> String {
+        let parts = color.split(separator: "|", maxSplits: 1, omittingEmptySubsequences: false)
+        let base = parts.first.map(String.init) ?? color
+        let existingAlpha = parts.dropFirst().first.flatMap { Double($0) } ?? 1.0
+        return "\(base)|\(max(0, min(1, existingAlpha * alpha)))"
+    }
+
+    private static func colorCSSClass(prefix: String, color: String) -> String {
+        let normalized = color.lowercased()
+        let parts = normalized.split(separator: "|", maxSplits: 1, omittingEmptySubsequences: false)
+        let base = parts.first.map(String.init) ?? normalized
+        let alpha = parts.dropFirst().first.flatMap { Double($0) } ?? 1.0
+        if alpha <= 0.01 || base == "clear" {
+            return "\(prefix)-clear"
+        }
+        if base.contains("rgb(1.0,0.4,0.0)") || base.contains("rgb(1,0.4,0)") {
+            return alpha < 0.5 ? "\(prefix)-orange-muted" : "\(prefix)-orange"
+        }
+        if base.contains("rgb(0.2,0.2,0.2)") || base.contains("rgb(0.917647058823529") {
+            return "\(prefix)-card"
+        }
+        if base.contains("rgb(1.0,0.62,0.04)") || base.contains("rgb(1,0.62,0.04)") {
+            return alpha < 0.5 ? "\(prefix)-orange-muted" : "\(prefix)-orange"
+        }
+        switch base {
+        case "orange":
+            return alpha < 0.5 ? "\(prefix)-orange-muted" : "\(prefix)-orange"
+        case "accentcolor", "tint":
+            return "\(prefix)-accent"
+        case "secondary":
+            return "\(prefix)-secondary"
+        case "tertiary":
+            return "\(prefix)-tertiary"
+        case "quaternary":
+            return "\(prefix)-quaternary"
+        case "white":
+            return alpha < 0.5 ? "\(prefix)-white-muted" : "\(prefix)-white"
+        case "black":
+            return alpha < 0.5 ? "\(prefix)-black-muted" : "\(prefix)-black"
+        case "gray", "grey":
+            return "\(prefix)-gray"
+        default:
+            return "\(prefix)-native"
+        }
     }
 
     private static func visibleChildren(forOverlayChildren children: [SemanticNode]) -> [SemanticNode] {
@@ -1149,6 +1509,16 @@ enum AdwaitaNodeBuilder {
         return !isSimpleButtonLabel(child)
     }
 
+    private static func rendersAsInlineButton(_ node: SemanticNode, context: BuildContext) -> Bool {
+        guard rendersInlineButtonContent(node) else { return false }
+        return context == .inline
+    }
+
+    private static func rendersInlineButtonContent(_ node: SemanticNode) -> Bool {
+        guard node.children.count == 1, let child = node.children.first else { return false }
+        return isSimpleButtonLabel(child)
+    }
+
     private static func isSimpleButtonLabel(_ node: SemanticNode) -> Bool {
         switch node.kind {
         case .text, .image:
@@ -1162,23 +1532,42 @@ enum AdwaitaNodeBuilder {
         }
     }
 
+    private static func foregroundCSSClass(in node: SemanticNode) -> String? {
+        if case .modifier(.foreground(let color)) = node.kind {
+            return colorCSSClass(prefix: "omni-fg", color: color)
+        }
+        for child in node.children {
+            if let css = foregroundCSSClass(in: child) {
+                return css
+            }
+        }
+        return nil
+    }
+
     private static func applyLayoutModifier(_ modifier: SemanticModifier, to node: OpaquePointer) {
         let cellWidth = 1
         let cellHeight = 1
         let marginUnit = 1
         switch modifier {
         case .frame(let width, let height, let minWidth, let maxWidth, let minHeight, let maxHeight):
+            let resolvedWidth = width ?? (maxWidth == 0 ? 0 : nil)
+            let resolvedHeight = height ?? (maxHeight == 0 ? 0 : nil)
             omni_adw_node_apply_layout(
                 node,
-                scaled(width, by: cellWidth),
-                scaled(height, by: cellHeight),
+                scaled(resolvedWidth, by: cellWidth),
+                scaled(resolvedHeight, by: cellHeight),
                 scaled(minWidth, by: cellWidth),
                 scaled(minHeight, by: cellHeight),
                 -1, -1, -1, -1,
                 -1
             )
             if maxWidth != nil || maxHeight != nil {
-                omni_adw_node_set_expand(node, maxWidth != nil ? 1 : -1, maxHeight != nil ? 1 : -1)
+                omni_adw_node_set_visible(node, maxWidth == 0 || maxHeight == 0 ? 0 : 1)
+                omni_adw_node_set_expand(
+                    node,
+                    maxWidth == nil ? -1 : (maxWidth == 0 ? 0 : 1),
+                    maxHeight == nil ? -1 : (maxHeight == 0 ? 0 : 1)
+                )
             }
         case .padding(let top, let leading, let bottom, let trailing):
             omni_adw_node_apply_layout(

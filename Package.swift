@@ -264,6 +264,9 @@ let package = Package(
                 .linkedLibrary("glib-2.0", .when(platforms: [.linux, .macOS])),
                 .linkedLibrary("gobject-2.0", .when(platforms: [.linux, .macOS])),
                 .linkedLibrary("gio-2.0", .when(platforms: [.linux, .macOS])),
+                .linkedLibrary("dl", .when(platforms: [.linux])),
+                .linkedFramework("AppKit", .when(platforms: [.macOS])),
+                .linkedFramework("WebKit", .when(platforms: [.macOS])),
                 .unsafeFlags(["-L/opt/homebrew/lib"], .when(platforms: [.macOS])),
             ]
         ),
