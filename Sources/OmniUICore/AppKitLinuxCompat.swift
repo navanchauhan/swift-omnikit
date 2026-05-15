@@ -1086,6 +1086,7 @@ public final class NSHostingController<Content: View>: NSViewController {
     public let rootView: Content
     public let anyRootView: AnyView
 
+    @MainActor
     public init(rootView: Content) {
         self.rootView = rootView
         self.anyRootView = AnyView(rootView)
@@ -1200,6 +1201,7 @@ public final class NSPopover: NSObject {
     public private(set) var isShown: Bool = false
     private var hostingWindow: NSPanel?
 
+    @MainActor
     public static var activeContentView: AnyView? {
         activeState.activePopover?.contentViewController.flatMap { controller in
             (controller as? _OmniAnyHostingControllerContent)?._omniAnyRootView
@@ -2256,6 +2258,7 @@ open class NSMenu: NSObject {
         activeState.activeMenu
     }
 
+    @MainActor
     public static var activeContentView: AnyView? {
         guard let menu = activeMenu else { return nil }
         return AnyView(_OmniMenuPresentationView(menu: menu))

@@ -75,6 +75,7 @@ public struct Path: Hashable, Sendable, Shape, _PrimitiveView {
 
 public protocol Shape: View {}
 
+@MainActor
 public extension Shape where Self == RoundedRectangle {
     static func rect(cornerRadius: CGFloat = 0) -> RoundedRectangle {
         RoundedRectangle(cornerRadius: cornerRadius)
@@ -145,6 +146,7 @@ public struct ShapeView<S: Shape>: View, _PrimitiveView {
     func _makeNode(_ ctx: inout _BuildContext) -> _VNode { ctx.buildChild(shape) }
 }
 
+@MainActor
 public extension Shape {
     func fill(_ content: Color = .primary, style: FillStyle = FillStyle()) -> some View {
         _ShapeStyle(content: AnyView(self), fill: style, stroke: nil, fillColor: content, strokeColor: nil)

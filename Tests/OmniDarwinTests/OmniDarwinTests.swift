@@ -1,17 +1,7 @@
 import Glibc
 import Foundation
-import Observation
 import OmniDarwin
 import Testing
-
-private struct ObservationImportProbe {}
-
-@Test
-func observationPlaceholderImportsWithoutProvidingConflictingMacros() {
-    // Compile-only coverage: apps can keep `import Observation` while their
-    // SwiftUI module supplies any Observable macro compatibility.
-    #expect(String(describing: ObservationImportProbe.self).contains("ObservationImportProbe"))
-}
 
 @Test
 func sockaddrInAcceptsDarwinSinLenCompatibility() {

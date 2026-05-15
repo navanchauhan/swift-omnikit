@@ -36,10 +36,12 @@ public struct RenderSnapshot: Sendable {
     public let scrollRegions: [_ScrollRegion]
     let runtime: _UIRuntime
 
+    @MainActor
     public func click(x: Int, y: Int) {
         click(x: x, y: y, count: 1)
     }
 
+    @MainActor
     public func click(x: Int, y: Int, count: Int) {
         let p = _Point(x: x, y: y)
         guard let hit = hitRegions.last(where: { $0.matches(p, tapCount: count) && $0.dragGestureID == nil })
@@ -48,6 +50,7 @@ public struct RenderSnapshot: Sendable {
         runtime._invokeAction(hit.actionID)
     }
 
+    @MainActor
     public func drag(from start: _Point, to end: _Point) {
         guard let hit = hitRegions.last(where: { $0.rect.contains(start) && $0.dragGestureID != nil }),
               let dragGestureID = hit.dragGestureID else { return }
@@ -60,6 +63,7 @@ public struct RenderSnapshot: Sendable {
         _ = runtime._performDropFallback(at: CGPoint(x: end.x, y: end.y))
     }
 
+    @MainActor
     public func scroll(x: Int, y: Int, deltaY: Int) {
         let p = _Point(x: x, y: y)
         for r in scrollRegions.reversed() where r.rect.contains(p) {
@@ -75,18 +79,21 @@ public struct RenderSnapshot: Sendable {
         }
     }
 
+    @MainActor
     public func hover(x: Int, y: Int) {
         let p = _Point(x: x, y: y)
         let id = hoverRegions.last(where: { $0.0.contains(p) })?.1
         runtime.updateHover(id)
     }
 
+    @MainActor
     public func type(_ s: String) {
         for scalar in s.unicodeScalars {
             runtime._handleKey(.char(scalar.value))
         }
     }
 
+    @MainActor
     public func backspace() {
         runtime._handleKey(.backspace)
     }
@@ -120,6 +127,7 @@ public struct _TextFieldInfo: Sendable {
     public let actionID: Int
 }
 
+@MainActor
 enum _RenderLayout {
     struct Result {
         var ops: [RenderOp]

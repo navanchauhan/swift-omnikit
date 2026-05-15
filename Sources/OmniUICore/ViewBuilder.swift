@@ -1,5 +1,6 @@
 /// A tiny subset of SwiftUI's `ViewBuilder`.
 @resultBuilder
+@MainActor
 public enum ViewBuilder {
     public static func buildExpression(_ expression: Never) -> Never {
         switch expression {}

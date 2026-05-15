@@ -56,6 +56,7 @@ public extension NotificationCenter {
     }
 }
 
+@MainActor
 public extension View {
     func font(_ font: Font?) -> some View {
         environment(\.font, font)
@@ -570,7 +571,7 @@ public extension View {
     func confirmationDialog<Data, Actions: View, Message: View>(_ title: String, isPresented: Binding<Bool>, titleVisibility: Visibility = .automatic, presenting data: Data, @ViewBuilder actions: (Data) -> Actions, @ViewBuilder message: (Data) -> Message) -> some View {
         _ConfirmationDialog(content: AnyView(self), title: title, isPresented: isPresented, titleVisibility: titleVisibility, actions: AnyView(actions(data)), message: AnyView(message(data)))
     }
-    func navigationDestination<Value: Hashable, Destination: View>(for value: Value.Type, @ViewBuilder destination: @escaping (Value) -> Destination) -> some View {
+    func navigationDestination<Value: Hashable, Destination: View>(for value: Value.Type, @ViewBuilder destination: @escaping @MainActor (Value) -> Destination) -> some View {
         _NavigationDestinationResolver(content: AnyView(self), valueType: value, destination: { AnyView(destination($0)) })
     }
     func navigationDestination<Destination: View>(isPresented: Binding<Bool>, @ViewBuilder destination: () -> Destination) -> some View {
@@ -623,19 +624,19 @@ public extension View {
         _OnDelete(content: AnyView(self), action: action, actionScopePath: _UIRuntime._currentPath ?? [])
     }
 
-    func onChange<V: Equatable>(of value: V, perform action: @escaping (_ newValue: V) -> Void) -> some View {
+    func onChange<V: Equatable>(of value: V, perform action: @escaping (_ newValue: V) -> Void) -> AnyView {
         AnyView(_OnChange(content: AnyView(self), value: value, action: { _, newValue in action(newValue) }))
     }
 
-    func onChange<V: Equatable>(of value: V, perform action: @escaping (_ oldValue: V, _ newValue: V) -> Void) -> some View {
+    func onChange<V: Equatable>(of value: V, perform action: @escaping (_ oldValue: V, _ newValue: V) -> Void) -> AnyView {
         AnyView(_OnChange(content: AnyView(self), value: value, action: action))
     }
 
-    func onChange<V: Equatable>(of value: V, initial: Bool = false, _ action: @escaping () -> Void) -> some View {
+    func onChange<V: Equatable>(of value: V, initial: Bool = false, _ action: @escaping () -> Void) -> AnyView {
         AnyView(_OnChangeSimple(content: AnyView(self), value: value, initial: initial, action: action))
     }
 
-    func onChange<V: Equatable>(of value: V, initial: Bool = false, _ action: @escaping (_ oldValue: V, _ newValue: V) -> Void) -> some View {
+    func onChange<V: Equatable>(of value: V, initial: Bool = false, _ action: @escaping (_ oldValue: V, _ newValue: V) -> Void) -> AnyView {
         AnyView(_OnChangeWithInitial(content: AnyView(self), value: value, initial: initial, action: action))
     }
 
@@ -1304,7 +1305,7 @@ private struct _NavigationDestinationResolver<Value: Hashable>: View, _Primitive
 
     let content: AnyView
     let valueType: Value.Type
-    let destination: (Value) -> AnyView
+    let destination: @MainActor (Value) -> AnyView
 
     func _makeNode(_ ctx: inout _BuildContext) -> _VNode {
         if let stackPath = ctx.runtime._nearestNavStackRoot(from: ctx.path) {
@@ -1507,6 +1508,7 @@ private struct _AlertFromType: View, _PrimitiveView {
     }
 }
 
+@MainActor
 private func _presentationChrome<Content: View>(title: String, dismiss: @escaping () -> Void, env: EnvironmentValues, @ViewBuilder content: () -> Content) -> some View {
     VStack(alignment: .leading, spacing: 0) {
         HStack(spacing: 1) {
@@ -1641,6 +1643,7 @@ private final class _DragSourceFallbackHandler: @unchecked Sendable {
         self.data = data
     }
 
+    @MainActor
     func dragChanged(_ value: DragGesture.Value) {
         guard !started else { return }
         started = true
@@ -1648,6 +1651,7 @@ private final class _DragSourceFallbackHandler: @unchecked Sendable {
         runtime._beginDragFallback(provider: data(), location: value.location)
     }
 
+    @MainActor
     func dragEnded(_ value: DragGesture.Value) {
         _ = value
         started = false
@@ -2249,6 +2253,7 @@ public struct EventModifiers: OptionSet, Hashable, Sendable {
 }
 
 // MARK: Tagged options (Picker)
+@MainActor
 public extension View {
     func tag<V: Hashable>(_ value: V) -> some View {
         _Tag(content: AnyView(self), value: AnyHashable(value))
@@ -2826,10 +2831,10 @@ public struct _PhaseAnimatorPrimitive: View, _PrimitiveView {
     public typealias Body = Never
 
     let phases: [Any]
-    let content: (Any) -> AnyView
+    let content: @MainActor @Sendable (Any) -> AnyView
     let intervalSeconds: Double
 
-    public init(phases: [Any], content: @escaping (Any) -> AnyView, intervalSeconds: Double) {
+    public init(phases: [Any], content: @escaping @MainActor @Sendable (Any) -> AnyView, intervalSeconds: Double) {
         self.phases = phases
         self.content = content
         self.intervalSeconds = intervalSeconds
@@ -2861,6 +2866,7 @@ public struct _Passthrough: View, _PrimitiveView {
     // Type-erase immediately to avoid exponential generic growth in large `body` expressions.
     let content: AnyView
 
+    @MainActor
     public init<V: View>(_ content: V) { self.content = AnyView(content) }
 
     func _makeNode(_ ctx: inout _BuildContext) -> _VNode {
@@ -3013,6 +3019,7 @@ public struct _OnChangeWithInitial<V: Equatable>: View, _PrimitiveView {
     }
 }
 
+@MainActor
 private func _runOnChangeAction(_ ctx: _BuildContext, _ action: () -> Void) {
     let env = _UIRuntime._currentEnvironment ?? ctx.runtime._baseEnvironment
     _UIRuntime.$_currentEnvironment.withValue(env) {

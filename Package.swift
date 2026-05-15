@@ -1,4 +1,4 @@
-// swift-tools-version: 6.0
+// swift-tools-version: 6.1
 // The swift-tools-version declares the minimum version of Swift required to build this package.
 
 import PackageDescription
@@ -153,10 +153,6 @@ let package = Package(
         .library(
             name: "Combine",
             targets: ["Combine"]
-        ),
-        .library(
-            name: "Observation",
-            targets: ["Observation"]
         ),
         .library(
             name: "OmniFoundationExtras",
@@ -501,11 +497,6 @@ let package = Package(
             name: "Combine",
             dependencies: ["OmniUICore"],
             path: "Sources/Combine",
-            swiftSettings: commonSwiftSettings
-        ),
-        .target(
-            name: "Observation",
-            path: "Sources/Observation",
             swiftSettings: commonSwiftSettings
         ),
         .target(
@@ -988,7 +979,6 @@ let package = Package(
             name: "OmniDarwinTests",
             dependencies: [
                 "OmniDarwin",
-                "Observation",
                 .product(name: "Testing", package: "swift-testing"),
             ],
             swiftSettings: commonSwiftSettings

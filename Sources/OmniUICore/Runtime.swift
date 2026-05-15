@@ -1,12 +1,9 @@
 import Foundation
-#if canImport(Observation) && !os(Linux)
+#if canImport(Observation)
 import Observation
 #endif
 
 // Safety: OmniUI runtime state is confined to a single render/event loop owner.
-// We intentionally do not use `@MainActor` here because notcurses/terminal renderers
-// may drive the runtime off the process main actor, but they still preserve
-// single-threaded ownership for mutation.
 public final class _UIRuntime: @unchecked Sendable {
     private static let _overlayPathSentinel = Int.min
     private static let _maxSynchronousRenderPasses = 4
@@ -118,7 +115,7 @@ public final class _UIRuntime: @unchecked Sendable {
         var ownerKey: String?
         var onPop: (() -> Void)?
     }
-    private typealias _NavResolver = (AnyHashable) -> AnyView
+    private typealias _NavResolver = @MainActor (AnyHashable) -> AnyView
     private var navStacks: [String: [_NavEntry]] = [:]
     private var navStackRoots: Set<[Int]> = []
     private var navResolvers: [String: [ObjectIdentifier: _NavResolver]] = [:]
@@ -586,6 +583,7 @@ public final class _UIRuntime: @unchecked Sendable {
         onDisappearSeenThisFrame.removeAll(keepingCapacity: true)
     }
 
+    @MainActor
     private func _buildRootNode<V: View>(_ root: V, size: _Size) -> _VNode {
         let runtime = self
         let ctx = _BuildContext(runtime: runtime, path: [], nextChildIndex: 0)
@@ -604,11 +602,13 @@ public final class _UIRuntime: @unchecked Sendable {
             }
         }
         let node: _VNode
-        #if canImport(Observation) && !os(Linux)
+        #if canImport(Observation)
         node = withObservationTracking {
             build()
         } onChange: { [weak runtime] in
-            runtime?._markDirty(path: rootPath)
+            Task { @MainActor in
+                runtime?._markDirty(path: rootPath)
+            }
         }
         #else
         node = build()
@@ -617,6 +617,7 @@ public final class _UIRuntime: @unchecked Sendable {
         return node
     }
 
+    @MainActor
     private func _applyOverlays(to node: _VNode) -> _VNode {
         guard !overlays.isEmpty else { return node }
         var merged = node
@@ -874,7 +875,7 @@ public final class _UIRuntime: @unchecked Sendable {
         _pathKey(prefix: "nav", path: stackPath)
     }
 
-    func _registerNavDestinationResolver<Value: Hashable>(stackPath: [Int], valueType: Value.Type, destination: @escaping (Value) -> AnyView) {
+    func _registerNavDestinationResolver<Value: Hashable>(stackPath: [Int], valueType: Value.Type, destination: @escaping @MainActor (Value) -> AnyView) {
         _noteBuildSideEffect()
         let key = _navKey(stackPath: stackPath)
         var resolvers = navResolvers[key] ?? [:]
@@ -885,6 +886,7 @@ public final class _UIRuntime: @unchecked Sendable {
         navResolvers[key] = resolvers
     }
 
+    @MainActor
     func _resolveNavDestination(stackPath: [Int], value: AnyHashable) -> AnyView? {
         let key = _navKey(stackPath: stackPath)
         let typeID = ObjectIdentifier(type(of: value.base))
@@ -956,6 +958,7 @@ public final class _UIRuntime: @unchecked Sendable {
         return id
     }
 
+    @MainActor
     func _invokeDragGesture(_ id: _DragGestureID, start: CGPoint, current: CGPoint, ended: Bool) {
         guard let entry = dragGestures[id] else { return }
         let value = DragGesture.Value(
@@ -975,6 +978,7 @@ public final class _UIRuntime: @unchecked Sendable {
     }
 
     @discardableResult
+    @MainActor
     public func _handleNativeDragEvent(actionID rawActionID: Int, eventType: Int, x: Double, y: Double) -> Bool {
         let point = CGPoint(x: x, y: y)
         switch eventType {
@@ -1154,6 +1158,7 @@ public final class _UIRuntime: @unchecked Sendable {
     /// Replace text for the text field associated with a native-widget action.
     /// This intentionally routes through the registered text editor so bindings,
     /// focus state, cursor state, keyboard filtering, and dirty marking stay in one place.
+    @MainActor
     public func replaceTextForRawActionID(_ rawID: Int, previous: String, next: String) {
         let id = _ActionID(raw: rawID)
         _invokeAction(id)
@@ -1172,6 +1177,7 @@ public final class _UIRuntime: @unchecked Sendable {
         _markDirty(path: path)
     }
 
+    @MainActor
     public func handleNativeKeyForRawActionID(_ rawID: Int, keyKind: Int, codepoint: UInt32) {
         if rawID > 0 {
             let id = _ActionID(raw: rawID)
@@ -1347,10 +1353,12 @@ public final class _UIRuntime: @unchecked Sendable {
         _setFocus(path: next)
     }
 
+    @MainActor
     public func _handleKeyPress(_ codepoint: UInt32) {
         _handleKey(.char(codepoint))
     }
 
+    @MainActor
     public func _handleKey(_ ev: _KeyEvent) {
         // When a picker is expanded, it owns the keyboard.
         if expandedPickerPath != nil { return }
@@ -1901,6 +1909,7 @@ public final class _UIRuntime: @unchecked Sendable {
         return previous
     }
 
+    @MainActor
     public func debugRender<V: View>(_ root: V, size: _Size, renderShapeGlyphs: Bool = true) -> DebugSnapshot {
         let runtime = self
         var laidOut: _DebugLayout.Result?
@@ -2073,6 +2082,7 @@ extension _UIRuntime {
 }
 
 extension _UIRuntime {
+    @MainActor
     public func render<V: View>(_ root: V, size: _Size) -> RenderSnapshot {
         let runtime = self
         var laidOut: _RenderLayout.Result?
@@ -2117,6 +2127,7 @@ extension _UIRuntime {
         )
     }
 
+    @MainActor
     public func semanticSnapshot<V: View>(_ root: V, size: _Size) -> SemanticSnapshot {
         let runtime = self
         var node: _VNode?
@@ -2252,7 +2263,7 @@ extension _UIRuntime {
 }
 
 struct _TextEditor {
-    let handle: (_KeyEvent) -> Void
+    let handle: @MainActor (_KeyEvent) -> Void
 }
 
 public enum _KeyEvent: Sendable {
@@ -2348,10 +2359,12 @@ public struct DebugSnapshot: Sendable {
     }
 
     /// Emulate a mouse click at a coordinate in the last rendered snapshot.
+    @MainActor
     public func click(x: Int, y: Int) {
         click(x: x, y: y, count: 1)
     }
 
+    @MainActor
     public func click(x: Int, y: Int, count: Int) {
         let p = _Point(x: x, y: y)
         // Prefer the last-added region (topmost) so overlays like Picker dropdowns win hit-testing.
@@ -2361,6 +2374,7 @@ public struct DebugSnapshot: Sendable {
         runtime._invokeAction(hit.actionID)
     }
 
+    @MainActor
     public func drag(from start: _Point, to end: _Point) {
         // Prefer the last-added region (topmost) so overlays and handles win hit-testing.
         guard let hit = hitRegions.last(where: { $0.rect.contains(start) && $0.dragGestureID != nil }),
@@ -2375,6 +2389,7 @@ public struct DebugSnapshot: Sendable {
     }
 
     /// Emulate a scroll wheel event at a coordinate in the last rendered snapshot.
+    @MainActor
     public func scroll(x: Int, y: Int, deltaY: Int) {
         let p = _Point(x: x, y: y)
         for r in scrollRegions.reversed() where r.rect.contains(p) {
@@ -2391,6 +2406,7 @@ public struct DebugSnapshot: Sendable {
         }
     }
 
+    @MainActor
     public func hover(x: Int, y: Int) {
         let p = _Point(x: x, y: y)
         let id = hoverRegions.last(where: { $0.0.contains(p) })?.1
@@ -2398,12 +2414,14 @@ public struct DebugSnapshot: Sendable {
     }
 
     /// Emulate typing into the currently-focused `TextField` (if any).
+    @MainActor
     public func type(_ s: String) {
         for scalar in s.unicodeScalars {
             runtime._handleKey(.char(scalar.value))
         }
     }
 
+    @MainActor
     public func backspace() {
         runtime._handleKey(.backspace)
     }
@@ -2438,14 +2456,17 @@ struct _BuildContext {
         })
     }
 
+    @MainActor
     mutating func buildChild<V: View>(_ view: V) -> _VNode {
         buildChild(view, pathComponent: nil)
     }
 
+    @MainActor
     mutating func buildIdentifiedChild<V: View, ID: Hashable>(_ view: V, id: ID) -> _VNode {
         buildChild(view, pathComponent: Self.stablePathComponent(for: AnyHashable(id)))
     }
 
+    @MainActor
     private mutating func buildChild<V: View>(_ view: V, pathComponent: Int?) -> _VNode {
         let index = nextChildIndex
         nextChildIndex += 1

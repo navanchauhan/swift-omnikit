@@ -73,6 +73,7 @@ struct _GridRowTag: Hashable {}
 
 // MARK: - gridCellColumns modifier
 
+@MainActor
 public extension View {
     /// Tells the parent `Grid` that this cell should span the given number of columns.
     /// Currently a hint stored as padding metadata; the Grid layout uses equal-width columns.

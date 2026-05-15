@@ -2,6 +2,7 @@
 ///
 /// OmniUI aims to preserve the surface area and value semantics of SwiftUI where practical,
 /// while keeping the runtime portable (Linux) and concurrency-friendly (Swift 6 strict mode).
+@MainActor
 public protocol View {
     associatedtype Body: View
     @ViewBuilder var body: Body { get }
@@ -35,8 +36,9 @@ extension Optional: _PrimitiveView where Wrapped: View {
 public struct AnyView: View {
     public typealias Body = Never
 
-    let _makeNode: (inout _BuildContext) -> _VNode
+    let _makeNode: @MainActor (inout _BuildContext) -> _VNode
 
+    @MainActor
     public init<V: View>(_ view: V) {
         self._makeNode = { ctx in
             OmniUICore._makeNode(view, &ctx)
@@ -52,9 +54,11 @@ extension AnyView: _PrimitiveView {
 
 /// Internal protocol for primitive views that directly lower to nodes (do not go through `body`).
 protocol _PrimitiveView {
+    @MainActor
     func _makeNode(_ ctx: inout _BuildContext) -> _VNode
 }
 
+@MainActor
 private func _makeRepresentableNode(_ representable: any NSViewRepresentable, path: [Int]) -> _VNode {
     func open<R: NSViewRepresentable>(_ value: R) -> _VNode {
         _OmniRepresentableFallback.node(for: value, path: path) ?? .empty
@@ -63,6 +67,7 @@ private func _makeRepresentableNode(_ representable: any NSViewRepresentable, pa
 }
 
 @inline(__always)
+@MainActor
 func _makeNode<V: View>(_ view: V, _ ctx: inout _BuildContext) -> _VNode {
     if let primitive = view as? _PrimitiveView {
         return primitive._makeNode(&ctx)

@@ -1,3 +1,4 @@
+@MainActor
 public protocol ToolbarContent {
     func _toolbarView() -> AnyView
 }
@@ -17,6 +18,10 @@ public struct AnyToolbarContent: View, ToolbarContent, _PrimitiveView {
         self.content = AnyView(content)
     }
 
+    public init<C: ToolbarContent>(toolbarContent content: C) {
+        self.content = content._toolbarView()
+    }
+
     public init<V: View>(view: V) {
         self.content = AnyView(view)
     }
@@ -31,11 +36,13 @@ public struct AnyToolbarContent: View, ToolbarContent, _PrimitiveView {
 }
 
 @resultBuilder
+@MainActor
 public enum ToolbarContentBuilder {
-    public static func buildExpression<C: View & ToolbarContent>(_ expression: C) -> AnyToolbarContent {
-        AnyToolbarContent(expression)
+    public static func buildExpression<C: ToolbarContent>(_ expression: C) -> AnyToolbarContent {
+        AnyToolbarContent(toolbarContent: expression)
     }
 
+    @_disfavoredOverload
     public static func buildExpression<V: View>(_ expression: V) -> AnyToolbarContent {
         AnyToolbarContent(view: expression)
     }

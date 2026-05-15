@@ -493,6 +493,7 @@ enum _OmniRepresentableFallback {
         }
     }
 
+    @MainActor
     static func node<R: NSViewRepresentable>(for view: R, path: [Int]) -> _VNode? {
         nativeNode(for: view, erasedView: view, path: path)
     }
@@ -504,6 +505,7 @@ enum _OmniRepresentableFallback {
         return .image(_OmniWebViewRegistry.store(url: url, fallbackText: text))
     }
 
+    @MainActor
     private static func nativeNode<R: NSViewRepresentable>(for view: R, erasedView: Any, path: [Int]) -> _VNode {
         let key = nativeRepresentableKey(typeName: String(reflecting: R.self), path: path)
         activeNativeEntryKeys.update { $0.insert(key) }
@@ -583,6 +585,7 @@ enum _OmniRepresentableFallback {
     }
 
     #if os(Linux)
+    @MainActor
     private static func nativeTextFieldNode(for textField: NSTextField, path: [Int]) -> _VNode? {
         guard let runtime = _UIRuntime._current else { return nil }
         let controlPath = path
@@ -599,6 +602,7 @@ enum _OmniRepresentableFallback {
             var scalars = Array(textField.stringValue.unicodeScalars)
             var cursor = min(max(0, runtime._getTextCursor(path: controlPath)), scalars.count)
 
+            @MainActor
             func save() {
                 textField.stringValue = String(String.UnicodeScalarView(scalars))
                 runtime._setTextCursor(path: controlPath, cursor)
@@ -662,6 +666,7 @@ enum _OmniRepresentableFallback {
     }
     #endif
 
+    @MainActor
     private static func nativeRepresentableKey(typeName: String, path: [Int]) -> String {
         let runtimeID = _UIRuntime._current.map { "runtime:\(ObjectIdentifier($0)):" } ?? "runtime:detached:"
         let pathKey = path.map(String.init).joined(separator: ".")

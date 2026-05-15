@@ -97,7 +97,6 @@ extension KitchenSinkWave {
             "Sources/OmniUICore/ObservableObjects.swift",
             "Sources/OmniUICore/State.swift",
             "Sources/OmniUICore/SwiftDataCompat.swift",
-            "Sources/SwiftUIMacros/ObservableMacro.swift",
         ],
         targetedTestCases: ["wave04_observable", "wave04_swiftdata"],
         expectedArtifacts: ["workflow.dot", "wave4_observable.png", "wave4_swiftdata.png"]

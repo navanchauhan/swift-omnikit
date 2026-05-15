@@ -19,6 +19,7 @@ public struct ButtonStyleConfiguration {
 public protocol ButtonStyle {
     associatedtype Body: View
     typealias Configuration = ButtonStyleConfiguration
+    @MainActor
     @ViewBuilder func makeBody(configuration: Configuration) -> Body
 }
 
@@ -186,6 +187,7 @@ public struct LabelStyleConfiguration {
 public protocol LabelStyle {
     associatedtype Body: View
     typealias Configuration = LabelStyleConfiguration
+    @MainActor
     @ViewBuilder func makeBody(configuration: Configuration) -> Body
 }
 

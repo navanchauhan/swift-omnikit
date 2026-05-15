@@ -124,6 +124,7 @@ public struct _TextSegment {
     }
 }
 
+@MainActor
 public func + (lhs: Text, rhs: Text) -> Text {
     let leftSegs = lhs._segments ?? [_TextSegment(lhs.content)]
     let rightSegs = rhs._segments ?? [_TextSegment(rhs.content)]
@@ -835,7 +836,7 @@ public struct List<Content: View>: View, _PrimitiveView {
     private let content: Content
     private let selection: _AnySelectionAdapter?
     private let actionScopePath: [Int]
-    private let customRowBuilder: ((inout _BuildContext) -> [_VNode])?
+    private let customRowBuilder: (@MainActor (inout _BuildContext) -> [_VNode])?
 
     public init(@ViewBuilder content: () -> Content) {
         self.content = content()
@@ -883,7 +884,7 @@ public struct List<Content: View>: View, _PrimitiveView {
     public init<Data: RandomAccessCollection, ID: Hashable, RowContent: View>(
         _ data: Data,
         id: KeyPath<Data.Element, ID>,
-        @ViewBuilder rowContent: @escaping (Data.Element) -> RowContent
+        @ViewBuilder rowContent: @escaping @MainActor @Sendable (Data.Element) -> RowContent
     ) where Content == ForEach<Data, ID, RowContent> {
         self.content = ForEach(data, id: id, content: rowContent)
         self.selection = nil
@@ -891,9 +892,10 @@ public struct List<Content: View>: View, _PrimitiveView {
         self.customRowBuilder = nil
     }
 
+    @MainActor
     public init<Data: RandomAccessCollection, RowContent: View>(
         _ data: Data,
-        @ViewBuilder rowContent: @escaping (Data.Element) -> RowContent
+        @ViewBuilder rowContent: @escaping @MainActor @Sendable (Data.Element) -> RowContent
     ) where Data.Element: Identifiable, Content == ForEach<Data, Data.Element.ID, RowContent> {
         self.content = ForEach(data, content: rowContent)
         self.selection = nil
@@ -901,33 +903,38 @@ public struct List<Content: View>: View, _PrimitiveView {
         self.customRowBuilder = nil
     }
 
+    @MainActor
     public init<Data: RandomAccessCollection, RowContent: View>(
         _ data: Data,
         children: KeyPath<Data.Element, Data?>,
-        @ViewBuilder rowContent: @escaping (Data.Element) -> RowContent
+        @ViewBuilder rowContent: @escaping @MainActor @Sendable (Data.Element) -> RowContent
     ) where Data.Element: Identifiable, Content == ForEach<Data, Data.Element.ID, RowContent> {
         self.content = ForEach(data, content: rowContent)
         self.selection = nil
         self.actionScopePath = _UIRuntime._currentPath ?? []
-        self.customRowBuilder = { ctx in
-            var rows: [_VNode] = []
+        var flattenedRows: [(Data.Element, Int)] = []
 
-            func appendRows(_ nodes: Data, depth: Int) {
-                for element in nodes {
-                    var rowNode = ctx.buildChild(rowContent(element))
-                    if depth > 0 {
-                        let padding = String(repeating: "  ", count: depth)
-                        rowNode = .stack(axis: .horizontal, spacing: 0, children: [.text(padding), rowNode])
-                    }
-                    rows.append(rowNode)
-
-                    if let childrenNodes = element[keyPath: children], !childrenNodes.isEmpty {
-                        appendRows(childrenNodes, depth: depth + 1)
-                    }
+        func collectRows(_ nodes: Data, depth: Int) {
+            for element in nodes {
+                flattenedRows.append((element, depth))
+                if let childrenNodes = element[keyPath: children], !childrenNodes.isEmpty {
+                    collectRows(childrenNodes, depth: depth + 1)
                 }
             }
+        }
 
-            appendRows(data, depth: 0)
+        collectRows(data, depth: 0)
+        self.customRowBuilder = { ctx in
+            var rows: [_VNode] = []
+            rows.reserveCapacity(flattenedRows.count)
+            for (element, depth) in flattenedRows {
+                var rowNode = ctx.buildChild(rowContent(element))
+                if depth > 0 {
+                    let padding = String(repeating: "  ", count: depth)
+                    rowNode = .stack(axis: .horizontal, spacing: 0, children: [.text(padding), rowNode])
+                }
+                rows.append(rowNode)
+            }
             return rows
         }
     }
@@ -1133,6 +1140,7 @@ private func _gridColumnCount(_ columns: [GridItem], availableWidth: Int, spacin
     }
 }
 
+@MainActor
 private func _lazyRealizationForGrid(columns: Int) -> _LazyRealization? {
     guard let viewport = _UIRuntime._currentScrollViewport, viewport.axis == .vertical else {
         return nil
@@ -1146,6 +1154,7 @@ private func _lazyRealizationForGrid(columns: Int) -> _LazyRealization? {
     return _LazyRealization(range: lower..<upper, placeholderMode: .individual)
 }
 
+@MainActor
 private func _lazyRealizationForStack() -> _LazyRealization? {
     guard let viewport = _UIRuntime._currentScrollViewport, viewport.axis == .vertical else {
         return nil
@@ -1157,16 +1166,21 @@ private func _lazyRealizationForStack() -> _LazyRealization? {
     return _LazyRealization(range: lower..<(lower + visible), placeholderMode: .compressed)
 }
 
+@MainActor
+private func _withLazyRealizationCleared<T>(_ body: () -> T) -> T {
+    _UIRuntime.$_currentLazyRealization.withValue(nil, operation: body)
+}
+
 public struct ForEach<Data: RandomAccessCollection, ID: Hashable, Content: View>: View, _PrimitiveView {
     public typealias Body = Never
 
     let data: Data
     let id: KeyPath<Data.Element, ID>
-    let content: (Data.Element) -> Content
+    let content: @MainActor (Data.Element) -> Content
     let moveAction: ((IndexSet, Int) -> Void)?
     let deleteAction: ((IndexSet) -> Void)?
 
-    public init(_ data: Data, id: KeyPath<Data.Element, ID>, @ViewBuilder content: @escaping (Data.Element) -> Content) {
+    public init(_ data: Data, id: KeyPath<Data.Element, ID>, @ViewBuilder content: @escaping @MainActor @Sendable (Data.Element) -> Content) {
         self.data = data
         self.id = id
         self.content = content
@@ -1174,7 +1188,7 @@ public struct ForEach<Data: RandomAccessCollection, ID: Hashable, Content: View>
         self.deleteAction = nil
     }
 
-    public init(_ data: Data, @ViewBuilder content: @escaping (Data.Element) -> Content) where Data.Element: Identifiable, ID == Data.Element.ID {
+    public init(_ data: Data, @ViewBuilder content: @escaping @MainActor @Sendable (Data.Element) -> Content) where Data.Element: Identifiable, ID == Data.Element.ID {
         self.data = data
         self.id = \.id
         self.content = content
@@ -1201,6 +1215,7 @@ public struct ForEach<Data: RandomAccessCollection, ID: Hashable, Content: View>
         return .group(nodes)
     }
 
+    @MainActor
     private func _makeLazyNode(_ ctx: inout _BuildContext, realization: _LazyRealization) -> _VNode {
         let count = data.count
         let lower = Swift.min(Swift.max(0, realization.range.lowerBound), count)
@@ -1219,7 +1234,7 @@ public struct ForEach<Data: RandomAccessCollection, ID: Hashable, Content: View>
             while offset < upper {
                 let element = data[index]
                 let elementID = element[keyPath: id]
-                let child = _UIRuntime.$_currentLazyRealization.withValue(nil) {
+                let child = _withLazyRealizationCleared {
                     ctx.buildIdentifiedChild(content(element), id: elementID)
                 }
                 nodes.append(.identified(id: AnyHashable(elementID), readerScopePath: nil, child: child))
@@ -1242,7 +1257,7 @@ public struct ForEach<Data: RandomAccessCollection, ID: Hashable, Content: View>
                 if offset >= lower && offset < upper {
                     let element = data[index]
                     let elementID = element[keyPath: id]
-                    let child = _UIRuntime.$_currentLazyRealization.withValue(nil) {
+                    let child = _withLazyRealizationCleared {
                         ctx.buildIdentifiedChild(content(element), id: elementID)
                     }
                     let row = editableRowNode(child, offset: offset, count: count, ctx: &ctx)
@@ -1311,7 +1326,7 @@ public extension ForEach {
     private init(
         _ data: Data,
         id: KeyPath<Data.Element, ID>,
-        content: @escaping (Data.Element) -> Content,
+        content: @escaping @MainActor @Sendable (Data.Element) -> Content,
         moveAction: ((IndexSet, Int) -> Void)?,
         deleteAction: ((IndexSet) -> Void)?
     ) {
@@ -1326,7 +1341,7 @@ public extension ForEach {
 public extension ForEach {
     init<BoundData>(
         _ data: Binding<BoundData>,
-        @ViewBuilder content: @escaping (Binding<BoundData.Element>) -> Content
+        @ViewBuilder content: @escaping @MainActor @Sendable (Binding<BoundData.Element>) -> Content
     ) where Data == [Binding<BoundData.Element>],
             ID == BoundData.Element.ID,
             BoundData: MutableCollection & RandomAccessCollection,
@@ -1475,11 +1490,12 @@ public struct NavigationStack<Content: View>: View, _PrimitiveView {
 public struct NavigationLink<Label: View, Destination: View>: View, _PrimitiveView {
     public typealias Body = Never
 
-    let makeDestination: (() -> AnyView)?
+    let makeDestination: (@MainActor () -> AnyView)?
     let navValue: AnyHashable?
     let label: Label
     let actionScopePath: [Int]
 
+    @MainActor
     public init(destination: @escaping () -> Destination, @ViewBuilder label: () -> Label) {
         self.makeDestination = { AnyView(destination()) }
         self.navValue = nil
@@ -1487,6 +1503,7 @@ public struct NavigationLink<Label: View, Destination: View>: View, _PrimitiveVi
         self.actionScopePath = _UIRuntime._currentPath ?? []
     }
 
+    @MainActor
     public init(destination: Destination, @ViewBuilder label: () -> Label) {
         self.makeDestination = { AnyView(destination) }
         self.navValue = nil
@@ -1494,6 +1511,7 @@ public struct NavigationLink<Label: View, Destination: View>: View, _PrimitiveVi
         self.actionScopePath = _UIRuntime._currentPath ?? []
     }
 
+    @MainActor
     public init(_ title: String, destination: @escaping () -> Destination) where Label == Text {
         self.makeDestination = { AnyView(destination()) }
         self.navValue = nil
@@ -1501,6 +1519,7 @@ public struct NavigationLink<Label: View, Destination: View>: View, _PrimitiveVi
         self.actionScopePath = _UIRuntime._currentPath ?? []
     }
 
+    @MainActor
     public init(_ title: String, destination: Destination) where Label == Text {
         self.makeDestination = { AnyView(destination) }
         self.navValue = nil
@@ -1753,6 +1772,7 @@ private func _stripTabItemLabel(from node: _VNode) -> (content: _VNode, label: S
     }
 }
 
+@MainActor
 public extension View {
     func tabItem<Label: View>(@ViewBuilder _ label: () -> Label) -> some View {
         _TabItem(content: AnyView(self), label: AnyView(label()))
@@ -1885,6 +1905,7 @@ public struct ContentUnavailableView<Label: View, Description: View, Actions: Vi
 }
 
 extension ContentUnavailableView where Label == AnyView, Description == AnyView, Actions == EmptyView {
+    @MainActor
     public init(_ title: String, systemImage: String, description: Text) {
         self.label = AnyView(VStack(spacing: 0) {
             Image(systemName: systemImage)
@@ -1894,6 +1915,7 @@ extension ContentUnavailableView where Label == AnyView, Description == AnyView,
         self.actions = EmptyView()
     }
 
+    @MainActor
     public init(_ title: String, systemImage: String) {
         self.label = AnyView(VStack(spacing: 0) {
             Image(systemName: systemImage)
@@ -1903,6 +1925,7 @@ extension ContentUnavailableView where Label == AnyView, Description == AnyView,
         self.actions = EmptyView()
     }
 
+    @MainActor
     public static var search: ContentUnavailableView {
         ContentUnavailableView(
             "No Results",
@@ -1980,15 +2003,15 @@ public struct Table<Data: RandomAccessCollection, ID: Hashable, RowContent: View
 
     let data: Data
     let id: KeyPath<Data.Element, ID>
-    let rowContent: (Data.Element) -> RowContent
+    let rowContent: @MainActor @Sendable (Data.Element) -> RowContent
 
-    public init(_ data: Data, id: KeyPath<Data.Element, ID>, @ViewBuilder rowContent: @escaping (Data.Element) -> RowContent) {
+    public init(_ data: Data, id: KeyPath<Data.Element, ID>, @ViewBuilder rowContent: @escaping @MainActor @Sendable (Data.Element) -> RowContent) {
         self.data = data
         self.id = id
         self.rowContent = rowContent
     }
 
-    public init(_ data: Data, @ViewBuilder rowContent: @escaping (Data.Element) -> RowContent) where Data.Element: Identifiable, ID == Data.Element.ID {
+    public init(_ data: Data, @ViewBuilder rowContent: @escaping @MainActor @Sendable (Data.Element) -> RowContent) where Data.Element: Identifiable, ID == Data.Element.ID {
         self.data = data
         self.id = \.id
         self.rowContent = rowContent
@@ -2364,15 +2387,18 @@ public struct TextField: View, _PrimitiveView {
             var scalars = Array(text.wrappedValue.unicodeScalars)
             cursor = min(max(0, cursor), scalars.count)
 
+            @MainActor
             func save() {
                 text.wrappedValue = String(String.UnicodeScalarView(scalars))
                 runtime._setTextCursor(path: controlPath, cursor)
             }
 
+            @MainActor
             func isURLField() -> Bool {
                 keyboardType == .URL || contentType == .URL
             }
 
+            @MainActor
             func shouldUppercase(_ scalar: UnicodeScalar) -> Bool {
                 guard !isURLField() else { return false }
                 guard let capitalization else { return false }
@@ -2508,6 +2534,7 @@ public struct Picker<SelectionValue: Hashable>: View, _PrimitiveView {
         self.actionScopePath = _UIRuntime._currentPath ?? []
     }
 
+    @MainActor
     public init<Content: View>(_ title: String, selection: Binding<SelectionValue>, @ViewBuilder content: () -> Content) {
         self.title = title
         self.selection = selection
@@ -2826,6 +2853,7 @@ private func _collectTaggedPickerOptions<T: Hashable>(node: _VNode, valueType: T
     return (values, labels)
 }
 
+@MainActor
 public extension View {
     func padding(_ amount: Int = 1) -> some View {
         _EdgePadding(content: AnyView(self), top: amount, leading: amount, bottom: amount, trailing: amount)
@@ -2847,6 +2875,7 @@ private func _formattedDatePickerDate(_ date: Date, style: _DatePickerStyleKind)
 }
 
 
+@MainActor
 private func _currentEnvironmentValues(for ctx: _BuildContext) -> EnvironmentValues {
     _UIRuntime._currentEnvironment ?? ctx.runtime._baseEnvironment
 }
@@ -3344,6 +3373,7 @@ public struct ViewThatFits: View, _PrimitiveView {
     let axes: Axis.Set
     let content: AnyView
 
+    @MainActor
     public init(in axes: Axis.Set = [.horizontal, .vertical], @ViewBuilder content: () -> some View) {
         self.axes = axes
         self.content = AnyView(content())
@@ -3387,6 +3417,7 @@ public struct TextEditor: View, _PrimitiveView {
             var scalars = Array(text.wrappedValue.unicodeScalars)
             var cursor = min(max(0, runtime._getTextCursor(path: controlPath)), scalars.count)
 
+            @MainActor
             func save() {
                 text.wrappedValue = String(String.UnicodeScalarView(scalars))
                 runtime._setTextCursor(path: controlPath, cursor)

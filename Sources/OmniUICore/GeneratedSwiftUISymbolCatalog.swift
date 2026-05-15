@@ -687,25 +687,27 @@ public struct DragGesture: Sendable {
         self.coordinateSpace = coordinateSpace
     }
 
-    private var _onChanged: (@Sendable (Value) -> Void)?
-    private var _onEnded: (@Sendable (Value) -> Void)?
+    private var _onChanged: (@MainActor @Sendable (Value) -> Void)?
+    private var _onEnded: (@MainActor @Sendable (Value) -> Void)?
 
-    public func onChanged(_ action: @escaping @Sendable (Value) -> Void) -> DragGesture {
+    public func onChanged(_ action: @escaping @MainActor @Sendable (Value) -> Void) -> DragGesture {
         var copy = self
         copy._onChanged = action
         return copy
     }
 
-    public func onEnded(_ action: @escaping @Sendable (Value) -> Void) -> DragGesture {
+    public func onEnded(_ action: @escaping @MainActor @Sendable (Value) -> Void) -> DragGesture {
         var copy = self
         copy._onEnded = action
         return copy
     }
 
+    @MainActor
     public func _fireChanged(_ value: Value) {
         _onChanged?(value)
     }
 
+    @MainActor
     public func _fireEnded(_ value: Value) {
         _onEnded?(value)
     }

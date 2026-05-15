@@ -846,6 +846,7 @@ private func adwaitaTextInput(matchingVisibleText label: String, box: CallbackBo
     return nil
 }
 
+@MainActor
 private func replaceAdwaitaText(actionID rawID: Int, previous: String, next: String, box: CallbackBox) {
     if rawID >= adwaitaSettingsActionOffset {
         let settingsRawID = rawID - adwaitaSettingsActionOffset
@@ -1446,6 +1447,7 @@ private func syncNativePresentation(_ modal: SemanticNode?, app: OpaquePointer?)
     omni_adw_app_present_modal(app, node, "Presentation")
 }
 
+@MainActor
 private func appKitTransientPresentation(runtime: _UIRuntime, size: _Size) -> SemanticNode? {
     #if canImport(AppKit)
     if let content = NSMenu.activeContentView {

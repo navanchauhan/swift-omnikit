@@ -6,15 +6,6 @@
 #endif
 import Foundation
 
-
-@attached(member, names: arbitrary)
-@attached(memberAttribute)
-@attached(extension, conformances: OmniUICore.ObservableObject, names: arbitrary)
-public macro Observable() = #externalMacro(module: "SwiftUIMacros", type: "ObservableMacro")
-
-@attached(accessor)
-public macro _ObservationTracked() = #externalMacro(module: "SwiftUIMacros", type: "ObservationTrackedMacro")
-
 #if canImport(AppKit) && !os(Linux)
 @_exported import AppKit
 #endif
@@ -100,6 +91,7 @@ public func withAnimation<T>(_ animation: Animation? = nil, _ body: () -> T) -> 
     body()
 }
 
+@MainActor
 public extension View {
     func animation<Value: Equatable>(_ animation: Animation?, value: Value) -> some View {
         _AnimationModifier(
@@ -111,7 +103,7 @@ public extension View {
 
     func phaseAnimator<Phase: Hashable, Content: View>(
         _ phases: [Phase],
-        @ViewBuilder content: @escaping (Self, Phase) -> Content,
+        @ViewBuilder content: @escaping @MainActor @Sendable (Self, Phase) -> Content,
         animation: @escaping (Phase) -> Animation? = { _ in .default }
     ) -> some View {
         let firstAnimation = phases.first.flatMap { animation($0) } ?? .default
@@ -128,7 +120,7 @@ public extension View {
     func phaseAnimator<Phase: Hashable, Trigger: Equatable, Content: View>(
         _ phases: [Phase],
         trigger: Trigger,
-        @ViewBuilder content: @escaping (Self, Phase) -> Content,
+        @ViewBuilder content: @escaping @MainActor @Sendable (Self, Phase) -> Content,
         animation: @escaping (Phase) -> Animation? = { _ in .default }
     ) -> some View {
         _AnimationModifier(

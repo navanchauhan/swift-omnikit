@@ -1,3 +1,4 @@
+@MainActor
 public protocol ViewModifier {
     associatedtype Body: View
 
@@ -21,6 +22,7 @@ public struct _ViewModifier_Content<Modifier: ViewModifier>: View, _PrimitiveVie
     }
 }
 
+@MainActor
 public extension View {
     func modifier<M: ViewModifier>(_ modifier: M) -> some View {
         modifier.body(content: _ViewModifier_Content(AnyView(self)))

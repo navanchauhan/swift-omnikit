@@ -7,6 +7,7 @@ import Foundation
 
 // MARK: - App
 
+@MainActor
 public protocol App {
     associatedtype Body: Scene
     @SceneBuilder var body: Body { get }
@@ -15,6 +16,7 @@ public protocol App {
 
 // MARK: - Scene
 
+@MainActor
 public protocol Scene {
     associatedtype Body
     @SceneBuilder var body: Body { get }
@@ -48,6 +50,7 @@ public struct TupleScene: Scene {
 }
 
 @resultBuilder
+@MainActor
 public enum SceneBuilder {
     public static func buildBlock() -> EmptyScene { EmptyScene() }
     public static func buildBlock<S0: Scene>(_ s0: S0) -> S0 { s0 }
@@ -131,6 +134,7 @@ public struct MenuBarExtra<LabelView: View, Content: View>: Scene {
 }
 
 #if os(Linux)
+@MainActor
 private final class _OmniMenuBarExtraEntry: NSObject {
     let item: NSStatusItem
     let popover = NSPopover()
@@ -145,8 +149,10 @@ private final class _OmniMenuBarExtraEntry: NSObject {
         super.init()
         item.button?.target = self
         item.button?.action = selector
-        _omniRegisterSelectorAction(selector) { [weak self] sender in
-            self?.showPopover(sender: sender)
+        _omniRegisterSelectorAction(selector) { [weak self] _ in
+            Task { @MainActor in
+                self?.showPopover()
+            }
         }
         update(title: title, content: content)
     }
@@ -158,11 +164,11 @@ private final class _OmniMenuBarExtraEntry: NSObject {
         item.button?.toolTip = title
     }
 
-    private func showPopover(sender: Any?) {
+    private func showPopover() {
         let button = item.button ?? NSButton()
         popover.contentViewController = NSHostingController(rootView: content)
         popover.behavior = .transient
-        popover.show(relativeTo: .zero, of: (sender as? NSView) ?? button, preferredEdge: .minY)
+        popover.show(relativeTo: .zero, of: button, preferredEdge: .minY)
     }
 }
 
@@ -172,6 +178,7 @@ private final class _OmniMenuBarExtraRegistry: @unchecked Sendable {
     private let lock = NSLock()
     private var entries: [String: _OmniMenuBarExtraEntry] = [:]
 
+    @MainActor
     func install(identity: String, title: String, content: AnyView) {
         lock.lock()
         let existing = entries[identity]
@@ -187,6 +194,7 @@ private final class _OmniMenuBarExtraRegistry: @unchecked Sendable {
 }
 #endif
 
+@MainActor
 public protocol Commands {}
 
 public struct EmptyCommands: Commands { public init() {} }
@@ -232,6 +240,7 @@ public struct TupleCommands: Commands {
 }
 
 @resultBuilder
+@MainActor
 public enum CommandsBuilder {
     public static func buildBlock() -> EmptyCommands { EmptyCommands() }
     public static func buildBlock<C0: Commands>(_ c0: C0) -> C0 { c0 }
@@ -267,6 +276,7 @@ public enum CommandsBuilder {
 
 public struct SidebarCommands: Commands { public init() {} }
 
+@MainActor
 private protocol _CommandsRoot {
     func _commandViews() -> [AnyView]
 }
@@ -338,6 +348,7 @@ public struct _SceneDefaultSizeProvider<Content: Scene>: Scene {
     let preferredSize: CGSize
 }
 
+@MainActor
 public protocol _OmniUISceneRoot {
     func _omniUIRootView() -> AnyView?
     func _omniUICommandsView() -> AnyView?
@@ -345,6 +356,7 @@ public protocol _OmniUISceneRoot {
     var _omniUIPreferredSize: CGSize? { get }
 }
 
+@MainActor
 private protocol _CommandsRenderable {
     func _commandsView() -> AnyView?
 }
@@ -358,6 +370,7 @@ private struct _CommandsViewStack: View, _PrimitiveView {
     }
 }
 
+@MainActor
 private func _mergeCommandViews(_ lhs: AnyView?, _ rhs: AnyView?) -> AnyView? {
     switch (lhs, rhs) {
     case (nil, nil):
@@ -586,6 +599,7 @@ public extension Scene {
 }
 
 
+@MainActor
 public func _sceneRootView<S: Scene>(_ scene: S) -> AnyView? {
     let root = (scene as? _OmniUISceneRoot)?._omniUIRootView()
     if _omniSceneTraceEnabled() {
@@ -595,14 +609,17 @@ public func _sceneRootView<S: Scene>(_ scene: S) -> AnyView? {
     return root
 }
 
+@MainActor
 public func _sceneCommandsView<S: Scene>(_ scene: S) -> AnyView? {
     (scene as? _OmniUISceneRoot)?._omniUICommandsView()
 }
 
+@MainActor
 public func _sceneSettingsView<S: Scene>(_ scene: S) -> AnyView? {
     (scene as? _OmniUISceneRoot)?._omniUISettingsView()
 }
 
+@MainActor
 public func _scenePreferredSize<S: Scene>(_ scene: S) -> CGSize? {
     (scene as? _OmniUISceneRoot)?._omniUIPreferredSize
 }

@@ -205,37 +205,58 @@ public final class WKScriptMessage: NSObject, @unchecked Sendable {
 }
 
 public protocol WKScriptMessageHandler: AnyObject {
+    @MainActor
     func userContentController(_ userContentController: WKUserContentController, didReceive message: WKScriptMessage)
 }
 
 public protocol WKNavigationDelegate: AnyObject {
+    @MainActor
     func webView(_ webView: WKWebView, didStartProvisionalNavigation navigation: WKNavigation!)
+    @MainActor
     func webView(_ webView: WKWebView, didReceiveServerRedirectForProvisionalNavigation navigation: WKNavigation!)
+    @MainActor
     func webView(_ webView: WKWebView, didCommit navigation: WKNavigation!)
+    @MainActor
     func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!)
+    @MainActor
     func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error)
+    @MainActor
     func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error)
+    @MainActor
     func webViewWebContentProcessDidTerminate(_ webView: WKWebView)
+    @MainActor
     func webView(_ webView: WKWebView, decidePolicyFor navigationAction: WKNavigationAction, decisionHandler: @escaping (WKNavigationActionPolicy) -> Void)
+    @MainActor
     func webView(_ webView: WKWebView, decidePolicyFor navigationAction: WKNavigationAction) async -> WKNavigationActionPolicy
+    @MainActor
     func webView(_ webView: WKWebView, decidePolicyFor navigationResponse: WKNavigationResponse, decisionHandler: @escaping (WKNavigationResponsePolicy) -> Void)
+    @MainActor
     func webView(_ webView: WKWebView, decidePolicyFor navigationResponse: WKNavigationResponse) async -> WKNavigationResponsePolicy
     func webView(_ webView: WKWebView, navigationAction: WKNavigationAction, didBecome download: WKDownload)
     func webView(_ webView: WKWebView, navigationResponse: WKNavigationResponse, didBecome download: WKDownload)
 }
 
 public extension WKNavigationDelegate {
+    @MainActor
     func webView(_ webView: WKWebView, didStartProvisionalNavigation navigation: WKNavigation!) {}
+    @MainActor
     func webView(_ webView: WKWebView, didReceiveServerRedirectForProvisionalNavigation navigation: WKNavigation!) {}
+    @MainActor
     func webView(_ webView: WKWebView, didCommit navigation: WKNavigation!) {}
+    @MainActor
     func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {}
+    @MainActor
     func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {}
+    @MainActor
     func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {}
+    @MainActor
     func webViewWebContentProcessDidTerminate(_ webView: WKWebView) {}
+    @MainActor
     func webView(_ webView: WKWebView, decidePolicyFor navigationAction: WKNavigationAction, decisionHandler: @escaping (WKNavigationActionPolicy) -> Void) {
         decisionHandler(.allow)
     }
 
+    @MainActor
     func webView(_ webView: WKWebView, decidePolicyFor navigationAction: WKNavigationAction) async -> WKNavigationActionPolicy {
         await withCheckedContinuation { continuation in
             self.webView(webView, decidePolicyFor: navigationAction) { policy in
@@ -244,10 +265,12 @@ public extension WKNavigationDelegate {
         }
     }
 
+    @MainActor
     func webView(_ webView: WKWebView, decidePolicyFor navigationResponse: WKNavigationResponse, decisionHandler: @escaping (WKNavigationResponsePolicy) -> Void) {
         decisionHandler(.allow)
     }
 
+    @MainActor
     func webView(_ webView: WKWebView, decidePolicyFor navigationResponse: WKNavigationResponse) async -> WKNavigationResponsePolicy {
         await withCheckedContinuation { continuation in
             self.webView(webView, decidePolicyFor: navigationResponse) { policy in
@@ -448,6 +471,7 @@ public final class WKUserContentController: NSObject, @unchecked Sendable {
         forAttachedWebViews { $0.removeAllNativeContentRules() }
     }
 
+    @MainActor
     func dispatch(name: String, body: Any, webView: WKWebView) {
         guard let handler = handlers[name]?.handler else { return }
         handler.userContentController(self, didReceive: WKScriptMessage(name: name, body: body, webView: webView))
@@ -747,18 +771,20 @@ public final class WKWebView: NSView, _OmniWebViewPayloadProviding, @unchecked S
     }
 
     private func decidePolicy(for action: WKNavigationAction) -> WKNavigationActionPolicy {
-        guard let navigationDelegate else { return .allow }
-        nonisolated(unsafe) let delegate = navigationDelegate
-        return Self.awaitPolicy(default: .allow) {
-            await delegate.webView(self, decidePolicyFor: action)
+        Self.awaitMainActorValue(default: .allow) { [self, action] in
+            guard let navigationDelegate else { return .allow }
+            var policy = WKNavigationActionPolicy.allow
+            navigationDelegate.webView(self, decidePolicyFor: action) { policy = $0 }
+            return policy
         }
     }
 
     private func decidePolicy(for response: WKNavigationResponse) -> WKNavigationResponsePolicy {
-        guard let navigationDelegate else { return .allow }
-        nonisolated(unsafe) let delegate = navigationDelegate
-        return Self.awaitPolicy(default: .allow) {
-            await delegate.webView(self, decidePolicyFor: response)
+        Self.awaitMainActorValue(default: .allow) { [self, response] in
+            guard let navigationDelegate else { return .allow }
+            var policy = WKNavigationResponsePolicy.allow
+            navigationDelegate.webView(self, decidePolicyFor: response) { policy = $0 }
+            return policy
         }
     }
 
@@ -783,16 +809,21 @@ public final class WKWebView: NSView, _OmniWebViewPayloadProviding, @unchecked S
         return destination
     }
 
-    private static func awaitPolicy<Policy: Sendable>(
+    private static func awaitMainActorValue<Policy: Sendable>(
         default defaultPolicy: Policy,
         timeout: DispatchTime = .now() + .seconds(2),
-        operation: @escaping () async -> Policy
+        operation: @escaping @MainActor @Sendable () -> Policy
     ) -> Policy {
+        if Thread.isMainThread {
+            return MainActor.assumeIsolated {
+                operation()
+            }
+        }
+
         let box = _OmniPolicyBox<Policy>()
         let semaphore = DispatchSemaphore(value: 0)
-        let runner = _OmniAsyncPolicyRunner(operation)
-        Task {
-            let policy = await runner.run()
+        Task { @MainActor in
+            let policy = operation()
             box.set(policy)
             semaphore.signal()
         }
@@ -1208,19 +1239,28 @@ public final class WKWebView: NSView, _OmniWebViewPayloadProviding, @unchecked S
 
     private func begin(navigation: WKNavigation) {
         isLoading = true
-        navigationDelegate?.webView(self, didStartProvisionalNavigation: navigation)
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            navigationDelegate?.webView(self, didStartProvisionalNavigation: navigation)
+        }
         notifyObservers()
     }
 
     private func commit(navigation: WKNavigation) {
-        navigationDelegate?.webView(self, didCommit: navigation)
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            navigationDelegate?.webView(self, didCommit: navigation)
+        }
         notifyObservers()
     }
 
     private func finish(navigation: WKNavigation) {
         isLoading = false
         updateBackForward()
-        navigationDelegate?.webView(self, didFinish: navigation)
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            navigationDelegate?.webView(self, didFinish: navigation)
+        }
         notifyObservers()
     }
 
@@ -1434,7 +1474,7 @@ public final class WKWebView: NSView, _OmniWebViewPayloadProviding, @unchecked S
         let name = String(cString: namePointer)
         let bodyString = bodyPointer.map { String(cString: $0) } ?? "null"
         let body = decodeJavaScriptBody(bodyString)
-        DispatchQueue.main.async {
+        Task { @MainActor in
             webView.configuration.userContentController.dispatch(name: name, body: body, webView: webView)
         }
     }
@@ -1461,7 +1501,7 @@ public final class WKWebView: NSView, _OmniWebViewPayloadProviding, @unchecked S
         let webView = Unmanaged<WKWebView>.fromOpaque(context).takeUnretainedValue()
         let url = urlPointer.map { URL(string: String(cString: $0)) } ?? nil
         let error = errorPointer.map { String(cString: $0) }
-        DispatchQueue.main.async {
+        Task { @MainActor in
             if ProcessInfo.processInfo.environment["OMNI_WEBKITGTK_TRACE"] == "1" {
                 print("OMNIWEBKIT_NAV event=\(event) url=\(url?.absoluteString ?? "") error=\(error ?? "")")
             }

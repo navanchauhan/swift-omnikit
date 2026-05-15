@@ -710,6 +710,7 @@ public extension EnvironmentValues {
     }
 }
 
+@MainActor
 public extension View {
     func environment<T: AnyObject>(_ value: T) -> some View {
         environmentObject(value)
@@ -748,7 +749,8 @@ struct _EnvironmentValueProvider<V>: View, _PrimitiveView {
 // MARK: - Custom ButtonStyle
 
 public struct _AnyButtonStyle: @unchecked Sendable {
-    let _makeBody: (ButtonStyleConfiguration) -> AnyView
+    let _makeBody: @MainActor (ButtonStyleConfiguration) -> AnyView
+    @MainActor
     public init<S: ButtonStyle>(_ style: S) {
         _makeBody = { config in AnyView(style.makeBody(configuration: config)) }
     }
