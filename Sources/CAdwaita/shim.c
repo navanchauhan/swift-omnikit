@@ -30,6 +30,8 @@ void omni_macos_text_input_install(void *app);
 #define OMNI_HEADER_ACTION_SEGMENTED 1
 #define OMNI_HEADER_ACTION_SELECTED 2
 #define OMNI_ENTRY_TEXT_COMMIT_DELAY_MS 1500
+#define OMNI_ADW_LIFECYCLE_MAIN_WINDOW_CLOSE_REQUEST 1
+#define OMNI_ADW_LIFECYCLE_APP_QUIT_REQUEST 2
 
 struct OmniAdwApp {
   AdwApplication *application;
@@ -70,6 +72,8 @@ struct OmniAdwApp {
   omni_adw_text_callback text_callback;
   omni_adw_key_callback key_callback;
   omni_adw_focus_callback focus_callback;
+  omni_adw_event_callback event_callback;
+  omni_adw_lifecycle_callback lifecycle_callback;
   void *context;
   int32_t focused_action_id;
   int32_t default_width;
@@ -78,6 +82,55 @@ struct OmniAdwApp {
   guint macos_accessibility_sync_source;
   gboolean application_actions_installed;
 };
+
+enum {
+  OMNI_ADW_EVENT_LEFT_MOUSE_DOWN = 1,
+  OMNI_ADW_EVENT_LEFT_MOUSE_UP = 2,
+  OMNI_ADW_EVENT_RIGHT_MOUSE_DOWN = 3,
+  OMNI_ADW_EVENT_RIGHT_MOUSE_UP = 4,
+  OMNI_ADW_EVENT_MOUSE_MOVED = 5,
+  OMNI_ADW_EVENT_FLAGS_CHANGED = 6,
+  OMNI_ADW_EVENT_KEY_DOWN = 7,
+  OMNI_ADW_EVENT_SCROLL_WHEEL = 8
+};
+
+static uint32_t omni_adw_event_modifiers(GdkModifierType state) {
+  uint32_t modifiers = 0;
+  if ((state & (GDK_META_MASK | GDK_SUPER_MASK)) != 0) modifiers |= 1u << 0;
+  if ((state & GDK_CONTROL_MASK) != 0) modifiers |= 1u << 1;
+  if ((state & GDK_ALT_MASK) != 0) modifiers |= 1u << 2;
+  if ((state & GDK_SHIFT_MASK) != 0) modifiers |= 1u << 3;
+  return modifiers;
+}
+
+static gboolean omni_adw_dispatch_native_event(
+  OmniAdwApp *app,
+  int32_t event_type,
+  double x,
+  double y,
+  int32_t click_count,
+  GdkModifierType state,
+  guint keyval
+) {
+  if (!app || !app->event_callback) return FALSE;
+  guint unicode = keyval ? gdk_keyval_to_unicode(keyval) : 0;
+  int32_t consumed = app->event_callback(
+    event_type,
+    x,
+    y,
+    click_count,
+    omni_adw_event_modifiers(state),
+    keyval,
+    unicode,
+    app->context
+  );
+  return consumed != 0;
+}
+
+static GdkModifierType omni_adw_current_controller_state(GtkEventController *controller) {
+  if (!controller) return 0;
+  return gtk_event_controller_get_current_event_state(controller);
+}
 
 struct OmniAdwNode {
   GtkWidget *widget;
@@ -110,12 +163,15 @@ typedef struct {
   omni_adw_web_message_callback message_callback;
   omni_adw_web_navigation_callback navigation_callback;
   omni_adw_web_policy_callback policy_callback;
+  omni_adw_web_response_policy_callback response_policy_callback;
+  omni_adw_web_download_destination_callback download_destination_callback;
   omni_adw_web_title_callback title_callback;
   omni_adw_web_progress_callback progress_callback;
   omni_adw_web_cookie_callback cookie_callback;
   omni_adw_web_script_dialog_callback script_dialog_callback;
   void *callback_context;
   GHashTable *message_handler_ids;
+  WebKitWebView *web_view;
 } OmniWebViewBridge;
 
 typedef struct {
@@ -159,7 +215,7 @@ static void omni_accessible_role_description(GtkWidget *widget, const char *desc
 
 static GHashTable *omni_webkit_view_registry(void) {
   if (!omni_webkit_views_by_identity) {
-    omni_webkit_views_by_identity = g_hash_table_new_full(g_str_hash, g_str_equal, free, NULL);
+    omni_webkit_views_by_identity = g_hash_table_new_full(g_str_hash, g_str_equal, free, g_object_unref);
   }
   return omni_webkit_views_by_identity;
 }
@@ -275,6 +331,59 @@ static void omni_webkit_install_message_handler(WebKitUserContentManager *manage
   g_free(signal_name);
 }
 
+static void omni_webkit_sync_message_handlers(
+    WebKitUserContentManager *manager,
+    OmniWebViewBridge *bridge,
+    const char **message_handler_names,
+    int32_t message_handler_count) {
+  if (!manager || !bridge) return;
+  if (bridge->message_handler_ids) {
+    GHashTableIter iter;
+    gpointer key = NULL;
+    gpointer value = NULL;
+    GPtrArray *names = g_ptr_array_new_with_free_func(g_free);
+    g_hash_table_iter_init(&iter, bridge->message_handler_ids);
+    while (g_hash_table_iter_next(&iter, &key, &value)) {
+      const char *name = (const char *)key;
+      guint handler_id = GPOINTER_TO_UINT(value);
+      if (handler_id) g_signal_handler_disconnect(manager, handler_id);
+      if (name && name[0]) g_ptr_array_add(names, g_strdup(name));
+    }
+    for (guint i = 0; i < names->len; i++) {
+      const char *name = (const char *)g_ptr_array_index(names, i);
+      webkit_user_content_manager_unregister_script_message_handler(manager, name, NULL);
+    }
+    g_ptr_array_free(names, TRUE);
+    g_hash_table_remove_all(bridge->message_handler_ids);
+  }
+  for (int32_t i = 0; i < message_handler_count; i++) {
+    if (!message_handler_names || !message_handler_names[i]) continue;
+    omni_webkit_install_message_handler(manager, bridge, message_handler_names[i]);
+  }
+}
+
+static void omni_webkit_sync_user_scripts(
+    WebKitUserContentManager *manager,
+    const char **script_sources,
+    const int32_t *script_injection_times,
+    const int32_t *script_main_frame_only,
+    int32_t script_count) {
+  if (!manager) return;
+  webkit_user_content_manager_remove_all_scripts(manager);
+  for (int32_t i = 0; i < script_count; i++) {
+    if (!script_sources || !script_sources[i]) continue;
+    WebKitUserScriptInjectionTime time = script_injection_times && script_injection_times[i] == 0
+        ? WEBKIT_USER_SCRIPT_INJECT_AT_DOCUMENT_START
+        : WEBKIT_USER_SCRIPT_INJECT_AT_DOCUMENT_END;
+    WebKitUserContentInjectedFrames frames = script_main_frame_only && script_main_frame_only[i]
+        ? WEBKIT_USER_CONTENT_INJECT_TOP_FRAME
+        : WEBKIT_USER_CONTENT_INJECT_ALL_FRAMES;
+    WebKitUserScript *script = webkit_user_script_new(script_sources[i], frames, time, NULL, NULL);
+    webkit_user_content_manager_add_script(manager, script);
+    webkit_user_script_unref(script);
+  }
+}
+
 static WebKitUserContentFilterStore *omni_webkit_filter_store(void) {
   static WebKitUserContentFilterStore *store = NULL;
   if (store) return store;
@@ -310,6 +419,39 @@ static void omni_webkit_free_string_array(char **values, int32_t count) {
   free(values);
 }
 
+static char *omni_webkit_html_signature(const char *html, const char *base_url) {
+  if (!html) return NULL;
+  char *checksum = g_compute_checksum_for_string(G_CHECKSUM_SHA256, html, -1);
+  if (!checksum) return NULL;
+  char *signature = g_strdup_printf("%s\n%s", base_url ? base_url : "", checksum);
+  g_free(checksum);
+  return signature;
+}
+
+static void omni_webkit_clear_html_signature(WebKitWebView *web_view) {
+  if (!web_view) return;
+  g_object_set_data_full(G_OBJECT(web_view), "omni-last-html-signature", NULL, NULL);
+}
+
+static gboolean omni_webkit_load_html(WebKitWebView *web_view, const char *html, const char *base_url, gboolean force) {
+  if (!web_view || !html) return FALSE;
+  char *signature = omni_webkit_html_signature(html, base_url);
+  const char *previous = (const char *)g_object_get_data(G_OBJECT(web_view), "omni-last-html-signature");
+  if (!force && signature && previous && strcmp(previous, signature) == 0) {
+    g_free(signature);
+    return FALSE;
+  }
+  if (signature) {
+    g_object_set_data_full(G_OBJECT(web_view), "omni-last-html-signature", signature, g_free);
+  }
+  webkit_web_view_load_html(web_view, html, base_url && base_url[0] ? base_url : NULL);
+  return TRUE;
+}
+
+static gboolean omni_webkit_load_html_if_changed(WebKitWebView *web_view, const char *html, const char *base_url) {
+  return omni_webkit_load_html(web_view, html, base_url, FALSE);
+}
+
 static void omni_webkit_load_uri_with_headers(
     WebKitWebView *web_view,
     const char *url,
@@ -317,6 +459,7 @@ static void omni_webkit_load_uri_with_headers(
     const char **header_values,
     int32_t header_count) {
   if (!web_view || !url || !url[0]) return;
+  omni_webkit_clear_html_signature(web_view);
   if (!header_names || !header_values || header_count <= 0) {
     webkit_web_view_load_uri(web_view, url);
     return;
@@ -381,7 +524,7 @@ static void omni_webkit_deferred_load_start(OmniWebViewDeferredLoad *load) {
   if (!load || load->did_load) return;
   load->did_load = TRUE;
   if (load->web_view && load->html && load->html[0]) {
-    webkit_web_view_load_html(load->web_view, load->html, load->base_url && load->base_url[0] ? load->base_url : NULL);
+    omni_webkit_load_html_if_changed(load->web_view, load->html, load->base_url);
   } else if (load->web_view && load->url && load->url[0]) {
     omni_webkit_load_uri_with_headers(
         load->web_view,
@@ -390,7 +533,7 @@ static void omni_webkit_deferred_load_start(OmniWebViewDeferredLoad *load) {
         (const char **)load->request_header_values,
         load->request_header_count);
   } else if (load->web_view) {
-    webkit_web_view_load_html(load->web_view, "<!doctype html><title>Blank</title>", "about:blank");
+    omni_webkit_load_html_if_changed(load->web_view, "<!doctype html><title>Blank</title>", "about:blank");
   }
   omni_webkit_deferred_load_free(load);
 }
@@ -656,11 +799,64 @@ static int32_t omni_webkit_navigation_type(WebKitNavigationType type) {
 
 static gboolean omni_webkit_decide_policy(WebKitWebView *web_view, WebKitPolicyDecision *decision, WebKitPolicyDecisionType type, gpointer user_data) {
   OmniWebViewBridge *bridge = (OmniWebViewBridge *)user_data;
-  if (!bridge || !bridge->policy_callback) return FALSE;
-  if (type != WEBKIT_POLICY_DECISION_TYPE_NAVIGATION_ACTION &&
-      type != WEBKIT_POLICY_DECISION_TYPE_NEW_WINDOW_ACTION) {
+  if (!bridge) return FALSE;
+  if (type == WEBKIT_POLICY_DECISION_TYPE_RESPONSE) {
+    if (!bridge->response_policy_callback || !WEBKIT_IS_RESPONSE_POLICY_DECISION(decision)) return FALSE;
+    WebKitResponsePolicyDecision *response_decision = WEBKIT_RESPONSE_POLICY_DECISION(decision);
+    WebKitURIResponse *response = webkit_response_policy_decision_get_response(response_decision);
+    const char *uri = response ? webkit_uri_response_get_uri(response) : webkit_web_view_get_uri(web_view);
+    const char *mime_type = response ? webkit_uri_response_get_mime_type(response) : NULL;
+    const char *suggested_filename = response ? webkit_uri_response_get_suggested_filename(response) : NULL;
+    guint64 content_length = response ? webkit_uri_response_get_content_length(response) : 0;
+    int32_t can_show = webkit_response_policy_decision_is_mime_type_supported(response_decision) ? 1 : 0;
+    int32_t policy = bridge->response_policy_callback(
+        bridge->callback_context,
+        uri ? uri : "",
+        mime_type ? mime_type : "",
+        can_show,
+        (int64_t)content_length,
+        suggested_filename ? suggested_filename : "");
+    if (policy == 2) {
+      if (bridge->download_destination_callback) {
+        char *destination = bridge->download_destination_callback(
+            bridge->callback_context,
+            uri ? uri : "",
+            mime_type ? mime_type : "",
+            (int64_t)content_length,
+            suggested_filename ? suggested_filename : "");
+        if (!destination || !destination[0]) {
+          g_free(destination);
+          webkit_policy_decision_ignore(decision);
+          return TRUE;
+        }
+        char *destination_uri = NULL;
+        if (g_str_has_prefix(destination, "file://")) {
+          destination_uri = g_strdup(destination);
+        } else {
+          destination_uri = g_filename_to_uri(destination, NULL, NULL);
+        }
+        WebKitNetworkSession *session = webkit_network_session_get_default();
+        WebKitDownload *download = uri && uri[0] && session ? webkit_network_session_download_uri(session, uri) : NULL;
+        if (download && destination_uri) {
+          webkit_download_set_destination(download, destination_uri);
+        }
+        g_free(destination_uri);
+        g_free(destination);
+        webkit_policy_decision_ignore(decision);
+        return TRUE;
+      }
+      webkit_policy_decision_download(decision);
+      return TRUE;
+    }
+    if (policy == 0) {
+      webkit_policy_decision_ignore(decision);
+      return TRUE;
+    }
     return FALSE;
   }
+  if (!bridge->policy_callback) return FALSE;
+  if (type != WEBKIT_POLICY_DECISION_TYPE_NAVIGATION_ACTION &&
+      type != WEBKIT_POLICY_DECISION_TYPE_NEW_WINDOW_ACTION) return FALSE;
   if (!WEBKIT_IS_NAVIGATION_POLICY_DECISION(decision)) return FALSE;
   WebKitNavigationAction *action = webkit_navigation_policy_decision_get_navigation_action(WEBKIT_NAVIGATION_POLICY_DECISION(decision));
   WebKitURIRequest *request = action ? webkit_navigation_action_get_request(action) : NULL;
@@ -671,6 +867,43 @@ static gboolean omni_webkit_decide_policy(WebKitWebView *web_view, WebKitPolicyD
   if (allow) return FALSE;
   webkit_policy_decision_ignore(decision);
   return TRUE;
+}
+
+static void omni_webkit_download_started(WebKitWebContext *context, WebKitDownload *download, gpointer user_data) {
+  (void)context;
+  OmniWebViewBridge *bridge = (OmniWebViewBridge *)user_data;
+  if (!bridge || !bridge->download_destination_callback || !download) return;
+  if (bridge->web_view && webkit_download_get_web_view(download) != bridge->web_view) return;
+  WebKitURIRequest *request = webkit_download_get_request(download);
+  WebKitURIResponse *response = webkit_download_get_response(download);
+  const char *uri = response ? webkit_uri_response_get_uri(response) : (request ? webkit_uri_request_get_uri(request) : NULL);
+  const char *mime_type = response ? webkit_uri_response_get_mime_type(response) : NULL;
+  const char *suggested_filename = response ? webkit_uri_response_get_suggested_filename(response) : NULL;
+  guint64 content_length = response ? webkit_uri_response_get_content_length(response) : 0;
+  char *destination = bridge->download_destination_callback(
+      bridge->callback_context,
+      uri ? uri : "",
+      mime_type ? mime_type : "",
+      (int64_t)content_length,
+      suggested_filename ? suggested_filename : "");
+  if (!destination || !destination[0]) {
+    g_free(destination);
+    webkit_download_cancel(download);
+    return;
+  }
+  char *destination_uri = NULL;
+  if (g_str_has_prefix(destination, "file://")) {
+    destination_uri = g_strdup(destination);
+  } else {
+    destination_uri = g_filename_to_uri(destination, NULL, NULL);
+  }
+  if (destination_uri) {
+    webkit_download_set_destination(download, destination_uri);
+    g_free(destination_uri);
+  } else {
+    webkit_download_cancel(download);
+  }
+  g_free(destination);
 }
 
 static char *omni_webkit_sanitized_user_agent_value(const char *value) {
@@ -732,6 +965,8 @@ static void omni_webkit_update_bridge_callbacks(
     omni_adw_web_message_callback message_callback,
     omni_adw_web_navigation_callback navigation_callback,
     omni_adw_web_policy_callback policy_callback,
+    omni_adw_web_response_policy_callback response_policy_callback,
+    omni_adw_web_download_destination_callback download_destination_callback,
     omni_adw_web_title_callback title_callback,
     omni_adw_web_progress_callback progress_callback,
     omni_adw_web_cookie_callback cookie_callback,
@@ -743,6 +978,8 @@ static void omni_webkit_update_bridge_callbacks(
   bridge->message_callback = message_callback;
   bridge->navigation_callback = navigation_callback;
   bridge->policy_callback = policy_callback;
+  bridge->response_policy_callback = response_policy_callback;
+  bridge->download_destination_callback = download_destination_callback;
   bridge->title_callback = title_callback;
   bridge->progress_callback = progress_callback;
   bridge->cookie_callback = cookie_callback;
@@ -787,10 +1024,10 @@ static void omni_webkit_load_if_needed(
   if (!web_view) return;
   const char *target = html ? (base_url && base_url[0] ? base_url : "about:blank") : (url ? url : "about:blank");
   const char *current = webkit_web_view_get_uri(web_view);
-  if (current && target && strcmp(current, target) == 0) return;
   if (html) {
-    webkit_web_view_load_html(web_view, html, base_url && base_url[0] ? base_url : NULL);
+    omni_webkit_load_html_if_changed(web_view, html, base_url);
   } else if (url && url[0]) {
+    if (current && target && strcmp(current, target) == 0) return;
     if (request_header_count > 0 && request_header_names && request_header_values) {
       WebKitURIRequest *request = webkit_uri_request_new(url);
       SoupMessageHeaders *headers = webkit_uri_request_get_http_headers(request);
@@ -802,6 +1039,7 @@ static void omni_webkit_load_if_needed(
       webkit_web_view_load_request(web_view, request);
       g_object_unref(request);
     } else {
+      omni_webkit_clear_html_signature(web_view);
       webkit_web_view_load_uri(web_view, url);
     }
   }
@@ -860,6 +1098,8 @@ static GtkWidget *omni_create_webkit_web_view_ex(
     omni_adw_web_message_callback message_callback,
     omni_adw_web_navigation_callback navigation_callback,
     omni_adw_web_policy_callback policy_callback,
+    omni_adw_web_response_policy_callback response_policy_callback,
+    omni_adw_web_download_destination_callback download_destination_callback,
     omni_adw_web_title_callback title_callback,
     omni_adw_web_progress_callback progress_callback,
     omni_adw_web_cookie_callback cookie_callback,
@@ -873,6 +1113,8 @@ static GtkWidget *omni_create_webkit_web_view_ex(
         message_callback,
         navigation_callback,
         policy_callback,
+        response_policy_callback,
+        download_destination_callback,
         title_callback,
         progress_callback,
         cookie_callback,
@@ -890,6 +1132,19 @@ static GtkWidget *omni_create_webkit_web_view_ex(
         is_inspectable,
         allows_inline_media_playback,
         media_playback_requires_user_gesture);
+    WebKitUserContentManager *manager = webkit_web_view_get_user_content_manager(existing);
+    OmniWebViewBridge *bridge = (OmniWebViewBridge *)g_object_get_data(G_OBJECT(existing), "omni-webkit-bridge");
+    omni_webkit_sync_user_scripts(
+        manager,
+        script_sources,
+        script_injection_times,
+        script_main_frame_only,
+        script_count);
+    if (manager) {
+      webkit_user_content_manager_remove_all_filters(manager);
+      omni_webkit_install_content_filters(manager, content_rule_identifiers, content_rule_sources, content_rule_count, NULL);
+    }
+    omni_webkit_sync_message_handlers(manager, bridge, message_handler_names, message_handler_count);
     omni_webkit_load_if_needed(
         existing,
         url,
@@ -909,18 +1164,7 @@ static GtkWidget *omni_create_webkit_web_view_ex(
   if (!web_view) return NULL;
 
   manager = webkit_web_view_get_user_content_manager(WEBKIT_WEB_VIEW(web_view));
-  for (int32_t i = 0; i < script_count; i++) {
-    if (!script_sources || !script_sources[i]) continue;
-    WebKitUserScriptInjectionTime time = script_injection_times && script_injection_times[i] == 0
-        ? WEBKIT_USER_SCRIPT_INJECT_AT_DOCUMENT_START
-        : WEBKIT_USER_SCRIPT_INJECT_AT_DOCUMENT_END;
-    WebKitUserContentInjectedFrames frames = script_main_frame_only && script_main_frame_only[i]
-        ? WEBKIT_USER_CONTENT_INJECT_TOP_FRAME
-        : WEBKIT_USER_CONTENT_INJECT_ALL_FRAMES;
-    WebKitUserScript *script = webkit_user_script_new(script_sources[i], frames, time, NULL, NULL);
-    webkit_user_content_manager_add_script(manager, script);
-    webkit_user_script_unref(script);
-  }
+  omni_webkit_sync_user_scripts(manager, script_sources, script_injection_times, script_main_frame_only, script_count);
   OmniWebViewDeferredLoad *initial_load = omni_webkit_deferred_load_new(
       WEBKIT_WEB_VIEW(web_view),
       url,
@@ -932,9 +1176,12 @@ static GtkWidget *omni_create_webkit_web_view_ex(
   omni_webkit_install_content_filters(manager, content_rule_identifiers, content_rule_sources, content_rule_count, initial_load);
 
   OmniWebViewBridge *bridge = calloc(1, sizeof(OmniWebViewBridge));
+  bridge->web_view = WEBKIT_WEB_VIEW(web_view);
   bridge->message_callback = message_callback;
   bridge->navigation_callback = navigation_callback;
   bridge->policy_callback = policy_callback;
+  bridge->response_policy_callback = response_policy_callback;
+  bridge->download_destination_callback = download_destination_callback;
   bridge->title_callback = title_callback;
   bridge->progress_callback = progress_callback;
   bridge->cookie_callback = cookie_callback;
@@ -972,7 +1219,7 @@ static GtkWidget *omni_create_webkit_web_view_ex(
   if (identity && identity[0]) {
     char *identity_copy = omni_strdup(identity);
     g_object_set_data_full(G_OBJECT(web_view), "omni-webkit-identity", omni_strdup(identity), free);
-    g_hash_table_replace(omni_webkit_view_registry(), omni_strdup(identity), web_view);
+    g_hash_table_replace(omni_webkit_view_registry(), omni_strdup(identity), g_object_ref(web_view));
     g_signal_connect_data(web_view, "destroy", G_CALLBACK(omni_webkit_unregister_identity), identity_copy, (GClosureNotify)free, 0);
   }
 
@@ -992,6 +1239,10 @@ static GtkWidget *omni_create_webkit_web_view_ex(
   g_signal_connect(web_view, "load-changed", G_CALLBACK(omni_webkit_load_changed), bridge);
   g_signal_connect(web_view, "load-failed", G_CALLBACK(omni_webkit_load_failed), bridge);
   g_signal_connect(web_view, "decide-policy", G_CALLBACK(omni_webkit_decide_policy), bridge);
+  WebKitWebContext *web_context = webkit_web_view_get_context(WEBKIT_WEB_VIEW(web_view));
+  if (web_context && g_signal_lookup("download-started", G_OBJECT_TYPE(web_context)) != 0) {
+    g_signal_connect(web_context, "download-started", G_CALLBACK(omni_webkit_download_started), bridge);
+  }
   g_signal_connect(web_view, "notify::title", G_CALLBACK(omni_webkit_title_changed), bridge);
   g_signal_connect(web_view, "notify::estimated-load-progress", G_CALLBACK(omni_webkit_progress_changed), bridge);
   g_signal_connect(web_view, "script-dialog", G_CALLBACK(omni_webkit_script_dialog), bridge);
@@ -1006,7 +1257,7 @@ static GtkWidget *omni_create_webkit_web_view_ex(
 
   if (!initial_load) {
     if (html && html[0]) {
-      webkit_web_view_load_html(WEBKIT_WEB_VIEW(web_view), html, base_url && base_url[0] ? base_url : NULL);
+      omni_webkit_load_html_if_changed(WEBKIT_WEB_VIEW(web_view), html, base_url);
     } else if (url && url[0]) {
       omni_webkit_load_uri_with_headers(
           WEBKIT_WEB_VIEW(web_view),
@@ -1015,7 +1266,7 @@ static GtkWidget *omni_create_webkit_web_view_ex(
           request_header_values,
           request_header_count);
     } else {
-      webkit_web_view_load_html(WEBKIT_WEB_VIEW(web_view), "<!doctype html><title>Blank</title>", "about:blank");
+      omni_webkit_load_html_if_changed(WEBKIT_WEB_VIEW(web_view), "<!doctype html><title>Blank</title>", "about:blank");
     }
   } else if (initial_load->pending_filters <= 0) {
     omni_webkit_deferred_load_start(initial_load);
@@ -1085,7 +1336,7 @@ int32_t omni_adw_web_view_load_html(const char *identity, const char *html, cons
 #if defined(__linux__)
   WebKitWebView *web_view = WEBKIT_WEB_VIEW(omni_webkit_lookup_view(identity));
   if (!web_view || !html) return 0;
-  webkit_web_view_load_html(web_view, html, base_url && base_url[0] ? base_url : NULL);
+  omni_webkit_load_html(web_view, html, base_url, TRUE);
   return 1;
 #else
   (void)identity; (void)html; (void)base_url;
@@ -1786,9 +2037,14 @@ static void present_about_dialog(OmniAdwApp *app);
 static void install_application_actions(OmniAdwApp *app);
 static void on_settings_clicked(GtkButton *button, gpointer data);
 static gboolean on_settings_close_request(GtkWindow *window, gpointer data);
+static gboolean on_main_window_close_request(GtkWindow *window, gpointer data);
 static gboolean on_key_pressed(GtkEventControllerKey *controller, guint keyval, guint keycode, GdkModifierType state, gpointer data);
+static void on_key_released(GtkEventControllerKey *controller, guint keyval, guint keycode, GdkModifierType state, gpointer data);
 static void on_window_click_pressed(GtkGestureClick *gesture, int n_press, double x, double y, gpointer data);
 static void on_window_click_released(GtkGestureClick *gesture, int n_press, double x, double y, gpointer data);
+static void on_required_click_released(GtkGestureClick *gesture, int n_press, double x, double y, gpointer data);
+static void on_window_motion(GtkEventControllerMotion *controller, double x, double y, gpointer data);
+static gboolean on_window_scroll(GtkEventControllerScroll *controller, double dx, double dy, gpointer data);
 static void on_sidebar_toggle_toggled(GtkToggleButton *button, gpointer data);
 static void on_split_show_sidebar_notify(GObject *object, GParamSpec *pspec, gpointer data);
 static void on_new_tab_clicked(GtkButton *button, gpointer data);
@@ -2029,14 +2285,23 @@ static void omni_apply_color_scheme_from_environment(void) {
 void omni_adw_set_color_scheme(const char *scheme) {
   if (!scheme || !scheme[0]) return;
   AdwStyleManager *manager = adw_style_manager_get_default();
-  if (!manager) return;
+  GtkSettings *settings = gtk_settings_get_default();
 
   if (g_ascii_strcasecmp(scheme, "dark") == 0 || g_ascii_strcasecmp(scheme, "force-dark") == 0) {
-    adw_style_manager_set_color_scheme(manager, ADW_COLOR_SCHEME_FORCE_DARK);
+    if (manager) adw_style_manager_set_color_scheme(manager, ADW_COLOR_SCHEME_FORCE_DARK);
+    if (settings && g_object_class_find_property(G_OBJECT_GET_CLASS(settings), "gtk-interface-color-scheme")) {
+      g_object_set(settings, "gtk-interface-color-scheme", GTK_INTERFACE_COLOR_SCHEME_DARK, NULL);
+    }
   } else if (g_ascii_strcasecmp(scheme, "light") == 0 || g_ascii_strcasecmp(scheme, "force-light") == 0) {
-    adw_style_manager_set_color_scheme(manager, ADW_COLOR_SCHEME_FORCE_LIGHT);
+    if (manager) adw_style_manager_set_color_scheme(manager, ADW_COLOR_SCHEME_FORCE_LIGHT);
+    if (settings && g_object_class_find_property(G_OBJECT_GET_CLASS(settings), "gtk-interface-color-scheme")) {
+      g_object_set(settings, "gtk-interface-color-scheme", GTK_INTERFACE_COLOR_SCHEME_LIGHT, NULL);
+    }
   } else if (g_ascii_strcasecmp(scheme, "default") == 0 || g_ascii_strcasecmp(scheme, "system") == 0) {
-    adw_style_manager_set_color_scheme(manager, ADW_COLOR_SCHEME_DEFAULT);
+    if (manager) adw_style_manager_set_color_scheme(manager, ADW_COLOR_SCHEME_DEFAULT);
+    if (settings && g_object_class_find_property(G_OBJECT_GET_CLASS(settings), "gtk-interface-color-scheme")) {
+      g_object_set(settings, "gtk-interface-color-scheme", GTK_INTERFACE_COLOR_SCHEME_DEFAULT, NULL);
+    }
   }
 }
 
@@ -2205,7 +2470,12 @@ static void on_app_quit_action(GSimpleAction *action, GVariant *parameter, gpoin
   (void)action;
   (void)parameter;
   OmniAdwApp *app = (OmniAdwApp *)data;
-  if (app && app->application) g_application_quit(G_APPLICATION(app->application));
+  if (!app || !app->application) return;
+  if (app->lifecycle_callback) {
+    int32_t should_quit = app->lifecycle_callback(OMNI_ADW_LIFECYCLE_APP_QUIT_REQUEST, app->context);
+    if (!should_quit) return;
+  }
+  g_application_quit(G_APPLICATION(app->application));
 }
 
 static void on_app_new_tab_action(GSimpleAction *action, GVariant *parameter, gpointer data) {
@@ -2255,6 +2525,7 @@ static void on_app_activate(GApplication *application, gpointer data) {
     app->window = adw_application_window_new(GTK_APPLICATION(application));
     gtk_window_set_title(GTK_WINDOW(app->window), app->title);
     gtk_window_set_default_size(GTK_WINDOW(app->window), app->default_width, app->default_height);
+    g_signal_connect(app->window, "close-request", G_CALLBACK(on_main_window_close_request), app);
     omni_accessible_label(app->window, app->title ? app->title : "OmniUI Adwaita");
     app->shell = adw_toolbar_view_new();
     gtk_widget_add_css_class(app->shell, "omni-shell");
@@ -2308,6 +2579,7 @@ static void on_app_activate(GApplication *application, gpointer data) {
       app->key_controller = gtk_event_controller_key_new();
       gtk_event_controller_set_propagation_phase(app->key_controller, GTK_PHASE_CAPTURE);
       g_signal_connect(app->key_controller, "key-pressed", G_CALLBACK(on_key_pressed), app);
+      g_signal_connect(app->key_controller, "key-released", G_CALLBACK(on_key_released), app);
       gtk_widget_add_controller(app->window, app->key_controller);
     }
     GtkGesture *click_controller = gtk_gesture_click_new();
@@ -2315,6 +2587,14 @@ static void on_app_activate(GApplication *application, gpointer data) {
     g_signal_connect(click_controller, "pressed", G_CALLBACK(on_window_click_pressed), app);
     g_signal_connect(click_controller, "released", G_CALLBACK(on_window_click_released), app);
     gtk_widget_add_controller(app->window, GTK_EVENT_CONTROLLER(click_controller));
+    GtkEventController *motion_controller = gtk_event_controller_motion_new();
+    gtk_event_controller_set_propagation_phase(motion_controller, GTK_PHASE_CAPTURE);
+    g_signal_connect(motion_controller, "motion", G_CALLBACK(on_window_motion), app);
+    gtk_widget_add_controller(app->window, motion_controller);
+    GtkEventController *scroll_controller = gtk_event_controller_scroll_new(GTK_EVENT_CONTROLLER_SCROLL_BOTH_AXES);
+    gtk_event_controller_set_propagation_phase(scroll_controller, GTK_PHASE_CAPTURE);
+    g_signal_connect(scroll_controller, "scroll", G_CALLBACK(on_window_scroll), app);
+    gtk_widget_add_controller(app->window, scroll_controller);
   }
   gtk_window_present(GTK_WINDOW(app->window));
   omni_macos_accessibility_schedule(app);
@@ -2364,12 +2644,40 @@ static gboolean on_settings_close_request(GtkWindow *window, gpointer data) {
   return TRUE;
 }
 
+static gboolean on_main_window_close_request(GtkWindow *window, gpointer data) {
+  (void)window;
+  OmniAdwApp *app = (OmniAdwApp *)data;
+  if (!app || !app->lifecycle_callback) return FALSE;
+  int32_t should_quit = app->lifecycle_callback(OMNI_ADW_LIFECYCLE_MAIN_WINDOW_CLOSE_REQUEST, app->context);
+  if (should_quit) return FALSE;
+  if (app->window) gtk_widget_set_visible(app->window, FALSE);
+  return TRUE;
+}
+
 static void on_clicked(GtkButton *button, gpointer data) {
   OmniAdwApp *app = (OmniAdwApp *)g_object_get_data(G_OBJECT(button), "omni-app");
   int action_id = GPOINTER_TO_INT(g_object_get_data(G_OBJECT(button), "omni-action-id"));
+  int required_click_count = GPOINTER_TO_INT(g_object_get_data(G_OBJECT(button), "omni-required-click-count"));
+  if (required_click_count > 1) return;
   if (app && app->callback) {
     app->callback(action_id, app->context);
     omni_flush_pending_ui(app);
+  }
+}
+
+static void on_required_click_released(GtkGestureClick *gesture, int n_press, double x, double y, gpointer data) {
+  (void)x;
+  (void)y;
+  GtkWidget *widget = gtk_event_controller_get_widget(GTK_EVENT_CONTROLLER(gesture));
+  if (!widget) return;
+  int required_click_count = GPOINTER_TO_INT(g_object_get_data(G_OBJECT(widget), "omni-required-click-count"));
+  if (required_click_count <= 1 || n_press != required_click_count) return;
+  int action_id = GPOINTER_TO_INT(g_object_get_data(G_OBJECT(widget), "omni-action-id"));
+  OmniAdwApp *app = (OmniAdwApp *)g_object_get_data(G_OBJECT(widget), "omni-app");
+  if (app && app->callback && action_id > 0) {
+    app->callback(action_id, app->context);
+    omni_flush_pending_ui(app);
+    gtk_gesture_set_state(GTK_GESTURE(gesture), GTK_EVENT_SEQUENCE_CLAIMED);
   }
 }
 
@@ -2571,6 +2879,8 @@ static void on_virtual_list_button_clicked(GtkButton *button, gpointer data) {
   GtkWidget *list_widget = list_view ? list_view : list_box;
   OmniAdwApp *app = list_widget ? (OmniAdwApp *)g_object_get_data(G_OBJECT(list_widget), "omni-app") : NULL;
   int action_id = GPOINTER_TO_INT(g_object_get_data(G_OBJECT(button), "omni-action-id"));
+  int required_click_count = GPOINTER_TO_INT(g_object_get_data(G_OBJECT(button), "omni-required-click-count"));
+  if (required_click_count > 1) return;
   if (app && app->callback && action_id > 0) {
     app->callback(action_id, app->context);
     omni_flush_pending_ui(app);
@@ -3163,6 +3473,28 @@ static void on_menu_option_clicked(GtkButton *button, gpointer data) {
   }
 }
 
+static void omni_context_menu_popover_owner_data_free(gpointer data) {
+  GtkWidget *popover = (GtkWidget *)data;
+  if (!popover) return;
+  if (gtk_widget_get_parent(popover)) gtk_widget_unparent(popover);
+  g_object_unref(popover);
+}
+
+static void on_context_menu_pressed(GtkGestureClick *gesture, int n_press, double x, double y, gpointer data) {
+  (void)data;
+  if (n_press != 1) return;
+  guint button = gtk_gesture_single_get_current_button(GTK_GESTURE_SINGLE(gesture));
+  if (button != GDK_BUTTON_SECONDARY) return;
+  GtkWidget *owner = gtk_event_controller_get_widget(GTK_EVENT_CONTROLLER(gesture));
+  if (!owner) return;
+  GtkPopover *popover = GTK_POPOVER(g_object_get_data(G_OBJECT(owner), "omni-context-menu-popover"));
+  if (!popover) return;
+  GdkRectangle rect = { (int)x, (int)y, 1, 1 };
+  gtk_popover_set_pointing_to(popover, &rect);
+  gtk_popover_popup(popover);
+  gtk_gesture_set_state(GTK_GESTURE(gesture), GTK_EVENT_SEQUENCE_CLAIMED);
+}
+
 static void on_entry_changed(GtkEditable *editable, gpointer data) {
   if (g_object_get_data(G_OBJECT(editable), "omni-updating") != NULL) return;
   OmniAdwApp *app = (OmniAdwApp *)g_object_get_data(G_OBJECT(editable), "omni-app");
@@ -3313,9 +3645,34 @@ static gboolean handle_entry_readline_key(OmniAdwApp *app, GtkWidget *widget, gu
   }
 }
 
+static gboolean omni_adw_is_modifier_key(guint keyval) {
+  switch (keyval) {
+    case GDK_KEY_Shift_L:
+    case GDK_KEY_Shift_R:
+    case GDK_KEY_Control_L:
+    case GDK_KEY_Control_R:
+    case GDK_KEY_Alt_L:
+    case GDK_KEY_Alt_R:
+    case GDK_KEY_Meta_L:
+    case GDK_KEY_Meta_R:
+    case GDK_KEY_Super_L:
+    case GDK_KEY_Super_R:
+      return TRUE;
+    default:
+      return FALSE;
+  }
+}
+
 static gboolean on_key_pressed(GtkEventControllerKey *controller, guint keyval, guint keycode, GdkModifierType state, gpointer data) {
   OmniAdwApp *app = (OmniAdwApp *)data;
   if (!app || !app->key_callback) return FALSE;
+  (void)keycode;
+
+  if (omni_adw_is_modifier_key(keyval)) {
+    if (omni_adw_dispatch_native_event(app, OMNI_ADW_EVENT_FLAGS_CHANGED, 0, 0, 0, state, keyval)) return TRUE;
+  } else if (omni_adw_dispatch_native_event(app, OMNI_ADW_EVENT_KEY_DOWN, 0, 0, 0, state, keyval)) {
+    return TRUE;
+  }
 
   if ((state & (GDK_META_MASK | GDK_CONTROL_MASK)) != 0 && keyval == GDK_KEY_comma) {
     present_settings_window(app);
@@ -3419,14 +3776,58 @@ static gboolean on_key_pressed(GtkEventControllerKey *controller, guint keyval, 
   return TRUE;
 }
 
+static void on_key_released(GtkEventControllerKey *controller, guint keyval, guint keycode, GdkModifierType state, gpointer data) {
+  (void)controller;
+  (void)keycode;
+  OmniAdwApp *app = (OmniAdwApp *)data;
+  if (!app || !omni_adw_is_modifier_key(keyval)) return;
+  omni_adw_dispatch_native_event(app, OMNI_ADW_EVENT_FLAGS_CHANGED, 0, 0, 0, state, keyval);
+}
+
 static void on_window_click_pressed(GtkGestureClick *gesture, int n_press, double x, double y, gpointer data) {
   if (n_press != 1) return;
+  OmniAdwApp *app = (OmniAdwApp *)data;
+  guint button = gtk_gesture_single_get_current_button(GTK_GESTURE_SINGLE(gesture));
+  int32_t event_type = button == GDK_BUTTON_SECONDARY ? OMNI_ADW_EVENT_RIGHT_MOUSE_DOWN : OMNI_ADW_EVENT_LEFT_MOUSE_DOWN;
+  GdkModifierType state = omni_adw_current_controller_state(GTK_EVENT_CONTROLLER(gesture));
+  guint action_payload = 0;
+  GtkWidget *window = gtk_event_controller_get_widget(GTK_EVENT_CONTROLLER(gesture));
+  GtkWidget *picked = window ? gtk_widget_pick(window, x, y, GTK_PICK_DEFAULT) : NULL;
+  GtkWidget *action_widget = picked;
+  while (action_widget) {
+    int drag_action_id = GPOINTER_TO_INT(g_object_get_data(G_OBJECT(action_widget), "omni-drag-source-action-id"));
+    if (drag_action_id > 0) {
+      action_payload = (guint)drag_action_id;
+      break;
+    }
+    action_widget = gtk_widget_get_parent(action_widget);
+  }
+  action_widget = action_payload > 0 ? NULL : picked;
+  while (action_widget) {
+    int action_id = GPOINTER_TO_INT(g_object_get_data(G_OBJECT(action_widget), "omni-action-id"));
+    if (action_id > 0) {
+      action_payload = (guint)action_id;
+      break;
+    }
+    action_widget = gtk_widget_get_parent(action_widget);
+  }
+  if (omni_adw_dispatch_native_event(app, event_type, x, y, n_press, state, action_payload)) {
+    gtk_gesture_set_state(GTK_GESTURE(gesture), GTK_EVENT_SEQUENCE_CLAIMED);
+    return;
+  }
   omni_record_click_start(gesture, x, y);
 }
 
 static void on_window_click_released(GtkGestureClick *gesture, int n_press, double x, double y, gpointer data) {
   if (!omni_click_is_stationary(gesture, x, y)) return;
   OmniAdwApp *app = (OmniAdwApp *)data;
+  guint button = gtk_gesture_single_get_current_button(GTK_GESTURE_SINGLE(gesture));
+  int32_t event_type = button == GDK_BUTTON_SECONDARY ? OMNI_ADW_EVENT_RIGHT_MOUSE_UP : OMNI_ADW_EVENT_LEFT_MOUSE_UP;
+  GdkModifierType state = omni_adw_current_controller_state(GTK_EVENT_CONTROLLER(gesture));
+  if (omni_adw_dispatch_native_event(app, event_type, x, y, n_press, state, 0)) {
+    gtk_gesture_set_state(GTK_GESTURE(gesture), GTK_EVENT_SEQUENCE_CLAIMED);
+    return;
+  }
   GtkWidget *window = gtk_event_controller_get_widget(GTK_EVENT_CONTROLLER(gesture));
   GtkWidget *picked = window ? gtk_widget_pick(window, x, y, GTK_PICK_DEFAULT) : NULL;
   GtkWidget *action_widget = picked;
@@ -3436,6 +3837,9 @@ static void on_window_click_released(GtkGestureClick *gesture, int n_press, doub
       return;
     }
     if (action_id > 0 && GTK_IS_LIST_BOX_ROW(action_widget)) {
+      int required_click_count = GPOINTER_TO_INT(g_object_get_data(G_OBJECT(action_widget), "omni-required-click-count"));
+      if (required_click_count <= 0) required_click_count = 1;
+      if (required_click_count != n_press) return;
       if (app && app->callback) {
         app->callback(action_id, app->context);
         omni_flush_pending_ui(app);
@@ -3450,9 +3854,21 @@ static void on_window_click_released(GtkGestureClick *gesture, int n_press, doub
   // clicks on Search/Cancel buttons race with the dialog dismissal path.
 }
 
+static void on_window_motion(GtkEventControllerMotion *controller, double x, double y, gpointer data) {
+  OmniAdwApp *app = (OmniAdwApp *)data;
+  GdkModifierType state = omni_adw_current_controller_state(GTK_EVENT_CONTROLLER(controller));
+  omni_adw_dispatch_native_event(app, OMNI_ADW_EVENT_MOUSE_MOVED, x, y, 0, state, 0);
+}
+
+static gboolean on_window_scroll(GtkEventControllerScroll *controller, double dx, double dy, gpointer data) {
+  OmniAdwApp *app = (OmniAdwApp *)data;
+  GdkModifierType state = omni_adw_current_controller_state(GTK_EVENT_CONTROLLER(controller));
+  return omni_adw_dispatch_native_event(app, OMNI_ADW_EVENT_SCROLL_WHEEL, dx, dy, 0, state, 0);
+}
+
 static void wire_actions(GtkWidget *widget, OmniAdwApp *app) {
   if (!widget) return;
-  if (GPOINTER_TO_INT(g_object_get_data(G_OBJECT(widget), "omni-action-id")) > 0 || GTK_IS_BUTTON(widget) || GTK_IS_CHECK_BUTTON(widget) || GTK_IS_ENTRY(widget) || GTK_IS_TEXT_VIEW(widget) || GTK_IS_DROP_DOWN(widget) || GTK_IS_MENU_BUTTON(widget) || GTK_IS_SCALE(widget) || GTK_IS_SPIN_BUTTON(widget) || GTK_IS_CALENDAR(widget) || GTK_IS_LIST_VIEW(widget) || GTK_IS_LIST_BOX(widget)) {
+  if (GPOINTER_TO_INT(g_object_get_data(G_OBJECT(widget), "omni-action-id")) > 0 || g_object_get_data(G_OBJECT(widget), "omni-context-menu-popover") != NULL || GTK_IS_BUTTON(widget) || GTK_IS_CHECK_BUTTON(widget) || GTK_IS_ENTRY(widget) || GTK_IS_TEXT_VIEW(widget) || GTK_IS_DROP_DOWN(widget) || GTK_IS_MENU_BUTTON(widget) || GTK_IS_SCALE(widget) || GTK_IS_SPIN_BUTTON(widget) || GTK_IS_CALENDAR(widget) || GTK_IS_LIST_VIEW(widget) || GTK_IS_LIST_BOX(widget)) {
     g_object_set_data(G_OBJECT(widget), "omni-app", app);
   }
   if (GTK_IS_LIST_VIEW(widget) || GTK_IS_LIST_BOX(widget)) {
@@ -3483,6 +3899,7 @@ static void wire_actions(GtkWidget *widget, OmniAdwApp *app) {
     GtkEventController *key_controller = gtk_event_controller_key_new();
     gtk_event_controller_set_propagation_phase(key_controller, GTK_PHASE_CAPTURE);
     g_signal_connect(key_controller, "key-pressed", G_CALLBACK(on_key_pressed), app);
+    g_signal_connect(key_controller, "key-released", G_CALLBACK(on_key_released), app);
     gtk_widget_add_controller(widget, key_controller);
     g_object_set_data(G_OBJECT(widget), "omni-focus-controller-installed", GINT_TO_POINTER(1));
   }
@@ -3547,6 +3964,20 @@ static int32_t first_widget_action_id(GtkWidget *widget) {
     child = gtk_widget_get_next_sibling(child);
   }
   return 0;
+}
+
+static int32_t first_widget_required_click_count(GtkWidget *widget) {
+  if (!widget) return 1;
+  int32_t click_count = GPOINTER_TO_INT(g_object_get_data(G_OBJECT(widget), "omni-required-click-count"));
+  if (click_count > 0) return click_count;
+
+  GtkWidget *child = gtk_widget_get_first_child(widget);
+  while (child) {
+    click_count = first_widget_required_click_count(child);
+    if (click_count > 1) return click_count;
+    child = gtk_widget_get_next_sibling(child);
+  }
+  return 1;
 }
 
 static const char *first_widget_accessible_label(GtkWidget *widget) {
@@ -4477,6 +4908,7 @@ OmniAdwApp *omni_adw_app_new(const char *app_id, const char *title, omni_adw_act
   gtk_init();
   adw_init();
   omni_install_css_once();
+  if (g_getenv("OMNIKIT_ADWAITA_ENTRY_TRACE")) g_printerr("[OmniKit CAdwaita] after css\n");
   OmniAdwApp *app = calloc(1, sizeof(OmniAdwApp));
   app->title = omni_strdup(title);
   app->callback = callback;
@@ -4527,6 +4959,16 @@ int32_t omni_adw_app_run(OmniAdwApp *app, int32_t argc, char **argv) {
   return g_application_run(G_APPLICATION(app->application), argc, argv);
 }
 
+void omni_adw_app_set_event_callback(OmniAdwApp *app, omni_adw_event_callback event_callback) {
+  if (!app) return;
+  app->event_callback = event_callback;
+}
+
+void omni_adw_app_set_lifecycle_callback(OmniAdwApp *app, omni_adw_lifecycle_callback lifecycle_callback) {
+  if (!app) return;
+  app->lifecycle_callback = lifecycle_callback;
+}
+
 static gboolean omni_adw_tick_bridge_fire(gpointer data) {
   OmniAdwTickBridge *bridge = (OmniAdwTickBridge *)data;
   if (bridge && bridge->callback) bridge->callback(bridge->context);
@@ -4572,6 +5014,20 @@ void omni_adw_app_set_default_size(OmniAdwApp *app, int32_t width, int32_t heigh
   if (app->window) {
     gtk_window_set_default_size(GTK_WINDOW(app->window), app->default_width, app->default_height);
   }
+}
+
+void omni_adw_app_present_main_window(OmniAdwApp *app) {
+  if (!app || !app->window) return;
+  gtk_window_present(GTK_WINDOW(app->window));
+}
+
+void omni_adw_app_set_cursor(OmniAdwApp *app, const char *cursor_name) {
+  if (!app || !app->window) return;
+  const char *name = NULL;
+  if (cursor_name && cursor_name[0] && strcmp(cursor_name, "default") != 0) {
+    name = cursor_name;
+  }
+  gtk_widget_set_cursor_from_name(app->window, name);
 }
 
 void omni_adw_app_set_header_title(OmniAdwApp *app, const char *title) {
@@ -4739,6 +5195,10 @@ void omni_adw_app_set_settings(OmniAdwApp *app, OmniAdwNode *settings) {
   omni_adw_node_free(settings);
 }
 
+void omni_adw_app_present_settings(OmniAdwApp *app) {
+  present_settings_window(app);
+}
+
 void omni_adw_app_set_commands(OmniAdwApp *app, OmniAdwNode *commands) {
   if (!app || !commands) return;
   app->command_content = commands->widget;
@@ -4790,6 +5250,7 @@ void omni_adw_app_set_root_focused(OmniAdwApp *app, OmniAdwNode *root, int32_t f
       app->key_controller = gtk_event_controller_key_new();
       gtk_event_controller_set_propagation_phase(app->key_controller, GTK_PHASE_CAPTURE);
       g_signal_connect(app->key_controller, "key-pressed", G_CALLBACK(on_key_pressed), app);
+      g_signal_connect(app->key_controller, "key-released", G_CALLBACK(on_key_released), app);
       gtk_widget_add_controller(app->window, app->key_controller);
     }
   }
@@ -5188,6 +5649,7 @@ static gboolean omni_text_needs_scrollable_static_view(const char *value) {
   if (length > 16384) return TRUE;
   if (g_str_has_prefix(value, "Loading web content")) return TRUE;
   if (g_str_has_prefix(value, "Web content\n")) return TRUE;
+  if (g_str_has_prefix(value, "Terminal\n")) return TRUE;
   return FALSE;
 }
 
@@ -5572,6 +6034,19 @@ OmniAdwNode *omni_adw_box_new(int32_t vertical, int32_t spacing) {
   return node;
 }
 
+OmniAdwNode *omni_adw_flow_new(int32_t horizontal_spacing, int32_t vertical_spacing) {
+  OmniAdwNode *node = calloc(1, sizeof(OmniAdwNode));
+  node->widget = gtk_flow_box_new();
+  gtk_flow_box_set_selection_mode(GTK_FLOW_BOX(node->widget), GTK_SELECTION_NONE);
+  gtk_flow_box_set_column_spacing(GTK_FLOW_BOX(node->widget), horizontal_spacing);
+  gtk_flow_box_set_row_spacing(GTK_FLOW_BOX(node->widget), vertical_spacing);
+  gtk_flow_box_set_min_children_per_line(GTK_FLOW_BOX(node->widget), 1);
+  gtk_widget_add_css_class(node->widget, "omni-flow");
+  omni_widget_expand(node->widget, FALSE);
+  omni_accessible_role_description(node->widget, "flow group");
+  return node;
+}
+
 void omni_adw_box_set_homogeneous(OmniAdwNode *node, int32_t homogeneous) {
   if (!node || !node->widget || !GTK_IS_BOX(node->widget)) return;
   gtk_box_set_homogeneous(GTK_BOX(node->widget), homogeneous != 0);
@@ -5918,6 +6393,8 @@ OmniAdwNode *omni_adw_web_view_new_ex(
     omni_adw_web_message_callback message_callback,
     omni_adw_web_navigation_callback navigation_callback,
     omni_adw_web_policy_callback policy_callback,
+    omni_adw_web_response_policy_callback response_policy_callback,
+    omni_adw_web_download_destination_callback download_destination_callback,
     omni_adw_web_title_callback title_callback,
     omni_adw_web_progress_callback progress_callback,
     omni_adw_web_cookie_callback cookie_callback,
@@ -5967,6 +6444,8 @@ OmniAdwNode *omni_adw_web_view_new_ex(
       message_callback,
       navigation_callback,
       policy_callback,
+      response_policy_callback,
+      download_destination_callback,
       title_callback,
       progress_callback,
       cookie_callback,
@@ -5977,7 +6456,7 @@ OmniAdwNode *omni_adw_web_view_new_ex(
   (void)javascript_can_open_windows; (void)javascript_enabled; (void)minimum_font_size; (void)is_inspectable; (void)allows_inline_media_playback; (void)media_playback_requires_user_gesture; (void)script_sources; (void)script_injection_times; (void)script_main_frame_only;
   (void)script_count; (void)content_rule_identifiers; (void)content_rule_sources; (void)content_rule_count; (void)message_handler_names; (void)message_handler_count; (void)cookie_names; (void)cookie_values;
   (void)cookie_domains; (void)cookie_paths; (void)cookie_expires_at; (void)cookie_secure; (void)cookie_http_only; (void)cookie_count; (void)accessibility_label;
-  (void)accessibility_description; (void)native_view; (void)message_callback; (void)navigation_callback; (void)policy_callback; (void)title_callback; (void)progress_callback; (void)cookie_callback; (void)script_dialog_callback; (void)callback_context;
+  (void)accessibility_description; (void)native_view; (void)message_callback; (void)navigation_callback; (void)policy_callback; (void)response_policy_callback; (void)download_destination_callback; (void)title_callback; (void)progress_callback; (void)cookie_callback; (void)script_dialog_callback; (void)callback_context;
 #endif
   if (!web_view) {
     return omni_adw_scrollable_text_node_new(fallback_text && fallback_text[0] ? fallback_text : (url ? url : "Web content unavailable"));
@@ -6055,6 +6534,56 @@ OmniAdwNode *omni_adw_inline_button_new(const char *label, int32_t action_id, co
   omni_accessible_description(node->widget, action_id > 0 ? "Inline button" : "Disabled inline button");
   omni_accessible_set_disabled(node->widget, action_id <= 0);
   g_signal_connect(node->widget, "clicked", G_CALLBACK(on_clicked), NULL);
+  return node;
+}
+
+OmniAdwNode *omni_adw_context_menu_new(const char **labels, const int32_t *action_ids, int32_t count) {
+  OmniAdwNode *node = calloc(1, sizeof(OmniAdwNode));
+  node->widget = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
+  gtk_widget_add_css_class(node->widget, "omni-context-menu-region");
+  gtk_widget_set_hexpand(node->widget, TRUE);
+  gtk_widget_set_halign(node->widget, GTK_ALIGN_FILL);
+
+  if (count > 0) {
+    GtkWidget *popover = gtk_popover_new();
+    GtkWidget *menu_box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 2);
+    gtk_widget_add_css_class(menu_box, "menu");
+    gtk_widget_set_margin_top(menu_box, 6);
+    gtk_widget_set_margin_bottom(menu_box, 6);
+    gtk_widget_set_margin_start(menu_box, 6);
+    gtk_widget_set_margin_end(menu_box, 6);
+    for (int32_t i = 0; i < count; i++) {
+      const char *label = labels && labels[i] ? labels[i] : "";
+      int32_t action_id = action_ids ? action_ids[i] : 0;
+      GtkWidget *button = gtk_button_new_with_label(label);
+      gtk_widget_add_css_class(button, "flat");
+      gtk_widget_set_hexpand(button, TRUE);
+      gtk_widget_set_halign(button, GTK_ALIGN_FILL);
+      gtk_widget_set_focusable(button, action_id > 0);
+      g_object_set_data(G_OBJECT(button), "omni-action-id", GINT_TO_POINTER(action_id));
+      g_object_set_data(G_OBJECT(button), "omni-owner", node->widget);
+      omni_accessible_label(button, label);
+      omni_accessible_description(button, action_id > 0 ? "Context menu item" : "Disabled context menu item");
+      omni_accessible_set_disabled(button, action_id <= 0);
+      g_signal_connect(button, "clicked", G_CALLBACK(on_menu_option_clicked), popover);
+      gtk_box_append(GTK_BOX(menu_box), button);
+    }
+    gtk_popover_set_child(GTK_POPOVER(popover), menu_box);
+    gtk_widget_set_parent(popover, node->widget);
+    gtk_accessible_update_property(GTK_ACCESSIBLE(node->widget), GTK_ACCESSIBLE_PROPERTY_HAS_POPUP, TRUE, -1);
+    g_object_set_data_full(
+        G_OBJECT(node->widget),
+        "omni-context-menu-popover",
+        g_object_ref(popover),
+        omni_context_menu_popover_owner_data_free);
+
+    GtkGesture *click_controller = gtk_gesture_click_new();
+    gtk_gesture_single_set_button(GTK_GESTURE_SINGLE(click_controller), GDK_BUTTON_SECONDARY);
+    gtk_event_controller_set_propagation_phase(GTK_EVENT_CONTROLLER(click_controller), GTK_PHASE_CAPTURE);
+    g_signal_connect(click_controller, "pressed", G_CALLBACK(on_context_menu_pressed), NULL);
+    gtk_widget_add_controller(node->widget, GTK_EVENT_CONTROLLER(click_controller));
+  }
+
   return node;
 }
 
@@ -6486,6 +7015,24 @@ void omni_adw_node_set_sensitive(OmniAdwNode *node, int32_t sensitive) {
   omni_accessible_set_disabled(node->widget, sensitive == 0);
 }
 
+void omni_adw_node_set_required_click_count(OmniAdwNode *node, int32_t click_count) {
+  if (!node || !node->widget) return;
+  int32_t required = click_count > 1 ? click_count : 1;
+  g_object_set_data(G_OBJECT(node->widget), "omni-required-click-count", GINT_TO_POINTER(required));
+  if (required > 1 && !g_object_get_data(G_OBJECT(node->widget), "omni-required-click-controller-installed")) {
+    GtkGesture *click_controller = gtk_gesture_click_new();
+    gtk_event_controller_set_propagation_phase(GTK_EVENT_CONTROLLER(click_controller), GTK_PHASE_CAPTURE);
+    g_signal_connect(click_controller, "released", G_CALLBACK(on_required_click_released), NULL);
+    gtk_widget_add_controller(node->widget, GTK_EVENT_CONTROLLER(click_controller));
+    g_object_set_data(G_OBJECT(node->widget), "omni-required-click-controller-installed", GINT_TO_POINTER(1));
+  }
+}
+
+void omni_adw_node_set_drag_source_action(OmniAdwNode *node, int32_t action_id) {
+  if (!node || !node->widget) return;
+  g_object_set_data(G_OBJECT(node->widget), "omni-drag-source-action-id", GINT_TO_POINTER(action_id > 0 ? action_id : 0));
+}
+
 void omni_adw_node_set_metadata(OmniAdwNode *node, const char *semantic_id, const char *label) {
   if (!node || !node->widget) return;
   if (semantic_id && semantic_id[0]) {
@@ -6498,6 +7045,17 @@ void omni_adw_node_set_metadata(OmniAdwNode *node, const char *semantic_id, cons
   }
 }
 
+void omni_adw_node_set_accessibility_description(OmniAdwNode *node, const char *description) {
+  if (!node || !node->widget || !description || !description[0]) return;
+  omni_accessible_description(node->widget, description);
+  gtk_widget_set_tooltip_text(node->widget, description);
+}
+
+void omni_adw_node_set_accessibility_value(OmniAdwNode *node, const char *value) {
+  if (!node || !node->widget || !value || !value[0]) return;
+  omni_accessible_value_text(node->widget, value);
+}
+
 void omni_adw_node_add_css_class(OmniAdwNode *node, const char *css_class) {
   if (!node || !node->widget || !css_class || !css_class[0]) return;
   omni_widget_add_css_classes(node->widget, css_class);
@@ -6507,6 +7065,8 @@ void omni_adw_node_append(OmniAdwNode *parent, OmniAdwNode *child) {
   if (!parent || !child || !parent->widget || !child->widget) return;
   if (GTK_IS_BOX(parent->widget)) {
     gtk_box_append(GTK_BOX(parent->widget), child->widget);
+  } else if (GTK_IS_FLOW_BOX(parent->widget)) {
+    gtk_flow_box_append(GTK_FLOW_BOX(parent->widget), child->widget);
   } else if (GTK_IS_OVERLAY(parent->widget)) {
     omni_widget_expand(child->widget, TRUE);
     if (!gtk_overlay_get_child(GTK_OVERLAY(parent->widget))) {
@@ -6522,6 +7082,8 @@ void omni_adw_node_append(OmniAdwNode *parent, OmniAdwNode *child) {
     int action_id = first_widget_action_id(child->widget);
     if (action_id > 0) {
       g_object_set_data(G_OBJECT(row), "omni-action-id", GINT_TO_POINTER(action_id));
+      int required_click_count = first_widget_required_click_count(child->widget);
+      g_object_set_data(G_OBJECT(row), "omni-required-click-count", GINT_TO_POINTER(required_click_count));
       gtk_list_box_row_set_activatable(GTK_LIST_BOX_ROW(row), TRUE);
       gtk_widget_set_focusable(row, TRUE);
       const char *label = first_widget_accessible_label(child->widget);

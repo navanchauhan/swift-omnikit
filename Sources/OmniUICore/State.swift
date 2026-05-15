@@ -1,5 +1,8 @@
+import Foundation
+
 /// A SwiftUI-like `Binding`.
 @propertyWrapper
+@dynamicMemberLookup
 public struct Binding<Value>: @unchecked Sendable {
     public var wrappedValue: Value {
         get { get() }
@@ -16,19 +19,82 @@ public struct Binding<Value>: @unchecked Sendable {
         self.set = set
     }
 
+    public init(projectedValue: Binding<Value>) {
+        self = projectedValue
+    }
+
     public static func constant(_ value: Value) -> Binding<Value> {
         Binding(get: { value }, set: { _ in })
     }
+
+    public subscript<Subject>(dynamicMember keyPath: WritableKeyPath<Value, Subject>) -> Binding<Subject> {
+        Binding<Subject>(
+            get: { wrappedValue[keyPath: keyPath] },
+            set: { wrappedValue[keyPath: keyPath] = $0 }
+        )
+    }
+}
+
+extension Binding: Sequence where Value: MutableCollection {}
+
+extension Binding: Collection where Value: MutableCollection {
+    public typealias Index = Value.Index
+    public typealias Element = Binding<Value.Element>
+
+    public var startIndex: Index { wrappedValue.startIndex }
+    public var endIndex: Index { wrappedValue.endIndex }
+
+    public func index(after i: Index) -> Index {
+        wrappedValue.index(after: i)
+    }
+
+    public subscript(position: Index) -> Element {
+        Binding<Value.Element>(
+            get: { wrappedValue[position] },
+            set: { wrappedValue[position] = $0 }
+        )
+    }
+}
+
+extension Binding: BidirectionalCollection where Value: BidirectionalCollection & MutableCollection {
+    public func index(before i: Index) -> Index {
+        wrappedValue.index(before: i)
+    }
+}
+
+extension Binding: RandomAccessCollection where Value: RandomAccessCollection & MutableCollection {}
+
+extension Binding: Identifiable where Value: Identifiable {
+    public var id: Value.ID { wrappedValue.id }
 }
 
 /// A SwiftUI-like `State` backed by the current `_UIRuntime` via a build context.
 ///
 /// This is intentionally limited and is designed to be portable and strict-concurrency friendly.
 @propertyWrapper
+@dynamicMemberLookup
 public struct State<Value> {
     private let seed: _StateSeed
     private let initial: () -> Value
     private let location: _StateLocation
+
+    private final class DeferredMutation: @unchecked Sendable {
+        let runtime: _UIRuntime
+        let seed: _StateSeed
+        let path: [Int]
+        let value: Value
+
+        init(runtime: _UIRuntime, seed: _StateSeed, path: [Int], value: Value) {
+            self.runtime = runtime
+            self.seed = seed
+            self.path = path
+            self.value = value
+        }
+
+        func apply() {
+            runtime._setState(seed: seed, path: path, value: value)
+        }
+    }
 
     public init(wrappedValue: Value, fileID: StaticString = #fileID, line: UInt = #line) {
         self.seed = _StateSeed(fileID: fileID, line: line)
@@ -57,12 +123,12 @@ public struct State<Value> {
         }
         nonmutating set {
             if let resolved = location.resolved {
-                resolved.runtime._setState(seed: seed, path: resolved.path, value: newValue)
+                setStateValue(runtime: resolved.runtime, path: resolved.path, value: newValue)
                 return
             }
             guard let runtime = _UIRuntime._current, let path = _UIRuntime._currentPath else { return }
             location.resolved = (runtime: runtime, path: path)
-            runtime._setState(seed: seed, path: path, value: newValue)
+            setStateValue(runtime: runtime, path: path, value: newValue)
         }
     }
 
@@ -72,7 +138,7 @@ public struct State<Value> {
         if let resolved = location.resolved {
             return Binding(
                 get: { resolved.runtime._getState(seed: seed, path: resolved.path, initial: initial) },
-                set: { resolved.runtime._setState(seed: seed, path: resolved.path, value: $0) }
+                set: { setStateValue(runtime: resolved.runtime, path: resolved.path, value: $0) }
             )
         }
 
@@ -80,7 +146,7 @@ public struct State<Value> {
             location.resolved = (runtime: runtime, path: path)
             return Binding(
                 get: { runtime._getState(seed: seed, path: path, initial: initial) },
-                set: { runtime._setState(seed: seed, path: path, value: $0) }
+                set: { setStateValue(runtime: runtime, path: path, value: $0) }
             )
         }
 
@@ -88,6 +154,23 @@ public struct State<Value> {
             get: { self.wrappedValue },
             set: { self.wrappedValue = $0 }
         )
+    }
+
+    public subscript<Subject>(dynamicMember keyPath: WritableKeyPath<Value, Subject>) -> Binding<Subject> {
+        projectedValue[dynamicMember: keyPath]
+    }
+
+    private func setStateValue(runtime: _UIRuntime, path: [Int], value: Value) {
+        #if os(Linux)
+        guard Thread.isMainThread else {
+            let mutation = DeferredMutation(runtime: runtime, seed: seed, path: path, value: value)
+            DispatchQueue.main.async {
+                mutation.apply()
+            }
+            return
+        }
+        #endif
+        runtime._setState(seed: seed, path: path, value: value)
     }
 }
 

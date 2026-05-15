@@ -21,6 +21,11 @@ public struct Color: Hashable, Sendable {
         self.alpha = 1.0
     }
 
+    public init(hue: Double, saturation: Double, brightness: Double) {
+        self.name = "hsb(\(hue),\(saturation),\(brightness))"
+        self.alpha = 1.0
+    }
+
     public init(red: CGFloat, green: CGFloat, blue: CGFloat, opacity: CGFloat = 1.0) {
         self.name = "rgb(\(red),\(green),\(blue))"
         self.alpha = opacity
@@ -93,6 +98,8 @@ public struct Font: Hashable, Sendable {
     public enum Design: Hashable, Sendable {
         case `default`
         case monospaced
+        case rounded
+        case serif
     }
 
     public enum Weight: Hashable, Sendable {
@@ -118,6 +125,7 @@ public struct Font: Hashable, Sendable {
     public static let body = Font(name: "body")
     public static let caption = Font(name: "caption")
     public static let caption2 = Font(name: "caption2")
+    public static let callout = Font(name: "callout")
 
     public static func system(size: CGFloat, design: Design = .default) -> Font {
         Font(name: "system(\(size),\(design))")
@@ -125,6 +133,10 @@ public struct Font: Hashable, Sendable {
 
     public static func system(size: CGFloat, weight: Weight, design: Design = .default) -> Font {
         Font(name: "system(\(size),\(weight),\(design))")
+    }
+
+    public static func custom(_ name: String, size: CGFloat) -> Font {
+        Font(name: "custom(\(name),\(size))")
     }
 
     // SwiftUI exposes `.system(_:, design:)` overloads; this keeps call sites compiling.
@@ -142,6 +154,10 @@ public struct Font: Hashable, Sendable {
 
     public func bold() -> Font {
         Font(name: "\(name).bold")
+    }
+
+    public func italic() -> Font {
+        Font(name: "\(name).italic")
     }
 }
 

@@ -271,7 +271,11 @@ public enum BorderedButtonMenuStyle {
 }
 
 
-public enum BorderedListStyle {
+public struct BorderedListStyle: ListStyle, Hashable, Sendable {
+    public var alternatesRowBackgrounds: Bool
+    public init(alternatesRowBackgrounds: Bool = false) {
+        self.alternatesRowBackgrounds = alternatesRowBackgrounds
+    }
 }
 
 
@@ -285,15 +289,15 @@ public enum BorderlessButtonMenuButtonStyle {
 }
 
 
-public enum BorderlessButtonMenuStyle {
-    public enum Body {
-    }
+public struct BorderlessButtonMenuStyle: Hashable, Sendable {
+    public init() {}
+    public static var borderlessButton: BorderlessButtonMenuStyle { BorderlessButtonMenuStyle() }
 }
 
 
-public enum BorderlessButtonStyle {
-    public enum Body {
-    }
+public struct BorderlessButtonStyle: ButtonStyle, Hashable, Sendable {
+    public init() {}
+    public func makeBody(configuration: Configuration) -> some View { configuration.label }
 }
 
 
@@ -329,10 +333,12 @@ public enum ButtonToggleStyle {
 }
 
 
+#if !os(Linux)
 public enum CheckboxToggleStyle {
     public enum Body {
     }
 }
+#endif
 
 
 public enum CircularProgressViewStyle {
@@ -722,12 +728,16 @@ public enum DropConfiguration {
 }
 
 
+#if !os(Linux)
 public enum DropDelegate {
 }
+#endif
 
 
+#if !os(Linux)
 public enum DropInfo {
 }
+#endif
 
 
 public enum DropOperation {
@@ -751,8 +761,10 @@ public enum DropOperation {
 }
 
 
+#if !os(Linux)
 public enum DropProposal {
 }
+#endif
 
 
 public enum DropSession {
@@ -1248,9 +1260,9 @@ public enum LinearCapacityGaugeStyle {
 }
 
 
-public enum LinearProgressViewStyle {
-    public enum Body {
-    }
+public struct LinearProgressViewStyle: Hashable, Sendable {
+    public init() {}
+    public static var linear: LinearProgressViewStyle { LinearProgressViewStyle() }
 }
 
 
@@ -1319,12 +1331,6 @@ public enum MenuActionDismissBehavior {
 }
 
 
-public enum MenuBarExtra {
-    public enum Body {
-    }
-}
-
-
 public enum MenuBarExtraStyle {
 }
 
@@ -1388,8 +1394,10 @@ public enum MoveCommandDirection {
 }
 
 
+#if !os(Linux)
 public enum NSApplicationDelegateAdaptor {
 }
+#endif
 
 
 public enum NSGestureRecognizerRepresentable {
@@ -1413,8 +1421,10 @@ public enum NSGestureRecognizerType {
 }
 
 
+#if !os(Linux)
 public enum NSHostingController {
 }
+#endif
 
 
 public enum NSHostingMenu {
@@ -1478,10 +1488,17 @@ public enum NSViewControllerType {
 }
 
 
+#if os(Linux)
+open class NSWindow: _OmniNSWindow, @unchecked Sendable {
+    public enum HostingSheetRepresentation {
+    }
+}
+#else
 public enum NSWindow {
     public enum HostingSheetRepresentation {
     }
 }
+#endif
 
 
 public enum NavigationControlGroupStyle {
@@ -1533,8 +1550,10 @@ public enum OpenImmersiveSpaceAction {
 }
 
 
+#if !os(Linux)
 public enum OpenSettingsAction {
 }
+#endif
 
 
 public enum OpenWindowAction {

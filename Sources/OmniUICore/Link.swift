@@ -11,6 +11,11 @@ public struct Link<Label: View>: View {
         self.label = label()
     }
 
+    public init(_ title: String, destination: URL) where Label == Text {
+        self.destination = destination
+        self.label = Text(title)
+    }
+
     public var body: Body {
         AnyView(Button(action: {
             if let runtime = _UIRuntime._current {

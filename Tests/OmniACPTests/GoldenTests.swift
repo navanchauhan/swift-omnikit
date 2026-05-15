@@ -17,8 +17,10 @@ struct GoldenTests {
     }
 
     private func jsonEqual(_ lhs: Data, _ rhs: Data) throws -> Bool {
-        let left = try JSONSerialization.jsonObject(with: lhs) as AnyObject
-        let right = try JSONSerialization.jsonObject(with: rhs) as AnyObject
+        guard let left = try JSONSerialization.jsonObject(with: lhs) as? NSObject,
+              let right = try JSONSerialization.jsonObject(with: rhs) as? NSObject else {
+            return false
+        }
         return left.isEqual(right)
     }
 

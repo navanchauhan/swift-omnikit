@@ -16,6 +16,21 @@ extension Never: View {
     public var body: Never { fatalError("Never has no body") }
 }
 
+extension Optional: View where Wrapped: View {
+    public typealias Body = Never
+}
+
+extension Optional: _PrimitiveView where Wrapped: View {
+    func _makeNode(_ ctx: inout _BuildContext) -> _VNode {
+        switch self {
+        case .some(let wrapped):
+            return OmniUICore._makeNode(wrapped, &ctx)
+        case .none:
+            return .empty
+        }
+    }
+}
+
 /// Type erasure for `View`.
 public struct AnyView: View {
     public typealias Body = Never

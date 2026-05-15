@@ -155,8 +155,20 @@ let package = Package(
             targets: ["Combine"]
         ),
         .library(
+            name: "Observation",
+            targets: ["Observation"]
+        ),
+        .library(
             name: "OmniFoundationExtras",
             targets: ["OmniFoundationExtras"]
+        ),
+        .library(
+            name: "UniformTypeIdentifiers",
+            targets: ["UniformTypeIdentifiers"]
+        ),
+        .library(
+            name: "OmniDarwin",
+            targets: ["OmniDarwin"]
         ),
         .library(
             name: "Sparkle",
@@ -466,6 +478,7 @@ let package = Package(
         ),
         .target(
             name: "OmniUICore",
+            dependencies: ["UniformTypeIdentifiers"],
             swiftSettings: commonSwiftSettings
         ),
         .target(
@@ -491,8 +504,23 @@ let package = Package(
             swiftSettings: commonSwiftSettings
         ),
         .target(
+            name: "Observation",
+            path: "Sources/Observation",
+            swiftSettings: commonSwiftSettings
+        ),
+        .target(
             name: "OmniFoundationExtras",
             path: "Sources/OmniFoundationExtras",
+            swiftSettings: commonSwiftSettings
+        ),
+        .target(
+            name: "UniformTypeIdentifiers",
+            path: "Sources/UniformTypeIdentifiers",
+            swiftSettings: commonSwiftSettings
+        ),
+        .target(
+            name: "OmniDarwin",
+            path: "Sources/OmniDarwin",
             swiftSettings: commonSwiftSettings
         ),
         .target(
@@ -953,6 +981,15 @@ let package = Package(
             dependencies: [
                 "OmniWebKit",
                 "OmniUICore",
+            ],
+            swiftSettings: commonSwiftSettings
+        ),
+        .testTarget(
+            name: "OmniDarwinTests",
+            dependencies: [
+                "OmniDarwin",
+                "Observation",
+                .product(name: "Testing", package: "swift-testing"),
             ],
             swiftSettings: commonSwiftSettings
         ),

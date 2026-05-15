@@ -80,10 +80,14 @@ public struct AppStorage<Value> {
         self.store = store
 
         let initial = Value._read(from: store, key: key) ?? wrappedValue
-        self._value = State(wrappedValue: initial)
         self.write = { v in
             Value._write(v, to: store, key: key)
         }
+        self._value = State(
+            wrappedValue: initial,
+            fileID: "OmniUICore.AppStorage",
+            line: Self.stateLine(discriminator: 1, key: key)
+        )
     }
 
     public init(wrappedValue: Value, _ key: String, store: UserDefaults = .standard) where Value: RawRepresentable, Value.RawValue: _AppStorageValue {
@@ -92,10 +96,14 @@ public struct AppStorage<Value> {
 
         let raw = Value.RawValue._read(from: store, key: key)
         let initial = raw.flatMap(Value.init(rawValue:)) ?? wrappedValue
-        self._value = State(wrappedValue: initial)
         self.write = { v in
             Value.RawValue._write(v.rawValue, to: store, key: key)
         }
+        self._value = State(
+            wrappedValue: initial,
+            fileID: "OmniUICore.AppStorage",
+            line: Self.stateLine(discriminator: 2, key: key)
+        )
     }
 
     public var wrappedValue: Value {
@@ -103,11 +111,21 @@ public struct AppStorage<Value> {
         nonmutating set {
             value = newValue
             write(newValue)
+            store.synchronize()
         }
     }
 
     public var projectedValue: Binding<Value> {
         Binding(get: { wrappedValue }, set: { wrappedValue = $0 })
+    }
+
+    private static func stateLine(discriminator: UInt, key: String) -> UInt {
+        var hash: UInt = 2_166_136_261
+        for byte in key.utf8 {
+            hash ^= UInt(byte)
+            hash &*= 16_777_619
+        }
+        return (discriminator << 31) ^ (hash & 0x7fff_ffff)
     }
 }
 

@@ -9,10 +9,6 @@ public enum ViewBuilder {
         expression
     }
 
-    public static func buildExpression<C: ToolbarContent>(_ expression: C) -> AnyView {
-        expression._toolbarView()
-    }
-
     public static func buildExpression<V: View>(_ expression: V) -> AnyView {
         AnyView(expression)
     }
@@ -21,10 +17,20 @@ public enum ViewBuilder {
         switch content {}
     }
 
+    public static func buildPartialBlock(first content: Never) -> Never {
+        switch content {}
+    }
+
     // Keep the builder's component type stable (`AnyView`) to avoid generic inference
     // failures in complex `if` / `switch` / availability blocks.
     public static func buildBlock() -> AnyView { AnyView(EmptyView()) }
     public static func buildBlock(_ c0: AnyView) -> AnyView { c0 }
+
+    public static func buildPartialBlock(first: AnyView) -> AnyView { first }
+
+    public static func buildPartialBlock(accumulated: AnyView, next: AnyView) -> AnyView {
+        AnyView(TupleView([accumulated, next]))
+    }
 
     public static func buildBlock(_ c0: AnyView, _ c1: AnyView) -> AnyView {
         AnyView(TupleView([c0, c1]))

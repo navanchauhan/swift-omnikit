@@ -32,10 +32,13 @@ public struct SemanticNode: Sendable, Identifiable {
         case text(String)
         case image(String)
         case stack(axis: SemanticAxis, spacing: Int)
+        case flowLayout(horizontalSpacing: Int, verticalSpacing: Int)
         case zstack
         case spacer
+        case webContent(registryKey: String, stableIdentity: String, url: String, label: String?, description: String?)
         case scroll(axis: SemanticAxis, actionID: Int, offset: Int)
         case button(actionID: Int, isFocused: Bool)
+        case tapTarget(actionID: Int, tapCount: Int)
         case toggle(actionID: Int, isFocused: Bool, isOn: Bool)
         case textField(actionID: Int, placeholder: String, text: String, cursor: Int, isFocused: Bool, isSecure: Bool)
         case textEditor(actionID: Int, text: String, cursor: Int, isFocused: Bool)
@@ -142,6 +145,16 @@ public enum SemanticContainerRole: String, Sendable, Equatable {
     case navigationSplitView
 }
 
+public struct SemanticContextMenuItem: Sendable, Equatable {
+    public let label: String
+    public let actionID: Int
+
+    public init(label: String, actionID: Int) {
+        self.label = label
+        self.actionID = actionID
+    }
+}
+
 public enum SemanticModifier: Sendable, Equatable {
     case foreground(String)
     case background(String)
@@ -156,6 +169,11 @@ public enum SemanticModifier: Sendable, Equatable {
     case crt(String)
     case accessibilityLabel(String)
     case accessibilityIdentifier(String)
+    case accessibilityValue(String)
+    case accessibilityHint(String)
+    case help(String)
+    case contextMenu(items: [SemanticContextMenuItem])
+    case dragSource(actionID: Int)
     case noOp(String)
 }
 
@@ -178,17 +196,52 @@ enum SemanticLowerer {
         case .styledText(let segments):
             return SemanticNode(id: path, kind: .text(segments.map(\.content).joined()))
         case .image(let name):
+            if let payload = _OmniWebViewRegistry.payload(for: name) {
+                return SemanticNode(
+                    id: path,
+                    kind: .webContent(
+                        registryKey: name,
+                        stableIdentity: payload.stableIdentity,
+                        url: payload.url.absoluteString,
+                        label: payload.accessibilityLabel,
+                        description: payload.accessibilityDescription
+                    ),
+                    children: [
+                        SemanticNode(id: path + ".fallback", kind: .text(payload.fallbackText))
+                    ]
+                )
+            }
             return SemanticNode(id: path, kind: .image(name))
         case .stack(let axis, let spacing, let children):
             return SemanticNode(id: path, kind: .stack(axis: axis.semantic, spacing: spacing), children: lower(children, path: path))
+        case .flowLayout(let horizontalSpacing, let verticalSpacing, let children):
+            return SemanticNode(
+                id: path,
+                kind: .flowLayout(horizontalSpacing: horizontalSpacing, verticalSpacing: verticalSpacing),
+                children: lower(children, path: path)
+            )
         case .zstack(let children):
             return SemanticNode(id: path, kind: .zstack, children: lower(children, path: path))
         case .spacer:
             return SemanticNode(id: path, kind: .spacer)
         case .button(let id, let focused, let label):
             return SemanticNode(id: path, kind: .button(actionID: id.raw, isFocused: focused), children: [lower(label, path: path + ".label")])
-        case .tapTarget(let id, let child), .gestureTarget(let id, let child):
+        case .tapTarget(let id, let count, let child):
+            return SemanticNode(id: path, kind: .tapTarget(actionID: id.raw, tapCount: max(1, count)), children: [lower(child, path: path + ".label")])
+        case .gestureTarget(let id, _, let child):
             return SemanticNode(id: path, kind: .button(actionID: id.raw, isFocused: false), children: [lower(child, path: path + ".label")])
+        case .dragSource(let id, _, let child):
+            return SemanticNode(
+                id: path,
+                kind: .modifier(.dragSource(actionID: id.raw)),
+                children: [lower(child, path: path + ".content")]
+            )
+        case .contextMenu(let items, let child):
+            return SemanticNode(
+                id: path,
+                kind: .modifier(.contextMenu(items: items.map { SemanticContextMenuItem(label: $0.label, actionID: $0.id.raw) })),
+                children: [lower(child, path: path + ".content")]
+            )
         case .toggle(let id, let focused, let isOn, let label):
             return SemanticNode(id: path, kind: .toggle(actionID: id.raw, isFocused: focused, isOn: isOn), children: [lower(label, path: path + ".label")])
         case .textField(let id, let placeholder, let text, let cursor, let focused, let isSecure, _):
@@ -225,6 +278,15 @@ enum SemanticLowerer {
             }
             if let identifier = value.base as? _AccessibilityIdentifier {
                 return SemanticNode(id: path, kind: .modifier(.accessibilityIdentifier(identifier.value)), children: [lower(child, path: path + ".content")])
+            }
+            if let accessibilityValue = value.base as? _AccessibilityValue {
+                return SemanticNode(id: path, kind: .modifier(.accessibilityValue(accessibilityValue.value)), children: [lower(child, path: path + ".content")])
+            }
+            if let hint = value.base as? _AccessibilityHint {
+                return SemanticNode(id: path, kind: .modifier(.accessibilityHint(hint.value)), children: [lower(child, path: path + ".content")])
+            }
+            if let help = value.base as? _HelpText {
+                return SemanticNode(id: path, kind: .modifier(.help(help.value)), children: [lower(child, path: path + ".content")])
             }
             if let segmented = value.base as? _SegmentedPickerRole {
                 return SemanticNode(id: path, kind: .segmentedControl(title: segmented.title, selectedIndex: segmented.selectedIndex), children: [lower(child, path: path + ".content")])
@@ -364,6 +426,14 @@ enum SemanticLowerer {
             }
             if case .image(let value) = current.kind {
                 parts.append(SFSymbolMap.unicode(for: value) ?? value)
+            }
+            if case .webContent(_, _, _, let label, let description) = current.kind {
+                if let label, !label.isEmpty {
+                    parts.append(label)
+                }
+                if let description, !description.isEmpty {
+                    parts.append(description)
+                }
             }
             for child in current.children {
                 visit(child)

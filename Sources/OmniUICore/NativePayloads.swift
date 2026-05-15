@@ -26,6 +26,20 @@ private final class _OmniLockedDictionary<Value>: @unchecked Sendable {
         storage[key] = value
         lock.unlock()
     }
+
+    func removeValues(where shouldRemove: (String) -> Bool) {
+        var removed: [Value] = []
+        lock.lock()
+        let keys = storage.keys.filter(shouldRemove)
+        removed.reserveCapacity(keys.count)
+        for key in keys {
+            if let value = storage.removeValue(forKey: key) {
+                removed.append(value)
+            }
+        }
+        lock.unlock()
+        _ = removed
+    }
 }
 
 private final class _OmniLockedValue<Value>: @unchecked Sendable {
@@ -134,6 +148,8 @@ public struct _OmniWebViewPayload {
     public typealias MessageCallback = @convention(c) (UnsafeMutableRawPointer?, UnsafePointer<CChar>?, UnsafePointer<CChar>?) -> Void
     public typealias NavigationCallback = @convention(c) (UnsafeMutableRawPointer?, Int32, UnsafePointer<CChar>?, UnsafePointer<CChar>?) -> Void
     public typealias PolicyCallback = @convention(c) (UnsafeMutableRawPointer?, UnsafePointer<CChar>?, Int32, Int32) -> Int32
+    public typealias ResponsePolicyCallback = @convention(c) (UnsafeMutableRawPointer?, UnsafePointer<CChar>?, UnsafePointer<CChar>?, Int32, Int64, UnsafePointer<CChar>?) -> Int32
+    public typealias DownloadDestinationCallback = @convention(c) (UnsafeMutableRawPointer?, UnsafePointer<CChar>?, UnsafePointer<CChar>?, Int64, UnsafePointer<CChar>?) -> UnsafeMutablePointer<CChar>?
     public typealias TitleCallback = @convention(c) (UnsafeMutableRawPointer?, UnsafePointer<CChar>?) -> Void
     public typealias ProgressCallback = @convention(c) (UnsafeMutableRawPointer?, Double) -> Void
     public typealias CookieCallback = @convention(c) (
@@ -183,6 +199,8 @@ public struct _OmniWebViewPayload {
     public let messageCallback: MessageCallback?
     public let navigationCallback: NavigationCallback?
     public let policyCallback: PolicyCallback?
+    public let responsePolicyCallback: ResponsePolicyCallback?
+    public let downloadDestinationCallback: DownloadDestinationCallback?
     public let titleCallback: TitleCallback?
     public let progressCallback: ProgressCallback?
     public let cookieCallback: CookieCallback?
@@ -227,6 +245,8 @@ public struct _OmniWebViewPayload {
         self.messageCallback = nil
         self.navigationCallback = nil
         self.policyCallback = nil
+        self.responsePolicyCallback = nil
+        self.downloadDestinationCallback = nil
         self.titleCallback = nil
         self.progressCallback = nil
         self.cookieCallback = nil
@@ -265,6 +285,8 @@ public struct _OmniWebViewPayload {
         messageCallback: MessageCallback? = nil,
         navigationCallback: NavigationCallback? = nil,
         policyCallback: PolicyCallback? = nil,
+        responsePolicyCallback: ResponsePolicyCallback? = nil,
+        downloadDestinationCallback: DownloadDestinationCallback? = nil,
         titleCallback: TitleCallback? = nil,
         progressCallback: ProgressCallback? = nil,
         cookieCallback: CookieCallback? = nil,
@@ -298,6 +320,8 @@ public struct _OmniWebViewPayload {
         self.messageCallback = messageCallback
         self.navigationCallback = navigationCallback
         self.policyCallback = policyCallback
+        self.responsePolicyCallback = responsePolicyCallback
+        self.downloadDestinationCallback = downloadDestinationCallback
         self.titleCallback = titleCallback
         self.progressCallback = progressCallback
         self.cookieCallback = cookieCallback
@@ -337,6 +361,8 @@ public struct _OmniWebViewPayload {
         self.messageCallback = nil
         self.navigationCallback = nil
         self.policyCallback = nil
+        self.responsePolicyCallback = nil
+        self.downloadDestinationCallback = nil
         self.titleCallback = nil
         self.progressCallback = nil
         self.cookieCallback = nil
@@ -416,21 +442,56 @@ extension NSImage {
 enum _OmniRepresentableFallback {
     private final class NativeEntry {
         let nsView: AnyObject
+        #if os(Linux)
+        let hostWindow: NSWindow?
+        #endif
         let update: (Any) -> Void
         let dismantle: () -> Void
 
         init(nsView: AnyObject, update: @escaping (Any) -> Void, dismantle: @escaping () -> Void) {
             self.nsView = nsView
+            #if os(Linux)
+            if let view = nsView as? NSView {
+                let window = NSWindow()
+                if view.frame.size == .zero {
+                    view.frame = NSRect(x: 0, y: 0, width: 800, height: 600)
+                }
+                window.contentView = view
+                if NSApp.keyWindow == nil {
+                    window.makeKey()
+                }
+                self.hostWindow = window
+            } else {
+                self.hostWindow = nil
+            }
+            #endif
             self.update = update
             self.dismantle = dismantle
         }
 
         deinit {
+            #if os(Linux)
+            hostWindow?.contentView = nil
+            #endif
             dismantle()
         }
     }
 
     private static let nativeEntries = _OmniLockedDictionary<NativeEntry>()
+    private static let activeNativeEntryKeys = _OmniLockedValue<Set<String>>([])
+
+    static func beginFrame(runtimeID: String) {
+        activeNativeEntryKeys.update { keys in
+            keys = keys.filter { !$0.hasPrefix(runtimeID) }
+        }
+    }
+
+    static func endFrame(runtimeID: String) {
+        let active = activeNativeEntryKeys.value()
+        nativeEntries.removeValues { key in
+            key.hasPrefix(runtimeID) && !active.contains(key)
+        }
+    }
 
     static func node<R: NSViewRepresentable>(for view: R, path: [Int]) -> _VNode? {
         nativeNode(for: view, erasedView: view, path: path)
@@ -445,6 +506,7 @@ enum _OmniRepresentableFallback {
 
     private static func nativeNode<R: NSViewRepresentable>(for view: R, erasedView: Any, path: [Int]) -> _VNode {
         let key = nativeRepresentableKey(typeName: String(reflecting: R.self), path: path)
+        activeNativeEntryKeys.update { $0.insert(key) }
         let entry: NativeEntry
         if let cached = nativeEntries.value(for: key) {
             entry = cached
@@ -467,7 +529,14 @@ enum _OmniRepresentableFallback {
 
         entry.update(erasedView)
 
-        if let provider = entry.nsView as? _OmniWebViewPayloadProviding {
+        #if os(Linux)
+        if let textField = entry.nsView as? NSTextField,
+           let node = nativeTextFieldNode(for: textField, path: path) {
+            return node
+        }
+        #endif
+
+        if let provider = payloadProvider(in: entry.nsView) {
             return .image(_OmniWebViewRegistry.store(payload: provider._omniWebViewPayload))
         }
 
@@ -478,13 +547,125 @@ enum _OmniRepresentableFallback {
         #if canImport(AppKit) && !os(Linux)
         return .image(_OmniWebViewRegistry.store(url: url, fallbackText: fallback, nativeView: entry.nsView as? NSView, identity: key))
         #else
-        return .image(_OmniWebViewRegistry.store(payload: _OmniWebViewPayload(load: .url(url), fallbackText: fallback, stableIdentity: key, swiftObject: entry.nsView)))
+        let node: _VNode = .image(_OmniWebViewRegistry.store(payload: _OmniWebViewPayload(
+            load: .url(url),
+            fallbackText: fallback,
+            stableIdentity: key,
+            accessibilityLabel: nativeAccessibilityLabel(for: url, nsView: entry.nsView, fallbackText: fallback),
+            accessibilityDescription: nativeAccessibilityDescription(for: url, nsView: entry.nsView),
+            swiftObject: entry.nsView
+        )))
+        if let view = entry.nsView as? NSView,
+           !view.registeredDraggedTypes.isEmpty,
+           let runtime = _UIRuntime._current,
+           runtime._hasActiveDragFallback() {
+            let id = runtime._registerAction({
+                _ = runtime._performNativeDragFallback(on: view)
+            }, path: path)
+            runtime._registerFocusable(path: path, activate: id)
+            return .tapTarget(id: id, count: 1, child: node)
+        }
+        return node
         #endif
     }
 
+    private static func payloadProvider(in object: AnyObject) -> _OmniWebViewPayloadProviding? {
+        if let provider = object as? _OmniWebViewPayloadProviding {
+            return provider
+        }
+        guard let view = object as? NSView else { return nil }
+        for subview in view.subviews {
+            if let provider = payloadProvider(in: subview) {
+                return provider
+            }
+        }
+        return nil
+    }
+
+    #if os(Linux)
+    private static func nativeTextFieldNode(for textField: NSTextField, path: [Int]) -> _VNode? {
+        guard let runtime = _UIRuntime._current else { return nil }
+        let controlPath = path
+        let id = runtime._registerAction({
+            runtime._ensureTextCursorAtEndIfUnset(path: controlPath, text: textField.stringValue)
+            runtime._setFocus(path: controlPath)
+            if !textField.becomeFirstResponder() {
+                textField.delegate?.controlTextDidBeginEditing(Notification(name: NSTextField.textDidBeginEditingNotification, object: textField))
+            }
+        }, path: controlPath)
+        runtime._registerFocusable(path: controlPath, activate: id)
+
+        runtime._registerTextEditor(path: controlPath, _TextEditor(handle: { event in
+            var scalars = Array(textField.stringValue.unicodeScalars)
+            var cursor = min(max(0, runtime._getTextCursor(path: controlPath)), scalars.count)
+
+            func save() {
+                textField.stringValue = String(String.UnicodeScalarView(scalars))
+                runtime._setTextCursor(path: controlPath, cursor)
+                textField.delegate?.controlTextDidChange(Notification(name: NSTextField.textDidChangeNotification, object: textField))
+            }
+
+            switch event {
+            case .left:
+                cursor = max(0, cursor - 1)
+                runtime._setTextCursor(path: controlPath, cursor)
+            case .right:
+                cursor = min(scalars.count, cursor + 1)
+                runtime._setTextCursor(path: controlPath, cursor)
+            case .home:
+                cursor = 0
+                runtime._setTextCursor(path: controlPath, cursor)
+            case .end:
+                cursor = scalars.count
+                runtime._setTextCursor(path: controlPath, cursor)
+            case .killToEnd:
+                guard cursor < scalars.count else { return }
+                scalars.removeSubrange(cursor..<scalars.count)
+                save()
+            case .backspace:
+                guard cursor > 0, !scalars.isEmpty else { return }
+                scalars.remove(at: cursor - 1)
+                cursor -= 1
+                save()
+            case .delete:
+                guard cursor < scalars.count else { return }
+                scalars.remove(at: cursor)
+                save()
+            case .char(let codepoint):
+                guard let scalar = UnicodeScalar(codepoint) else { return }
+                let value = scalar.value
+                guard value >= 32 && value != 127 else { return }
+                scalars.insert(scalar, at: cursor)
+                cursor += 1
+                save()
+            }
+        }))
+        runtime._registerSubmitHandler(controlPath: controlPath, actionScopePath: controlPath) {
+            let editor = textField.currentEditor() ?? NSTextView()
+            if textField.delegate?.control(textField, textView: editor, doCommandBy: Selector("insertNewline:")) == true {
+                return
+            }
+            if let action = textField.action {
+                _ = NSApp.sendAction(action, to: textField.target, from: textField)
+            }
+        }
+
+        return .textField(
+            id: id,
+            placeholder: textField.placeholderString ?? "",
+            text: textField.stringValue,
+            cursor: runtime._getTextCursor(path: controlPath),
+            isFocused: runtime._isFocused(path: controlPath),
+            isSecure: false,
+            style: textField.isBordered || textField.isBezeled ? .roundedBorder : .plain
+        )
+    }
+    #endif
+
     private static func nativeRepresentableKey(typeName: String, path: [Int]) -> String {
+        let runtimeID = _UIRuntime._current.map { "runtime:\(ObjectIdentifier($0)):" } ?? "runtime:detached:"
         let pathKey = path.map(String.init).joined(separator: ".")
-        return "\(typeName):\(pathKey)"
+        return "\(runtimeID)\(typeName):\(pathKey)"
     }
 
     private static func nativeRepresentableURL(for view: Any, nsView: AnyObject) -> URL {
@@ -505,6 +686,26 @@ enum _OmniRepresentableFallback {
             return _OmniRemoteDocumentRegistry.text(for: url, textScale: textScale)
         }
         return "Native view\n\(String(describing: type(of: nsView)))"
+    }
+
+    private static func nativeAccessibilityLabel(for url: URL, nsView: AnyObject, fallbackText: String) -> String {
+        if url.scheme == "http" || url.scheme == "https" {
+            return url.absoluteString
+        }
+        let fallbackLines = fallbackText
+            .split(separator: "\n", omittingEmptySubsequences: true)
+            .map(String.init)
+        if fallbackLines.count > 1 {
+            return fallbackLines[1]
+        }
+        return String(describing: type(of: nsView))
+    }
+
+    private static func nativeAccessibilityDescription(for url: URL, nsView: AnyObject) -> String {
+        if url.scheme == "http" || url.scheme == "https" {
+            return "Web content"
+        }
+        return "Native view \(String(describing: type(of: nsView)))"
     }
 
     private static func trace(_ message: String) {

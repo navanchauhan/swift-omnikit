@@ -1,5 +1,5 @@
 import Foundation
-#if canImport(Observation)
+#if canImport(Observation) && !os(Linux)
 import Observation
 #endif
 
@@ -76,7 +76,7 @@ public final class _UIRuntime: @unchecked Sendable {
     private var hoverHandlers: [_HoverID: (path: [Int], env: EnvironmentValues, action: (Bool) -> Void)] = [:]
     private var activeHoverID: _HoverID? = nil
     private var exitCommand: (path: [Int], env: EnvironmentValues, action: () -> Void)? = nil
-    private var keyboardShortcuts: [KeyboardShortcut: _ActionID] = [:]
+    private var keyboardShortcuts: [KeyboardShortcut: [(path: [Int], id: _ActionID)]] = [:]
 
     // Preference system
     private var _preferences: [ObjectIdentifier: Any] = [:]
@@ -92,6 +92,7 @@ public final class _UIRuntime: @unchecked Sendable {
     private let taskRegistryLock = NSLock()
     private var tasks: [String: _TaskEntry] = [:]
     private var tasksSeenThisFrame: Set<String> = []
+    private var receiveSubscriptions: [String: AnyObject] = [:]
     private var nextLaunchedAsyncActionID: Int = 1
     private var launchedAsyncActions: [Int: _TaskEntry] = [:]
 
@@ -100,8 +101,17 @@ public final class _UIRuntime: @unchecked Sendable {
     private var scrollTargets: [_ScrollTarget] = []
     private var pendingScrollRequests: [_PendingScrollRequest] = []
     private var globalEditMode: EditMode = .inactive
-    private var lastHitRegions: [(_Rect, _ActionID)] = []
+    private var lastHitRegions: [_HitRegion] = []
     private var lastScrollRegions: [_ScrollRegion] = []
+    private var activeDragItemProviders: [NSItemProvider] = []
+    private var activeDragLocation: CGPoint = .zero
+    private var dropFallbackActionIDs: Set<_ActionID> = []
+    private var activationPointsByActionID: [_ActionID: CGPoint] = [:]
+    private var currentInvokedActionID: _ActionID?
+    private var nextDragGestureID: Int = 1
+    private var dragGestures: [_DragGestureID: (path: [Int], env: EnvironmentValues, gesture: DragGesture)] = [:]
+    private var dragGestureByActionID: [_ActionID: _DragGestureID] = [:]
+    private var activeNativeDragGesture: (id: _DragGestureID, start: CGPoint, hasMoved: Bool)?
 
     private struct _NavEntry {
         var view: AnyView
@@ -214,6 +224,8 @@ public final class _UIRuntime: @unchecked Sendable {
 
     // Base environment at the root render call.
     var _baseEnvironment: EnvironmentValues = EnvironmentValues()
+    public private(set) var lastPreferredColorScheme: ColorScheme?
+    private var framePreferredColorScheme: ColorScheme?
     private var defaultShareURLAction: OpenURLAction = OpenURLAction()
 
     public init() {
@@ -234,6 +246,10 @@ public final class _UIRuntime: @unchecked Sendable {
         _markDirty()
     }
 
+    func _recordPreferredColorScheme(_ scheme: ColorScheme) {
+        framePreferredColorScheme = scheme
+    }
+
     /// Deliver a URL to the top-level `onOpenURL` handler registered in the environment.
     public func deliverURL(_ url: URL) {
         let env = _UIRuntime._currentEnvironment ?? _baseEnvironment
@@ -244,6 +260,11 @@ public final class _UIRuntime: @unchecked Sendable {
 
     public func setDefaultOpenURLAction(_ action: OpenURLAction) {
         _baseEnvironment.openURL = action
+        _markDirty()
+    }
+
+    public func setDefaultOpenSettingsAction(_ action: OpenSettingsAction) {
+        _baseEnvironment.openSettings = action
         _markDirty()
     }
 
@@ -399,6 +420,9 @@ public final class _UIRuntime: @unchecked Sendable {
         #if os(Linux)
         _baseEnvironment.colorScheme = _omniEffectiveAppearanceColorScheme()
         #endif
+        let runtimeID = "runtime:\(ObjectIdentifier(self)):"
+        _OmniRepresentableFallback.beginFrame(runtimeID: runtimeID)
+        framePreferredColorScheme = nil
         let sizeChanged = (_lastRenderedSize != size)
         if sizeChanged {
             _viewCache.removeAll(keepingCapacity: true)
@@ -447,6 +471,9 @@ public final class _UIRuntime: @unchecked Sendable {
 
         _frameDirtyEverything = false
         _frameDirtyPaths.removeAll(keepingCapacity: true)
+        lastPreferredColorScheme = framePreferredColorScheme
+        let runtimeID = "runtime:\(ObjectIdentifier(self)):"
+        _OmniRepresentableFallback.endFrame(runtimeID: runtimeID)
         let alivePathKeys = _frameAlivePathKeys
         if !onAppearPathKeys.isEmpty {
             onAppearPathKeys = Set(
@@ -548,6 +575,7 @@ public final class _UIRuntime: @unchecked Sendable {
         hoverHandlers.removeAll(keepingCapacity: true)
         exitCommand = nil
         keyboardShortcuts.removeAll(keepingCapacity: true)
+        dropFallbackActionIDs.removeAll(keepingCapacity: true)
         navStackRoots.removeAll(keepingCapacity: true)
         navResolvers.removeAll(keepingCapacity: true)
         overlays.removeAll(keepingCapacity: true)
@@ -576,7 +604,7 @@ public final class _UIRuntime: @unchecked Sendable {
             }
         }
         let node: _VNode
-        #if canImport(Observation)
+        #if canImport(Observation) && !os(Linux)
         node = withObservationTracking {
             build()
         } onChange: { [weak runtime] in
@@ -791,7 +819,7 @@ public final class _UIRuntime: @unchecked Sendable {
     }
 
     func _updateLastInteractionRegions(
-        hitRegions: [(_Rect, _ActionID)],
+        hitRegions: [_HitRegion],
         scrollRegions: [_ScrollRegion]
     ) {
         lastHitRegions = hitRegions
@@ -800,7 +828,7 @@ public final class _UIRuntime: @unchecked Sendable {
 
     private func _ensureFocusedControlVisible(path: [Int]) {
         guard let focusedID = focusActivation[path] else { return }
-        guard let focusedRect = lastHitRegions.last(where: { $0.1 == focusedID })?.0 else { return }
+        guard let focusedRect = lastHitRegions.last(where: { $0.actionID == focusedID })?.rect else { return }
         guard let region = lastScrollRegions
             .filter({ _isPrefix($0.path, of: path) })
             .max(by: { $0.path.count < $1.path.count })
@@ -918,6 +946,130 @@ public final class _UIRuntime: @unchecked Sendable {
         return id
     }
 
+    func _registerDragGesture(_ gesture: DragGesture, actionID: _ActionID, path: [Int]) -> _DragGestureID {
+        _noteBuildSideEffect()
+        let id = _DragGestureID(raw: nextDragGestureID)
+        nextDragGestureID += 1
+        let env = _UIRuntime._currentEnvironment ?? _baseEnvironment
+        dragGestures[id] = (path: path, env: env, gesture: gesture)
+        dragGestureByActionID[actionID] = id
+        return id
+    }
+
+    func _invokeDragGesture(_ id: _DragGestureID, start: CGPoint, current: CGPoint, ended: Bool) {
+        guard let entry = dragGestures[id] else { return }
+        let value = DragGesture.Value(
+            startLocation: start,
+            location: current,
+            translation: CGSize(width: current.x - start.x, height: current.y - start.y)
+        )
+        _UIRuntime.$_currentEnvironment.withValue(entry.env) {
+            _BuildContext.withRuntime(self, path: entry.path) {
+                entry.gesture._fireChanged(value)
+                if ended {
+                    entry.gesture._fireEnded(value)
+                }
+            }
+        }
+        _markDirty(path: entry.path)
+    }
+
+    @discardableResult
+    public func _handleNativeDragEvent(actionID rawActionID: Int, eventType: Int, x: Double, y: Double) -> Bool {
+        let point = CGPoint(x: x, y: y)
+        switch eventType {
+        case 1:
+            let actionID = _ActionID(raw: rawActionID)
+            guard let dragID = dragGestureByActionID[actionID] else { return false }
+            activeNativeDragGesture = (dragID, point, false)
+            return false
+        case 5:
+            guard let activeNativeDragGesture else { return false }
+            let dx = point.x - activeNativeDragGesture.start.x
+            let dy = point.y - activeNativeDragGesture.start.y
+            guard activeNativeDragGesture.hasMoved || hypot(dx, dy) >= 4 else { return false }
+            self.activeNativeDragGesture = (activeNativeDragGesture.id, activeNativeDragGesture.start, true)
+            _invokeDragGesture(activeNativeDragGesture.id, start: activeNativeDragGesture.start, current: point, ended: false)
+            return true
+        case 2:
+            guard let activeNativeDragGesture else { return false }
+            self.activeNativeDragGesture = nil
+            guard activeNativeDragGesture.hasMoved else { return false }
+            _invokeDragGesture(activeNativeDragGesture.id, start: activeNativeDragGesture.start, current: point, ended: true)
+            _performDropFallback(at: point)
+            return true
+        default:
+            return false
+        }
+    }
+
+    func _beginDragFallback(provider: NSItemProvider, location: CGPoint = .zero) {
+        activeDragItemProviders = [provider]
+        activeDragLocation = location
+        _markDirty()
+    }
+
+    public func _recordNativeActivationPoint(actionID rawActionID: Int, x: Double, y: Double) {
+        guard rawActionID > 0 else { return }
+        activationPointsByActionID[_ActionID(raw: rawActionID)] = CGPoint(x: x, y: y)
+    }
+
+    func _dropInfoForActiveDragFallback() -> DropInfo? {
+        guard !activeDragItemProviders.isEmpty else { return nil }
+        return DropInfo(location: activeDragLocation, itemProviders: activeDragItemProviders)
+    }
+
+    func _registerDropFallbackAction(_ id: _ActionID) {
+        dropFallbackActionIDs.insert(id)
+    }
+
+    @discardableResult
+    func _performDropFallback(at point: CGPoint) -> Bool {
+        guard !activeDragItemProviders.isEmpty else { return false }
+        let hitPoint = _Point(x: Int(point.x), y: Int(point.y))
+        guard let hit = lastHitRegions.last(where: { region in
+            region.rect.contains(hitPoint) && dropFallbackActionIDs.contains(region.actionID)
+        }) else { return false }
+        activeDragLocation = point
+        _recordNativeActivationPoint(actionID: hit.actionID.raw, x: point.x, y: point.y)
+        _invokeAction(hit.actionID)
+        return true
+    }
+
+    func _performNativeDragFallback(on view: NSView) -> Bool {
+        guard !activeDragItemProviders.isEmpty, !view.registeredDraggedTypes.isEmpty else { return false }
+        let pasteboard = NSPasteboard()
+        guard pasteboard.writeObjects(activeDragItemProviders.map(\.object)) else { return false }
+        guard view.registeredDraggedTypes.contains(where: { pasteboard.types.contains($0) }) else { return false }
+
+        let windowPoint: NSPoint
+        if let currentInvokedActionID,
+           let activationPoint = activationPointsByActionID[currentInvokedActionID] {
+            windowPoint = activationPoint
+        } else {
+            let localCenter = NSPoint(x: view.bounds.midX, y: view.bounds.midY)
+            windowPoint = view.convert(localCenter, to: nil)
+        }
+        let info = NSDraggingInfoSnapshot(draggingPasteboard: pasteboard, draggingLocation: windowPoint)
+        guard !view.draggingEntered(info).isEmpty || !view.draggingUpdated(info).isEmpty else { return false }
+        let performed = view.performDragOperation(info)
+        if performed {
+            _endDragFallback()
+        }
+        return performed
+    }
+
+    func _hasActiveDragFallback() -> Bool {
+        !activeDragItemProviders.isEmpty
+    }
+
+    func _endDragFallback() {
+        guard !activeDragItemProviders.isEmpty else { return }
+        activeDragItemProviders = []
+        activeDragLocation = .zero
+        _markDirty()
+    }
+
     func _registerOnAppear(path: [Int], action: @escaping () -> Void) {
         _noteBuildSideEffect()
         let key = _viewPathKey(path: path)
@@ -943,6 +1095,12 @@ public final class _UIRuntime: @unchecked Sendable {
 
     func _invokeAction(_ id: _ActionID) {
         guard let entry = actions[id] else { return }
+        let previousInvokedActionID = currentInvokedActionID
+        currentInvokedActionID = id
+        defer {
+            currentInvokedActionID = previousInvokedActionID
+            activationPointsByActionID.removeValue(forKey: id)
+        }
         _UIRuntime.$_currentEnvironment.withValue(entry.env) {
             _BuildContext.withRuntime(self, path: entry.path) {
                 entry.action()
@@ -1332,7 +1490,7 @@ public final class _UIRuntime: @unchecked Sendable {
     func _registerKeyboardShortcut(_ shortcut: KeyboardShortcut, forFocusablePath path: [Int]) {
         _noteBuildSideEffect()
         guard let id = focusActivation[path] else { return }
-        keyboardShortcuts[shortcut] = id
+        keyboardShortcuts[shortcut, default: []].append((path: path, id: id))
     }
 
     func _registerKeyPress(_ key: KeyEquivalent, forFocusablePath path: [Int], actionPath: [Int], action: @escaping () -> Bool) {
@@ -1424,7 +1582,13 @@ public final class _UIRuntime: @unchecked Sendable {
     @discardableResult
     public func invokeKeyboardShortcut(_ key: KeyEquivalent, modifiers: EventModifiers = []) -> Bool {
         func lookup(_ mods: EventModifiers) -> _ActionID? {
-            keyboardShortcuts[KeyboardShortcut(key, modifiers: mods)]
+            let entries = keyboardShortcuts[KeyboardShortcut(key, modifiers: mods)] ?? []
+            if !overlays.isEmpty {
+                return entries.reversed().first { entry in
+                    !entry.path.isEmpty && entry.path[0] == Self._overlayPathSentinel
+                }?.id
+            }
+            return entries.last?.id
         }
 
         if let id = lookup(modifiers) {
@@ -1767,7 +1931,7 @@ public final class _UIRuntime: @unchecked Sendable {
         let finalLayout = laidOut!
         let focusedRect: _Rect? = {
             guard let raw = focusedActionRawID() else { return nil }
-            return finalLayout.hitRegions.last(where: { $0.1.raw == raw })?.0
+            return finalLayout.hitRegions.last(where: { $0.actionID.raw == raw })?.rect
         }()
         return DebugSnapshot(
             size: size,
@@ -1790,7 +1954,39 @@ extension _UIRuntime {
     }
 
     public func _markDirtyFromExternalResource() {
+        _clearExternalResourceBackedState()
         _markDirty()
+    }
+
+    private func _clearExternalResourceBackedState() {
+        let prefixes = [
+            "OmniUICore.AppStorage:",
+        ]
+        let keys = state.keys.filter { key in
+            prefixes.contains { key.hasPrefix($0) }
+        }
+        guard !keys.isEmpty else { return }
+        for key in keys {
+            state.removeValue(forKey: key)
+            _stateReaders.removeValue(forKey: key)
+        }
+        for viewKey in Array(_viewStateDependencies.keys) {
+            _viewStateDependencies[viewKey]?.subtract(keys)
+            if _viewStateDependencies[viewKey]?.isEmpty == true {
+                _viewStateDependencies.removeValue(forKey: viewKey)
+            }
+        }
+    }
+
+    func _ensureReceiveSubscription(path: [Int], identity: String, subscribe: () -> AnyObject) {
+        _noteBuildSideEffect()
+        let key = _pathKey(prefix: "receive:\(identity)", path: path)
+        guard receiveSubscriptions[key] == nil else { return }
+        if _omniRuntimeReceiveTraceEnabled() {
+            let line = "[OmniKit receive] install identity=\(identity) path=\(path)\n"
+            FileHandle.standardError.write(Data(line.utf8))
+        }
+        receiveSubscriptions[key] = subscribe()
     }
 
     /// Called by `_ObservationRegistrar.notify()` when an `@Observable` object's
@@ -1903,7 +2099,7 @@ extension _UIRuntime {
         let finalLayout = laidOut!
         let focusedRect: _Rect? = {
             guard let raw = focusedActionRawID() else { return nil }
-            return finalLayout.hitRegions.last(where: { $0.1.raw == raw })?.0
+            return finalLayout.hitRegions.last(where: { $0.actionID.raw == raw })?.rect
         }()
         return RenderSnapshot(
             size: size,
@@ -1976,12 +2172,13 @@ extension _UIRuntime {
              .edgePadding(_, _, _, _, let child),
              .offset(_, _, let child),
              .opacity(_, let child),
-             .tapTarget(_, let child),
+             .tapTarget(_, _, let child),
              .hover(_, let child),
              .scrollView(_, _, _, _, _, let child),
              .onDelete(_, _, let child),
              .tagged(_, let child),
-             .gestureTarget(_, let child),
+             .gestureTarget(_, _, let child),
+             .dragSource(_, _, let child),
              .fixedSize(_, _, let child),
              .layoutPriority(_, let child),
              .aspectRatio(_, _, let child),
@@ -2115,7 +2312,7 @@ public struct DebugSnapshot: Sendable {
     public let focusedRect: _Rect?
     public let shapeRegions: [(_Rect, _ShapeNode)]
 
-    let hitRegions: [(_Rect, _ActionID)]
+    let hitRegions: [_HitRegion]
     let hoverRegions: [(_Rect, _HoverID)]
     let scrollRegions: [_ScrollRegion]
     let runtime: _UIRuntime
@@ -2123,7 +2320,7 @@ public struct DebugSnapshot: Sendable {
     public var text: String { lines.joined(separator: "\n") }
 
     public func containsHitRegion(at point: _Point) -> Bool {
-        hitRegions.contains(where: { $0.0.contains(point) })
+        hitRegions.contains(where: { $0.rect.contains(point) })
     }
 
     public func containsHitRegion(x: Int, y: Int) -> Bool {
@@ -2152,10 +2349,29 @@ public struct DebugSnapshot: Sendable {
 
     /// Emulate a mouse click at a coordinate in the last rendered snapshot.
     public func click(x: Int, y: Int) {
+        click(x: x, y: y, count: 1)
+    }
+
+    public func click(x: Int, y: Int, count: Int) {
         let p = _Point(x: x, y: y)
         // Prefer the last-added region (topmost) so overlays like Picker dropdowns win hit-testing.
-        guard let (_, id) = hitRegions.last(where: { $0.0.contains(p) }) else { return }
-        runtime._invokeAction(id)
+        guard let hit = hitRegions.last(where: { $0.matches(p, tapCount: count) && $0.dragGestureID == nil })
+            ?? hitRegions.last(where: { $0.matches(p, tapCount: count) }) else { return }
+        runtime._recordNativeActivationPoint(actionID: hit.actionID.raw, x: Double(x), y: Double(y))
+        runtime._invokeAction(hit.actionID)
+    }
+
+    public func drag(from start: _Point, to end: _Point) {
+        // Prefer the last-added region (topmost) so overlays and handles win hit-testing.
+        guard let hit = hitRegions.last(where: { $0.rect.contains(start) && $0.dragGestureID != nil }),
+              let dragGestureID = hit.dragGestureID else { return }
+        runtime._invokeDragGesture(
+            dragGestureID,
+            start: CGPoint(x: start.x, y: start.y),
+            current: CGPoint(x: end.x, y: end.y),
+            ended: true
+        )
+        _ = runtime._performDropFallback(at: CGPoint(x: end.x, y: end.y))
     }
 
     /// Emulate a scroll wheel event at a coordinate in the last rendered snapshot.
@@ -2261,4 +2477,12 @@ struct _BuildContext {
         }
         return -1 - Int(hash & 0x3FFF_FFFF)
     }
+}
+
+private func _omniRuntimeReceiveTraceEnabled() -> Bool {
+    guard let raw = getenv("OMNIKIT_RECEIVE_TRACE"),
+          let value = String(validatingCString: raw) else {
+        return false
+    }
+    return !value.isEmpty && value != "0" && value.lowercased() != "false"
 }

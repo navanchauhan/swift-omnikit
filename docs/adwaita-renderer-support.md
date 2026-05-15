@@ -43,6 +43,8 @@ Scene `.defaultSize(width:height:)` metadata is read by `AdwaitaApp(scene:)` and
 - Full-tree GTK replacement preserves named `GtkScrolledWindow` vertical offsets across rebuilds and restores focused text/action controls through the semantic snapshot's focused action ID.
 - Native action callbacks invoke OmniUI action IDs, compute the next semantic snapshot, and reconcile the GTK tree.
 - Native Return and Escape key presses invoke OmniUI `.keyboardShortcut(.defaultAction)` and `.keyboardShortcut(.cancelAction)` handlers through the shared runtime shortcut registry.
+- SwiftUI `.onDrag` sources carry renderer-neutral drag-source metadata separately from tap actions. On Adwaita, drag motion starts OmniUICore's generic item-provider fallback without replacing existing click/tap behavior, native drag release can invoke SwiftUI `.onDrop` delegates, and active fallback payloads can also be delivered to registered Linux `NSView` drop targets.
+- Linux `NSView` tracks effective appearance through parent, window, and application appearance changes. Embedded WebKitGTK payload views receive inherited appearance-change notifications so live web content can update light/dark styling without rebuilding the view identity.
 
 ## Drawing Islands
 
@@ -56,7 +58,7 @@ The renderer uses drawing islands where there is no appropriate native GTK contr
 
 - Liquid Glass and CRT effect modifiers are semantic metadata in the Adwaita backend. They preserve the real content subtree and drop decorative Canvas, Path, shape, and gradient overlays when those layers would otherwise become visible fake GTK widgets.
 - Common layout modifiers such as frame, padding, opacity, and positive offset map to native GTK size requests, margins, and opacity on wrapper widgets. Style modifiers such as badge become Adwaita CSS classes, while background, shadow, glass, and CRT wrappers preserve primary content unless they are a real Adwaita dialog background. Clip, safe-area insets, toolbar backgrounds, sheets, and alerts are represented in OmniUICore and either become native containers, transient modal Adwaita windows, or documented no-op/metadata approximations where GTK has no direct equivalent.
-- Accessibility labels and identifiers are preserved in the semantic tree. The Adwaita backend uses labels for native action metadata, GTK accessible labels, and GTK widget names where the modifier wraps a native child. macOS Computer Use still exposes the GTK child tree opaquely in this environment, so UI verification relies on screenshot deltas for child widgets.
+- Accessibility labels, identifiers, values, and hints are preserved in the semantic tree. The Adwaita backend uses labels for native action metadata, GTK accessible labels, GTK accessible value text, descriptions, and GTK widget names where the modifier wraps a native child. macOS Computer Use still exposes the GTK child tree opaquely in this environment, so UI verification relies on screenshot deltas for child widgets.
 
 ## Known Gaps
 

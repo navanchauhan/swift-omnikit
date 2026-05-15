@@ -1,11 +1,19 @@
 @_exported import Foundation
 @_exported import OmniUICore
 @_exported import OmniUIAdwaitaRenderer
-@_exported import Observation
 #if canImport(FoundationNetworking)
 @_exported import FoundationNetworking
 #endif
 import Foundation
+
+
+@attached(member, names: arbitrary)
+@attached(memberAttribute)
+@attached(extension, conformances: OmniUICore.ObservableObject, names: arbitrary)
+public macro Observable() = #externalMacro(module: "SwiftUIMacros", type: "ObservableMacro")
+
+@attached(accessor)
+public macro _ObservationTracked() = #externalMacro(module: "SwiftUIMacros", type: "ObservationTrackedMacro")
 
 #if canImport(AppKit) && !os(Linux)
 @_exported import AppKit
@@ -14,8 +22,10 @@ import Foundation
 public extension App {
     @MainActor
     static func main() async throws {
+        _omniAdwaitaEntryTrace("main begin app=\(String(reflecting: Self.self))")
         let name = Self.omniUIAdwaitaDisplayName
         try await Self.adwaitaMain(appID: "dev.omnikit.\(name)", title: name)
+        _omniAdwaitaEntryTrace("main end app=\(String(reflecting: Self.self))")
     }
 
     private static var omniUIAdwaitaDisplayName: String {
@@ -25,6 +35,17 @@ public extension App {
         }
         return name
     }
+}
+
+private func _omniAdwaitaEntryTrace(_ message: String) {
+    guard let raw = getenv("OMNIKIT_ADWAITA_ENTRY_TRACE"),
+          let value = String(validatingCString: raw),
+          !value.isEmpty,
+          value != "0",
+          value.lowercased() != "false" else {
+        return
+    }
+    FileHandle.standardError.write(Data("[OmniKit Adwaita entry] \(message)\n".utf8))
 }
 
 public struct AnimationTimelineSchedule: Hashable, Sendable { public init() {} }

@@ -177,7 +177,8 @@ func withRetry<T>(
                               errorDesc.contains("timeout") ||
                               errorDesc.contains("URLError")
             guard isTransient && attempt < maxAttempts else { break }
-            fputs("[E2E retry] Attempt \(attempt) failed: \(errorDesc). Retrying in \(delay)...\n", stderr)
+            let message = "[E2E retry] Attempt \(attempt) failed: \(errorDesc). Retrying in \(delay)...\n"
+            FileHandle.standardError.write(Data(message.utf8))
             try await Task.sleep(for: delay)
             delay *= 2
         }

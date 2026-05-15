@@ -51,6 +51,15 @@ public struct Path: Hashable, Sendable, Shape, _PrimitiveView {
         elements = [.rect(rect)]
     }
 
+    public init(ellipseIn rect: CGRect) {
+        elements = [.ellipse(rect)]
+    }
+
+    public init(roundedRect rect: CGRect, cornerRadius: CGFloat) {
+        _ = cornerRadius
+        elements = [.rect(rect)]
+    }
+
     public mutating func move(to p: CGPoint) { elements.append(.move(to: p)) }
     public mutating func addLine(to p: CGPoint) { elements.append(.line(to: p)) }
     public mutating func addQuadCurve(to p: CGPoint, control: CGPoint) { elements.append(.quadCurve(to: p, control: control)) }

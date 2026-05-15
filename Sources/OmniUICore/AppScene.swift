@@ -52,6 +52,19 @@ public enum SceneBuilder {
     public static func buildBlock() -> EmptyScene { EmptyScene() }
     public static func buildBlock<S0: Scene>(_ s0: S0) -> S0 { s0 }
 
+    public static func buildPartialBlock<S: Scene>(first scene: S) -> S { scene }
+
+    public static func buildPartialBlock<S0: Scene, S1: Scene>(accumulated s0: S0, next s1: S1) -> TupleScene {
+        var scenes: [AnyScene] = []
+        if let tuple = s0 as? TupleScene {
+            scenes.append(contentsOf: tuple.scenes)
+        } else {
+            scenes.append(AnyScene(s0))
+        }
+        scenes.append(AnyScene(s1))
+        return TupleScene(scenes)
+    }
+
     public static func buildBlock<S0: Scene, S1: Scene>(_ s0: S0, _ s1: S1) -> TupleScene {
         TupleScene([AnyScene(s0), AnyScene(s1)])
     }
@@ -88,12 +101,101 @@ public struct Settings<Content: View>: Scene {
     }
 }
 
+public struct MenuBarExtra<LabelView: View, Content: View>: Scene {
+    public typealias Body = Never
+    let content: Content
+    let label: LabelView
+    let fallbackTitle: String
+    let identity: String
+
+    public init(@ViewBuilder content: () -> Content, @ViewBuilder label: () -> LabelView) {
+        self.content = content()
+        self.label = label()
+        self.fallbackTitle = "Menu"
+        self.identity = "label:\(ObjectIdentifier(LabelView.self)):\(ObjectIdentifier(Content.self))"
+    }
+
+    public init(_ title: String, @ViewBuilder content: () -> Content) where LabelView == Text {
+        self.content = content()
+        self.label = Text(title)
+        self.fallbackTitle = title
+        self.identity = "title:\(title)"
+    }
+
+    public init(_ title: String, systemImage: String, @ViewBuilder content: () -> Content) where LabelView == Label<Text, Image> {
+        self.content = content()
+        self.label = Label(title, systemImage: systemImage)
+        self.fallbackTitle = title
+        self.identity = "title-system-image:\(title):\(systemImage)"
+    }
+}
+
+#if os(Linux)
+private final class _OmniMenuBarExtraEntry: NSObject {
+    let item: NSStatusItem
+    let popover = NSPopover()
+    let selector = Selector("omniMenuBarExtraClicked:")
+    var title: String
+    var content: AnyView
+
+    init(title: String, content: AnyView) {
+        self.title = title
+        self.content = content
+        self.item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
+        super.init()
+        item.button?.target = self
+        item.button?.action = selector
+        _omniRegisterSelectorAction(selector) { [weak self] sender in
+            self?.showPopover(sender: sender)
+        }
+        update(title: title, content: content)
+    }
+
+    func update(title: String, content: AnyView) {
+        self.title = title
+        self.content = content
+        item.button?.title = title
+        item.button?.toolTip = title
+    }
+
+    private func showPopover(sender: Any?) {
+        let button = item.button ?? NSButton()
+        popover.contentViewController = NSHostingController(rootView: content)
+        popover.behavior = .transient
+        popover.show(relativeTo: .zero, of: (sender as? NSView) ?? button, preferredEdge: .minY)
+    }
+}
+
+private final class _OmniMenuBarExtraRegistry: @unchecked Sendable {
+    static let shared = _OmniMenuBarExtraRegistry()
+
+    private let lock = NSLock()
+    private var entries: [String: _OmniMenuBarExtraEntry] = [:]
+
+    func install(identity: String, title: String, content: AnyView) {
+        lock.lock()
+        let existing = entries[identity]
+        if existing == nil {
+            let entry = _OmniMenuBarExtraEntry(title: title, content: content)
+            entries[identity] = entry
+            lock.unlock()
+        } else {
+            lock.unlock()
+            existing?.update(title: title, content: content)
+        }
+    }
+}
+#endif
+
 public protocol Commands {}
 
 public struct EmptyCommands: Commands { public init() {} }
 
 public enum CommandGroupPlacement: Hashable, Sendable {
     case appInfo
+    case appTermination
+    case help
+    case newItem
     case textEditing
     case sidebar
     case toolbar
@@ -109,6 +211,11 @@ public struct CommandGroup<Content: View>: Commands {
     }
 
     public init(before placement: CommandGroupPlacement, @ViewBuilder content: () -> Content) {
+        self.placement = placement
+        self.content = content()
+    }
+
+    public init(replacing placement: CommandGroupPlacement, @ViewBuilder content: () -> Content) {
         self.placement = placement
         self.content = content()
     }
@@ -128,6 +235,19 @@ public struct TupleCommands: Commands {
 public enum CommandsBuilder {
     public static func buildBlock() -> EmptyCommands { EmptyCommands() }
     public static func buildBlock<C0: Commands>(_ c0: C0) -> C0 { c0 }
+
+    public static func buildPartialBlock<C: Commands>(first commands: C) -> C { commands }
+
+    public static func buildPartialBlock<C0: Commands, C1: Commands>(accumulated c0: C0, next c1: C1) -> TupleCommands {
+        var commands: [AnyCommands] = []
+        if let tuple = c0 as? TupleCommands {
+            commands.append(contentsOf: tuple.commands)
+        } else {
+            commands.append(AnyCommands(c0))
+        }
+        commands.append(AnyCommands(c1))
+        return TupleCommands(commands)
+    }
 
     public static func buildBlock<C0: Commands, C1: Commands>(_ c0: C0, _ c1: C1) -> TupleCommands {
         TupleCommands([AnyCommands(c0), AnyCommands(c1)])
@@ -297,6 +417,25 @@ extension Settings: _OmniUISceneRoot {
     public var _omniUIPreferredSize: CGSize? { nil }
 }
 
+extension MenuBarExtra: _OmniUISceneRoot {
+    public func _omniUIRootView() -> AnyView? {
+        #if os(Linux)
+        _OmniMenuBarExtraRegistry.shared.install(identity: identity, title: fallbackTitle, content: AnyView(content))
+        #endif
+        return nil
+    }
+
+    public func _omniUICommandsView() -> AnyView? {
+        #if os(Linux)
+        _OmniMenuBarExtraRegistry.shared.install(identity: identity, title: fallbackTitle, content: AnyView(content))
+        #endif
+        return nil
+    }
+
+    public func _omniUISettingsView() -> AnyView? { nil }
+    public var _omniUIPreferredSize: CGSize? { nil }
+}
+
 extension AnyScene: _OmniUISceneRoot {
     public func _omniUIRootView() -> AnyView? {
         (self._box as? _OmniUISceneRoot)?._omniUIRootView()
@@ -317,12 +456,13 @@ extension AnyScene: _OmniUISceneRoot {
 
 extension TupleScene: _OmniUISceneRoot {
     public func _omniUIRootView() -> AnyView? {
+        var firstRoot: AnyView?
         for scene in scenes {
-            if let root = (scene._box as? _OmniUISceneRoot)?._omniUIRootView() {
-                return root
+            if let root = (scene._box as? _OmniUISceneRoot)?._omniUIRootView(), firstRoot == nil {
+                firstRoot = root
             }
         }
-        return nil
+        return firstRoot
     }
 
     public func _omniUICommandsView() -> AnyView? {
@@ -447,7 +587,12 @@ public extension Scene {
 
 
 public func _sceneRootView<S: Scene>(_ scene: S) -> AnyView? {
-    (scene as? _OmniUISceneRoot)?._omniUIRootView()
+    let root = (scene as? _OmniUISceneRoot)?._omniUIRootView()
+    if _omniSceneTraceEnabled() {
+        let line = "[OmniKit scene] root scene=\(String(reflecting: S.self)) present=\(root != nil)\n"
+        FileHandle.standardError.write(Data(line.utf8))
+    }
+    return root
 }
 
 public func _sceneCommandsView<S: Scene>(_ scene: S) -> AnyView? {
@@ -460,4 +605,12 @@ public func _sceneSettingsView<S: Scene>(_ scene: S) -> AnyView? {
 
 public func _scenePreferredSize<S: Scene>(_ scene: S) -> CGSize? {
     (scene as? _OmniUISceneRoot)?._omniUIPreferredSize
+}
+
+private func _omniSceneTraceEnabled() -> Bool {
+    guard let raw = getenv("OMNIKIT_SCENE_TRACE"),
+          let value = String(validatingCString: raw) else {
+        return false
+    }
+    return !value.isEmpty && value != "0" && value.lowercased() != "false"
 }

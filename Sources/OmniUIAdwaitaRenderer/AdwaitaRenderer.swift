@@ -7,6 +7,7 @@ import AppKit
 
 private let adwaitaCommandActionOffset = 1_000_000
 private let adwaitaSettingsActionOffset = 2_000_000
+private let adwaitaStatusItemActionOffset = 3_000_000
 
 public enum OmniUIAdwaitaRendererError: Error {
     case unableToCreateApplication
@@ -22,6 +23,7 @@ public final class AdwaitaApp<Root: View>: @unchecked Sendable {
     private let runtime = _UIRuntime()
     private let settingsRuntime = _UIRuntime()
     private let commandRuntime = _UIRuntime()
+    private let popoverRuntime = _UIRuntime()
     private let size: _Size
 
     public init(
@@ -42,19 +44,14 @@ public final class AdwaitaApp<Root: View>: @unchecked Sendable {
 
     @MainActor
     public func run() async throws {
-        let box = Unmanaged.passRetained(CallbackBox(runtime: runtime, settingsRuntime: settingsRuntime, commandRuntime: commandRuntime, rerender: {}))
+        _omniAdwaitaRendererEntryTrace("run begin")
+        let box = Unmanaged.passRetained(CallbackBox(runtime: runtime, settingsRuntime: settingsRuntime, commandRuntime: commandRuntime, popoverRuntime: popoverRuntime, rerender: {}))
         var cApp: OpaquePointer?
         let callback: omni_adw_action_callback = { actionID, context in
             guard let context else { return }
             let box = Unmanaged<CallbackBox>.fromOpaque(context).takeUnretainedValue()
             let rawID = Int(actionID)
-            if rawID >= adwaitaSettingsActionOffset {
-                box.settingsRuntime.invokeActionByRawID(rawID - adwaitaSettingsActionOffset)
-            } else if rawID >= adwaitaCommandActionOffset {
-                box.commandRuntime.invokeActionByRawID(rawID - adwaitaCommandActionOffset)
-            } else {
-                box.runtime.invokeActionByRawID(rawID)
-            }
+            invokeAdwaitaRawAction(rawID, box: box)
             box.rerender()
         }
         let textCallback: omni_adw_text_callback = { actionID, text, context in
@@ -65,6 +62,7 @@ public final class AdwaitaApp<Root: View>: @unchecked Sendable {
             if rawID >= adwaitaSettingsActionOffset {
                 let settingsRawID = rawID - adwaitaSettingsActionOffset
                 if let timestamp = TimeInterval(next), box.settingsRuntime.setDateForRawActionID(settingsRawID, timestamp: timestamp) {
+                    box.runtime._markDirtyFromExternalResource()
                     box.rerender()
                     return
                 }
@@ -72,6 +70,7 @@ public final class AdwaitaApp<Root: View>: @unchecked Sendable {
                 _ = box.settingsRuntime.focusByRawActionID(settingsRawID)
                 box.settingsRuntime.replaceTextForRawActionID(settingsRawID, previous: previous, next: next)
                 box.textValuesByActionID[rawID] = next
+                box.runtime._markDirtyFromExternalResource()
                 box.rerender()
                 return
             }
@@ -91,6 +90,7 @@ public final class AdwaitaApp<Root: View>: @unchecked Sendable {
             let rawID = Int(actionID)
             if rawID >= adwaitaSettingsActionOffset {
                 box.settingsRuntime.handleNativeKeyForRawActionID(rawID - adwaitaSettingsActionOffset, keyKind: Int(keyKind), codepoint: codepoint)
+                box.runtime._markDirtyFromExternalResource()
             } else {
                 box.runtime.handleNativeKeyForRawActionID(rawID, keyKind: Int(keyKind), codepoint: codepoint)
             }
@@ -110,13 +110,116 @@ public final class AdwaitaApp<Root: View>: @unchecked Sendable {
                 box.rerender()
             }
         }
+        let eventCallback: omni_adw_event_callback = { eventType, x, y, clickCount, modifiers, keyval, codepoint, context in
+            guard let context else { return 0 }
+            let box = Unmanaged<CallbackBox>.fromOpaque(context).takeUnretainedValue()
+            let rawActionID = Int(keyval)
+            if eventType == 1 || eventType == 2 || eventType == 5 {
+                if eventType == 1, rawActionID > 0 {
+                    if rawActionID >= adwaitaStatusItemActionOffset {
+                        // Status-item actions do not originate from native drop targets.
+                    } else if rawActionID >= adwaitaSettingsActionOffset {
+                        box.settingsRuntime._recordNativeActivationPoint(
+                            actionID: rawActionID - adwaitaSettingsActionOffset,
+                            x: x,
+                            y: y
+                        )
+                    } else if rawActionID >= adwaitaCommandActionOffset {
+                        box.commandRuntime._recordNativeActivationPoint(
+                            actionID: rawActionID - adwaitaCommandActionOffset,
+                            x: x,
+                            y: y
+                        )
+                    } else {
+                        box.runtime._recordNativeActivationPoint(actionID: rawActionID, x: x, y: y)
+                    }
+                }
+                let consumedByDrag: Bool
+                if rawActionID >= adwaitaSettingsActionOffset {
+                    consumedByDrag = box.settingsRuntime._handleNativeDragEvent(
+                        actionID: rawActionID - adwaitaSettingsActionOffset,
+                        eventType: Int(eventType),
+                        x: x,
+                        y: y
+                    )
+                } else {
+                    consumedByDrag = box.runtime._handleNativeDragEvent(
+                        actionID: rawActionID,
+                        eventType: Int(eventType),
+                        x: x,
+                        y: y
+                    )
+                }
+                if consumedByDrag {
+                    box.rerender()
+                    return 1
+                }
+            }
+            let consumed = dispatchNativeEventToLocalMonitors(
+                eventType: Int(eventType),
+                x: x,
+                y: y,
+                clickCount: Int(clickCount),
+                modifiers: modifiers,
+                codepoint: codepoint
+            )
+            if consumed || eventType != 5 {
+                box.rerender()
+            }
+            return consumed ? 1 : 0
+        }
+        let lifecycleCallback: omni_adw_lifecycle_callback = { eventType, _ in
+            switch eventType {
+            case 1:
+                #if os(Linux)
+                guard NSApp.applicationShouldTerminateAfterLastWindowClosed() else { return 0 }
+                NotificationCenter.default.post(name: NSApplication.willTerminateNotification, object: NSApp)
+                return 1
+                #else
+                return 1
+                #endif
+            case 2:
+                NotificationCenter.default.post(name: NSApplication.willTerminateNotification, object: NSApp)
+                return 1
+            default:
+                return 1
+            }
+        }
 
+        _omniAdwaitaRendererEntryTrace("run before app_new")
         cApp = omni_adw_app_new(appID, title, callback, textCallback, keyCallback, focusCallback, box.toOpaque())
+        _omniAdwaitaRendererEntryTrace("run after app_new")
         guard let cApp else {
             box.release()
             throw OmniUIAdwaitaRendererError.unableToCreateApplication
         }
+        omni_adw_app_set_event_callback(cApp, eventCallback)
+        omni_adw_app_set_lifecycle_callback(cApp, lifecycleCallback)
         let appHandle = cApp
+        #if canImport(AppKit)
+        let appHandleBits = UInt(bitPattern: appHandle)
+        _omniSetApplicationActivationHandler {
+            if let handle = OpaquePointer(bitPattern: appHandleBits) {
+                omni_adw_app_present_main_window(handle)
+            }
+        }
+        _omniSetCursorHandler { cursorName in
+            guard let handle = OpaquePointer(bitPattern: appHandleBits) else { return }
+            if let cursorName {
+                cursorName.withCString { pointer in
+                    omni_adw_app_set_cursor(handle, pointer)
+                }
+            } else {
+                omni_adw_app_set_cursor(handle, nil)
+            }
+        }
+        #endif
+        defer {
+            #if canImport(AppKit)
+            _omniSetApplicationActivationHandler(nil)
+            _omniSetCursorHandler(nil)
+            #endif
+        }
         runtime.setDefaultOpenURLAction(OpenURLAction { url in
             url.absoluteString.withCString { value in
                 omni_adw_app_share_url(appHandle, value)
@@ -129,12 +232,19 @@ public final class AdwaitaApp<Root: View>: @unchecked Sendable {
             }
             return .handled
         })
+        runtime.setDefaultOpenSettingsAction(OpenSettingsAction {
+            omni_adw_app_present_settings(appHandle)
+        })
         let windowSize = nativeWindowSize(for: size)
         let renderSize = semanticRenderSize(for: size)
         omni_adw_app_set_default_size(cApp, Int32(windowSize.width), Int32(windowSize.height))
+        var initialPreferredColorScheme: ColorScheme?
         if let settings {
             let snapshot = settingsRuntime.semanticSnapshot(settings(), size: renderSize)
+            initialPreferredColorScheme = settingsRuntime.lastPreferredColorScheme
             let settingsRoot = AdwaitaNodeBuilder.offsetActionIDs(in: snapshot.root, by: adwaitaSettingsActionOffset)
+            box.takeUnretainedValue().previousSettingsRoot = settingsRoot
+            AdwaitaSemanticDumper.dumpIfRequested(settingsRoot, section: "SETTINGS")
             if let node = AdwaitaNodeBuilder.build(settingsRoot) {
                 omni_adw_app_set_settings(cApp, node)
             }
@@ -142,25 +252,48 @@ public final class AdwaitaApp<Root: View>: @unchecked Sendable {
         if let commands {
             let snapshot = commandRuntime.semanticSnapshot(commands(), size: renderSize)
             let commandRoot = AdwaitaNodeBuilder.offsetActionIDs(in: snapshot.root, by: adwaitaCommandActionOffset)
+            box.takeUnretainedValue().previousCommandRoot = commandRoot
+            AdwaitaSemanticDumper.dumpIfRequested(commandRoot, section: "COMMANDS")
             if let node = AdwaitaNodeBuilder.build(commandRoot) {
                 omni_adw_app_set_commands(cApp, node)
             }
         }
+        #if os(Linux)
+        if initialPreferredColorScheme != nil {
+            syncPreferredColorScheme(initialPreferredColorScheme)
+        }
+        #endif
         defer {
             omni_adw_app_free(cApp)
             box.release()
         }
 
-        let rerender: @MainActor () -> Void = { [runtime, root, renderSize] in
+        let rerender: @MainActor () -> Void = { [runtime, settingsRuntime, popoverRuntime, root, settings, renderSize] in
             let traceRenders = ProcessInfo.processInfo.environment["OMNIUI_ADWAITA_RENDER_TRACE"] == "1"
             if traceRenders {
                 print("OmniUI Adwaita rerender: begin")
             }
+            var activePreferredColorScheme: ColorScheme?
+            if let settings {
+                let settingsSnapshot = settingsRuntime.semanticSnapshot(settings(), size: renderSize)
+                activePreferredColorScheme = settingsRuntime.lastPreferredColorScheme
+                let settingsRoot = AdwaitaNodeBuilder.offsetActionIDs(in: settingsSnapshot.root, by: adwaitaSettingsActionOffset)
+                box.takeUnretainedValue().previousSettingsRoot = settingsRoot
+                AdwaitaSemanticDumper.dumpIfRequested(settingsRoot, section: "SETTINGS")
+                if let node = AdwaitaNodeBuilder.build(settingsRoot) {
+                    omni_adw_app_set_settings(cApp, node)
+                }
+            }
             let snapshot = runtime.semanticSnapshot(root(), size: renderSize)
+            activePreferredColorScheme = runtime.lastPreferredColorScheme ?? activePreferredColorScheme
             if traceRenders {
                 print("OmniUI Adwaita rerender: semantic snapshot ready")
             }
+            #if os(Linux)
+            syncPreferredColorScheme(activePreferredColorScheme)
+            #endif
             let presentation = AdwaitaPresentationExtractor.extract(from: snapshot.root)
+            AdwaitaSemanticDumper.dumpToolbarIfRequested(presentation.toolbar)
             let displaySnapshot = SemanticSnapshot(
                 root: presentation.root,
                 size: snapshot.size,
@@ -169,7 +302,7 @@ public final class AdwaitaApp<Root: View>: @unchecked Sendable {
                 activePicker: snapshot.activePicker,
                 activeTextField: snapshot.activeTextField
             )
-            AdwaitaSemanticDumper.dumpIfRequested(displaySnapshot.root)
+            AdwaitaSemanticDumper.dumpIfRequested(displaySnapshot.root, section: "MAIN")
             if let headerEntry = AdwaitaHeaderEntry.extract(from: displaySnapshot.root) {
                 omni_adw_app_set_header_entry(cApp, headerEntry.placeholder, headerEntry.text, Int32(headerEntry.actionID))
             }
@@ -178,6 +311,9 @@ public final class AdwaitaApp<Root: View>: @unchecked Sendable {
             }
             syncNativeHeaderActions(presentation.toolbar.actions, app: cApp)
             let callbackBox = box.takeUnretainedValue()
+            callbackBox.previousToolbar = presentation.toolbar
+            let transientPresentation = presentation.modal ?? appKitTransientPresentation(runtime: popoverRuntime, size: renderSize)
+            callbackBox.previousModalRoot = transientPresentation
             let changes = callbackBox.previousSnapshot.map {
                 SemanticDiff.changes(from: $0, to: displaySnapshot)
             } ?? []
@@ -185,14 +321,14 @@ public final class AdwaitaApp<Root: View>: @unchecked Sendable {
                 print("OmniUI Adwaita rerender: changes=\(changes.count)")
             }
             callbackBox.lastChanges = changes
-            callbackBox.textValuesByActionID = AdwaitaNodeBuilder.textValues(in: displaySnapshot.root)
+            callbackBox.textValuesByActionID = adwaitaTextValues(box: callbackBox, displayRoot: displaySnapshot.root)
             if changes.isEmpty, callbackBox.previousSnapshot != nil {
-                syncNativePresentation(presentation.modal, app: cApp)
+                syncNativePresentation(transientPresentation, app: cApp)
                 callbackBox.previousSnapshot = displaySnapshot
                 return
             }
             if !changes.isEmpty, AdwaitaNodeBuilder.applyLeafUpdates(changes: changes, snapshot: displaySnapshot, app: cApp) {
-                syncNativePresentation(presentation.modal, app: cApp)
+                syncNativePresentation(transientPresentation, app: cApp)
                 callbackBox.previousSnapshot = displaySnapshot
                 return
             }
@@ -207,13 +343,13 @@ public final class AdwaitaApp<Root: View>: @unchecked Sendable {
                     app: cApp
                 )
             {
-                syncNativePresentation(presentation.modal, app: cApp)
+                syncNativePresentation(transientPresentation, app: cApp)
                 callbackBox.previousSnapshot = displaySnapshot
                 return
             }
             guard let node = AdwaitaNodeBuilder.build(displaySnapshot.root) else { return }
             omni_adw_app_set_root_focused(cApp, node, Int32(displaySnapshot.focusedActionID ?? 0))
-            syncNativePresentation(presentation.modal, app: cApp)
+            syncNativePresentation(transientPresentation, app: cApp)
             callbackBox.previousSnapshot = displaySnapshot
             if traceRenders {
                 print("OmniUI Adwaita rerender: full root set")
@@ -221,7 +357,7 @@ public final class AdwaitaApp<Root: View>: @unchecked Sendable {
         }
         box.takeUnretainedValue().rerender = { Task { @MainActor in rerender() } }
         #if os(Linux)
-        _omniSetAppearanceChangeHandler { [runtime, settingsRuntime, commandRuntime, box] scheme in
+        _omniSetAppearanceChangeHandler { [runtime, settingsRuntime, commandRuntime, popoverRuntime, box] scheme in
             let nativeScheme: String
             switch scheme {
             case .some(.light):
@@ -236,6 +372,7 @@ public final class AdwaitaApp<Root: View>: @unchecked Sendable {
                 runtime._markDirtyFromExternalResource()
                 settingsRuntime._markDirtyFromExternalResource()
                 commandRuntime._markDirtyFromExternalResource()
+                popoverRuntime._markDirtyFromExternalResource()
                 box.takeUnretainedValue().rerender()
             }
         }
@@ -256,7 +393,67 @@ public final class AdwaitaApp<Root: View>: @unchecked Sendable {
         defer {
             NotificationCenter.default.removeObserver(remoteDocumentObserver)
         }
+        let userDefaultsObserver = NotificationCenter.default.addObserver(
+            forName: UserDefaults.didChangeNotification,
+            object: nil,
+            queue: nil
+        ) { [runtime, settingsRuntime, commandRuntime, popoverRuntime] _ in
+            Task { @MainActor in
+                runtime._markDirtyFromExternalResource()
+                settingsRuntime._markDirtyFromExternalResource()
+                commandRuntime._markDirtyFromExternalResource()
+                popoverRuntime._markDirtyFromExternalResource()
+                rerender()
+            }
+        }
+        defer {
+            NotificationCenter.default.removeObserver(userDefaultsObserver)
+        }
+        #if canImport(AppKit)
+        let statusItemObserver = NotificationCenter.default.addObserver(
+            forName: NSStatusBar.didChangeStatusItemsNotification,
+            object: nil,
+            queue: nil
+        ) { [runtime] _ in
+            Task { @MainActor in
+                runtime._markDirtyFromExternalResource()
+                rerender()
+            }
+        }
+        defer {
+            NotificationCenter.default.removeObserver(statusItemObserver)
+        }
+        let popoverObserver = NotificationCenter.default.addObserver(
+            forName: NSPopover.didChangePopoverNotification,
+            object: nil,
+            queue: nil
+        ) { [popoverRuntime] _ in
+            Task { @MainActor in
+                popoverRuntime._markDirtyFromExternalResource()
+                rerender()
+            }
+        }
+        defer {
+            NotificationCenter.default.removeObserver(popoverObserver)
+        }
+        let menuObserver = NotificationCenter.default.addObserver(
+            forName: NSMenu.didChangeActiveMenuNotification,
+            object: nil,
+            queue: nil
+        ) { [popoverRuntime] _ in
+            Task { @MainActor in
+                popoverRuntime._markDirtyFromExternalResource()
+                rerender()
+            }
+        }
+        defer {
+            NotificationCenter.default.removeObserver(menuObserver)
+        }
+        #endif
+        _omniAdwaitaRendererEntryTrace("run initial rerender")
         rerender()
+        runAdwaitaAutomationIfRequested(box: box.takeUnretainedValue(), rerender: rerender)
+        _omniAdwaitaRendererEntryTrace("run before gtk")
         let observationRenderLoop = Task { @MainActor [runtime, renderSize] in
             let traceRenders = ProcessInfo.processInfo.environment["OMNIUI_ADWAITA_RENDER_TRACE"] == "1"
             var remoteDocumentVersion = _OmniRemoteDocumentRegistry.version
@@ -296,26 +493,61 @@ public final class AdwaitaApp<Root: View>: @unchecked Sendable {
 
         let argc: Int32 = 0
         _ = omni_adw_app_run(cApp, argc, nil)
+        _omniAdwaitaRendererEntryTrace("run after gtk")
     }
+}
+
+private func syncPreferredColorScheme(_ scheme: ColorScheme?) {
+    _omniSetPreferredColorScheme(scheme)
+    let nativeScheme: String
+    switch scheme ?? _omniCurrentApplicationAppearanceColorScheme() {
+    case .some(.light):
+        nativeScheme = "light"
+    case .some(.dark):
+        nativeScheme = "dark"
+    case .none:
+        nativeScheme = "system"
+    }
+    nativeScheme.withCString { omni_adw_set_color_scheme($0) }
 }
 
 @MainActor
 private enum AdwaitaSemanticDumper {
-    private static var didDump = false
+    private static var didDumpSections = Set<String>()
 
-    static func dumpIfRequested(_ root: SemanticNode) {
+    static func dumpIfRequested(_ root: SemanticNode, section: String = "MAIN") {
         let environment = ProcessInfo.processInfo.environment
         let dumpEveryFrame = environment["OMNIUI_ADWAITA_DUMP_SEMANTIC_EACH"] == "1"
         guard environment["OMNIUI_ADWAITA_DUMP_SEMANTIC"] == "1" || dumpEveryFrame else {
             return
         }
-        guard dumpEveryFrame || !didDump else {
+        guard dumpEveryFrame || didDumpSections.insert(section).inserted else {
             return
         }
-        didDump = true
-        write("OMNIUI_ADWAITA_SEMANTIC_BEGIN")
+        write("OMNIUI_ADWAITA_SEMANTIC_BEGIN \(section)")
         dump(root, depth: 0)
-        write("OMNIUI_ADWAITA_SEMANTIC_END")
+        write("OMNIUI_ADWAITA_SEMANTIC_END \(section)")
+    }
+
+    static func dumpToolbarIfRequested(_ toolbar: AdwaitaHeaderToolbar, section: String = "TOOLBAR") {
+        let environment = ProcessInfo.processInfo.environment
+        let dumpEveryFrame = environment["OMNIUI_ADWAITA_DUMP_SEMANTIC_EACH"] == "1"
+        guard environment["OMNIUI_ADWAITA_DUMP_SEMANTIC"] == "1" || dumpEveryFrame else {
+            return
+        }
+        guard dumpEveryFrame || didDumpSections.insert(section).inserted else {
+            return
+        }
+        write("OMNIUI_ADWAITA_SEMANTIC_BEGIN \(section)")
+        if let title = toolbar.title {
+            write("  title \(String(reflecting: title))")
+        }
+        for action in toolbar.actions {
+            write(
+                "  action(actionID: \(action.actionID), placement: \(action.placement), segmented: \(action.isSegmented), selected: \(action.isSelected), label: \(String(reflecting: action.label)))"
+            )
+        }
+        write("OMNIUI_ADWAITA_SEMANTIC_END \(section)")
     }
 
     private static func dump(_ node: SemanticNode, depth: Int) {
@@ -428,24 +660,518 @@ public extension App {
         title: String = "OmniUI Adwaita",
         size: _Size = _Size(width: 120, height: 42)
     ) async throws {
+        _omniAdwaitaRendererEntryTrace("adwaitaMain begin app=\(String(reflecting: Self.self))")
         try await AdwaitaApp(appID: appID, title: title, size: size, Self.self).run()
+        _omniAdwaitaRendererEntryTrace("adwaitaMain end app=\(String(reflecting: Self.self))")
     }
+}
+
+private func _omniAdwaitaRendererEntryTrace(_ message: String) {
+    guard let raw = getenv("OMNIKIT_ADWAITA_ENTRY_TRACE"),
+          let value = String(validatingCString: raw),
+          !value.isEmpty,
+          value != "0",
+          value.lowercased() != "false" else {
+        return
+    }
+    FileHandle.standardError.write(Data("[OmniKit Adwaita entry] \(message)\n".utf8))
 }
 
 private final class CallbackBox: @unchecked Sendable {
     let runtime: _UIRuntime
     let settingsRuntime: _UIRuntime
     let commandRuntime: _UIRuntime
+    let popoverRuntime: _UIRuntime
     var rerender: @Sendable () -> Void
     var textValuesByActionID: [Int: String] = [:]
     var previousSnapshot: SemanticSnapshot?
+    var previousSettingsRoot: SemanticNode?
+    var previousCommandRoot: SemanticNode?
+    var previousModalRoot: SemanticNode?
+    var previousToolbar: AdwaitaHeaderToolbar?
+    var didCompleteAutomationSequence = false
     var lastChanges: [SemanticChange] = []
 
-    init(runtime: _UIRuntime, settingsRuntime: _UIRuntime, commandRuntime: _UIRuntime, rerender: @escaping @Sendable () -> Void) {
+    init(runtime: _UIRuntime, settingsRuntime: _UIRuntime, commandRuntime: _UIRuntime, popoverRuntime: _UIRuntime, rerender: @escaping @Sendable () -> Void) {
         self.runtime = runtime
         self.settingsRuntime = settingsRuntime
         self.commandRuntime = commandRuntime
+        self.popoverRuntime = popoverRuntime
         self.rerender = rerender
+    }
+}
+
+private func invokeAdwaitaRawAction(_ rawID: Int, box: CallbackBox) {
+    if rawID >= adwaitaStatusItemActionOffset {
+        #if canImport(AppKit)
+        NSStatusBar.system.performStatusItem(at: rawID - adwaitaStatusItemActionOffset)
+        #endif
+    } else if rawID >= adwaitaSettingsActionOffset {
+        box.settingsRuntime.invokeActionByRawID(rawID - adwaitaSettingsActionOffset)
+        box.runtime._markDirtyFromExternalResource()
+    } else if rawID >= adwaitaCommandActionOffset {
+        box.commandRuntime.invokeActionByRawID(rawID - adwaitaCommandActionOffset)
+        box.runtime._markDirtyFromExternalResource()
+    } else {
+        box.runtime.invokeActionByRawID(rawID)
+    }
+}
+
+private func adwaitaActionID(matchingVisibleText label: String, in node: SemanticNode) -> Int? {
+    switch node.kind {
+    case .button(let actionID, _), .tapTarget(let actionID, _), .toggle(let actionID, _, _):
+        if adwaitaVisibleText(in: node).contains(label) {
+            return actionID
+        }
+    case .menu(let actionID, let title, let value, _):
+        if title == label || value == label {
+            return actionID
+        }
+    case .textField(let actionID, let placeholder, let text, _, _, _):
+        if placeholder == label || text == label {
+            return actionID
+        }
+    case .textEditor(let actionID, let text, _, _):
+        if text == label {
+            return actionID
+        }
+    case .slider(let title, _, _, _, _, let decrementActionID, let incrementActionID):
+        if title == label {
+            return incrementActionID ?? decrementActionID
+        }
+    case .stepper(let title, _, let decrementActionID, let incrementActionID):
+        if title == label {
+            return incrementActionID ?? decrementActionID
+        }
+    case .datePicker(let title, _, _, let setActionID, let decrementActionID, let incrementActionID):
+        if title == label {
+            return setActionID ?? incrementActionID ?? decrementActionID
+        }
+    default:
+        break
+    }
+    for child in node.children {
+        if let actionID = adwaitaActionID(matchingVisibleText: label, in: child) {
+            return actionID
+        }
+    }
+    return nil
+}
+
+private func adwaitaVisibleText(in node: SemanticNode) -> [String] {
+    var values: [String] = []
+    switch node.kind {
+    case .text(let value), .image(let value), .disabledButton(let value):
+        values.append(value)
+    case .textField(_, let placeholder, let text, _, _, _),
+         .disabledTextField(let placeholder, let text, _):
+        values.append(placeholder)
+        values.append(text)
+    case .textEditor(_, let text, _, _):
+        values.append(text)
+    case .menu(_, let title, let value, _),
+         .disabledMenu(let title, let value):
+        values.append(title)
+        values.append(value)
+    case .disabledToggle(let label, _),
+         .progress(let label, _),
+         .slider(let label, _, _, _, _, _, _),
+         .stepper(let label, _, _, _),
+         .datePicker(let label, _, _, _, _, _),
+         .segmentedControl(let label, _):
+        values.append(label)
+    case .webContent(_, _, let url, let label, let description):
+        values.append(url)
+        if let label { values.append(label) }
+        if let description { values.append(description) }
+    default:
+        break
+    }
+    for child in node.children {
+        values.append(contentsOf: adwaitaVisibleText(in: child))
+    }
+    return values.filter { !$0.isEmpty }
+}
+
+private func adwaitaTextValues(box: CallbackBox, displayRoot: SemanticNode) -> [Int: String] {
+    var values: [Int: String] = [:]
+    if let settingsRoot = box.previousSettingsRoot {
+        values.merge(AdwaitaNodeBuilder.textValues(in: settingsRoot), uniquingKeysWith: { _, next in next })
+    }
+    if let commandRoot = box.previousCommandRoot {
+        values.merge(AdwaitaNodeBuilder.textValues(in: commandRoot), uniquingKeysWith: { _, next in next })
+    }
+    if let modalRoot = box.previousModalRoot {
+        values.merge(AdwaitaNodeBuilder.textValues(in: modalRoot), uniquingKeysWith: { _, next in next })
+    }
+    values.merge(AdwaitaNodeBuilder.textValues(in: displayRoot), uniquingKeysWith: { _, next in next })
+    return values
+}
+
+private func adwaitaTextInput(matchingVisibleText label: String, in node: SemanticNode) -> (actionID: Int, text: String)? {
+    switch node.kind {
+    case .textField(let actionID, let placeholder, let text, _, _, _):
+        if placeholder == label || text == label {
+            return (actionID, text)
+        }
+    case .textEditor(let actionID, let text, _, _):
+        if text == label {
+            return (actionID, text)
+        }
+    default:
+        break
+    }
+    for child in node.children {
+        if let match = adwaitaTextInput(matchingVisibleText: label, in: child) {
+            return match
+        }
+    }
+    return nil
+}
+
+private func adwaitaTextInput(matchingVisibleText label: String, box: CallbackBox) -> (actionID: Int, text: String)? {
+    let roots = [
+        box.previousSettingsRoot,
+        box.previousCommandRoot,
+        box.previousModalRoot,
+        box.previousSnapshot?.root,
+    ]
+    for root in roots {
+        guard let root,
+              let match = adwaitaTextInput(matchingVisibleText: label, in: root) else {
+            continue
+        }
+        return match
+    }
+    return nil
+}
+
+private func replaceAdwaitaText(actionID rawID: Int, previous: String, next: String, box: CallbackBox) {
+    if rawID >= adwaitaSettingsActionOffset {
+        let settingsRawID = rawID - adwaitaSettingsActionOffset
+        _ = box.settingsRuntime.focusByRawActionID(settingsRawID)
+        box.settingsRuntime.replaceTextForRawActionID(settingsRawID, previous: previous, next: next)
+        box.runtime._markDirtyFromExternalResource()
+    } else if rawID >= adwaitaCommandActionOffset {
+        let commandRawID = rawID - adwaitaCommandActionOffset
+        _ = box.commandRuntime.focusByRawActionID(commandRawID)
+        box.commandRuntime.replaceTextForRawActionID(commandRawID, previous: previous, next: next)
+        box.runtime._markDirtyFromExternalResource()
+    } else {
+        _ = box.runtime.focusByRawActionID(rawID)
+        box.runtime.replaceTextForRawActionID(rawID, previous: previous, next: next)
+    }
+    box.textValuesByActionID[rawID] = next
+}
+
+private func adwaitaPickerOptionActionID(title: String, option: String, in node: SemanticNode) -> Int? {
+    if case .menu(_, let menuTitle, _, _) = node.kind,
+       menuTitle == title {
+        return adwaitaActionID(matchingVisibleText: option, in: node)
+    }
+    for child in node.children {
+        if let actionID = adwaitaPickerOptionActionID(title: title, option: option, in: child) {
+            return actionID
+        }
+    }
+    return nil
+}
+
+private func adwaitaPickerOptionActionID(title: String, option: String, box: CallbackBox) -> Int? {
+    let roots = [
+        box.previousSettingsRoot,
+        box.previousCommandRoot,
+        box.previousModalRoot,
+        box.previousSnapshot?.root,
+    ]
+    for root in roots {
+        guard let root,
+              let actionID = adwaitaPickerOptionActionID(title: title, option: option, in: root) else {
+            continue
+        }
+        return actionID
+    }
+    return nil
+}
+
+private func adwaitaContextMenuActionID(target: String, item: String, in node: SemanticNode) -> Int? {
+    if case .modifier(.contextMenu(let items)) = node.kind,
+       adwaitaVisibleText(in: node).contains(target),
+       let match = items.first(where: { $0.label == item }) {
+        return match.actionID
+    }
+    for child in node.children {
+        if let actionID = adwaitaContextMenuActionID(target: target, item: item, in: child) {
+            return actionID
+        }
+    }
+    return nil
+}
+
+private func adwaitaContextMenuActionID(target: String, item: String, box: CallbackBox) -> Int? {
+    let roots = [
+        box.previousSettingsRoot,
+        box.previousCommandRoot,
+        box.previousModalRoot,
+        box.previousSnapshot?.root,
+    ]
+    for root in roots {
+        guard let root,
+              let actionID = adwaitaContextMenuActionID(target: target, item: item, in: root) else {
+            continue
+        }
+        return actionID
+    }
+    return nil
+}
+
+@MainActor
+private func runAdwaitaAutomationIfRequested(box: CallbackBox, rerender: @MainActor @escaping () -> Void) {
+    if runAdwaitaAutomationSequenceIfRequested(box: box, rerender: rerender) {
+        dumpAdwaitaAutomationPasteboardIfRequested()
+        return
+    }
+    scheduleAdwaitaAutomationSequenceRetriesIfNeeded(box: box, rerender: rerender)
+    guard let raw = ProcessInfo.processInfo.environment["OMNIUI_ADWAITA_AUTOMATION_ACTIONS"],
+          !raw.isEmpty else {
+        runAdwaitaLabelAutomationIfRequested(box: box, rerender: rerender)
+        runAdwaitaPickerAutomationIfRequested(box: box, rerender: rerender)
+        runAdwaitaContextMenuAutomationIfRequested(box: box, rerender: rerender)
+        runAdwaitaTextAutomationIfRequested(box: box, rerender: rerender)
+        dumpAdwaitaAutomationPasteboardIfRequested()
+        return
+    }
+    let separators = CharacterSet(charactersIn: ", \n\t")
+    let actionIDs = raw
+        .components(separatedBy: separators)
+        .compactMap { Int($0.trimmingCharacters(in: .whitespacesAndNewlines)) }
+    if !actionIDs.isEmpty {
+        for actionID in actionIDs {
+            invokeAdwaitaRawAction(actionID, box: box)
+            rerender()
+        }
+    }
+    runAdwaitaLabelAutomationIfRequested(box: box, rerender: rerender)
+    runAdwaitaPickerAutomationIfRequested(box: box, rerender: rerender)
+    runAdwaitaContextMenuAutomationIfRequested(box: box, rerender: rerender)
+    runAdwaitaTextAutomationIfRequested(box: box, rerender: rerender)
+    dumpAdwaitaAutomationPasteboardIfRequested()
+}
+
+@discardableResult
+@MainActor
+private func runAdwaitaAutomationSequenceIfRequested(box: CallbackBox, rerender: @MainActor () -> Void) -> Bool {
+    guard !box.didCompleteAutomationSequence else { return true }
+    guard let raw = ProcessInfo.processInfo.environment["OMNIUI_ADWAITA_AUTOMATION_SEQUENCE"],
+          !raw.isEmpty else {
+        return false
+    }
+    let steps = raw
+        .components(separatedBy: CharacterSet.newlines)
+        .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+        .filter { !$0.isEmpty }
+    guard !steps.isEmpty else { return false }
+    for step in steps {
+        if let rawAction = step.droppingAdwaitaAutomationPrefix("action:"),
+           let actionID = Int(rawAction.trimmingCharacters(in: .whitespacesAndNewlines)) {
+            invokeAdwaitaRawAction(actionID, box: box)
+            rerender()
+            continue
+        }
+        if let label = step.droppingAdwaitaAutomationPrefix("label:") {
+            guard invokeAdwaitaLabel(label.trimmingCharacters(in: .whitespacesAndNewlines), box: box) else {
+                return false
+            }
+            rerender()
+            continue
+        }
+        if let assignment = step.droppingAdwaitaAutomationPrefix("picker:"),
+           let parsed = parseAdwaitaAutomationAssignment(assignment, trimValue: true),
+           let actionID = adwaitaPickerOptionActionID(title: parsed.key, option: parsed.value, box: box) {
+            invokeAdwaitaRawAction(actionID, box: box)
+            rerender()
+            continue
+        }
+        if let assignment = step.droppingAdwaitaAutomationPrefix("context:"),
+           let parsed = parseAdwaitaAutomationAssignment(assignment, trimValue: true),
+           let actionID = adwaitaContextMenuActionID(target: parsed.key, item: parsed.value, box: box) {
+            invokeAdwaitaRawAction(actionID, box: box)
+            rerender()
+            continue
+        }
+        if let assignment = step.droppingAdwaitaAutomationPrefix("text:"),
+           let parsed = parseAdwaitaAutomationAssignment(assignment, trimValue: false),
+           let match = adwaitaTextInput(matchingVisibleText: parsed.key, box: box) {
+            let previous = box.textValuesByActionID[match.actionID] ?? match.text
+            replaceAdwaitaText(actionID: match.actionID, previous: previous, next: parsed.value, box: box)
+            rerender()
+            continue
+        }
+        return false
+    }
+    box.didCompleteAutomationSequence = true
+    return true
+}
+
+@MainActor
+private func scheduleAdwaitaAutomationSequenceRetriesIfNeeded(box: CallbackBox, rerender: @MainActor @escaping () -> Void) {
+    guard ProcessInfo.processInfo.environment["OMNIUI_ADWAITA_AUTOMATION_SEQUENCE"]?.isEmpty == false else {
+        return
+    }
+    let delays: [UInt64] = [100_000_000, 300_000_000, 700_000_000, 1_200_000_000]
+    for delay in delays {
+        Task { @MainActor in
+            try? await Task.sleep(nanoseconds: delay)
+            guard !box.didCompleteAutomationSequence else { return }
+            if runAdwaitaAutomationSequenceIfRequested(box: box, rerender: rerender) {
+                dumpAdwaitaAutomationPasteboardIfRequested()
+            }
+        }
+    }
+}
+
+private func parseAdwaitaAutomationAssignment(_ line: String, trimValue: Bool) -> (key: String, value: String)? {
+    guard let separator = line.firstIndex(of: "=") else { return nil }
+    let key = String(line[..<separator]).trimmingCharacters(in: .whitespacesAndNewlines)
+    var value = String(line[line.index(after: separator)...])
+    if trimValue {
+        value = value.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+    guard !key.isEmpty else { return nil }
+    return (key, value)
+}
+
+private extension String {
+    func droppingAdwaitaAutomationPrefix(_ prefix: String) -> String? {
+        guard hasPrefix(prefix) else { return nil }
+        return String(dropFirst(prefix.count))
+    }
+}
+
+private func dumpAdwaitaAutomationPasteboardIfRequested() {
+    guard let path = ProcessInfo.processInfo.environment["OMNIUI_ADWAITA_AUTOMATION_PASTEBOARD_DUMP"],
+          !path.isEmpty else {
+        return
+    }
+    #if canImport(AppKit)
+    let value = NSPasteboard.general.string(forType: .string) ?? ""
+    try? value.write(toFile: path, atomically: true, encoding: .utf8)
+    #else
+    try? "".write(toFile: path, atomically: true, encoding: .utf8)
+    #endif
+}
+
+@MainActor
+private func runAdwaitaLabelAutomationIfRequested(box: CallbackBox, rerender: @MainActor () -> Void) {
+    guard let raw = ProcessInfo.processInfo.environment["OMNIUI_ADWAITA_AUTOMATION_LABELS"],
+          !raw.isEmpty else {
+        return
+    }
+    let labels = raw
+        .components(separatedBy: CharacterSet.newlines)
+        .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+        .filter { !$0.isEmpty }
+    guard !labels.isEmpty else { return }
+    for label in labels {
+        if invokeAdwaitaLabel(label, box: box) {
+            rerender()
+        }
+    }
+}
+
+@discardableResult
+private func invokeAdwaitaLabel(_ label: String, box: CallbackBox) -> Bool {
+    let toolbarActionID = box.previousToolbar?.actions.first { $0.label == label }?.actionID
+    let settingsActionID = box.previousSettingsRoot.flatMap {
+        adwaitaActionID(matchingVisibleText: label, in: $0)
+    }
+    let commandActionID = box.previousCommandRoot.flatMap {
+        adwaitaActionID(matchingVisibleText: label, in: $0)
+    }
+    let modalActionID = box.previousModalRoot.flatMap {
+        adwaitaActionID(matchingVisibleText: label, in: $0)
+    }
+    let rootActionID = box.previousSnapshot.map { adwaitaActionID(matchingVisibleText: label, in: $0.root) } ?? nil
+    guard let actionID = toolbarActionID ?? settingsActionID ?? commandActionID ?? modalActionID ?? rootActionID else {
+        return false
+    }
+    invokeAdwaitaRawAction(actionID, box: box)
+    return true
+}
+
+@MainActor
+private func runAdwaitaPickerAutomationIfRequested(box: CallbackBox, rerender: @MainActor () -> Void) {
+    guard let raw = ProcessInfo.processInfo.environment["OMNIUI_ADWAITA_AUTOMATION_PICKERS"],
+          !raw.isEmpty else {
+        return
+    }
+    let selections = raw
+        .components(separatedBy: CharacterSet.newlines)
+        .compactMap { line -> (title: String, option: String)? in
+            guard let separator = line.firstIndex(of: "=") else { return nil }
+            let title = String(line[..<separator]).trimmingCharacters(in: .whitespacesAndNewlines)
+            let option = String(line[line.index(after: separator)...]).trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !title.isEmpty, !option.isEmpty else { return nil }
+            return (title, option)
+        }
+    guard !selections.isEmpty else { return }
+    for selection in selections {
+        guard let actionID = adwaitaPickerOptionActionID(title: selection.title, option: selection.option, box: box) else {
+            continue
+        }
+        invokeAdwaitaRawAction(actionID, box: box)
+        rerender()
+    }
+}
+
+@MainActor
+private func runAdwaitaContextMenuAutomationIfRequested(box: CallbackBox, rerender: @MainActor () -> Void) {
+    guard let raw = ProcessInfo.processInfo.environment["OMNIUI_ADWAITA_AUTOMATION_CONTEXT_MENUS"],
+          !raw.isEmpty else {
+        return
+    }
+    let selections = raw
+        .components(separatedBy: CharacterSet.newlines)
+        .compactMap { line -> (target: String, item: String)? in
+            guard let separator = line.firstIndex(of: "=") else { return nil }
+            let target = String(line[..<separator]).trimmingCharacters(in: .whitespacesAndNewlines)
+            let item = String(line[line.index(after: separator)...]).trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !target.isEmpty, !item.isEmpty else { return nil }
+            return (target, item)
+        }
+    guard !selections.isEmpty else { return }
+    for selection in selections {
+        guard let actionID = adwaitaContextMenuActionID(target: selection.target, item: selection.item, box: box) else {
+            continue
+        }
+        invokeAdwaitaRawAction(actionID, box: box)
+        rerender()
+    }
+}
+
+@MainActor
+private func runAdwaitaTextAutomationIfRequested(box: CallbackBox, rerender: @MainActor () -> Void) {
+    guard let raw = ProcessInfo.processInfo.environment["OMNIUI_ADWAITA_AUTOMATION_TEXT"],
+          !raw.isEmpty else {
+        return
+    }
+    let assignments = raw
+        .components(separatedBy: CharacterSet.newlines)
+        .compactMap { line -> (label: String, value: String)? in
+            guard let separator = line.firstIndex(of: "=") else { return nil }
+            let label = String(line[..<separator]).trimmingCharacters(in: .whitespacesAndNewlines)
+            let value = String(line[line.index(after: separator)...])
+            guard !label.isEmpty else { return nil }
+            return (label, value)
+        }
+    guard !assignments.isEmpty else { return }
+    for assignment in assignments {
+        guard let match = adwaitaTextInput(matchingVisibleText: assignment.label, box: box) else {
+            continue
+        }
+        let previous = box.textValuesByActionID[match.actionID] ?? match.text
+        replaceAdwaitaText(actionID: match.actionID, previous: previous, next: assignment.value, box: box)
+        rerender()
     }
 }
 
@@ -531,7 +1257,7 @@ private struct AdwaitaHeaderToolbar {
             switch node.kind {
             case .segmentedControl(_, let selectedIndex):
                 actions.append(contentsOf: segmentedActions(in: node, placement: placement, selectedIndex: selectedIndex))
-            case .button(let actionID, _):
+            case .button(let actionID, _), .tapTarget(let actionID, _):
                 let label = AdwaitaReconciliation.accessibleLabel(for: node).trimmingCharacters(in: .whitespacesAndNewlines)
                 guard !label.isEmpty, label != "Action", label != "☰" else { return }
                 actions.append(Action(label: label, actionID: actionID, placement: placement))
@@ -598,7 +1324,7 @@ private struct AdwaitaHeaderToolbar {
                 if !trimmed.isEmpty {
                     parts.append(trimmed)
                 }
-            case .image, .button, .menu, .toggle, .textField, .textEditor:
+            case .image, .webContent, .button, .menu, .toggle, .textField, .textEditor:
                 return
             case .stack, .group, .zstack, .container, .modifier:
                 for child in node.children {
@@ -696,7 +1422,7 @@ private enum AdwaitaPresentationExtractor {
             return true
         case .modifier(let modifier):
             switch modifier {
-            case .background, .frame, .padding, .clip, .shadow, .glass, .opacity, .offset, .noOp:
+            case .background, .frame, .padding, .clip, .shadow, .glass, .opacity, .offset, .help, .noOp:
                 return true
             default:
                 return false
@@ -720,12 +1446,32 @@ private func syncNativePresentation(_ modal: SemanticNode?, app: OpaquePointer?)
     omni_adw_app_present_modal(app, node, "Presentation")
 }
 
+private func appKitTransientPresentation(runtime: _UIRuntime, size: _Size) -> SemanticNode? {
+    #if canImport(AppKit)
+    if let content = NSMenu.activeContentView {
+        return runtime.semanticSnapshot(content, size: size).root
+    }
+    guard let content = NSPopover.activeContentView else { return nil }
+    return runtime.semanticSnapshot(content, size: size).root
+    #else
+    _ = runtime
+    _ = size
+    return nil
+    #endif
+}
+
 private func syncNativeHeaderActions(_ actions: [AdwaitaHeaderToolbar.Action], app: OpaquePointer?) {
     guard let app else { return }
-    let labels = actions.map(\.label)
-    var ids = actions.map { Int32($0.actionID) }
-    var placements = actions.map { $0.placement.rawValue }
-    var styles = actions.map(\.styleFlags)
+    var allActions = actions
+    #if canImport(AppKit)
+    allActions.append(contentsOf: NSStatusBar.system.fallbackLabels.enumerated().map { index, label in
+        AdwaitaHeaderToolbar.Action(label: label, actionID: adwaitaStatusItemActionOffset + index, placement: .end)
+    })
+    #endif
+    let labels = allActions.map(\.label)
+    var ids = allActions.map { Int32($0.actionID) }
+    var placements = allActions.map { $0.placement.rawValue }
+    var styles = allActions.map(\.styleFlags)
     labels.withCStringArray { labelPointers in
         ids.withUnsafeMutableBufferPointer { idBuffer in
             placements.withUnsafeMutableBufferPointer { placementBuffer in
@@ -736,7 +1482,7 @@ private func syncNativeHeaderActions(_ actions: [AdwaitaHeaderToolbar.Action], a
                         idBuffer.baseAddress,
                         placementBuffer.baseAddress,
                         styleBuffer.baseAddress,
-                        Int32(actions.count)
+                        Int32(allActions.count)
                     )
                 }
             }
@@ -897,7 +1643,9 @@ public enum AdwaitaReconciliation {
                 return nil
             }
             return AdwaitaNativeLeafUpdate(id: node.id, kind: .text, text: text)
-        case .button:
+        case .webContent:
+            return nil
+        case .button, .tapTarget:
             return AdwaitaNativeLeafUpdate(id: node.id, kind: .button, text: accessibleLabel(for: node))
         case .toggle(_, _, let isOn):
             return AdwaitaNativeLeafUpdate(id: node.id, kind: .toggle, text: accessibleLabel(for: node), active: isOn)
@@ -946,6 +1694,9 @@ public enum AdwaitaReconciliation {
             }
             return SFSymbolMap.unicode(for: text) ?? text
         }
+        if case .webContent(_, _, let url, let label, let description) = node.kind {
+            return label ?? description ?? url
+        }
         let collected = accessibilityText(in: node)
         if !collected.isEmpty {
             return collected
@@ -971,6 +1722,11 @@ public enum AdwaitaReconciliation {
                 parts.append(payload.url.absoluteString)
             } else {
                 parts.append(SFSymbolMap.unicode(for: text) ?? text)
+            }
+        case .webContent(_, _, let url, let label, let description):
+            parts.append(label ?? url)
+            if let description {
+                parts.append(description)
             }
         case .disabledButton(let label), .disabledTextField(_, let label, _):
             parts.append(label)
@@ -1000,7 +1756,13 @@ public enum AdwaitaReconciliation {
 
     fileprivate static func menuItems(in node: SemanticNode) -> [(label: String, actionID: Int)] {
         node.children.compactMap { child in
-            guard case .button(let actionID, _) = child.kind else { return nil }
+            let actionID: Int
+            switch child.kind {
+            case .button(let id, _), .tapTarget(let id, _):
+                actionID = id
+            default:
+                return nil
+            }
             return (accessibleLabel(for: child), actionID)
         }
     }
@@ -1009,6 +1771,13 @@ public enum AdwaitaReconciliation {
         var items: [(label: String, actionID: Int)] = []
         func collect(_ current: SemanticNode) {
             if case .button(let actionID, _) = current.kind {
+                let label = accessibleLabel(for: current).trimmingCharacters(in: .whitespacesAndNewlines)
+                if !label.isEmpty, label != "Action" {
+                    items.append((label, actionID))
+                }
+                return
+            }
+            if case .tapTarget(let actionID, _) = current.kind {
                 let label = accessibleLabel(for: current).trimmingCharacters(in: .whitespacesAndNewlines)
                 if !label.isEmpty, label != "Action" {
                     items.append((label, actionID))
@@ -1045,6 +1814,8 @@ enum AdwaitaNodeBuilder {
             kind = .scroll(axis: axis, actionID: actionID + offset, offset: offsetValue)
         case .button(let actionID, let isFocused):
             kind = .button(actionID: actionID + offset, isFocused: isFocused)
+        case .tapTarget(let actionID, let tapCount):
+            kind = .tapTarget(actionID: actionID + offset, tapCount: tapCount)
         case .toggle(let actionID, let isFocused, let isOn):
             kind = .toggle(actionID: actionID + offset, isFocused: isFocused, isOn: isOn)
         case .textField(let actionID, let placeholder, let text, let cursor, let isFocused, let isSecure):
@@ -1081,6 +1852,10 @@ enum AdwaitaNodeBuilder {
             )
         case .segmentedControl:
             kind = node.kind
+        case .modifier(.contextMenu(let items)):
+            kind = .modifier(.contextMenu(items: items.map {
+                SemanticContextMenuItem(label: $0.label, actionID: $0.actionID + offset)
+            }))
         default:
             kind = node.kind
         }
@@ -1115,6 +1890,8 @@ enum AdwaitaNodeBuilder {
             built = omni_adw_box_new(1, 0)
         case .stack(let axis, let spacing):
             built = container(vertical: axis == .vertical, spacing: Int32(spacing), children: node.children, context: context)
+        case .flowLayout(let horizontalSpacing, let verticalSpacing):
+            built = flowContainer(horizontalSpacing: Int32(horizontalSpacing), verticalSpacing: Int32(verticalSpacing), children: node.children, context: context)
         case .text(let text):
             built = omni_adw_text_new(text)
         case .image(let text):
@@ -1127,6 +1904,12 @@ enum AdwaitaNodeBuilder {
             } else {
                 built = omni_adw_text_new(SFSymbolMap.unicode(for: text) ?? text)
             }
+        case .webContent(let registryKey, _, _, _, _):
+            if let payload = _OmniWebViewRegistry.payload(for: registryKey) {
+                built = webViewNode(for: payload)
+            } else {
+                built = omni_adw_text_new(accessibleLabel(for: node))
+            }
         case .button(let actionID, _):
             let label = accessibleLabel(for: node)
             if rendersAsInlineButton(node, context: context) {
@@ -1135,6 +1918,21 @@ enum AdwaitaNodeBuilder {
                 built = omni_adw_click_container_new(label, Int32(actionID))
             } else {
                 built = omni_adw_button_new(label, Int32(actionID))
+            }
+            if let built, rendersComplexButtonContent(node), let child = node.children.first, let childNode = build(child, context: .inline) {
+                omni_adw_node_append(built, childNode)
+            }
+        case .tapTarget(let actionID, let tapCount):
+            let label = accessibleLabel(for: node)
+            if rendersAsInlineButton(node, context: context) {
+                built = omni_adw_inline_button_new(label, Int32(actionID), foregroundCSSClass(in: node) ?? "")
+            } else if rendersComplexButtonContent(node) {
+                built = omni_adw_click_container_new(label, Int32(actionID))
+            } else {
+                built = omni_adw_button_new(label, Int32(actionID))
+            }
+            if let built {
+                omni_adw_node_set_required_click_count(built, Int32(max(1, tapCount)))
             }
             if let built, rendersComplexButtonContent(node), let child = node.children.first, let childNode = build(child, context: .inline) {
                 omni_adw_node_append(built, childNode)
@@ -1329,6 +2127,19 @@ enum AdwaitaNodeBuilder {
         return parent
     }
 
+    private static func flowContainer(horizontalSpacing: Int32, verticalSpacing: Int32, children: [SemanticNode], context: BuildContext) -> OpaquePointer? {
+        guard let parent = omni_adw_flow_new(horizontalSpacing, verticalSpacing) else { return nil }
+        for child in children {
+            if let built = build(child, context: context) {
+                omni_adw_node_append(parent, built)
+            }
+        }
+        if children.contains(where: shouldExpandVertically) {
+            omni_adw_node_set_expand(parent, -1, 1)
+        }
+        return parent
+    }
+
     private static func overlay(children: [SemanticNode], context: BuildContext) -> OpaquePointer? {
         if children.count == 1, let child = children.first {
             return build(child, context: context)
@@ -1351,14 +2162,16 @@ enum AdwaitaNodeBuilder {
             return axis == .vertical
         case .image(let text):
             return _OmniWebViewRegistry.payload(for: text) != nil
-        case .button:
+        case .webContent:
+            return true
+        case .button, .tapTarget:
             return node.children.contains(where: shouldExpandVertically)
         case .modifier(.frame(_, let height, _, _, _, let maxHeight)):
             if height != nil || maxHeight == 0 { return false }
             return node.children.contains(where: shouldExpandVertically)
         case .modifier(let modifier) where modifierAllowsLayoutDescent(modifier):
             return node.children.contains(where: shouldExpandVertically)
-        case .group, .zstack, .stack, .container:
+        case .group, .zstack, .stack, .flowLayout, .container:
             return node.children.contains(where: shouldExpandVertically)
         default:
             return false
@@ -1468,6 +2281,8 @@ enum AdwaitaNodeBuilder {
                                                                                                             payload.messageCallback,
                                                                                                             payload.navigationCallback,
                                                                                                             payload.policyCallback,
+                                                                                                            payload.responsePolicyCallback,
+                                                                                                            payload.downloadDestinationCallback,
                                                                                                             payload.titleCallback,
                                                                                                             payload.progressCallback,
                                                                                                             payload.cookieCallback,
@@ -1527,7 +2342,7 @@ enum AdwaitaNodeBuilder {
         switch node.kind {
         case .modifier(.frame(_, _, _, let maxWidth, _, _)):
             return maxWidth == Int.max
-        case .button:
+        case .button, .tapTarget:
             return node.children.contains(where: hasFlexibleHorizontalFrame)
         case .modifier(let modifier) where modifierAllowsLayoutDescent(modifier):
             return node.children.contains(where: hasFlexibleHorizontalFrame)
@@ -1542,7 +2357,7 @@ enum AdwaitaNodeBuilder {
         switch node.kind {
         case .modifier(.frame(let width, _, _, let maxWidth, _, _)):
             return width == 0 || maxWidth == 0
-        case .button:
+        case .button, .tapTarget:
             return node.children.contains(where: isZeroWidthFrame)
         case .modifier(let modifier) where modifierAllowsLayoutDescent(modifier):
             return node.children.contains(where: isZeroWidthFrame)
@@ -1555,7 +2370,7 @@ enum AdwaitaNodeBuilder {
 
     private static func modifierAllowsLayoutDescent(_ modifier: SemanticModifier) -> Bool {
         switch modifier {
-        case .opacity, .clip, .background, .padding, .accessibilityLabel, .accessibilityIdentifier, .noOp, .foreground, .shadow, .glass, .crt:
+        case .opacity, .clip, .background, .padding, .accessibilityLabel, .accessibilityIdentifier, .accessibilityValue, .accessibilityHint, .help, .noOp, .foreground, .shadow, .glass, .crt, .dragSource:
             return true
         default:
             return false
@@ -1596,12 +2411,40 @@ enum AdwaitaNodeBuilder {
 
         let css: String
         switch modifier {
+        case .dragSource(let actionID):
+            guard let node = primaryContent() else { return nil }
+            omni_adw_node_set_drag_source_action(node, Int32(actionID))
+            return node
+        case .contextMenu(let items):
+            guard !items.isEmpty else { return primaryContent() }
+            var ids = items.map { Int32($0.actionID) }
+            guard let wrapper = items.map(\.label).withCStringArray({ labels in
+                ids.withUnsafeMutableBufferPointer { idBuffer in
+                    omni_adw_context_menu_new(labels, idBuffer.baseAddress, Int32(items.count))
+                }
+            }) else { return primaryContent() }
+            if let content = primaryContent() {
+                omni_adw_node_append(wrapper, content)
+            }
+            return wrapper
         case .background("adw-dialog"):
             css = "card adw-dialog"
         case .foreground(let color):
             css = colorCSSClass(prefix: "omni-fg", color: color)
         case .background(let color):
             css = colorCSSClass(prefix: "omni-bg", color: color)
+        case .help(let text), .accessibilityHint(let text):
+            if let node = primaryContent() {
+                omni_adw_node_set_accessibility_description(node, text)
+                return node
+            }
+            return nil
+        case .accessibilityValue(let value):
+            if let node = primaryContent() {
+                omni_adw_node_set_accessibility_value(node, value)
+                return node
+            }
+            return nil
         case .shadow, .glass, .crt, .clip, .accessibilityLabel, .noOp:
             return primaryContent()
         case .badge:
@@ -1733,11 +2576,11 @@ enum AdwaitaNodeBuilder {
 
     private static func isSimpleButtonLabel(_ node: SemanticNode) -> Bool {
         switch node.kind {
-        case .text, .image:
+        case .text, .image, .webContent:
             return true
         case .group, .stack, .zstack:
             return node.children.allSatisfy(isSimpleButtonLabel)
-        case .modifier(.foreground), .modifier(.background), .modifier(.padding), .modifier(.opacity), .modifier(.frame), .modifier(.accessibilityLabel), .modifier(.accessibilityIdentifier), .modifier(.noOp):
+        case .modifier(.foreground), .modifier(.background), .modifier(.padding), .modifier(.opacity), .modifier(.frame), .modifier(.accessibilityLabel), .modifier(.accessibilityIdentifier), .modifier(.accessibilityValue), .modifier(.accessibilityHint), .modifier(.contextMenu), .modifier(.noOp):
             return node.children.allSatisfy(isSimpleButtonLabel)
         default:
             return false
@@ -1937,7 +2780,7 @@ enum AdwaitaNodeBuilder {
             case .text(let text):
                 guard text.allSatisfy({ $0 == " " || $0 == "\t" }) else { return 0 }
                 return max(0, text.reduce(0) { $0 + ($1 == "\t" ? 2 : 1) } / 2)
-            case .button, .stack(axis: .horizontal, _), .modifier, .group:
+            case .button, .tapTarget, .stack(axis: .horizontal, _), .modifier, .group:
                 return node.children.map(leadingWhitespaceDepth(in:)).max() ?? 0
             default:
                 return 0
@@ -1948,12 +2791,22 @@ enum AdwaitaNodeBuilder {
             if case .button(let actionID, _) = node.kind {
                 return actionID
             }
+            if case .tapTarget(let actionID, _) = node.kind {
+                return actionID
+            }
             for child in node.children {
                 if let actionID = firstButtonActionID(in: child) {
                     return actionID
                 }
             }
             return nil
+        }
+
+        func containsMultiTapTarget(_ node: SemanticNode) -> Bool {
+            if case .tapTarget(_, let tapCount) = node.kind, tapCount > 1 {
+                return true
+            }
+            return node.children.contains(where: containsMultiTapTarget)
         }
 
         func appendRows(from node: SemanticNode) -> Bool {
@@ -1990,7 +2843,14 @@ enum AdwaitaNodeBuilder {
                 if label.isEmpty { return false }
                 rows.append((label: label, actionID: actionID, depth: leadingWhitespaceDepth(in: node)))
                 return true
+            case .tapTarget(let actionID, let tapCount):
+                if tapCount > 1 { return false }
+                let label = rowLabel(from: node)
+                if label.isEmpty { return false }
+                rows.append((label: label, actionID: actionID, depth: leadingWhitespaceDepth(in: node)))
+                return true
             case .stack(axis: .horizontal, _), .zstack:
+                if containsMultiTapTarget(node) { return false }
                 let label = rowLabel(from: node)
                 if label.isEmpty { return false }
                 rows.append((label: label, actionID: firstButtonActionID(in: node), depth: leadingWhitespaceDepth(in: node)))
@@ -2074,7 +2934,9 @@ enum AdwaitaNodeBuilder {
         switch node.kind {
         case .text(let text), .image(let text):
             return text
-        case .button, .toggle:
+        case .webContent(_, _, let url, let label, let description):
+            return label ?? description ?? url
+        case .button, .tapTarget, .toggle:
             return accessibleLabel(for: node)
         case .textField(_, let placeholder, let text, _, _, let isSecure):
             if isSecure {
@@ -2117,6 +2979,15 @@ enum AdwaitaNodeBuilder {
             if case .accessibilityIdentifier(let identifier) = modifier {
                 return identifier
             }
+            if case .help = modifier, let child = node.children.last {
+                return accessibleLabel(for: child)
+            }
+            if case .accessibilityHint = modifier, let child = node.children.last {
+                return accessibleLabel(for: child)
+            }
+            if case .accessibilityValue = modifier, let child = node.children.last {
+                return accessibleLabel(for: child)
+            }
             return String(describing: modifier)
         case .scroll(let axis, _, _):
             return axis == .vertical ? "vertical scroll view" : "horizontal scroll view"
@@ -2152,4 +3023,64 @@ private extension Array where Element == String {
             body(buffer.baseAddress)
         }
     }
+}
+
+@discardableResult
+private func dispatchNativeEventToLocalMonitors(
+    eventType: Int,
+    x: Double,
+    y: Double,
+    clickCount: Int,
+    modifiers: UInt32,
+    codepoint: UInt32
+) -> Bool {
+    let event = NSEvent()
+    switch eventType {
+    case 1:
+        event.type = .leftMouseDown
+    case 2:
+        event.type = .leftMouseUp
+    case 3:
+        event.type = .rightMouseDown
+    case 4:
+        event.type = .rightMouseUp
+    case 5:
+        event.type = .mouseMoved
+    case 6:
+        event.type = .flagsChanged
+    case 7:
+        event.type = .keyDown
+    case 8:
+        event.type = .scrollWheel
+    default:
+        return false
+    }
+    if event.type == .scrollWheel {
+        event.locationInWindow = NSApp.keyWindow?.mouseLocationOutsideOfEventStream ?? .zero
+        event.scrollingDeltaX = x
+        event.scrollingDeltaY = y
+    } else {
+        event.locationInWindow = NSPoint(x: x, y: y)
+    }
+    event.clickCount = clickCount
+    event.modifierFlags = NSEvent._omniMacCompatibleModifierFlags(rawValue: Int(modifiers), eventType: event.type)
+    if event.type == .keyDown, let scalar = UnicodeScalar(codepoint), scalar.value >= 32, scalar.value != 127 {
+        event.charactersIgnoringModifiers = String(Character(scalar)).lowercased()
+    }
+    switch event.type {
+    case .leftMouseDown, .leftMouseUp, .rightMouseDown, .rightMouseUp, .mouseMoved:
+        NSApp.keyWindow?._recordMouseLocation(event.locationInWindow)
+    default:
+        break
+    }
+    if NSEvent._deliverLocalMonitors(event) == nil {
+        return true
+    }
+    if event.type == .rightMouseDown {
+        return _omniPresentContextMenu(for: event)
+    }
+    if event.type == .scrollWheel {
+        return _omniDispatchScrollWheel(for: event)
+    }
+    return false
 }

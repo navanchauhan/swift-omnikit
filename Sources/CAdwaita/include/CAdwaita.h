@@ -6,10 +6,14 @@ typedef void (*omni_adw_action_callback)(int32_t action_id, void *context);
 typedef void (*omni_adw_text_callback)(int32_t action_id, const char *text, void *context);
 typedef void (*omni_adw_key_callback)(int32_t action_id, int32_t key_kind, uint32_t codepoint, void *context);
 typedef void (*omni_adw_focus_callback)(int32_t action_id, void *context);
+typedef int32_t (*omni_adw_event_callback)(int32_t event_type, double x, double y, int32_t click_count, uint32_t modifiers, uint32_t keyval, uint32_t codepoint, void *context);
+typedef int32_t (*omni_adw_lifecycle_callback)(int32_t event_type, void *context);
 typedef void (*omni_adw_tick_callback)(void *context);
 typedef void (*omni_adw_web_message_callback)(void *context, const char *name, const char *json_body);
 typedef void (*omni_adw_web_navigation_callback)(void *context, int32_t event, const char *url, const char *error);
 typedef int32_t (*omni_adw_web_policy_callback)(void *context, const char *url, int32_t navigation_type, int32_t is_new_window);
+typedef int32_t (*omni_adw_web_response_policy_callback)(void *context, const char *url, const char *mime_type, int32_t can_show_mime_type, int64_t expected_content_length, const char *suggested_filename);
+typedef char *(*omni_adw_web_download_destination_callback)(void *context, const char *url, const char *mime_type, int64_t expected_content_length, const char *suggested_filename);
 typedef void (*omni_adw_web_evaluate_callback)(void *context, const char *json_body, const char *error);
 typedef void (*omni_adw_web_title_callback)(void *context, const char *title);
 typedef void (*omni_adw_web_progress_callback)(void *context, double progress);
@@ -37,14 +41,19 @@ typedef struct OmniAdwNode OmniAdwNode;
 OmniAdwApp *omni_adw_app_new(const char *app_id, const char *title, omni_adw_action_callback callback, omni_adw_text_callback text_callback, omni_adw_key_callback key_callback, omni_adw_focus_callback focus_callback, void *context);
 int32_t omni_adw_app_run(OmniAdwApp *app, int32_t argc, char **argv);
 void omni_adw_app_free(OmniAdwApp *app);
+void omni_adw_app_set_event_callback(OmniAdwApp *app, omni_adw_event_callback event_callback);
+void omni_adw_app_set_lifecycle_callback(OmniAdwApp *app, omni_adw_lifecycle_callback lifecycle_callback);
 uint32_t omni_adw_app_add_tick_callback(OmniAdwApp *app, int32_t interval_ms, omni_adw_tick_callback callback, void *context);
 void omni_adw_app_remove_tick_callback(uint32_t source_id);
 void omni_adw_app_set_default_size(OmniAdwApp *app, int32_t width, int32_t height);
+void omni_adw_app_present_main_window(OmniAdwApp *app);
+void omni_adw_app_set_cursor(OmniAdwApp *app, const char *cursor_name);
 void omni_adw_set_color_scheme(const char *scheme);
 void omni_adw_app_set_header_title(OmniAdwApp *app, const char *title);
 void omni_adw_app_set_header_entry(OmniAdwApp *app, const char *placeholder, const char *text, int32_t action_id);
 void omni_adw_app_set_header_actions(OmniAdwApp *app, const char **labels, const int32_t *action_ids, const int32_t *placements, const int32_t *styles, int32_t count);
 void omni_adw_app_set_settings(OmniAdwApp *app, OmniAdwNode *settings);
+void omni_adw_app_present_settings(OmniAdwApp *app);
 void omni_adw_app_set_commands(OmniAdwApp *app, OmniAdwNode *commands);
 void omni_adw_app_set_root(OmniAdwApp *app, OmniAdwNode *root);
 void omni_adw_app_set_root_focused(OmniAdwApp *app, OmniAdwNode *root, int32_t focused_action_id);
@@ -55,6 +64,7 @@ int32_t omni_adw_app_update_node(OmniAdwApp *app, const char *semantic_id, int32
 int32_t omni_adw_app_replace_node(OmniAdwApp *app, const char *semantic_id, OmniAdwNode *replacement, int32_t focused_action_id);
 
 OmniAdwNode *omni_adw_box_new(int32_t vertical, int32_t spacing);
+OmniAdwNode *omni_adw_flow_new(int32_t horizontal_spacing, int32_t vertical_spacing);
 void omni_adw_box_set_homogeneous(OmniAdwNode *node, int32_t homogeneous);
 OmniAdwNode *omni_adw_overlay_new(void);
 OmniAdwNode *omni_adw_list_new(void);
@@ -108,6 +118,8 @@ OmniAdwNode *omni_adw_web_view_new_ex(
     omni_adw_web_message_callback message_callback,
     omni_adw_web_navigation_callback navigation_callback,
     omni_adw_web_policy_callback policy_callback,
+    omni_adw_web_response_policy_callback response_policy_callback,
+    omni_adw_web_download_destination_callback download_destination_callback,
     omni_adw_web_title_callback title_callback,
     omni_adw_web_progress_callback progress_callback,
     omni_adw_web_cookie_callback cookie_callback,
@@ -158,6 +170,7 @@ int32_t omni_adw_web_cookie_store_delete(
 OmniAdwNode *omni_adw_button_new(const char *label, int32_t action_id);
 OmniAdwNode *omni_adw_click_container_new(const char *label, int32_t action_id);
 OmniAdwNode *omni_adw_inline_button_new(const char *label, int32_t action_id, const char *css_classes);
+OmniAdwNode *omni_adw_context_menu_new(const char **labels, const int32_t *action_ids, int32_t count);
 OmniAdwNode *omni_adw_toggle_new(const char *label, int32_t active, int32_t action_id);
 OmniAdwNode *omni_adw_entry_new(const char *placeholder, const char *text, int32_t action_id);
 OmniAdwNode *omni_adw_secure_entry_new(const char *placeholder, const char *text, int32_t action_id);
@@ -176,6 +189,10 @@ void omni_adw_node_apply_layout(OmniAdwNode *node, int32_t width, int32_t height
 void omni_adw_node_set_visible(OmniAdwNode *node, int32_t visible);
 void omni_adw_node_set_sensitive(OmniAdwNode *node, int32_t sensitive);
 void omni_adw_node_set_metadata(OmniAdwNode *node, const char *semantic_id, const char *label);
+void omni_adw_node_set_required_click_count(OmniAdwNode *node, int32_t click_count);
+void omni_adw_node_set_drag_source_action(OmniAdwNode *node, int32_t action_id);
+void omni_adw_node_set_accessibility_description(OmniAdwNode *node, const char *description);
+void omni_adw_node_set_accessibility_value(OmniAdwNode *node, const char *value);
 void omni_adw_node_add_css_class(OmniAdwNode *node, const char *css_class);
 void omni_adw_node_append(OmniAdwNode *parent, OmniAdwNode *child);
 void omni_adw_node_set_expand(OmniAdwNode *node, int32_t horizontal, int32_t vertical);

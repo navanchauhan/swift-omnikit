@@ -20,7 +20,8 @@ public struct ColorPicker: View, _PrimitiveView {
 
         let currentColor = selection.wrappedValue
         let hex = _colorToHex(currentColor)
-        let labelText = _UIRuntime._labelsHidden ? hex : "\(title): \(hex)"
+        let showsTitle = !_UIRuntime._labelsHidden && !title.isEmpty
+        let labelText = showsTitle ? "\(title): \(hex)" : hex
 
         guard _UIRuntime._hitTestingEnabled else {
             return .text(labelText)
@@ -32,6 +33,7 @@ public struct ColorPicker: View, _PrimitiveView {
         // Three HSL bar controls: H, S, L
         let hsl = _colorToHSL(currentColor)
         let barWidth = 6
+        let swatches = _presetSwatches(runtime: runtime, controlPath: controlPath)
 
         // H bar
         let hPath = controlPath + [0]
@@ -69,16 +71,65 @@ public struct ColorPicker: View, _PrimitiveView {
         // Preview swatch
         let swatchNode = _VNode.style(fg: nil, bg: currentColor, child: .text("  \(hex)  "))
 
-        let titleNode = _VNode.text(title)
-        return .stack(axis: .vertical, spacing: 0, children: [
-            titleNode,
+        var children: [_VNode] = []
+        if showsTitle {
+            children.append(.text(title))
+        }
+        children.append(contentsOf: [
+            swatches,
             .stack(axis: .horizontal, spacing: 1, children: [
-                .tapTarget(id: hID, child: hBar),
-                .tapTarget(id: sID, child: sBar),
-                .tapTarget(id: lID, child: lBar),
+                .tapTarget(id: hID, count: 1, child: hBar),
+                .tapTarget(id: sID, count: 1, child: sBar),
+                .tapTarget(id: lID, count: 1, child: lBar),
             ]),
             swatchNode,
         ])
+        return .stack(axis: .vertical, spacing: 0, children: children)
+    }
+
+    private func _presetSwatches(
+        runtime: _UIRuntime,
+        controlPath: [Int]
+    ) -> _VNode {
+        let presets: [(label: String, color: Color)] = [
+            ("black", .black),
+            ("white", .white),
+            ("gray", .gray),
+            ("red", .red),
+            ("orange", .orange),
+            ("yellow", .yellow),
+            ("green", .green),
+            ("blue", .blue),
+            ("purple", .purple),
+        ]
+
+        let children: [_VNode] = presets.enumerated().map { index, preset in
+            let path = controlPath + [10 + index]
+            let focused = runtime._isFocused(path: path)
+            let actionID = runtime._registerAction({
+                runtime._setFocus(path: path)
+                selection.wrappedValue = preset.color
+            }, path: actionScopePath)
+            runtime._registerFocusable(path: path, activate: actionID)
+            return .tapTarget(
+                id: actionID,
+                count: 1,
+                child: _swatch(label: preset.label, color: preset.color, focused: focused)
+            )
+        }
+
+        return .stack(axis: .horizontal, spacing: 1, children: children)
+    }
+
+    private func _swatch(label: String, color: Color, focused: Bool) -> _VNode {
+        let marker = focused ? ">" : " "
+        let rgb = _resolveColorToRGB(color)
+        let foreground: Color = {
+            guard let rgb else { return .primary }
+            let luminance = 0.299 * Double(rgb.r) + 0.587 * Double(rgb.g) + 0.114 * Double(rgb.b)
+            return luminance > 128 ? .black : .white
+        }()
+        return .style(fg: foreground, bg: color, child: .text("\(marker)■"))
     }
 
     private func _renderBar(label: String, value: Double, width: Int, focused: Bool) -> _VNode {

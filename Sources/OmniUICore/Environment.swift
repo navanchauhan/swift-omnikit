@@ -12,6 +12,24 @@ public protocol EnvironmentKey {
 }
 
 public struct EnvironmentValues: @unchecked Sendable {
+    private final class GlobalObjects: @unchecked Sendable {
+        private let lock = NSLock()
+        private var storage: [ObjectIdentifier: Any] = [:]
+
+        func set<T: AnyObject>(_ value: T, as type: T.Type = T.self) {
+            lock.lock()
+            storage[ObjectIdentifier(type)] = value
+            lock.unlock()
+        }
+
+        func getErased(_ type: AnyObject.Type) -> Any? {
+            lock.lock()
+            defer { lock.unlock() }
+            return storage[ObjectIdentifier(type)]
+        }
+    }
+
+    private static let globalObjects = GlobalObjects()
     private var storage: [ObjectIdentifier: Any] = [:]
 
     public init() {}
@@ -24,28 +42,57 @@ public struct EnvironmentValues: @unchecked Sendable {
     // EnvironmentObject storage.
     mutating func _setObject<T: AnyObject>(_ value: T, as type: T.Type = T.self) {
         storage[ObjectIdentifier(type)] = value
+        Self.globalObjects.set(value, as: type)
     }
 
     func _getObject<T: AnyObject>(_ type: T.Type = T.self) -> T? {
         storage[ObjectIdentifier(type)] as? T
     }
+
+    func _getObjectErased(_ type: AnyObject.Type) -> Any? {
+        storage[ObjectIdentifier(type)]
+    }
+
+    static func _getGlobalObjectErased(_ type: AnyObject.Type) -> Any? {
+        globalObjects.getErased(type)
+    }
 }
 
 @propertyWrapper
 public struct Environment<Value> {
-    private let keyPath: KeyPath<EnvironmentValues, Value>
+    private let keyPath: KeyPath<EnvironmentValues, Value>?
+    private let objectType: Any.Type?
 
     public init(_ keyPath: KeyPath<EnvironmentValues, Value>) {
         self.keyPath = keyPath
+        self.objectType = nil
+    }
+
+    public init(_ objectType: Value.Type) {
+        self.keyPath = nil
+        self.objectType = objectType
     }
 
     public var wrappedValue: Value {
         let env = _UIRuntime._currentEnvironment ?? EnvironmentValues()
+        if let objectType = objectType as? AnyObject.Type,
+           let value = env._getObjectErased(objectType) as? Value {
+            (value as? ObservableObject)?._$observationRegistrar.track()
+            return value
+        }
+        if let objectType = objectType as? AnyObject.Type,
+           let value = EnvironmentValues._getGlobalObjectErased(objectType) as? Value {
+            (value as? ObservableObject)?._$observationRegistrar.track()
+            return value
+        }
+        guard let keyPath else {
+            fatalError("No typed environment value is available for \(Value.self)")
+        }
         return env[keyPath: keyPath]
     }
 }
 
-public enum ColorScheme: Sendable {
+public enum ColorScheme: Sendable, Equatable {
     case light
     case dark
 }
@@ -78,6 +125,14 @@ public struct OpenURLAction: @unchecked Sendable {
     public func callAsFunction(_ url: URL) -> Result {
         _open(url)
     }
+}
+
+public struct OpenSettingsAction: @unchecked Sendable {
+    let _open: () -> Void
+    public init(_ open: @escaping () -> Void = {}) {
+        self._open = open
+    }
+    public func callAsFunction() { _open() }
 }
 
 public enum EditMode: Hashable, Sendable {
@@ -113,6 +168,10 @@ private enum _ModelContextKey: EnvironmentKey {
 
 private enum _OpenURLKey: EnvironmentKey {
     static let defaultValue: OpenURLAction = OpenURLAction()
+}
+
+private enum _OpenSettingsKey: EnvironmentKey {
+    static let defaultValue: OpenSettingsAction = OpenSettingsAction()
 }
 
 private enum _EditModeKey: EnvironmentKey {
@@ -187,11 +246,18 @@ public struct _ToolbarBackgroundStyle: Hashable, Sendable {
     public var visibility: Visibility
     public var color: Color?
     public var material: Material?
+    public var colorScheme: ColorScheme?
 
-    public init(visibility: Visibility = .automatic, color: Color? = nil, material: Material? = nil) {
+    public init(
+        visibility: Visibility = .automatic,
+        color: Color? = nil,
+        material: Material? = nil,
+        colorScheme: ColorScheme? = nil
+    ) {
         self.visibility = visibility
         self.color = color
         self.material = material
+        self.colorScheme = colorScheme
     }
 }
 
@@ -418,6 +484,11 @@ public extension EnvironmentValues {
         set { self[_OpenURLKey.self] = newValue }
     }
 
+    var openSettings: OpenSettingsAction {
+        get { self[_OpenSettingsKey.self] }
+        set { self[_OpenSettingsKey.self] = newValue }
+    }
+
     var editMode: Binding<EditMode>? {
         get { self[_EditModeKey.self] }
         set { self[_EditModeKey.self] = newValue }
@@ -640,6 +711,10 @@ public extension EnvironmentValues {
 }
 
 public extension View {
+    func environment<T: AnyObject>(_ value: T) -> some View {
+        environmentObject(value)
+    }
+
     func environment<V>(_ keyPath: WritableKeyPath<EnvironmentValues, V>, _ value: V) -> some View {
         _EnvironmentValueProvider(content: AnyView(self), keyPath: keyPath, value: value)
     }

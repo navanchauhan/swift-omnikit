@@ -9,6 +9,7 @@ public enum ToolbarItemPlacement: Hashable, Sendable {
     case navigation
     case bottomBar
     case principal
+    case primaryAction
 }
 
 public enum ToolbarPlacement: Hashable, Sendable {
@@ -45,7 +46,7 @@ func _collectToolbarItems(from node: _VNode) -> _ToolbarLayoutItems {
                 switch tag.placement {
                 case .navigation, .navigationBarLeading, .topBarLeading, .cancellationAction:
                     out.leading.append(label)
-                case .navigationBarTrailing, .topBarTrailing, .confirmationAction, .automatic:
+                case .navigationBarTrailing, .topBarTrailing, .confirmationAction, .primaryAction, .automatic:
                     out.trailing.append(label)
                 case .principal:
                     out.principal.append(label)

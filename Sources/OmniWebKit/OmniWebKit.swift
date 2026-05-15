@@ -21,6 +21,35 @@ private final class _OmniLockedCounter: @unchecked Sendable {
     }
 }
 
+private final class _OmniPolicyBox<Policy>: @unchecked Sendable {
+    private let lock = NSLock()
+    private var policy: Policy?
+
+    func set(_ policy: Policy) {
+        lock.lock()
+        self.policy = policy
+        lock.unlock()
+    }
+
+    func get(default defaultPolicy: Policy) -> Policy {
+        lock.lock()
+        defer { lock.unlock() }
+        return policy ?? defaultPolicy
+    }
+}
+
+private final class _OmniAsyncPolicyRunner<Policy>: @unchecked Sendable {
+    private let operation: () async -> Policy
+
+    init(_ operation: @escaping () async -> Policy) {
+        self.operation = operation
+    }
+
+    func run() async -> Policy {
+        await operation()
+    }
+}
+
 #if os(Linux)
 public final class NSKeyValueObservation {
     private let onInvalidate: () -> Void
@@ -70,6 +99,64 @@ public final class WKFrameInfo: NSObject, @unchecked Sendable {
 public enum WKNavigationActionPolicy: Int, Sendable {
     case cancel = 0
     case allow = 1
+    case download = 2
+}
+
+public enum WKNavigationResponsePolicy: Int, Sendable {
+    case cancel = 0
+    case allow = 1
+    case download = 2
+}
+
+public final class WKNavigationResponse: NSObject, @unchecked Sendable {
+    public let response: URLResponse
+    public var canShowMIMEType: Bool
+
+    public init(
+        response: URLResponse = URLResponse(
+            url: URL(string: "about:blank")!,
+            mimeType: nil,
+            expectedContentLength: 0,
+            textEncodingName: nil
+        ),
+        canShowMIMEType: Bool = true
+    ) {
+        self.response = response
+        self.canShowMIMEType = canShowMIMEType
+        super.init()
+    }
+}
+
+public protocol WKDownloadDelegate: AnyObject {
+    func download(
+        _ download: WKDownload,
+        decideDestinationUsing response: URLResponse,
+        suggestedFilename: String,
+        completionHandler: @escaping (URL?) -> Void
+    )
+
+    func downloadDidFinish(_ download: WKDownload)
+
+    func download(_ download: WKDownload, didFailWithError error: Error, resumeData: Data?)
+}
+
+public extension WKDownloadDelegate {
+    func download(
+        _ download: WKDownload,
+        decideDestinationUsing response: URLResponse,
+        suggestedFilename: String,
+        completionHandler: @escaping (URL?) -> Void
+    ) {
+        completionHandler(nil)
+    }
+
+    func downloadDidFinish(_ download: WKDownload) {}
+
+    func download(_ download: WKDownload, didFailWithError error: Error, resumeData: Data?) {}
+}
+
+public final class WKDownload: NSObject, @unchecked Sendable {
+    public weak var delegate: WKDownloadDelegate?
 }
 
 public enum WKNavigationType: Int, Sendable {
@@ -130,6 +217,11 @@ public protocol WKNavigationDelegate: AnyObject {
     func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error)
     func webViewWebContentProcessDidTerminate(_ webView: WKWebView)
     func webView(_ webView: WKWebView, decidePolicyFor navigationAction: WKNavigationAction, decisionHandler: @escaping (WKNavigationActionPolicy) -> Void)
+    func webView(_ webView: WKWebView, decidePolicyFor navigationAction: WKNavigationAction) async -> WKNavigationActionPolicy
+    func webView(_ webView: WKWebView, decidePolicyFor navigationResponse: WKNavigationResponse, decisionHandler: @escaping (WKNavigationResponsePolicy) -> Void)
+    func webView(_ webView: WKWebView, decidePolicyFor navigationResponse: WKNavigationResponse) async -> WKNavigationResponsePolicy
+    func webView(_ webView: WKWebView, navigationAction: WKNavigationAction, didBecome download: WKDownload)
+    func webView(_ webView: WKWebView, navigationResponse: WKNavigationResponse, didBecome download: WKDownload)
 }
 
 public extension WKNavigationDelegate {
@@ -143,6 +235,29 @@ public extension WKNavigationDelegate {
     func webView(_ webView: WKWebView, decidePolicyFor navigationAction: WKNavigationAction, decisionHandler: @escaping (WKNavigationActionPolicy) -> Void) {
         decisionHandler(.allow)
     }
+
+    func webView(_ webView: WKWebView, decidePolicyFor navigationAction: WKNavigationAction) async -> WKNavigationActionPolicy {
+        await withCheckedContinuation { continuation in
+            self.webView(webView, decidePolicyFor: navigationAction) { policy in
+                continuation.resume(returning: policy)
+            }
+        }
+    }
+
+    func webView(_ webView: WKWebView, decidePolicyFor navigationResponse: WKNavigationResponse, decisionHandler: @escaping (WKNavigationResponsePolicy) -> Void) {
+        decisionHandler(.allow)
+    }
+
+    func webView(_ webView: WKWebView, decidePolicyFor navigationResponse: WKNavigationResponse) async -> WKNavigationResponsePolicy {
+        await withCheckedContinuation { continuation in
+            self.webView(webView, decidePolicyFor: navigationResponse) { policy in
+                continuation.resume(returning: policy)
+            }
+        }
+    }
+
+    func webView(_ webView: WKWebView, navigationAction: WKNavigationAction, didBecome download: WKDownload) {}
+    func webView(_ webView: WKWebView, navigationResponse: WKNavigationResponse, didBecome download: WKDownload) {}
 }
 
 public protocol WKUIDelegate: AnyObject {
@@ -279,7 +394,7 @@ public final class WKContentRuleListStore: NSObject, @unchecked Sendable {
 
 public final class WKUserContentController: NSObject, @unchecked Sendable {
     private struct HandlerBox {
-        weak var handler: WKScriptMessageHandler?
+        var handler: WKScriptMessageHandler
     }
 
     private struct WebViewBox {
@@ -551,7 +666,20 @@ public final class WKWebView: NSView, _OmniWebViewPayloadProviding, @unchecked S
             invalidatePayload()
         }
     }
-    public var appearance: NSAppearance?
+    public override var appearance: NSAppearance? {
+        get { super.appearance }
+        set {
+            super.appearance = newValue
+            syncNativeAppearance()
+            invalidatePayload()
+        }
+    }
+
+    public override func viewEffectiveAppearanceDidChange() {
+        super.viewEffectiveAppearanceDidChange()
+        syncNativeAppearance()
+        invalidatePayload()
+    }
     public var underPageBackgroundColor: NSColor?
 
     public private(set) var url: URL?
@@ -579,6 +707,9 @@ public final class WKWebView: NSView, _OmniWebViewPayloadProviding, @unchecked S
     private var lastEvaluation: String?
     private var requestHeaders: [String: String] = [:]
     private var preflightedPolicyURL: URL?
+    #if os(Linux)
+    private var appearanceObservation: _OmniAppearanceChangeObservation?
+    #endif
 
     public init(frame: CGRect = .zero, configuration: WKWebViewConfiguration) {
         _ = frame
@@ -586,22 +717,104 @@ public final class WKWebView: NSView, _OmniWebViewPayloadProviding, @unchecked S
         super.init()
         configuration.userContentController.attach(self)
         configuration.preferences.attach(self)
+        observeApplicationAppearance()
+    }
+
+    public required init?(coder: NSCoder) {
+        self.configuration = WKWebViewConfiguration()
+        super.init(coder: coder)
+        configuration.userContentController.attach(self)
+        configuration.preferences.attach(self)
+        observeApplicationAppearance()
     }
 
     deinit {
+        #if os(Linux)
+        appearanceObservation?.invalidate()
+        #endif
         configuration.userContentController.detach(self)
         configuration.preferences.detach(self)
+    }
+
+    private func observeApplicationAppearance() {
+        #if os(Linux)
+        appearanceObservation = _omniAddAppearanceChangeHandler { [weak self] _ in
+            guard let self else { return }
+            self.syncNativeAppearance()
+            self.invalidatePayload()
+        }
+        #endif
+    }
+
+    private func decidePolicy(for action: WKNavigationAction) -> WKNavigationActionPolicy {
+        guard let navigationDelegate else { return .allow }
+        nonisolated(unsafe) let delegate = navigationDelegate
+        return Self.awaitPolicy(default: .allow) {
+            await delegate.webView(self, decidePolicyFor: action)
+        }
+    }
+
+    private func decidePolicy(for response: WKNavigationResponse) -> WKNavigationResponsePolicy {
+        guard let navigationDelegate else { return .allow }
+        nonisolated(unsafe) let delegate = navigationDelegate
+        return Self.awaitPolicy(default: .allow) {
+            await delegate.webView(self, decidePolicyFor: response)
+        }
+    }
+
+    private func becomeDownload(for action: WKNavigationAction) {
+        let download = WKDownload()
+        navigationDelegate?.webView(self, navigationAction: action, didBecome: download)
+    }
+
+    private func becomeDownload(for response: WKNavigationResponse) {
+        let download = WKDownload()
+        navigationDelegate?.webView(self, navigationResponse: response, didBecome: download)
+    }
+
+    private func decideDownloadDestination(for response: WKNavigationResponse, suggestedFilename: String) -> URL? {
+        let download = WKDownload()
+        navigationDelegate?.webView(self, navigationResponse: response, didBecome: download)
+        guard let delegate = download.delegate else { return nil }
+        var destination: URL?
+        delegate.download(download, decideDestinationUsing: response.response, suggestedFilename: suggestedFilename) { url in
+            destination = url
+        }
+        return destination
+    }
+
+    private static func awaitPolicy<Policy: Sendable>(
+        default defaultPolicy: Policy,
+        timeout: DispatchTime = .now() + .seconds(2),
+        operation: @escaping () async -> Policy
+    ) -> Policy {
+        let box = _OmniPolicyBox<Policy>()
+        let semaphore = DispatchSemaphore(value: 0)
+        let runner = _OmniAsyncPolicyRunner(operation)
+        Task {
+            let policy = await runner.run()
+            box.set(policy)
+            semaphore.signal()
+        }
+        guard semaphore.wait(timeout: timeout) == .success else {
+            return defaultPolicy
+        }
+        return box.get(default: defaultPolicy)
     }
 
     @discardableResult
     public func load(_ request: URLRequest) -> WKNavigation? {
         guard let requestURL = request.url else { return nil }
         let action = WKNavigationAction(request: request, navigationType: .other)
-        var allowed = true
-        navigationDelegate?.webView(self, decidePolicyFor: action) { policy in
-            allowed = policy == .allow
+        switch decidePolicy(for: action) {
+        case .allow:
+            break
+        case .download:
+            becomeDownload(for: action)
+            return nil
+        case .cancel:
+            return nil
         }
-        guard allowed else { return nil }
         preflightedPolicyURL = requestURL
         if let current = url, current != requestURL {
             backStack.append(current)
@@ -642,6 +855,7 @@ public final class WKWebView: NSView, _OmniWebViewPayloadProviding, @unchecked S
         }
         #endif
         begin(navigation: navigation)
+        commit(navigation: navigation)
         finish(navigation: navigation)
         invalidatePayload()
         return navigation
@@ -671,6 +885,7 @@ public final class WKWebView: NSView, _OmniWebViewPayloadProviding, @unchecked S
         }
         #endif
         begin(navigation: navigation)
+        commit(navigation: navigation)
         finish(navigation: navigation)
         invalidatePayload()
         return navigation
@@ -774,7 +989,7 @@ public final class WKWebView: NSView, _OmniWebViewPayloadProviding, @unchecked S
     }
 
     @discardableResult
-    public func becomeFirstResponder() -> Bool {
+    public override func becomeFirstResponder() -> Bool {
         #if os(Linux)
         return withNativeIdentity { identity in
             identity.withCString { omni_adw_web_view_focus($0) != 0 }
@@ -841,7 +1056,7 @@ public final class WKWebView: NSView, _OmniWebViewPayloadProviding, @unchecked S
             isInspectable: isInspectable,
             allowsInlineMediaPlayback: configuration.allowsInlineMediaPlayback,
             mediaPlaybackRequiresUserGesture: !configuration.mediaTypesRequiringUserActionForPlayback.isEmpty,
-            userScripts: configuration.userContentController.userScripts.map {
+            userScripts: appearanceUserScripts + configuration.userContentController.userScripts.map {
                 _OmniWebViewPayload.UserScript(
                     source: $0.source,
                     injectionTime: Int32($0.injectionTime.rawValue),
@@ -875,6 +1090,8 @@ public final class WKWebView: NSView, _OmniWebViewPayloadProviding, @unchecked S
             messageCallback: WKWebView.messageCallback,
             navigationCallback: WKWebView.navigationCallback,
             policyCallback: WKWebView.policyCallback,
+            responsePolicyCallback: WKWebView.responsePolicyCallback,
+            downloadDestinationCallback: WKWebView.downloadDestinationCallback,
             titleCallback: WKWebView.titleCallback,
             progressCallback: WKWebView.progressCallback,
             cookieCallback: WKWebView.cookieCallback,
@@ -883,9 +1100,120 @@ public final class WKWebView: NSView, _OmniWebViewPayloadProviding, @unchecked S
         )
     }
 
+    private var appearanceUserScripts: [_OmniWebViewPayload.UserScript] {
+        guard let scheme = webAppearanceColorScheme else { return [] }
+        return [
+            _OmniWebViewPayload.UserScript(
+                source: Self.webAppearanceScript(for: scheme),
+                injectionTime: Int32(WKUserScriptInjectionTime.atDocumentStart.rawValue),
+                forMainFrameOnly: false
+            )
+        ]
+    }
+
+    private static func webAppearanceScript(for scheme: ColorScheme) -> String {
+        let escapedScheme = scheme == .light ? "light" : "dark"
+        return """
+        (() => {
+          const scheme = "\(escapedScheme)";
+          const state = window.__omniColorSchemeState || {
+            originalMatchMedia: window.matchMedia ? window.matchMedia.bind(window) : null,
+            lists: [],
+            scheme: null
+          };
+          window.__omniColorSchemeState = state;
+          const matchesSchemeQuery = (query) => {
+            const text = String(query || "");
+            const normalized = text.replace(/\\s+/g, "").toLowerCase();
+            return normalized === "(prefers-color-scheme:dark)" || normalized === "(prefers-color-scheme:light)";
+          };
+          const queryMatches = (query) => String(query || "").replace(/\\s+/g, "").toLowerCase().includes(state.scheme);
+          const updateList = (list) => {
+            const next = queryMatches(list.media);
+            const changed = list.matches !== next;
+            list.matches = next;
+            return changed;
+          };
+          if (!state.installed) {
+            window.matchMedia = (query) => {
+              const text = String(query || "");
+              if (matchesSchemeQuery(text)) {
+                const listeners = new Set();
+                const list = {
+                  matches: false,
+                  media: text,
+                  onchange: null,
+                  addListener(listener) { if (listener) listeners.add(listener); },
+                  removeListener(listener) { listeners.delete(listener); },
+                  addEventListener(type, listener) { if (type === "change" && listener) listeners.add(listener); },
+                  removeEventListener(type, listener) { if (type === "change") listeners.delete(listener); },
+                  dispatchEvent(event) {
+                    listeners.forEach((listener) => {
+                      if (typeof listener === "function") listener.call(list, event);
+                      else if (listener && typeof listener.handleEvent === "function") listener.handleEvent(event);
+                    });
+                    if (typeof list.onchange === "function") list.onchange.call(list, event);
+                    return true;
+                  }
+                };
+                state.lists.push(list);
+                updateList(list);
+                return list;
+              }
+              return state.originalMatchMedia ? state.originalMatchMedia(text) : {
+                matches: false,
+                media: text,
+                onchange: null,
+                addListener() {},
+                removeListener() {},
+                addEventListener() {},
+                removeEventListener() {},
+                dispatchEvent() { return false; }
+              };
+            };
+            state.installed = true;
+          }
+          const previousScheme = state.scheme;
+          state.scheme = scheme;
+          const apply = () => {
+            if (document.documentElement) document.documentElement.style.colorScheme = scheme;
+            if (document.body) document.body.style.colorScheme = scheme;
+            state.lists.forEach((list) => {
+              if (updateList(list) && previousScheme !== null) {
+                list.dispatchEvent({ type: "change", matches: list.matches, media: list.media });
+              }
+            });
+          };
+          apply();
+          if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", apply, { once: true });
+        })();
+        """
+    }
+
+    private var webAppearanceColorScheme: ColorScheme? {
+        #if os(Linux)
+        let resolved = effectiveAppearance
+        if resolved.name == .aqua { return .light }
+        if resolved.name == .darkAqua { return .dark }
+        return _omniCurrentAppearanceColorScheme()
+        #else
+        if let appearance {
+            if appearance.name == .aqua { return .light }
+            if appearance.name == .darkAqua { return .dark }
+            return nil
+        }
+        return nil
+        #endif
+    }
+
     private func begin(navigation: WKNavigation) {
         isLoading = true
         navigationDelegate?.webView(self, didStartProvisionalNavigation: navigation)
+        notifyObservers()
+    }
+
+    private func commit(navigation: WKNavigation) {
+        navigationDelegate?.webView(self, didCommit: navigation)
         notifyObservers()
     }
 
@@ -954,6 +1282,13 @@ public final class WKWebView: NSView, _OmniWebViewPayloadProviding, @unchecked S
         notifyObservers()
         #else
         updateBackForward()
+        #endif
+    }
+
+    fileprivate func syncNativeAppearance() {
+        #if os(Linux)
+        guard let scheme = webAppearanceColorScheme else { return }
+        evaluateJavaScript(Self.webAppearanceScript(for: scheme))
         #endif
     }
 
@@ -1176,11 +1511,62 @@ public final class WKWebView: NSView, _OmniWebViewPayloadProviding, @unchecked S
             return 0
         }
 
-        var allowed = true
-        webView.navigationDelegate?.webView(webView, decidePolicyFor: action) { policy in
-            allowed = policy == .allow
+        switch webView.decidePolicy(for: action) {
+        case .allow:
+            return 1
+        case .download:
+            webView.becomeDownload(for: action)
+            return 0
+        case .cancel:
+            return 0
         }
-        return allowed ? 1 : 0
+    }
+
+    private static let responsePolicyCallback: _OmniWebViewPayload.ResponsePolicyCallback = { context, urlPointer, mimeTypePointer, canShowMIMEType, expectedContentLength, suggestedFilenamePointer in
+        guard let context, let urlPointer, let url = URL(string: String(cString: urlPointer)) else {
+            return Int32(WKNavigationResponsePolicy.allow.rawValue)
+        }
+        let webView = Unmanaged<WKWebView>.fromOpaque(context).takeUnretainedValue()
+        let mimeType = mimeTypePointer.map { String(cString: $0) }.flatMap { $0.isEmpty ? nil : $0 }
+        _ = suggestedFilenamePointer.map { String(cString: $0) }
+        let response = WKNavigationResponse(
+            response: URLResponse(
+                url: url,
+                mimeType: mimeType,
+                expectedContentLength: Int(expectedContentLength),
+                textEncodingName: nil
+            ),
+            canShowMIMEType: canShowMIMEType != 0
+        )
+
+        let policy = webView.decidePolicy(for: response)
+        if policy == .download {
+            webView.becomeDownload(for: response)
+        }
+        return Int32(policy.rawValue)
+    }
+
+    private static let downloadDestinationCallback: _OmniWebViewPayload.DownloadDestinationCallback = { context, urlPointer, mimeTypePointer, expectedContentLength, suggestedFilenamePointer in
+        guard let context, let urlPointer, let url = URL(string: String(cString: urlPointer)) else {
+            return nil
+        }
+        let webView = Unmanaged<WKWebView>.fromOpaque(context).takeUnretainedValue()
+        let mimeType = mimeTypePointer.map { String(cString: $0) }.flatMap { $0.isEmpty ? nil : $0 }
+        let suggestedFilename = suggestedFilenamePointer.map { String(cString: $0) }.flatMap { $0.isEmpty ? nil : $0 }
+            ?? url.lastPathComponent
+        let response = WKNavigationResponse(
+            response: URLResponse(
+                url: url,
+                mimeType: mimeType,
+                expectedContentLength: Int(expectedContentLength),
+                textEncodingName: nil
+            ),
+            canShowMIMEType: false
+        )
+        guard let destination = webView.decideDownloadDestination(for: response, suggestedFilename: suggestedFilename) else {
+            return nil
+        }
+        return strdup(destination.isFileURL ? destination.path : destination.absoluteString)
     }
 
     private static let titleCallback: _OmniWebViewPayload.TitleCallback = { context, titlePointer in

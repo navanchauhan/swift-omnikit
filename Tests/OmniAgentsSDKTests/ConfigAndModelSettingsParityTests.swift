@@ -29,18 +29,15 @@ struct ConfigAndModelSettingsParityTests {
         #expect(snapshot.tracingExportAPIKey == "sk-phase1-client")
         #expect(snapshot.traceProcessors.count == 1)
 
-        let lock = NSLock()
-        var snapshots: [OmniAgentsGlobalConfigSnapshot] = []
-        snapshots.reserveCapacity(32)
+        let snapshots = SnapshotBox(capacity: 32)
         DispatchQueue.concurrentPerform(iterations: 32) { _ in
             let snapshot = getGlobalConfig()
-            lock.lock()
             snapshots.append(snapshot)
-            lock.unlock()
         }
-        #expect(snapshots.allSatisfy { $0.defaultOpenAIAPI == .chatCompletions })
-        #expect(snapshots.allSatisfy { $0.defaultOpenAIResponsesTransport == .websocket })
-        #expect(snapshots.allSatisfy { $0.tracingExportAPIKey == "sk-phase1-client" })
+        let values = snapshots.values()
+        #expect(values.allSatisfy { $0.defaultOpenAIAPI == .chatCompletions })
+        #expect(values.allSatisfy { $0.defaultOpenAIResponsesTransport == .websocket })
+        #expect(values.allSatisfy { $0.tracingExportAPIKey == "sk-phase1-client" })
     }
 
     @Test
@@ -135,5 +132,27 @@ struct ConfigAndModelSettingsParityTests {
             "x-none": .null,
         ]))
         #expect(json["extra_args"] == .object(["gamma": .string("delta")]))
+    }
+}
+
+private final class SnapshotBox: @unchecked Sendable {
+    private let lock = NSLock()
+    private var storage: [OmniAgentsGlobalConfigSnapshot] = []
+
+    init(capacity: Int) {
+        storage.reserveCapacity(capacity)
+    }
+
+    func append(_ snapshot: OmniAgentsGlobalConfigSnapshot) {
+        lock.lock()
+        storage.append(snapshot)
+        lock.unlock()
+    }
+
+    func values() -> [OmniAgentsGlobalConfigSnapshot] {
+        lock.lock()
+        let current = storage
+        lock.unlock()
+        return current
     }
 }

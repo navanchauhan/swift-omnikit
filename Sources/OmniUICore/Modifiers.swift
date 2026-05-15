@@ -1,4 +1,60 @@
 import Foundation
+import UniformTypeIdentifiers
+
+public protocol _OmniReceivePublisher {
+    associatedtype Output
+    var _omniPublisherIdentity: String { get }
+    func _omniSubscribe(_ handler: @escaping @Sendable (Output) -> Void) -> AnyObject
+}
+
+private final class _OmniNotificationSubscription {
+    private let center: NotificationCenter
+    private var observer: NSObjectProtocol?
+
+    init(center: NotificationCenter, observer: NSObjectProtocol) {
+        self.center = center
+        self.observer = observer
+    }
+
+    deinit {
+        if let observer {
+            center.removeObserver(observer)
+        }
+    }
+}
+
+public struct _OmniNotificationPublisher: _OmniReceivePublisher {
+    public typealias Output = Notification
+
+    private let center: NotificationCenter
+    private let name: Notification.Name?
+    private let object: AnyObject?
+
+    public var _omniPublisherIdentity: String {
+        let nameValue = name?.rawValue ?? "*"
+        let objectValue = object.map { ObjectIdentifier($0).debugDescription } ?? "nil"
+        return "notification:\(ObjectIdentifier(center).debugDescription):\(nameValue):\(objectValue)"
+    }
+
+    public init(center: NotificationCenter, name: Notification.Name?, object: AnyObject?) {
+        self.center = center
+        self.name = name
+        self.object = object
+    }
+
+    public func _omniSubscribe(_ handler: @escaping @Sendable (Notification) -> Void) -> AnyObject {
+        let observer = center.addObserver(forName: name, object: object, queue: nil) { note in
+            handler(note)
+        }
+        return _OmniNotificationSubscription(center: center, observer: observer)
+    }
+}
+
+public extension NotificationCenter {
+    func publisher(for name: Notification.Name, object: AnyObject? = nil) -> _OmniNotificationPublisher {
+        _OmniNotificationPublisher(center: self, name: name, object: object)
+    }
+}
 
 public extension View {
     func font(_ font: Font?) -> some View {
@@ -26,6 +82,9 @@ public extension View {
     func lineLimit(_ limit: Int?) -> some View {
         environment(\.lineLimit, limit)
     }
+    func lineLimit(_ limits: ClosedRange<Int>) -> some View {
+        environment(\.lineLimit, limits.upperBound)
+    }
     func monospacedDigit() -> some View {
         environment(\.monospacedDigits, true)
     }
@@ -44,6 +103,9 @@ public extension View {
     }
     func cornerRadius(_ radius: CGFloat) -> some View {
         clipShape(RoundedRectangle(cornerRadius: radius))
+    }
+    func shadow(radius: CGFloat) -> some View {
+        shadow(color: .black.opacity(0.33), radius: radius, x: 0, y: 0)
     }
     func shadow(color: Color, radius: CGFloat) -> some View {
         shadow(color: color, radius: radius, x: 0, y: 0)
@@ -112,6 +174,30 @@ public extension View {
     func accessibilityIdentifier(_ identifier: String, isEnabled: Bool) -> some View {
         isEnabled ? AnyView(_AccessibilityIdentifierModifier(content: AnyView(self), identifier: identifier)) : AnyView(self)
     }
+    func accessibilityValue(_ value: String) -> some View {
+        _AccessibilityValueModifier(content: AnyView(self), value: value)
+    }
+    func accessibilityValue(_ value: Text) -> some View {
+        accessibilityValue(value.content)
+    }
+    func accessibilityValue(_ value: String, isEnabled: Bool) -> some View {
+        isEnabled ? AnyView(_AccessibilityValueModifier(content: AnyView(self), value: value)) : AnyView(self)
+    }
+    func accessibilityValue(_ value: Text, isEnabled: Bool) -> some View {
+        accessibilityValue(value.content, isEnabled: isEnabled)
+    }
+    func accessibilityHint(_ hint: String) -> some View {
+        _AccessibilityHintModifier(content: AnyView(self), hint: hint)
+    }
+    func accessibilityHint(_ hint: Text) -> some View {
+        accessibilityHint(hint.content)
+    }
+    func accessibilityHint(_ hint: String, isEnabled: Bool) -> some View {
+        isEnabled ? AnyView(_AccessibilityHintModifier(content: AnyView(self), hint: hint)) : AnyView(self)
+    }
+    func accessibilityHint(_ hint: Text, isEnabled: Bool) -> some View {
+        accessibilityHint(hint.content, isEnabled: isEnabled)
+    }
     func accessibilityHidden(_ hidden: Bool) -> some View {
         _ = hidden
         return _Passthrough(self)
@@ -139,6 +225,10 @@ public extension View {
         _Background(content: AnyView(self), background: AnyView(background()))
     }
     func background(_ color: Color) -> some View { _Style(content: AnyView(self), fg: nil, bg: color) }
+    func background(_ color: Color, ignoresSafeAreaEdges edges: Edge.Set) -> some View {
+        _ = edges
+        return background(color)
+    }
     func background<S: Shape>(_ color: Color, in shape: S, fillStyle: FillStyle = FillStyle()) -> some View {
         background {
             shape.fill(color, style: fillStyle)
@@ -168,10 +258,18 @@ public extension View {
     func overlay<O: View>(@ViewBuilder _ overlay: () -> O) -> some View {
         _Overlay(content: AnyView(self), overlay: AnyView(overlay()))
     }
+    func overlay<O: View>(alignment: Alignment = .center, @ViewBuilder content: () -> O) -> some View {
+        _ = alignment
+        return _Overlay(content: AnyView(self), overlay: AnyView(content()))
+    }
 
     // MARK: SwiftUI API Surface (stubs/passthrough)
     func navigationTitle(_ title: String) -> some View {
         environment(\.navigationTitle, title)
+    }
+    func navigationSubtitle(_ title: String) -> some View {
+        _ = title
+        return self
     }
     func navigationTransition(_ transition: NavigationTransition) -> some View {
         _NavigationTransitionModifier(content: AnyView(self), transition: transition)
@@ -198,13 +296,8 @@ public extension View {
         _AllowsHitTesting(content: AnyView(self), enabled: enabled)
     }
 
-    @ViewBuilder
     func preferredColorScheme(_ scheme: ColorScheme?) -> some View {
-        if let scheme {
-            environment(\.colorScheme, scheme)
-        } else {
-            self
-        }
+        _PreferredColorSchemeModifier(content: AnyView(self), scheme: scheme)
     }
 
     func listStyle<S: ListStyle>(_ style: S) -> some View {
@@ -213,6 +306,8 @@ public extension View {
         case is SidebarListStyle:
             kind = .sidebar
         case is PlainListStyle:
+            kind = .plain
+        case is BorderedListStyle:
             kind = .plain
         default:
             kind = .automatic
@@ -252,6 +347,8 @@ public extension View {
             kind = .primaryFill
         case is BorderedButtonStyle:
             kind = .bordered
+        case is BorderlessButtonStyle:
+            kind = .plain
         default:
             // Custom ButtonStyle: store type-erased style in environment
             return AnyView(
@@ -304,7 +401,7 @@ public extension View {
         return environment(\.gaugeStyleKind, kind)
     }
     func toggleStyle<S: ToggleStyle>(_ style: S) -> some View {
-        let kind: _ToggleStyleKind = style is SwitchToggleStyle ? .switch : .automatic
+        let kind: _ToggleStyleKind = (style is SwitchToggleStyle || style is CheckboxToggleStyle) ? .switch : .automatic
         return environment(\.toggleStyleKind, kind)
     }
     func labelStyle<S: LabelStyle>(_ style: S) -> some View {
@@ -328,8 +425,20 @@ public extension View {
     func scrollContentBackground(_ visibility: Visibility) -> some View {
         environment(\.scrollContentBackgroundVisibility, visibility)
     }
+    func selectionDisabled(_ isDisabled: Bool = true) -> some View {
+        _ = isDisabled
+        return self
+    }
+    func listRowInsets(_ insets: EdgeInsets?) -> some View {
+        _ = insets
+        return self
+    }
     func listRowSeparator(_ visibility: Visibility) -> some View {
         environment(\.listRowSeparatorVisibility, visibility)
+    }
+    func listRowSeparator(_ visibility: Visibility, edges: Edge.Set) -> some View {
+        _ = edges
+        return listRowSeparator(visibility)
     }
     func listRowBackground<B: View>(_ background: B?) -> some View {
         if let background {
@@ -337,8 +446,11 @@ public extension View {
         }
         return AnyView(environment(\.listRowBackground, nil))
     }
-    func toolbar<Content: View>(@ViewBuilder content: () -> Content) -> some View {
-        _ToolbarModifier(content: AnyView(self), toolbar: AnyView(content()))
+    func onDrag(_ data: @escaping () -> NSItemProvider) -> some View {
+        _DragSourceModifier(content: AnyView(self), data: data, actionScopePath: _UIRuntime._currentPath ?? [])
+    }
+    func onDrop<D: DropDelegate>(of supportedContentTypes: [UTType], delegate: D) -> some View {
+        _DropTargetModifier(content: AnyView(self), supportedContentTypes: supportedContentTypes, delegate: delegate, actionScopePath: _UIRuntime._currentPath ?? [])
     }
     func toolbar<Content: ToolbarContent>(@ToolbarContentBuilder content: () -> Content) -> some View {
         _ToolbarModifier(content: AnyView(self), toolbar: content()._toolbarView())
@@ -380,8 +492,22 @@ public extension View {
         }
         return environment(\.toolbarBackgroundStyle, next)
     }
+    func toolbarColorScheme(_ scheme: ColorScheme?, for bars: ToolbarPlacement...) -> some View {
+        _ = bars // stored for compile parity; toolbar-region targeting requires ToolbarItemPlacement redesign
+        var next = (_UIRuntime._currentEnvironment ?? EnvironmentValues()).toolbarBackgroundStyle
+        next.colorScheme = scheme
+        return environment(\.toolbarBackgroundStyle, next)
+    }
     func controlSize(_ size: ControlSize) -> some View {
         environment(\.controlSize, size)
+    }
+    func menuStyle(_ style: BorderlessButtonMenuStyle) -> some View {
+        _ = style
+        return self
+    }
+    func progressViewStyle(_ style: LinearProgressViewStyle) -> some View {
+        _ = style
+        return self
     }
     func modelContainer(_ any: Any) -> some View {
         if let container = any as? ModelContainer {
@@ -564,16 +690,35 @@ public extension View {
     }
 
     func contextMenu<MenuItems: View>(@ViewBuilder menuItems: () -> MenuItems) -> some View {
-        _ = menuItems()
-        return _Passthrough(self)
+        _ContextMenuModifier(content: AnyView(self), menuItems: AnyView(menuItems()))
     }
 
     func contextMenu<MenuItems: View, Preview: View>(
         @ViewBuilder menuItems: () -> MenuItems,
         @ViewBuilder preview: () -> Preview
     ) -> some View {
-        _ = menuItems()
         _ = preview()
+        return contextMenu(menuItems: menuItems)
+    }
+
+    func coordinateSpace(name: String) -> some View {
+        _ = name
+        return _Passthrough(self)
+    }
+
+    func gesture<G>(_ gesture: G) -> some View {
+        if let dragGesture = gesture as? DragGesture {
+            return AnyView(_DragGestureModifier(
+                content: AnyView(self),
+                gesture: dragGesture,
+                actionScopePath: _UIRuntime._currentPath ?? []
+            ))
+        }
+        return AnyView(_Passthrough(self))
+    }
+
+    func zIndex(_ value: Double) -> some View {
+        _ = value
         return _Passthrough(self)
     }
 
@@ -692,6 +837,10 @@ public extension View {
 
     func onDisappear(perform action: @escaping () -> Void) -> some View {
         _OnDisappear(content: AnyView(self), action: action)
+    }
+
+    func onReceive<P: _OmniReceivePublisher>(_ publisher: P, perform action: @escaping (P.Output) -> Void) -> some View {
+        _OnReceive(content: AnyView(self), publisher: publisher, action: action)
     }
 
     func safeAreaInset<Content: View>(edge: Edge, alignment: Alignment = .center, spacing: CGFloat? = nil, @ViewBuilder content: () -> Content) -> some View {
@@ -1045,6 +1194,42 @@ private struct _ItemPresentationOverlay<Item: Identifiable>: View, _PrimitiveVie
     }
 }
 
+private struct _ContextMenuModifier: View, _PrimitiveView {
+    typealias Body = Never
+
+    let content: AnyView
+    let menuItems: AnyView
+
+    func _makeNode(_ ctx: inout _BuildContext) -> _VNode {
+        let runtime = ctx.runtime
+        let captureID = runtime._beginMenuCapture()
+        _UIRuntime.$_currentMenuCaptureID.withValue(captureID) {
+            var menuCtx = _BuildContext(runtime: runtime, path: ctx.path + [73_000], nextChildIndex: 0)
+            _ = _BuildContext.withRuntime(runtime, path: menuCtx.path) {
+                OmniUICore._makeNode(menuItems, &menuCtx)
+            }
+        }
+        let captured = runtime._endMenuCapture(captureID)
+        let contextItems = captured.map { entry -> (id: _ActionID, label: String) in
+            let actionID = runtime._registerAction({
+                runtime._invokeCapturedMenuItem(entry)
+            }, path: entry.actionScopePath)
+            return (id: actionID, label: entry.label)
+        }
+
+        let fallback = AnyView(
+            HStack(spacing: 1) {
+                content
+                Menu("⋯") {
+                    menuItems
+                }
+            }
+        )
+        let child = ctx.buildChild(fallback)
+        return .contextMenu(items: contextItems, child: child)
+    }
+}
+
 private struct _ConfirmationDialog: View, _PrimitiveView {
     typealias Body = Never
 
@@ -1363,7 +1548,6 @@ private struct _TapGesture: View, _PrimitiveView {
     let actionScopePath: [Int]
 
     func _makeNode(_ ctx: inout _BuildContext) -> _VNode {
-        _ = count // multi-tap not modeled; retained for call-site compatibility.
         guard _UIRuntime._hitTestingEnabled else {
             return ctx.buildChild(content)
         }
@@ -1375,7 +1559,178 @@ private struct _TapGesture: View, _PrimitiveView {
             action()
         }, path: actionScopePath)
         runtime._registerFocusable(path: controlPath, activate: id)
-        return .tapTarget(id: id, child: ctx.buildChild(content))
+        return .tapTarget(id: id, count: count, child: ctx.buildChild(content))
+    }
+}
+
+private struct _DragGestureModifier: View, _PrimitiveView {
+    typealias Body = Never
+    let content: AnyView
+    let gesture: DragGesture
+    let actionScopePath: [Int]
+
+    func _makeNode(_ ctx: inout _BuildContext) -> _VNode {
+        guard _UIRuntime._hitTestingEnabled else {
+            return ctx.buildChild(content)
+        }
+
+        let runtime = ctx.runtime
+        let controlPath = ctx.path
+        let actionID = runtime._registerAction({
+            runtime._setFocus(path: controlPath)
+        }, path: actionScopePath)
+        let dragID = runtime._registerDragGesture(gesture, actionID: actionID, path: actionScopePath)
+        runtime._registerFocusable(path: controlPath, activate: actionID)
+        return .gestureTarget(id: actionID, dragID: dragID, child: ctx.buildChild(content))
+    }
+}
+
+private struct _DragSourceModifier: View, _PrimitiveView {
+    typealias Body = Never
+    let content: AnyView
+    let data: () -> NSItemProvider
+    let actionScopePath: [Int]
+
+    func _makeNode(_ ctx: inout _BuildContext) -> _VNode {
+        let child = ctx.buildChild(content)
+        guard _UIRuntime._hitTestingEnabled else {
+            return child
+        }
+        guard !_omniContainsPrimaryInteraction(child) else {
+            return child
+        }
+
+        let runtime = ctx.runtime
+        let controlPath = ctx.path
+        if _omniContainsPrimaryInteraction(child) {
+            let handler = _DragSourceFallbackHandler(runtime: runtime, controlPath: controlPath, data: data)
+            let id = runtime._registerAction({
+                runtime._setFocus(path: controlPath)
+            }, path: actionScopePath)
+            let drag = DragGesture(minimumDistance: 2)
+                .onChanged { value in
+                    handler.dragChanged(value)
+                }
+                .onEnded { value in
+                    handler.dragEnded(value)
+                }
+            let dragID = runtime._registerDragGesture(drag, actionID: id, path: actionScopePath)
+            runtime._registerFocusable(path: controlPath, activate: id)
+            return .dragSource(id: id, dragID: dragID, child: child)
+        }
+
+        let id = runtime._registerAction({
+            runtime._setFocus(path: controlPath)
+            runtime._beginDragFallback(provider: data())
+        }, path: actionScopePath)
+        runtime._registerDropFallbackAction(id)
+        runtime._registerFocusable(path: controlPath, activate: id)
+        return .tapTarget(id: id, count: 1, child: child)
+    }
+}
+
+private final class _DragSourceFallbackHandler: @unchecked Sendable {
+    private let runtime: _UIRuntime
+    private let controlPath: [Int]
+    private let data: () -> NSItemProvider
+    private var started = false
+
+    init(runtime: _UIRuntime, controlPath: [Int], data: @escaping () -> NSItemProvider) {
+        self.runtime = runtime
+        self.controlPath = controlPath
+        self.data = data
+    }
+
+    func dragChanged(_ value: DragGesture.Value) {
+        guard !started else { return }
+        started = true
+        runtime._setFocus(path: controlPath)
+        runtime._beginDragFallback(provider: data(), location: value.location)
+    }
+
+    func dragEnded(_ value: DragGesture.Value) {
+        _ = value
+        started = false
+    }
+}
+
+private struct _DropTargetModifier<D: DropDelegate>: View, _PrimitiveView {
+    typealias Body = Never
+    let content: AnyView
+    let supportedContentTypes: [UTType]
+    let delegate: D
+    let actionScopePath: [Int]
+
+    func _makeNode(_ ctx: inout _BuildContext) -> _VNode {
+        let child = ctx.buildChild(content)
+        guard _UIRuntime._hitTestingEnabled else {
+            return child
+        }
+        guard ctx.runtime._hasActiveDragFallback() else {
+            return child
+        }
+
+        let runtime = ctx.runtime
+        let controlPath = ctx.path
+        let id = runtime._registerAction({
+            runtime._setFocus(path: controlPath)
+            guard let info = runtime._dropInfoForActiveDragFallback(),
+                  info.hasItemsConforming(to: supportedContentTypes),
+                  delegate.validateDrop(info: info)
+            else { return }
+            delegate.dropEntered(info: info)
+            _ = delegate.dropUpdated(info: info)
+            if delegate.performDrop(info: info) {
+                runtime._endDragFallback()
+            }
+        }, path: actionScopePath)
+        runtime._registerFocusable(path: controlPath, activate: id)
+        return .tapTarget(id: id, count: 1, child: child)
+    }
+}
+
+private func _omniContainsPrimaryInteraction(_ node: _VNode) -> Bool {
+    switch node {
+    case .button, .tapTarget, .gestureTarget, .dragSource, .toggle, .textField, .menu:
+        return true
+    case .group(let children), .stack(_, _, let children), .flowLayout(_, _, let children), .zstack(let children), .viewThatFits(_, let children):
+        return children.contains(where: _omniContainsPrimaryInteraction)
+    case .style(_, _, let child),
+         .textStyled(_, let child),
+         .contentShapeRect(_, let child),
+         .clip(_, let child),
+         .shadow(let child, _, _, _, _),
+         .glass(_, _, let child),
+         .crt(_, let child),
+         .background(let child, _),
+         .overlay(let child, _),
+         .elevated(_, let child),
+         .modalOverlay(_, _, _, let child),
+         .frame(_, _, _, _, _, _, let child),
+         .edgePadding(_, _, _, _, let child),
+         .offset(_, _, let child),
+         .opacity(_, let child),
+         .hover(_, let child),
+         .scrollView(_, _, _, _, _, let child),
+         .identified(_, _, let child),
+         .onDelete(_, _, let child),
+         .tagged(_, let child),
+         .fixedSize(_, _, let child),
+         .layoutPriority(_, let child),
+         .aspectRatio(_, _, let child),
+         .alignmentGuide(_, _, let child),
+         .preferenceNode(_, let child),
+         .swipeActions(_, _, _, let child),
+         .rotationEffect(_, let child),
+         .textCase(_, let child),
+         .blur(_, let child),
+         .badge(_, let child),
+         .anchorPreference(_, _, _, let child),
+         .geometryReaderProxy(_, let child),
+         .contextMenu(_, let child):
+        return _omniContainsPrimaryInteraction(child)
+    case .empty, .text, .image, .spacer, .gradient, .shape, .divider, .styledText, .truncatedText:
+        return false
     }
 }
 
@@ -1492,8 +1847,14 @@ private func _toolbarBottomBar(items: _ToolbarLayoutItems, env: EnvironmentValue
 private func _applyToolbarBackground(to node: _VNode, env: EnvironmentValues) -> _VNode {
     let style = env.toolbarBackgroundStyle
     guard style.visibility != .hidden else { return node }
+    let styledNode: _VNode
+    if let colorScheme = style.colorScheme {
+        styledNode = .style(fg: colorScheme == .light ? .black : .white, bg: nil, child: node)
+    } else {
+        styledNode = node
+    }
     if let color = style.color {
-        return .background(child: node, background: .style(fg: nil, bg: color, child: .empty))
+        return .background(child: styledNode, background: .style(fg: nil, bg: color, child: .empty))
     }
     if let material = style.material {
         let backgroundColor: Color
@@ -1507,12 +1868,12 @@ private func _applyToolbarBackground(to node: _VNode, env: EnvironmentValues) ->
         default:
             backgroundColor = Color.gray.opacity(0.22)
         }
-        return .background(child: node, background: .style(fg: nil, bg: backgroundColor, child: .empty))
+        return .background(child: styledNode, background: .style(fg: nil, bg: backgroundColor, child: .empty))
     }
     if style.visibility == .visible {
-        return .background(child: node, background: .style(fg: nil, bg: Color.gray.opacity(0.10), child: .empty))
+        return .background(child: styledNode, background: .style(fg: nil, bg: Color.gray.opacity(0.10), child: .empty))
     }
-    return node
+    return styledNode
 }
 
 private struct _Frame: View, _PrimitiveView {
@@ -1644,6 +2005,25 @@ private struct _OnSubmitBinder: View, _PrimitiveView {
     }
 }
 
+private struct _PreferredColorSchemeModifier: View, _PrimitiveView {
+    typealias Body = Never
+    let content: AnyView
+    let scheme: ColorScheme?
+
+    func _makeNode(_ ctx: inout _BuildContext) -> _VNode {
+        guard let scheme else {
+            return ctx.buildChild(content)
+        }
+        let current = _UIRuntime._currentEnvironment ?? ctx.runtime._baseEnvironment
+        var next = current
+        next.colorScheme = scheme
+        ctx.runtime._recordPreferredColorScheme(scheme)
+        return _UIRuntime.$_currentEnvironment.withValue(next) {
+            ctx.buildChild(content)
+        }
+    }
+}
+
 private struct _Style: View, _PrimitiveView {
     typealias Body = Never
     let content: AnyView
@@ -1755,6 +2135,26 @@ private struct _AccessibilityIdentifierModifier: View, _PrimitiveView {
 
     func _makeNode(_ ctx: inout _BuildContext) -> _VNode {
         .tagged(value: AnyHashable(_AccessibilityIdentifier(value: identifier)), label: ctx.buildChild(content))
+    }
+}
+
+private struct _AccessibilityValueModifier: View, _PrimitiveView {
+    typealias Body = Never
+    let content: AnyView
+    let value: String
+
+    func _makeNode(_ ctx: inout _BuildContext) -> _VNode {
+        .tagged(value: AnyHashable(_AccessibilityValue(value: value)), label: ctx.buildChild(content))
+    }
+}
+
+private struct _AccessibilityHintModifier: View, _PrimitiveView {
+    typealias Body = Never
+    let content: AnyView
+    let hint: String
+
+    func _makeNode(_ ctx: inout _BuildContext) -> _VNode {
+        .tagged(value: AnyHashable(_AccessibilityHint(value: hint)), label: ctx.buildChild(content))
     }
 }
 
@@ -2285,8 +2685,7 @@ private struct _HelpModifier: View, _PrimitiveView {
     let text: String
 
     func _makeNode(_ ctx: inout _BuildContext) -> _VNode {
-        _ = text
-        return ctx.buildChild(content)
+        .tagged(value: AnyHashable(_HelpText(value: text)), label: ctx.buildChild(content))
     }
 }
 
@@ -2492,6 +2891,70 @@ public struct _OnDisappear: View, _PrimitiveView {
         ctx.runtime._registerOnDisappear(path: ctx.path, action: action)
         return ctx.buildChild(content)
     }
+}
+
+private final class _OmniReceiveActionBox<Output>: @unchecked Sendable {
+    let action: (Output) -> Void
+
+    init(action: @escaping (Output) -> Void) {
+        self.action = action
+    }
+}
+
+private final class _OmniReceiveDeliveryBox: @unchecked Sendable {
+    let deliver: () -> Void
+
+    init(deliver: @escaping () -> Void) {
+        self.deliver = deliver
+    }
+}
+
+public struct _OnReceive<P: _OmniReceivePublisher>: View, _PrimitiveView {
+    public typealias Body = Never
+
+    let content: AnyView
+    let publisher: P
+    let action: (P.Output) -> Void
+
+    func _makeNode(_ ctx: inout _BuildContext) -> _VNode {
+        let runtime = ctx.runtime
+        let path = ctx.path
+        let environment = _UIRuntime._currentEnvironment ?? runtime._baseEnvironment
+        let actionBox = _OmniReceiveActionBox(action: action)
+        let identity = publisher._omniPublisherIdentity
+        runtime._ensureReceiveSubscription(path: path, identity: publisher._omniPublisherIdentity) {
+            publisher._omniSubscribe { output in
+                let delivery = _OmniReceiveDeliveryBox {
+                    if _omniReceiveTraceEnabled() {
+                        let line = "[OmniKit onReceive] identity=\(identity) path=\(path)\n"
+                        FileHandle.standardError.write(Data(line.utf8))
+                    }
+                    _UIRuntime.$_currentEnvironment.withValue(environment) {
+                        _BuildContext.withRuntime(runtime, path: path) {
+                            actionBox.action(output)
+                        }
+                    }
+                    runtime._markDirtyFromExternalResource()
+                }
+                if Thread.isMainThread {
+                    delivery.deliver()
+                } else {
+                    DispatchQueue.main.async {
+                        delivery.deliver()
+                    }
+                }
+            }
+        }
+        return ctx.buildChild(content)
+    }
+}
+
+private func _omniReceiveTraceEnabled() -> Bool {
+    guard let raw = getenv("OMNIKIT_RECEIVE_TRACE"),
+          let value = String(validatingCString: raw) else {
+        return false
+    }
+    return !value.isEmpty && value != "0" && value.lowercased() != "false"
 }
 
 public struct _OnChange<V: Equatable>: View, _PrimitiveView {

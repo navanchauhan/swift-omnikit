@@ -1,7 +1,10 @@
 import Foundation
+import UniformTypeIdentifiers
 #if canImport(AppKit) && !os(Linux)
 import AppKit
 #endif
+
+public typealias LocalizedStringKey = String
 #if canImport(FoundationNetworking)
 import FoundationNetworking
 #endif
@@ -38,8 +41,23 @@ public struct Text: View, _PrimitiveView {
         case middle
     }
 
+    public enum DateStyle: Sendable {
+        case date
+        case time
+    }
+
     public init(_ content: String) {
         self.content = content
+        self._segments = nil
+    }
+
+    public init(_ date: Date, style: DateStyle) {
+        switch style {
+        case .date:
+            self.content = DateFormatter.localizedString(from: date, dateStyle: .short, timeStyle: .none)
+        case .time:
+            self.content = DateFormatter.localizedString(from: date, dateStyle: .none, timeStyle: .short)
+        }
         self._segments = nil
     }
 
@@ -123,6 +141,10 @@ public struct Image: View, _PrimitiveView {
         self.name = systemName
     }
 
+    public init(_ name: String) {
+        self.name = name
+    }
+
 #if canImport(AppKit) && !os(Linux)
     public init(nsImage: NSImage) {
         if let data = nsImage._omniPNGRepresentation() {
@@ -145,6 +167,56 @@ public struct Image: View, _PrimitiveView {
     func _makeNode(_ ctx: inout _BuildContext) -> _VNode {
         .image(name)
     }
+}
+
+public struct DropInfo: Sendable {
+    public let location: CGPoint
+    public let itemProviders: [NSItemProvider]
+
+    public init(location: CGPoint = .zero, itemProviders: [NSItemProvider] = []) {
+        self.location = location
+        self.itemProviders = itemProviders
+    }
+
+    public func hasItemsConforming(to types: [UTType]) -> Bool {
+        guard !types.isEmpty else { return !itemProviders.isEmpty }
+        return itemProviders.contains { provider in
+            Self.provider(provider, conformsToAny: types)
+        }
+    }
+
+    public func itemProviders(for types: [UTType]) -> [NSItemProvider] {
+        guard !types.isEmpty else { return itemProviders }
+        return itemProviders.filter { Self.provider($0, conformsToAny: types) }
+    }
+
+    private static func provider(_ provider: NSItemProvider, conformsToAny types: [UTType]) -> Bool {
+        types.contains { provider.hasItemConformingToTypeIdentifier($0.identifier) }
+    }
+}
+
+extension DropOperation: @unchecked Sendable {}
+
+public struct DropProposal: Sendable {
+    public let operation: DropOperation?
+    public init(operation: DropOperation? = nil) {
+        self.operation = operation
+    }
+}
+
+public protocol DropDelegate {
+    func validateDrop(info: DropInfo) -> Bool
+    func dropEntered(info: DropInfo)
+    func dropUpdated(info: DropInfo) -> DropProposal?
+    func dropExited(info: DropInfo)
+    func performDrop(info: DropInfo) -> Bool
+}
+
+public extension DropDelegate {
+    func validateDrop(info: DropInfo) -> Bool { true }
+    func dropEntered(info: DropInfo) {}
+    func dropUpdated(info: DropInfo) -> DropProposal? { nil }
+    func dropExited(info: DropInfo) {}
 }
 
 public enum ImageResizingMode: Hashable, Sendable {
@@ -670,6 +742,93 @@ private struct _AnySelectionAdapter {
     let set: (AnyHashable) -> Void
 }
 
+private func _listSelectionTag(from node: _VNode) -> (value: AnyHashable, label: _VNode)? {
+    switch node {
+    case .tagged(let value, let label):
+        return (value, label)
+    case .identified(let id, let readerScopePath, let child):
+        guard let tagged = _listSelectionTag(from: child) else { return nil }
+        return (tagged.value, .identified(id: id, readerScopePath: readerScopePath, child: tagged.label))
+    case .style(let fg, let bg, let child):
+        guard let tagged = _listSelectionTag(from: child) else { return nil }
+        return (tagged.value, .style(fg: fg, bg: bg, child: tagged.label))
+    case .textStyled(let style, let child):
+        guard let tagged = _listSelectionTag(from: child) else { return nil }
+        return (tagged.value, .textStyled(style: style, child: tagged.label))
+    case .contentShapeRect(let kind, let child):
+        guard let tagged = _listSelectionTag(from: child) else { return nil }
+        return (tagged.value, .contentShapeRect(kind: kind, child: tagged.label))
+    case .clip(let kind, let child):
+        guard let tagged = _listSelectionTag(from: child) else { return nil }
+        return (tagged.value, .clip(kind: kind, child: tagged.label))
+    case .shadow(let child, let color, let radius, let x, let y):
+        guard let tagged = _listSelectionTag(from: child) else { return nil }
+        return (tagged.value, .shadow(child: tagged.label, color: color, radius: radius, x: x, y: y))
+    case .glass(let style, let shape, let child):
+        guard let tagged = _listSelectionTag(from: child) else { return nil }
+        return (tagged.value, .glass(style: style, shape: shape, child: tagged.label))
+    case .crt(let style, let child):
+        guard let tagged = _listSelectionTag(from: child) else { return nil }
+        return (tagged.value, .crt(style: style, child: tagged.label))
+    case .background(let child, let background):
+        guard let tagged = _listSelectionTag(from: child) else { return nil }
+        return (tagged.value, .background(child: tagged.label, background: background))
+    case .overlay(let child, let overlay):
+        guard let tagged = _listSelectionTag(from: child) else { return nil }
+        return (tagged.value, .overlay(child: tagged.label, overlay: overlay))
+    case .elevated(let zOffset, let child):
+        guard let tagged = _listSelectionTag(from: child) else { return nil }
+        return (tagged.value, .elevated(zOffset: zOffset, child: tagged.label))
+    case .modalOverlay(let scrim, let maxWidth, let maxHeight, let child):
+        guard let tagged = _listSelectionTag(from: child) else { return nil }
+        return (tagged.value, .modalOverlay(scrim: scrim, maxWidth: maxWidth, maxHeight: maxHeight, child: tagged.label))
+    case .frame(let width, let height, let minWidth, let maxWidth, let minHeight, let maxHeight, let child):
+        guard let tagged = _listSelectionTag(from: child) else { return nil }
+        return (tagged.value, .frame(width: width, height: height, minWidth: minWidth, maxWidth: maxWidth, minHeight: minHeight, maxHeight: maxHeight, child: tagged.label))
+    case .edgePadding(let top, let leading, let bottom, let trailing, let child):
+        guard let tagged = _listSelectionTag(from: child) else { return nil }
+        return (tagged.value, .edgePadding(top: top, leading: leading, bottom: bottom, trailing: trailing, child: tagged.label))
+    case .offset(let x, let y, let child):
+        guard let tagged = _listSelectionTag(from: child) else { return nil }
+        return (tagged.value, .offset(x: x, y: y, child: tagged.label))
+    case .opacity(let opacity, let child):
+        guard let tagged = _listSelectionTag(from: child) else { return nil }
+        return (tagged.value, .opacity(opacity, child: tagged.label))
+    case .hover(let id, let child):
+        guard let tagged = _listSelectionTag(from: child) else { return nil }
+        return (tagged.value, .hover(id: id, child: tagged.label))
+    case .gestureTarget(let id, let dragID, let child):
+        guard let tagged = _listSelectionTag(from: child) else { return nil }
+        return (tagged.value, .gestureTarget(id: id, dragID: dragID, child: tagged.label))
+    case .dragSource(let id, let dragID, let child):
+        guard let tagged = _listSelectionTag(from: child) else { return nil }
+        return (tagged.value, .dragSource(id: id, dragID: dragID, child: tagged.label))
+    case .fixedSize(let horizontal, let vertical, let child):
+        guard let tagged = _listSelectionTag(from: child) else { return nil }
+        return (tagged.value, .fixedSize(horizontal: horizontal, vertical: vertical, child: tagged.label))
+    case .layoutPriority(let priority, let child):
+        guard let tagged = _listSelectionTag(from: child) else { return nil }
+        return (tagged.value, .layoutPriority(priority, child: tagged.label))
+    case .aspectRatio(let ratio, let contentMode, let child):
+        guard let tagged = _listSelectionTag(from: child) else { return nil }
+        return (tagged.value, .aspectRatio(ratio, contentMode: contentMode, child: tagged.label))
+    case .alignmentGuide(let alignment, let offset, let child):
+        guard let tagged = _listSelectionTag(from: child) else { return nil }
+        return (tagged.value, .alignmentGuide(alignment: alignment, offset: offset, child: tagged.label))
+    case .textCase(let textCase, let child):
+        guard let tagged = _listSelectionTag(from: child) else { return nil }
+        return (tagged.value, .textCase(textCase, child: tagged.label))
+    case .blur(let radius, let child):
+        guard let tagged = _listSelectionTag(from: child) else { return nil }
+        return (tagged.value, .blur(radius: radius, child: tagged.label))
+    case .badge(let text, let child):
+        guard let tagged = _listSelectionTag(from: child) else { return nil }
+        return (tagged.value, .badge(text: text, child: tagged.label))
+    default:
+        return nil
+    }
+}
+
 public struct List<Content: View>: View, _PrimitiveView {
     public typealias Body = Never
 
@@ -685,6 +844,7 @@ public struct List<Content: View>: View, _PrimitiveView {
         self.customRowBuilder = nil
     }
 
+    @_disfavoredOverload
     public init<SelectionValue: Hashable>(
         selection: Binding<SelectionValue>,
         @ViewBuilder content: () -> Content
@@ -788,7 +948,8 @@ public struct List<Content: View>: View, _PrimitiveView {
 
         for (index, row) in rows.enumerated() {
             var rowNode: _VNode
-            if let selection, case .tagged(let value, let label) = row {
+            if let selection, let tagged = _listSelectionTag(from: row) {
+                let value = tagged.value
                 let path = controlPath + [10_000 + rowIndex]
                 rowIndex += 1
                 let actionID = runtime._registerAction({
@@ -797,7 +958,7 @@ public struct List<Content: View>: View, _PrimitiveView {
                 }, path: actionScopePath)
                 runtime._registerFocusable(path: path, activate: actionID)
 
-                var rowLabel = label
+                var rowLabel = tagged.label
                 if selected == value {
                     let tint = env.tint ?? .accentColor
                     if env.listStyleKind == .sidebar {
@@ -1002,17 +1163,23 @@ public struct ForEach<Data: RandomAccessCollection, ID: Hashable, Content: View>
     let data: Data
     let id: KeyPath<Data.Element, ID>
     let content: (Data.Element) -> Content
+    let moveAction: ((IndexSet, Int) -> Void)?
+    let deleteAction: ((IndexSet) -> Void)?
 
     public init(_ data: Data, id: KeyPath<Data.Element, ID>, @ViewBuilder content: @escaping (Data.Element) -> Content) {
         self.data = data
         self.id = id
         self.content = content
+        self.moveAction = nil
+        self.deleteAction = nil
     }
 
     public init(_ data: Data, @ViewBuilder content: @escaping (Data.Element) -> Content) where Data.Element: Identifiable, ID == Data.Element.ID {
         self.data = data
         self.id = \.id
         self.content = content
+        self.moveAction = nil
+        self.deleteAction = nil
     }
 
     func _makeNode(_ ctx: inout _BuildContext) -> _VNode {
@@ -1023,10 +1190,13 @@ public struct ForEach<Data: RandomAccessCollection, ID: Hashable, Content: View>
 
         var nodes: [_VNode] = []
         nodes.reserveCapacity(data.count)
+        var offset = 0
         for element in data {
             let elementID = element[keyPath: id]
             let child = ctx.buildIdentifiedChild(content(element), id: elementID)
-            nodes.append(.identified(id: AnyHashable(elementID), readerScopePath: nil, child: child))
+            let row = editableRowNode(child, offset: offset, count: data.count, ctx: &ctx)
+            nodes.append(.identified(id: AnyHashable(elementID), readerScopePath: nil, child: row))
+            offset += 1
         }
         return .group(nodes)
     }
@@ -1075,7 +1245,8 @@ public struct ForEach<Data: RandomAccessCollection, ID: Hashable, Content: View>
                     let child = _UIRuntime.$_currentLazyRealization.withValue(nil) {
                         ctx.buildIdentifiedChild(content(element), id: elementID)
                     }
-                    nodes.append(.identified(id: AnyHashable(elementID), readerScopePath: nil, child: child))
+                    let row = editableRowNode(child, offset: offset, count: count, ctx: &ctx)
+                    nodes.append(.identified(id: AnyHashable(elementID), readerScopePath: nil, child: row))
                 } else {
                     nodes.append(.frame(width: nil, height: 1, minWidth: nil, maxWidth: nil, minHeight: 1, maxHeight: 1, child: .empty))
                 }
@@ -1084,6 +1255,94 @@ public struct ForEach<Data: RandomAccessCollection, ID: Hashable, Content: View>
             }
             return .group(nodes)
         }
+    }
+
+    private func editableRowNode(_ child: _VNode, offset: Int, count: Int, ctx: inout _BuildContext) -> _VNode {
+        guard moveAction != nil || deleteAction != nil else { return child }
+
+        let env = _UIRuntime._currentEnvironment ?? ctx.runtime._baseEnvironment
+        let isEditing = env.editMode?.wrappedValue.isEditing == true
+        var controls: [_VNode] = []
+        if let moveAction {
+            if offset > 0 {
+                let path = ctx.path + [71_000 + offset * 3]
+                let id = ctx.runtime._registerAction({
+                    moveAction(IndexSet(integer: offset), max(0, offset - 1))
+                }, path: ctx.path)
+                ctx.runtime._registerFocusable(path: path, activate: id)
+                controls.append(.button(id: id, isFocused: ctx.runtime._isFocused(path: path), label: .text("Up")))
+            }
+            if offset < count - 1 {
+                let path = ctx.path + [71_001 + offset * 3]
+                let id = ctx.runtime._registerAction({
+                    moveAction(IndexSet(integer: offset), min(count, offset + 2))
+                }, path: ctx.path)
+                ctx.runtime._registerFocusable(path: path, activate: id)
+                controls.append(.button(id: id, isFocused: ctx.runtime._isFocused(path: path), label: .text("Down")))
+            }
+        }
+        if let deleteAction {
+            let path = ctx.path + [71_002 + offset * 3]
+            let id = ctx.runtime._registerAction({
+                deleteAction(IndexSet(integer: offset))
+            }, path: ctx.path)
+            ctx.runtime._registerFocusable(path: path, activate: id)
+            controls.append(.button(id: id, isFocused: ctx.runtime._isFocused(path: path), label: .text(isEditing ? "Del" : "Delete")))
+        }
+
+        guard !controls.isEmpty else { return child }
+        return .stack(axis: .horizontal, spacing: 1, children: [
+            child,
+            .spacer,
+            .stack(axis: .horizontal, spacing: 1, children: controls)
+        ])
+    }
+}
+
+public extension ForEach {
+    func onMove(perform action: ((IndexSet, Int) -> Void)?) -> ForEach {
+        ForEach(data, id: id, content: content, moveAction: action, deleteAction: deleteAction)
+    }
+
+    func onDelete(perform action: ((IndexSet) -> Void)?) -> ForEach {
+        ForEach(data, id: id, content: content, moveAction: moveAction, deleteAction: action)
+    }
+
+    private init(
+        _ data: Data,
+        id: KeyPath<Data.Element, ID>,
+        content: @escaping (Data.Element) -> Content,
+        moveAction: ((IndexSet, Int) -> Void)?,
+        deleteAction: ((IndexSet) -> Void)?
+    ) {
+        self.data = data
+        self.id = id
+        self.content = content
+        self.moveAction = moveAction
+        self.deleteAction = deleteAction
+    }
+}
+
+public extension ForEach {
+    init<BoundData>(
+        _ data: Binding<BoundData>,
+        @ViewBuilder content: @escaping (Binding<BoundData.Element>) -> Content
+    ) where Data == [Binding<BoundData.Element>],
+            ID == BoundData.Element.ID,
+            BoundData: MutableCollection & RandomAccessCollection,
+            BoundData.Index == Int,
+            BoundData.Element: Identifiable {
+        let bindings = data.wrappedValue.indices.map { index in
+            Binding<BoundData.Element>(
+                get: { data.wrappedValue[index] },
+                set: { data.wrappedValue[index] = $0 }
+            )
+        }
+        self.data = bindings
+        self.id = \Binding<BoundData.Element>.wrappedValue.id
+        self.content = content
+        self.moveAction = nil
+        self.deleteAction = nil
     }
 }
 
@@ -1666,6 +1925,12 @@ public struct Section<Parent: View, Content: View, Footer: View>: View, _Primiti
         self.footer = EmptyView()
     }
 
+    public init(_ title: String, @ViewBuilder content: () -> Content) where Parent == Text, Footer == EmptyView {
+        self.header = Text(title)
+        self.content = content()
+        self.footer = EmptyView()
+    }
+
     public init(header: Parent, @ViewBuilder content: () -> Content) where Footer == EmptyView {
         self.header = header
         self.content = content()
@@ -1902,7 +2167,8 @@ public struct Button<Label: View>: View, _PrimitiveView {
             if let customStyle = env._customButtonStyle {
                 let config = ButtonStyleConfiguration(
                     label: AnyView(_VNodeView(node: labelNode)),
-                    isPressed: false
+                    isPressed: false,
+                    role: role
                 )
                 let bodyView = customStyle._makeBody(config)
                 let bodyNode = ctx.buildChild(bodyView)
@@ -1914,7 +2180,7 @@ public struct Button<Label: View>: View, _PrimitiveView {
                 let plainLabel: _VNode = isFocused
                     ? .stack(axis: .horizontal, spacing: 0, children: [.text("> "), labelNode])
                     : labelNode
-                return .tapTarget(id: id, child: plainLabel)
+                return .tapTarget(id: id, count: 1, child: plainLabel)
             case .borderedProminent, .primaryFill:
                 let tint = env.tint ?? (role == .destructive ? .red : .accentColor)
                 let prominentLabel: _VNode = .style(fg: Color.white, bg: tint, child: labelNode)
@@ -2006,14 +2272,22 @@ public struct Toggle<Label: View>: View, _PrimitiveView {
                 )
                 let body = _VNode.stack(axis: .horizontal, spacing: 1, children: [labelNode, stateNode])
                 if isFocused {
-                    return .tapTarget(id: id, child: .stack(axis: .horizontal, spacing: 0, children: [.text("> "), body]))
+                    return .tapTarget(id: id, count: 1, child: .stack(axis: .horizontal, spacing: 0, children: [.text("> "), body]))
                 }
-                return .tapTarget(id: id, child: body)
+                return .tapTarget(id: id, count: 1, child: body)
             }
             return .toggle(id: id, isFocused: isFocused, isOn: isOn.wrappedValue, label: labelNode)
         }()
         return _applyControlPadding(node, env: env)
     }
+}
+
+public struct NumberFormatStyle<Value>: Sendable {
+    public init() {}
+}
+
+public extension NumberFormatStyle where Value: LosslessStringConvertible {
+    static var number: NumberFormatStyle<Value> { NumberFormatStyle() }
 }
 
 public struct TextField: View, _PrimitiveView {
@@ -2029,9 +2303,39 @@ public struct TextField: View, _PrimitiveView {
         self.actionScopePath = _UIRuntime._currentPath ?? []
     }
 
+    public enum Axis: Sendable {
+        case horizontal
+        case vertical
+    }
+
+    public init(_ placeholder: String, text: Binding<String>, axis: Axis) {
+        _ = axis
+        self.placeholder = placeholder
+        self.text = text
+        self.actionScopePath = _UIRuntime._currentPath ?? []
+    }
+
     public init(_ placeholder: String, text: Binding<String>, prompt: Text?) {
         self.placeholder = prompt?.content ?? placeholder
         self.text = text
+        self.actionScopePath = _UIRuntime._currentPath ?? []
+    }
+
+    public init<Value: LosslessStringConvertible>(
+        _ placeholder: String,
+        value: Binding<Value>,
+        format: NumberFormatStyle<Value>
+    ) {
+        _ = format
+        self.placeholder = placeholder
+        self.text = Binding<String>(
+            get: { String(value.wrappedValue) },
+            set: { newValue in
+                if let parsed = Value(newValue.trimmingCharacters(in: .whitespacesAndNewlines)) {
+                    value.wrappedValue = parsed
+                }
+            }
+        )
         self.actionScopePath = _UIRuntime._currentPath ?? []
     }
 
@@ -2331,6 +2635,12 @@ public struct Menu<Content: View, Label: View>: View, _PrimitiveView {
     public init(@ViewBuilder content: () -> Content, @ViewBuilder label: () -> Label) {
         self.content = content()
         self.label = label()
+        self.actionScopePath = _UIRuntime._currentPath ?? []
+    }
+
+    public init(_ title: String, @ViewBuilder content: () -> Content) where Label == Text {
+        self.content = content()
+        self.label = Text(title)
         self.actionScopePath = _UIRuntime._currentPath ?? []
     }
 
@@ -2826,7 +3136,7 @@ public struct DisclosureGroup<Label: View, Content: View>: View, _PrimitiveView 
 
         let chevron = expanded ? "v" : ">"
         let focusPrefix: _VNode = isFocused ? .text("> ") : .text("  ")
-        let header: _VNode = .tapTarget(id: id, child: .stack(axis: .horizontal, spacing: 0, children: [focusPrefix, .text(chevron), .text(" "), labelNode]))
+        let header: _VNode = .tapTarget(id: id, count: 1, child: .stack(axis: .horizontal, spacing: 0, children: [focusPrefix, .text(chevron), .text(" "), labelNode]))
 
         if expanded {
             let contentNode = ctx.buildChild(content)
@@ -2910,8 +3220,8 @@ public struct Stepper<Label: View>: View, _PrimitiveView {
         }, path: actionScopePath)
         runtime._registerFocusable(path: incPath, activate: incID)
 
-        let decButton: _VNode = .tapTarget(id: decID, child: .text(decFocused ? ">[-]" : " [-]"))
-        let incButton: _VNode = .tapTarget(id: incID, child: .text(incFocused ? ">[+]" : " [+]"))
+        let decButton: _VNode = .tapTarget(id: decID, count: 1, child: .text(decFocused ? ">[-]" : " [-]"))
+        let incButton: _VNode = .tapTarget(id: incID, count: 1, child: .text(incFocused ? ">[+]" : " [+]"))
 
         let node: _VNode = .stack(axis: .horizontal, spacing: 1, children: [decButton, labelNode, incButton])
         let labelText = _menuLabelText(from: labelNode)
@@ -3005,8 +3315,8 @@ public struct Slider<Label: View, ValueLabel: View>: View, _PrimitiveView {
         }, path: actionScopePath)
         runtime._registerFocusable(path: incPath, activate: incID)
 
-        let decButton: _VNode = .tapTarget(id: decID, child: .text(decFocused ? ">-" : " -"))
-        let incButton: _VNode = .tapTarget(id: incID, child: .text(incFocused ? ">+" : " +"))
+        let decButton: _VNode = .tapTarget(id: decID, count: 1, child: .text(decFocused ? ">-" : " -"))
+        let incButton: _VNode = .tapTarget(id: incID, count: 1, child: .text(incFocused ? ">+" : " +"))
 
         let node: _VNode = .stack(axis: .horizontal, spacing: 1, children: [decButton, .text(track), incButton])
         let labelText = _menuLabelText(from: ctx.buildChild(label))

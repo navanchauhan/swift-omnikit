@@ -33,6 +33,28 @@ struct _ActionID: Hashable {
     let raw: Int
 }
 
+struct _DragGestureID: Hashable {
+    let raw: Int
+}
+
+struct _HitRegion: Sendable {
+    let rect: _Rect
+    let actionID: _ActionID
+    let dragGestureID: _DragGestureID?
+    let tapCount: Int
+
+    init(rect: _Rect, actionID: _ActionID, tapCount: Int = 1, dragGestureID: _DragGestureID? = nil) {
+        self.rect = rect
+        self.actionID = actionID
+        self.dragGestureID = dragGestureID
+        self.tapCount = max(1, tapCount)
+    }
+
+    func matches(_ point: _Point, tapCount requestedTapCount: Int) -> Bool {
+        rect.contains(point) && tapCount == max(1, requestedTapCount)
+    }
+}
+
 struct _HoverID: Hashable {
     let raw: Int
 }
@@ -62,13 +84,14 @@ indirect enum _VNode {
     case edgePadding(top: Int, leading: Int, bottom: Int, trailing: Int, child: _VNode)
     case spacer
     case stack(axis: _Axis, spacing: Int, children: [_VNode])
+    case flowLayout(horizontalSpacing: Int, verticalSpacing: Int, children: [_VNode])
     case zstack(children: [_VNode])
     case gradient(_GradientNode)
     case shape(_ShapeNode)
     case offset(x: Int, y: Int, child: _VNode)
     case opacity(CGFloat, child: _VNode)
     case button(id: _ActionID, isFocused: Bool, label: _VNode)
-    case tapTarget(id: _ActionID, child: _VNode)
+    case tapTarget(id: _ActionID, count: Int, child: _VNode)
     case hover(id: _HoverID, child: _VNode)
     case toggle(id: _ActionID, isFocused: Bool, isOn: Bool, label: _VNode)
     case textField(id: _ActionID, placeholder: String, text: String, cursor: Int, isFocused: Bool, isSecure: Bool, style: _TextFieldStyleKind)
@@ -85,7 +108,9 @@ indirect enum _VNode {
     )
     case tagged(value: AnyHashable, label: _VNode)
     case divider
-    case gestureTarget(id: _ActionID, child: _VNode)
+    case gestureTarget(id: _ActionID, dragID: _DragGestureID?, child: _VNode)
+    case dragSource(id: _ActionID, dragID: _DragGestureID, child: _VNode)
+    case contextMenu(items: [(id: _ActionID, label: String)], child: _VNode)
     // Parity additions
     case viewThatFits(axes: Axis.Set, children: [_VNode])
     case fixedSize(horizontal: Bool, vertical: Bool, child: _VNode)
@@ -139,6 +164,18 @@ struct _AccessibilityLabel: Hashable, Sendable {
 }
 
 struct _AccessibilityIdentifier: Hashable, Sendable {
+    let value: String
+}
+
+struct _AccessibilityValue: Hashable, Sendable {
+    let value: String
+}
+
+struct _AccessibilityHint: Hashable, Sendable {
+    let value: String
+}
+
+struct _HelpText: Hashable, Sendable {
     let value: String
 }
 

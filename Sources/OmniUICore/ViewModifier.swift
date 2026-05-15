@@ -26,4 +26,3 @@ public extension View {
         modifier.body(content: _ViewModifier_Content(AnyView(self)))
     }
 }
-

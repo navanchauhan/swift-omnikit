@@ -1,11 +1,412 @@
 import Testing
 import Foundation
 import OmniUICore
+import UniformTypeIdentifiers
+#if os(Linux)
+import Glibc
+#endif
 #if canImport(AppKit)
 import AppKit
 #endif
 #if canImport(WebKit)
 import WebKit
+#endif
+
+#if canImport(AppKit)
+private final class WindowPropagationProbeView: NSView {
+    var willMoveWindowStates: [Bool] = []
+    var didMoveWindowStates: [Bool] = []
+
+    override func viewWillMove(toWindow newWindow: NSWindow?) {
+        willMoveWindowStates.append(newWindow != nil)
+    }
+
+    override func viewDidMoveToWindow() {
+        didMoveWindowStates.append(window != nil)
+    }
+}
+
+private final class AppearancePropagationProbeView: NSView {
+    var effectiveAppearanceNames: [NSAppearance.Name] = []
+
+    override func viewEffectiveAppearanceDidChange() {
+        effectiveAppearanceNames.append(effectiveAppearance.name)
+    }
+}
+
+private final class DraggingProbeView: NSView {
+    var enteredPasteboardString: String?
+    var performedPasteboardString: String?
+    var lastLocation: NSPoint?
+
+    override func draggingEntered(_ sender: NSDraggingInfo) -> NSDragOperation {
+        enteredPasteboardString = sender.draggingPasteboard.string(forType: .string)
+        lastLocation = sender.draggingLocation
+        return .move
+    }
+
+    override func performDragOperation(_ sender: NSDraggingInfo) -> Bool {
+        performedPasteboardString = sender.draggingPasteboard.string(forType: .string)
+        lastLocation = sender.draggingLocation
+        return performedPasteboardString != nil
+    }
+}
+
+private final class DraggingConversionProbeView: NSView {
+    var lastLocalLocation: NSPoint?
+
+    override func draggingUpdated(_ sender: NSDraggingInfo) -> NSDragOperation {
+        lastLocalLocation = convert(sender.draggingLocation, from: nil)
+        return .move
+    }
+}
+
+private final class NativeDropFallbackProbeBox: @unchecked Sendable {
+    var performedString: String?
+    var performedLocation: NSPoint?
+    var entered = 0
+    var updated = 0
+}
+
+private final class NativeDropFallbackProbeView: NSView {
+    let box: NativeDropFallbackProbeBox
+
+    init(box: NativeDropFallbackProbeBox) {
+        self.box = box
+        super.init(frame: .zero)
+        registerForDraggedTypes([.string])
+    }
+
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
+    }
+
+    override func draggingEntered(_ sender: NSDraggingInfo) -> NSDragOperation {
+        _ = sender
+        box.entered += 1
+        return .move
+    }
+
+    override func draggingUpdated(_ sender: NSDraggingInfo) -> NSDragOperation {
+        _ = sender
+        box.updated += 1
+        return .move
+    }
+
+    override func performDragOperation(_ sender: NSDraggingInfo) -> Bool {
+        box.performedString = sender.draggingPasteboard.string(forType: .string)
+        box.performedLocation = sender.draggingLocation
+        return box.performedString != nil
+    }
+}
+
+private struct NativeDropFallbackRepresentable: NSViewRepresentable {
+    let box: NativeDropFallbackProbeBox
+
+    func makeNSView(context: Context) -> NativeDropFallbackProbeView {
+        _ = context
+        return NativeDropFallbackProbeView(box: box)
+    }
+
+    func updateNSView(_ nsView: NativeDropFallbackProbeView, context: Context) {
+        _ = nsView
+        _ = context
+    }
+}
+
+private final class TransparentHitTestProbeView: NSView {
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        _ = point
+        return nil
+    }
+}
+
+private final class SwiftUIDropProbeBox: @unchecked Sendable {
+    var entered = 0
+    var updated = 0
+    var performed = 0
+    var providers: [NSItemProvider] = []
+}
+
+private struct SwiftUIDropProbeDelegate: DropDelegate {
+    let box: SwiftUIDropProbeBox
+
+    func dropEntered(info: DropInfo) {
+        box.entered += 1
+        box.providers = info.itemProviders
+    }
+
+    func dropUpdated(info: DropInfo) -> DropProposal? {
+        box.updated += 1
+        return DropProposal(operation: .move)
+    }
+
+    func performDrop(info: DropInfo) -> Bool {
+        box.performed += 1
+        box.providers = info.itemProviders(for: [.plainText])
+        return true
+    }
+}
+
+private class ResponderActionProbeView: NSView {
+    var copied = 0
+    var pasted = 0
+    var selectedAll = 0
+
+    override func validateUserInterfaceItem(_ item: NSValidatedUserInterfaceItem) -> Bool {
+        item.action == Selector("copy:") ||
+        item.action == Selector("paste:") ||
+        item.action == Selector("selectAll:")
+    }
+
+    override func copy(_ sender: Any?) {
+        _ = sender
+        copied += 1
+    }
+
+    override func paste(_ sender: Any?) {
+        _ = sender
+        pasted += 1
+    }
+
+    override func selectAll(_ sender: Any?) {
+        _ = sender
+        selectedAll += 1
+    }
+}
+
+private final class FirstResponderProbeView: NSView {
+    var becomeCount = 0
+    var resignCount = 0
+    var acceptsFirstResponder = true
+
+    override func becomeFirstResponder() -> Bool {
+        becomeCount += 1
+        return acceptsFirstResponder
+    }
+
+    override func resignFirstResponder() -> Bool {
+        resignCount += 1
+        return true
+    }
+}
+
+private final class PointCaptureBox: @unchecked Sendable {
+    private let lock = NSLock()
+    private var points: [NSPoint] = []
+
+    func append(_ point: NSPoint) {
+        lock.lock()
+        points.append(point)
+        lock.unlock()
+    }
+
+    var snapshot: [NSPoint] {
+        lock.lock()
+        let current = points
+        lock.unlock()
+        return current
+    }
+}
+
+private final class ContextMenuProbeView: ResponderActionProbeView {
+    var menuPresentationCount = 0
+    var lastMenuEventLocation: NSPoint?
+
+    override func menu(for event: NSEvent) -> NSMenu? {
+        menuPresentationCount += 1
+        lastMenuEventLocation = event.locationInWindow
+        let menu = NSMenu(title: "Context")
+        menu.addItem(NSMenuItem(title: "Copy", action: Selector("copy:"), keyEquivalent: ""))
+        menu.addItem(NSMenuItem.separator())
+        menu.addItem(NSMenuItem(title: "Paste", action: Selector("paste:"), keyEquivalent: ""))
+        return menu
+    }
+}
+
+private final class ScrollWheelProbeView: NSView {
+    var scrollEvents: [NSEvent] = []
+
+    override func scrollWheel(with event: NSEvent) {
+        scrollEvents.append(event)
+    }
+}
+
+private final class RepresentableLifecycleState: @unchecked Sendable {
+    private let lock = NSLock()
+    private var makeCountValue = 0
+    private var updateCountValue = 0
+    private var dismantleCountValue = 0
+
+    func reset() {
+        lock.lock()
+        makeCountValue = 0
+        updateCountValue = 0
+        dismantleCountValue = 0
+        lock.unlock()
+    }
+
+    func made() {
+        lock.lock()
+        makeCountValue += 1
+        lock.unlock()
+    }
+
+    func updated() {
+        lock.lock()
+        updateCountValue += 1
+        lock.unlock()
+    }
+
+    func dismantled() {
+        lock.lock()
+        dismantleCountValue += 1
+        lock.unlock()
+    }
+
+    var counts: (make: Int, update: Int, dismantle: Int) {
+        lock.lock()
+        let current = (makeCountValue, updateCountValue, dismantleCountValue)
+        lock.unlock()
+        return current
+    }
+}
+
+private let representableLifecycleState = RepresentableLifecycleState()
+
+private final class LifecycleProbeNSView: NSView {}
+
+private struct LifecycleProbeRepresentable: NSViewRepresentable {
+    func makeNSView(context: Context) -> LifecycleProbeNSView {
+        _ = context
+        representableLifecycleState.made()
+        return LifecycleProbeNSView()
+    }
+
+    func updateNSView(_ nsView: LifecycleProbeNSView, context: Context) {
+        _ = nsView
+        _ = context
+        representableLifecycleState.updated()
+    }
+
+    static func dismantleNSView(_ nsView: LifecycleProbeNSView, coordinator: Void) {
+        _ = nsView
+        _ = coordinator
+        representableLifecycleState.dismantled()
+    }
+}
+
+private final class NativeHostProbeBox: @unchecked Sendable {
+    var view: NSView?
+}
+
+private final class NativeHostProbeView: NSView {}
+
+private struct NativeHostProbeRepresentable: NSViewRepresentable {
+    let box: NativeHostProbeBox
+
+    func makeNSView(context: Context) -> NativeHostProbeView {
+        _ = context
+        let view = NativeHostProbeView()
+        box.view = view
+        return view
+    }
+
+    func updateNSView(_ nsView: NativeHostProbeView, context: Context) {
+        _ = nsView
+        _ = context
+    }
+}
+
+private final class NativePayloadChildProbeView: NSView, _OmniWebViewPayloadProviding {
+    var _omniWebViewPayload: _OmniWebViewPayload {
+        _OmniWebViewPayload(
+            load: .html("<html><body>Native child</body></html>", baseURL: URL(string: "about:blank")),
+            fallbackText: "Native child",
+            stableIdentity: "native-child-probe",
+            swiftObject: self
+        )
+    }
+}
+
+private final class DeferredNativePayloadRootView: NSView {
+    var attachedProvider: NativePayloadChildProbeView?
+}
+
+private struct DeferredNativePayloadRepresentable: NSViewRepresentable {
+    func makeNSView(context: Context) -> DeferredNativePayloadRootView {
+        _ = context
+        return DeferredNativePayloadRootView()
+    }
+
+    func updateNSView(_ nsView: DeferredNativePayloadRootView, context: Context) {
+        _ = context
+        guard nsView.window != nil, nsView.bounds.size != .zero, nsView.attachedProvider == nil else { return }
+        let provider = NativePayloadChildProbeView()
+        nsView.attachedProvider = provider
+        nsView.addSubview(provider)
+    }
+}
+
+private final class NativeTextFieldProbeBox: @unchecked Sendable {
+    var field: NSTextField?
+    var changes: [String] = []
+    var beganEditing = 0
+    var endedEditing = 0
+    var submitted = 0
+}
+
+private final class NativeTextFieldProbeDelegate: NSObject, NSTextFieldDelegate {
+    let box: NativeTextFieldProbeBox
+
+    init(box: NativeTextFieldProbeBox) {
+        self.box = box
+    }
+
+    func controlTextDidChange(_ obj: Notification) {
+        guard let field = obj.object as? NSTextField else { return }
+        box.changes.append(field.stringValue)
+    }
+
+    func controlTextDidBeginEditing(_ obj: Notification) {
+        _ = obj
+        box.beganEditing += 1
+    }
+
+    func controlTextDidEndEditing(_ obj: Notification) {
+        _ = obj
+        box.endedEditing += 1
+    }
+
+    func control(_ control: NSControl, textView: NSTextView, doCommandBy commandSelector: Selector) -> Bool {
+        _ = control
+        _ = textView
+        guard commandSelector == Selector("NSResponder.insertNewline:") else { return false }
+        box.submitted += 1
+        return true
+    }
+}
+
+private struct NativeTextFieldRepresentableProbe: NSViewRepresentable {
+    let box: NativeTextFieldProbeBox
+
+    func makeCoordinator() -> NativeTextFieldProbeDelegate {
+        NativeTextFieldProbeDelegate(box: box)
+    }
+
+    func makeNSView(context: Context) -> NSTextField {
+        let field = NSTextField(string: "native start")
+        field.placeholderString = "Native placeholder"
+        field.delegate = context.coordinator
+        box.field = field
+        return field
+    }
+
+    func updateNSView(_ nsView: NSTextField, context: Context) {
+        _ = nsView
+        _ = context
+    }
+}
 #endif
 
 struct CounterView: View {
@@ -37,6 +438,9 @@ private enum SemanticTextProbe {
             switch current.kind {
             case .text(let text), .image(let text):
                 parts.append(text)
+            case .webContent(_, _, _, let label, let description):
+                if let label { parts.append(label) }
+                if let description { parts.append(description) }
             default:
                 break
             }
@@ -46,6 +450,601 @@ private enum SemanticTextProbe {
         return parts.joined(separator: " ")
     }
 }
+
+private struct ColorSchemeReaderProbe: View {
+    @Environment(\.colorScheme) private var colorScheme
+
+    var body: some View {
+        Text(colorScheme == .light ? "light" : "dark")
+    }
+}
+
+private final class ThreadSafeCounter: @unchecked Sendable {
+    private let lock = NSLock()
+    private var value = 0
+
+    func increment() {
+        lock.lock()
+        value += 1
+        lock.unlock()
+    }
+
+    var count: Int {
+        lock.lock()
+        let current = value
+        lock.unlock()
+        return current
+    }
+}
+
+@Test func preferredColorSchemeUpdatesRuntimeEnvironmentAndResetsWhenAbsent() async throws {
+    struct V: View {
+        let scheme: ColorScheme?
+
+        var body: some View {
+            ColorSchemeReaderProbe()
+                .preferredColorScheme(scheme)
+        }
+    }
+
+    let runtime = _UIRuntime()
+    let size = _Size(width: 20, height: 4)
+
+    let light = runtime.semanticSnapshot(V(scheme: .light), size: size)
+    #expect(SemanticTextProbe.collect(in: light.root).contains("light"))
+    #expect(runtime.lastPreferredColorScheme == .light)
+
+    let dark = runtime.semanticSnapshot(V(scheme: .dark), size: size)
+    #expect(SemanticTextProbe.collect(in: dark.root).contains("dark"))
+    #expect(runtime.lastPreferredColorScheme == .dark)
+
+    _ = runtime.semanticSnapshot(Text("plain"), size: size)
+    #expect(runtime.lastPreferredColorScheme == nil)
+}
+
+@Test func localColorSchemeEnvironmentDoesNotOverrideApplicationPreference() async throws {
+    struct V: View {
+        var body: some View {
+            ColorSchemeReaderProbe()
+                .environment(\.colorScheme, .light)
+        }
+    }
+
+    let runtime = _UIRuntime()
+    let snapshot = runtime.semanticSnapshot(V(), size: _Size(width: 20, height: 4))
+
+    #expect(SemanticTextProbe.collect(in: snapshot.root).contains("light"))
+    #expect(runtime.lastPreferredColorScheme == nil)
+}
+
+#if canImport(AppKit)
+@Test func linuxColorBridgePreservesRGBAndColorPanelNotifications() async throws {
+    let swiftColor = Color(red: 0.93, green: 0.88, blue: 0.72)
+    let nsColor = NSColor(swiftColor)
+    #expect(abs(nsColor.redComponent - 0.93) < 0.01)
+    #expect(abs(nsColor.greenComponent - 0.88) < 0.01)
+    #expect(abs(nsColor.blueComponent - 0.72) < 0.01)
+
+    let roundTrip = Color(nsColor)
+    let roundTripNSColor = NSColor(roundTrip)
+    #expect(abs(roundTripNSColor.redComponent - nsColor.redComponent) < 0.01)
+    #expect(abs(roundTripNSColor.greenComponent - nsColor.greenComponent) < 0.01)
+    #expect(abs(roundTripNSColor.blueComponent - nsColor.blueComponent) < 0.01)
+
+    let notificationCount = ThreadSafeCounter()
+    let observer = NotificationCenter.default.addObserver(
+        forName: NSColorPanel.colorDidChangeNotification,
+        object: NSColorPanel.shared,
+        queue: nil
+    ) { _ in
+        notificationCount.increment()
+    }
+    defer { NotificationCenter.default.removeObserver(observer) }
+
+    NSColorPanel.shared.color = nsColor
+    #expect(notificationCount.count == 1)
+}
+
+@Test func linuxColorPanelOrderFrontCanSelectColorThroughHeadlessOverride() async throws {
+    #if os(Linux)
+    let previous = getenv("OMNIKIT_COLOR_PANEL_SELECTION").map { String(cString: $0) }
+    defer {
+        if let previous {
+            setenv("OMNIKIT_COLOR_PANEL_SELECTION", previous, 1)
+        } else {
+            unsetenv("OMNIKIT_COLOR_PANEL_SELECTION")
+        }
+        NSColorPanel.shared.orderOut(nil)
+    }
+
+    setenv("OMNIKIT_COLOR_PANEL_SELECTION", "#336699", 1)
+    let panel = NSColorPanel.shared
+    panel.showsAlpha = false
+    panel.color = NSColor(red: 1, green: 1, blue: 1, alpha: 1)
+
+    final class Box: @unchecked Sendable {
+        var changedWhileVisible = false
+        var closed = false
+    }
+    let box = Box()
+    let colorObserver = NotificationCenter.default.addObserver(
+        forName: NSColorPanel.colorDidChangeNotification,
+        object: panel,
+        queue: nil
+    ) { _ in
+        box.changedWhileVisible = panel.isVisible
+    }
+    let closeObserver = NotificationCenter.default.addObserver(
+        forName: NSWindow.willCloseNotification,
+        object: panel,
+        queue: nil
+    ) { _ in
+        box.closed = true
+    }
+    defer {
+        NotificationCenter.default.removeObserver(colorObserver)
+        NotificationCenter.default.removeObserver(closeObserver)
+    }
+
+    panel.orderFront(nil)
+
+    #expect(abs(panel.color.redComponent - 0.2) < 0.01)
+    #expect(abs(panel.color.greenComponent - 0.4) < 0.01)
+    #expect(abs(panel.color.blueComponent - 0.6) < 0.01)
+    #expect(panel.color.alphaComponent == 1)
+    #expect(box.changedWhileVisible)
+    #expect(box.closed)
+    #expect(!panel.isVisible)
+    #endif
+}
+
+@Test func swiftUIOnReceiveSubscribesToNotificationPublishers() async throws {
+    final class Box: @unchecked Sendable {
+        private let lock = NSLock()
+        private var values: [String] = []
+
+        func append(_ value: String) {
+            lock.lock()
+            values.append(value)
+            lock.unlock()
+        }
+
+        var snapshot: [String] {
+            lock.lock()
+            let current = values
+            lock.unlock()
+            return current
+        }
+    }
+
+    let name = Notification.Name("OmniUICoreTestsOnReceiveNotification")
+    let box = Box()
+
+    struct V: View {
+        let name: Notification.Name
+        let box: Box
+
+        var body: some View {
+            Text("Receiver")
+                .onReceive(DistributedNotificationCenter.default().publisher(for: name)) { note in
+                    box.append(note.userInfo?["value"] as? String ?? "")
+                }
+        }
+    }
+
+    let runtime = _UIRuntime()
+    _ = runtime.semanticSnapshot(V(name: name, box: box), size: _Size(width: 30, height: 4))
+    DistributedNotificationCenter.default().postNotificationName(
+        name,
+        object: nil,
+        userInfo: ["value": "delivered"],
+        deliverImmediately: true
+    )
+
+    for _ in 0..<20 where box.snapshot.isEmpty {
+        try await Task.sleep(nanoseconds: 10_000_000)
+    }
+
+    #expect(box.snapshot == ["delivered"])
+}
+
+@Test func swiftUIOnReceiveRunsWithCapturedEnvironmentFromBackgroundDelivery() async throws {
+    final class Model {
+        private let lock = NSLock()
+        private var values: [String] = []
+
+        func append(_ value: String) {
+            lock.lock()
+            values.append(value)
+            lock.unlock()
+        }
+
+        var snapshot: [String] {
+            lock.lock()
+            let current = values
+            lock.unlock()
+            return current
+        }
+    }
+
+    struct V: View {
+        @Environment(Model.self) private var model
+        let name: Notification.Name
+
+        var body: some View {
+            Text("Receiver")
+                .onReceive(NotificationCenter.default.publisher(for: name)) { note in
+                    model.append(note.userInfo?["value"] as? String ?? "")
+                }
+        }
+    }
+
+    let name = Notification.Name("OmniUICoreTestsOnReceiveBackgroundNotification")
+    let model = Model()
+    let runtime = _UIRuntime()
+    _ = runtime.semanticSnapshot(
+        V(name: name).environment(model),
+        size: _Size(width: 30, height: 4)
+    )
+
+    DispatchQueue.global().async {
+        NotificationCenter.default.post(
+            name: name,
+            object: nil,
+            userInfo: ["value": "captured-environment"]
+        )
+    }
+
+    for _ in 0..<50 where model.snapshot.isEmpty {
+        try await Task.sleep(nanoseconds: 10_000_000)
+    }
+
+    #expect(model.snapshot == ["captured-environment"])
+}
+
+@Test func stateBindingMutationFromBackgroundQueueAppliesOnMainQueue() async throws {
+    final class Box: @unchecked Sendable {
+        private let lock = NSLock()
+        private var bindingValue: Binding<Int>?
+
+        func set(_ binding: Binding<Int>) {
+            lock.lock()
+            bindingValue = binding
+            lock.unlock()
+        }
+
+        func mutateFromBackground(to value: Int) {
+            lock.lock()
+            let binding = bindingValue
+            lock.unlock()
+
+            DispatchQueue.global().async {
+                binding?.wrappedValue = value
+            }
+        }
+    }
+
+    struct V: View {
+        let box: Box
+        @State private var count = 0
+
+        var body: some View {
+            box.set($count)
+            return Text("Count: \(count)")
+        }
+    }
+
+    let box = Box()
+    let runtime = _UIRuntime()
+    let size = _Size(width: 30, height: 4)
+    let initial = runtime.debugRender(V(box: box), size: size)
+    #expect(initial.text.contains("Count: 0"))
+
+    box.mutateFromBackground(to: 42)
+
+    var updated = runtime.debugRender(V(box: box), size: size)
+    for _ in 0..<50 where !updated.text.contains("Count: 42") {
+        try await Task.sleep(nanoseconds: 10_000_000)
+        await MainActor.run {}
+        updated = runtime.debugRender(V(box: box), size: size)
+    }
+
+    #expect(updated.text.contains("Count: 42"))
+}
+
+@Test func typedEnvironmentObjectCanBeReadFromEscapingCallbackAfterBuild() async throws {
+    final class Model {
+        private let lock = NSLock()
+        private var values: [String] = []
+
+        func append(_ value: String) {
+            lock.lock()
+            values.append(value)
+            lock.unlock()
+        }
+
+        var snapshot: [String] {
+            lock.lock()
+            let current = values
+            lock.unlock()
+            return current
+        }
+    }
+
+    final class Box: @unchecked Sendable {
+        var callback: (() -> Void)?
+    }
+
+    struct Child: View {
+        @Environment(Model.self) private var model
+        let box: Box
+
+        func handleEscapingCallback() {
+            model.append("escaped")
+        }
+
+        var body: some View {
+            box.callback = {
+                handleEscapingCallback()
+            }
+            return Text("Callback registered")
+        }
+    }
+
+    let model = Model()
+    let box = Box()
+    let runtime = _UIRuntime()
+    _ = runtime.semanticSnapshot(
+        Child(box: box).environment(model),
+        size: _Size(width: 30, height: 4)
+    )
+
+    box.callback?()
+
+    #expect(model.snapshot == ["escaped"])
+}
+
+@Test func typedEnvironmentObjectCanBeReadFromActionEnvironmentThatLacksObject() async throws {
+    final class Model {
+        private let lock = NSLock()
+        private var values: [String] = []
+
+        func append(_ value: String) {
+            lock.lock()
+            values.append(value)
+            lock.unlock()
+        }
+
+        var snapshot: [String] {
+            lock.lock()
+            let current = values
+            lock.unlock()
+            return current
+        }
+    }
+
+    struct ActionView: View {
+        @Environment(Model.self) private var model
+
+        var body: some View {
+            Button("Run") {
+                model.append("action")
+            }
+        }
+    }
+
+    func firstButtonActionID(in node: SemanticNode) -> Int? {
+        if case .button(let actionID, _) = node.kind {
+            return actionID
+        }
+        for child in node.children {
+            if let actionID = firstButtonActionID(in: child) {
+                return actionID
+            }
+        }
+        return nil
+    }
+
+    let model = Model()
+    let runtime = _UIRuntime()
+    _ = runtime.semanticSnapshot(
+        Text("Seed").environment(model),
+        size: _Size(width: 30, height: 4)
+    )
+    let snapshot = runtime.semanticSnapshot(
+        ActionView(),
+        size: _Size(width: 30, height: 4)
+    )
+    let actionID = try #require(firstButtonActionID(in: snapshot.root))
+
+    runtime.invokeActionByRawID(actionID)
+
+    #expect(model.snapshot == ["action"])
+}
+
+@Test func distributedNotificationCenterReceivesFileBackedExternalPostsOnLinux() async throws {
+    #if os(Linux)
+    final class Box: @unchecked Sendable {
+        private let lock = NSLock()
+        private var values: [String] = []
+
+        func append(_ value: String) {
+            lock.lock()
+            values.append(value)
+            lock.unlock()
+        }
+
+        var snapshot: [String] {
+            lock.lock()
+            let current = values
+            lock.unlock()
+            return current
+        }
+    }
+
+    let directory = FileManager.default.temporaryDirectory
+        .appendingPathComponent("omnikit-distributed-notification-tests-\(UUID().uuidString)", isDirectory: true)
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    setenv("OMNIKIT_DISTRIBUTED_NOTIFICATION_DIR", directory.path, 1)
+    defer {
+        unsetenv("OMNIKIT_DISTRIBUTED_NOTIFICATION_DIR")
+        try? FileManager.default.removeItem(at: directory)
+    }
+
+    let name = Notification.Name("OmniUICoreTestsExternalDistributedNotification-\(UUID().uuidString)")
+    let box = Box()
+    let subscription = DistributedNotificationCenter.default().publisher(for: name)._omniSubscribe { note in
+        box.append(note.userInfo?["value"] as? String ?? "")
+    }
+    _ = subscription
+
+    let payload: [String: Any] = [
+        "name": name.rawValue,
+        "object": NSNull(),
+        "pid": -1,
+        "created": Date().timeIntervalSince1970,
+        "userInfo": ["value": "external"],
+    ]
+    let data = try JSONSerialization.data(withJSONObject: payload, options: [])
+    try data.write(to: directory.appendingPathComponent("external.json"), options: .atomic)
+
+    for _ in 0..<50 where box.snapshot.isEmpty {
+        try await Task.sleep(nanoseconds: 20_000_000)
+    }
+
+    #expect(box.snapshot == ["external"])
+    #endif
+}
+
+@Test func runningApplicationsDiscoversLinuxProcessesByBundleIdentifierEnvironment() async throws {
+    #if os(Linux)
+    let bundleIdentifier = "dev.omnikit.tests.running-app-\(UUID().uuidString)"
+    setenv("OMNIKIT_BUNDLE_IDENTIFIER", bundleIdentifier, 1)
+    defer { unsetenv("OMNIKIT_BUNDLE_IDENTIFIER") }
+
+    let matches = NSRunningApplication.runningApplications(withBundleIdentifier: bundleIdentifier)
+    #expect(matches.contains { $0.processIdentifier == ProcessInfo.processInfo.processIdentifier })
+    #endif
+}
+
+@Test func appleScriptDoShellScriptExecutesThroughLinuxShellFallback() async throws {
+    #if os(Linux)
+    let capture = FileManager.default.temporaryDirectory
+        .appendingPathComponent("omnikit-applescript-capture-\(UUID().uuidString).txt")
+    setenv("OMNIKIT_DESKTOP_PROCESS_CAPTURE", capture.path, 1)
+    defer {
+        unsetenv("OMNIKIT_DESKTOP_PROCESS_CAPTURE")
+        try? FileManager.default.removeItem(at: capture)
+    }
+
+    var error: NSDictionary?
+    let script = NSAppleScript(source: #"do shell script "printf hello > '/tmp/omnikit apple script'" with administrator privileges"#)
+    script?.executeAndReturnError(&error)
+
+    #expect(error == nil)
+    let captured = try String(contentsOf: capture, encoding: .utf8)
+    #expect(captured.contains("/bin/sh\t-c\tprintf hello > '/tmp/omnikit apple script'"))
+    #endif
+}
+
+@Test func fontManagerDiscoversLinuxFontFamiliesBeyondPlaceholders() async throws {
+    #if os(Linux)
+    let families = NSFontManager.shared.availableFontFamilies
+    #expect(families.contains("System"))
+    #expect(families.contains("Monospace"))
+    #expect(Set(families.map { $0.lowercased() }).count == families.count)
+    if FileManager.default.fileExists(atPath: "/usr/bin/fc-list") || FileManager.default.fileExists(atPath: "/bin/fc-list") {
+        #expect(families.count > 2)
+    }
+    #endif
+}
+
+@Test func preferredColorSchemeOverridesApplicationAppearanceUntilCleared() async throws {
+    NSApp.appearance = NSAppearance(named: .darkAqua)
+    #expect(_omniEffectiveAppearanceColorScheme() == .dark)
+
+    _omniSetPreferredColorScheme(.light)
+    #expect(_omniEffectiveAppearanceColorScheme() == .light)
+
+    _omniSetPreferredColorScheme(nil)
+    #expect(_omniEffectiveAppearanceColorScheme() == .dark)
+    NSApp.appearance = nil
+}
+
+@Test func linuxDynamicSystemColorsTrackEffectiveAppearance() async throws {
+    NSApp.appearance = nil
+    _omniSetPreferredColorScheme(nil)
+    defer {
+        _omniSetPreferredColorScheme(nil)
+        NSApp.appearance = nil
+    }
+
+    _omniSetPreferredColorScheme(.light)
+    #expect(NSColor.textColor.redComponent < 0.2)
+    #expect(NSColor.textBackgroundColor.redComponent > 0.9)
+    #expect(NSColor.windowBackgroundColor.redComponent > 0.9)
+
+    _omniSetPreferredColorScheme(.dark)
+    #expect(NSColor.textColor.redComponent > 0.8)
+    #expect(NSColor.textBackgroundColor.redComponent < 0.2)
+    #expect(NSColor.windowBackgroundColor.redComponent < 0.2)
+
+    _omniSetPreferredColorScheme(nil)
+    NSApp.appearance = NSAppearance(named: .aqua)
+    #expect(NSColor.labelColor.redComponent < 0.2)
+
+    NSApp.appearance = NSAppearance(named: .darkAqua)
+    #expect(NSColor.labelColor.redComponent > 0.8)
+}
+
+@Test func linuxNSViewEffectiveAppearanceInheritsFromSuperviewWindowAndApplication() async throws {
+    NSApp.appearance = NSAppearance(named: .darkAqua)
+    defer { NSApp.appearance = nil }
+
+    let window = NSWindow()
+    let root = NSView()
+    let child = NSView()
+    root.addSubview(child)
+    window.contentView = root
+
+    #expect(child.effectiveAppearance.name == .darkAqua)
+
+    root.appearance = NSAppearance(named: .aqua)
+    #expect(child.effectiveAppearance.name == .aqua)
+
+    child.appearance = NSAppearance(named: .darkAqua)
+    #expect(child.effectiveAppearance.name == .darkAqua)
+
+    child.appearance = nil
+    root.appearance = nil
+    window.appearance = NSAppearance(named: .aqua)
+    #expect(child.effectiveAppearance.name == .aqua)
+}
+
+@Test func linuxNSViewNotifiesDescendantsWhenEffectiveAppearanceChanges() async throws {
+    NSApp.appearance = nil
+    defer { NSApp.appearance = nil }
+
+    let window = NSWindow()
+    let root = NSView()
+    let child = AppearancePropagationProbeView()
+    root.addSubview(child)
+    window.contentView = root
+
+    root.appearance = NSAppearance(named: .aqua)
+    root.appearance = NSAppearance(named: .darkAqua)
+    window.appearance = NSAppearance(named: .aqua)
+
+    #expect(child.effectiveAppearanceNames.contains(.aqua))
+    #expect(child.effectiveAppearanceNames.contains(.darkAqua))
+    #expect(child.effectiveAppearance.name == .darkAqua)
+
+    root.appearance = nil
+    #expect(child.effectiveAppearance.name == .aqua)
+    #expect(child.effectiveAppearanceNames.last == .aqua)
+}
+
+#endif
 
 #if canImport(AppKit) && canImport(WebKit)
 private final class WebViewRepresentableCoordinatorProbe: NSObject, WKNavigationDelegate, WKUIDelegate, WKScriptMessageHandler {
@@ -119,7 +1118,7 @@ private struct ConfigurableWebViewRepresentableProbe: NSViewRepresentable {
     let snapshot = runtime.semanticSnapshot(V(zoom: 1.2), size: size)
     func webPayloads(in node: SemanticNode) -> [_OmniWebViewPayload] {
         var payloads: [_OmniWebViewPayload] = []
-        if case .image(let name) = node.kind,
+        if case .webContent(let name, _, _, _, _) = node.kind,
            let payload = _OmniWebViewRegistry.payload(for: name) {
             payloads.append(payload)
         }
@@ -151,6 +1150,1721 @@ private struct ConfigurableWebViewRepresentableProbe: NSViewRepresentable {
     #expect(webView.uiDelegate === coordinator)
     #expect(coordinator.updateCount == 2)
     #expect(webView.pageZoom == 1.85)
+}
+
+@Test @MainActor func semanticSnapshotLabelsNativeWebPayloadsForComputerUse() async throws {
+    struct V: View {
+        var body: some View {
+            ConfigurableWebViewRepresentableProbe(
+                url: URL(string: "https://example.com/article")!,
+                zoom: 1.0
+            )
+        }
+    }
+
+    let runtime = _UIRuntime()
+    let snapshot = runtime.semanticSnapshot(V(), size: _Size(width: 80, height: 12))
+
+    func webContent(in node: SemanticNode) -> SemanticNode.Kind? {
+        if case .webContent = node.kind {
+            return node.kind
+        }
+        for child in node.children {
+            if let found = webContent(in: child) {
+                return found
+            }
+        }
+        return nil
+    }
+
+    guard case .webContent(let registryKey, let stableIdentity, let url, let label, let description) = webContent(in: snapshot.root) else {
+        Issue.record("Expected native web payload to lower as webContent")
+        return
+    }
+
+    #expect(_OmniWebViewRegistry.payload(for: registryKey) != nil)
+    #expect(stableIdentity.contains("example.com"))
+    #expect(url == "https://example.com/article")
+    #expect(label == "https://example.com/article")
+    #expect(description == "Web content")
+    #expect(SemanticTextProbe.collect(in: snapshot.root).contains("Web content"))
+    #expect(SemanticTextProbe.collect(in: snapshot.root).contains("Web content\nhttps://example.com/article"))
+}
+#endif
+
+#if canImport(AppKit)
+@Test func representableFallbackDismantlesNativeViewWhenRemovedFromTree() async throws {
+    struct V: View {
+        let showNativeView: Bool
+
+        var body: some View {
+            VStack {
+                if showNativeView {
+                    LifecycleProbeRepresentable()
+                } else {
+                    Text("gone")
+                }
+            }
+        }
+    }
+
+    representableLifecycleState.reset()
+    let runtime = _UIRuntime()
+    let size = _Size(width: 40, height: 8)
+
+    _ = runtime.semanticSnapshot(V(showNativeView: true), size: size)
+    var counts = representableLifecycleState.counts
+    #expect(counts.make == 1)
+    #expect(counts.update == 1)
+    #expect(counts.dismantle == 0)
+
+    _ = runtime.semanticSnapshot(V(showNativeView: true), size: size)
+    counts = representableLifecycleState.counts
+    #expect(counts.make == 1)
+    #expect(counts.update == 2)
+    #expect(counts.dismantle == 0)
+
+    _ = runtime.semanticSnapshot(V(showNativeView: false), size: size)
+    counts = representableLifecycleState.counts
+    #expect(counts.make == 1)
+    #expect(counts.update == 2)
+    #expect(counts.dismantle == 1)
+}
+
+@Test func linuxNSViewRepresentableRootsReceiveSyntheticWindowAndDefaultFrame() async throws {
+    NSApp.keyWindow = nil
+    let runtime = _UIRuntime()
+    let box = NativeHostProbeBox()
+
+    _ = runtime.semanticSnapshot(NativeHostProbeRepresentable(box: box), size: _Size(width: 80, height: 24))
+
+    let view = try #require(box.view)
+    #expect(view.window != nil)
+    #expect(view.window === NSApp.keyWindow)
+    #expect(view.bounds.size == CGSize(width: 800, height: 600))
+
+    let child = NSView()
+    view.addSubview(child)
+    #expect(child.window === view.window)
+    #expect(child.bounds.size == view.bounds.size)
+}
+
+@Test func linuxGenericNativeRepresentablePayloadCarriesAccessibilityMetadata() async throws {
+    let runtime = _UIRuntime()
+    let box = NativeHostProbeBox()
+    let snapshot = runtime.semanticSnapshot(NativeHostProbeRepresentable(box: box), size: _Size(width: 80, height: 24))
+
+    func webContent(in node: SemanticNode) -> SemanticNode.Kind? {
+        if case .webContent = node.kind {
+            return node.kind
+        }
+        for child in node.children {
+            if let found = webContent(in: child) {
+                return found
+            }
+        }
+        return nil
+    }
+
+    guard case .webContent(let registryKey, _, let url, let label, let description) = webContent(in: snapshot.root) else {
+        Issue.record("Expected generic native representable to lower as webContent")
+        return
+    }
+
+    let payload = try #require(_OmniWebViewRegistry.payload(for: registryKey))
+    #expect(url == "about:blank")
+    #expect(payload.fallbackText == "Native view\nNativeHostProbeView")
+    #expect(label == "NativeHostProbeView")
+    #expect(description == "Native view NativeHostProbeView")
+    #expect(payload.accessibilityLabel == "NativeHostProbeView")
+    #expect(payload.accessibilityDescription == "Native view NativeHostProbeView")
+}
+
+@Test func linuxNSViewRepresentableCanAttachNativePayloadAfterWindowHosting() async throws {
+    let runtime = _UIRuntime()
+    let snapshot = runtime.semanticSnapshot(DeferredNativePayloadRepresentable(), size: _Size(width: 80, height: 24))
+
+    func payloads(in node: SemanticNode) -> [_OmniWebViewPayload] {
+        var found: [_OmniWebViewPayload] = []
+        if case .webContent(let name, _, _, _, _) = node.kind,
+           let payload = _OmniWebViewRegistry.payload(for: name) {
+            found.append(payload)
+        }
+        for child in node.children {
+            found.append(contentsOf: payloads(in: child))
+        }
+        return found
+    }
+
+    let payload = try #require(payloads(in: snapshot.root).first { $0.stableIdentity == "native-child-probe" })
+    #expect(payload.fallbackText == "Native child")
+    #expect(payload.swiftObject is NativePayloadChildProbeView)
+}
+
+@Test func linuxNSTextFieldRepresentableRendersAsEditableSemanticTextField() async throws {
+    let runtime = _UIRuntime()
+    let box = NativeTextFieldProbeBox()
+    let view = NativeTextFieldRepresentableProbe(box: box)
+    let snapshot = runtime.semanticSnapshot(view, size: _Size(width: 80, height: 24))
+
+    func textFieldActionID(in node: SemanticNode) -> Int? {
+        if case .textField(let actionID, let placeholder, let text, _, _, _) = node.kind {
+            #expect(placeholder == "Native placeholder")
+            #expect(text == "native start")
+            return actionID
+        }
+        for child in node.children {
+            if let actionID = textFieldActionID(in: child) {
+                return actionID
+            }
+        }
+        return nil
+    }
+
+    let actionID = try #require(textFieldActionID(in: snapshot.root))
+    runtime.invokeActionByRawID(actionID)
+    #expect(box.field?.currentEditor() != nil)
+    #expect(box.beganEditing == 1)
+
+    runtime.replaceTextForRawActionID(actionID, previous: "native start", next: "native edit")
+    runtime.handleNativeKeyForRawActionID(actionID, keyKind: 7, codepoint: 0)
+
+    #expect(box.field?.stringValue == "native edit")
+    #expect(box.changes.last == "native edit")
+    #expect(box.submitted == 1)
+}
+
+@Test func linuxNSTextFieldResponderLifecycleExposesCurrentEditorAndEndEditing() async throws {
+    let window = NSWindow()
+    let field = NSTextField(string: "native")
+    let replacement = NSView()
+    let box = NativeTextFieldProbeBox()
+    let delegate = NativeTextFieldProbeDelegate(box: box)
+    field.delegate = delegate
+    window.contentView = NSView()
+    window.contentView?.addSubview(field)
+    window.contentView?.addSubview(replacement)
+
+    #expect(window.makeFirstResponder(field))
+    #expect(box.beganEditing == 1)
+    #expect(field.currentEditor() != nil)
+    field.currentEditor()?.alignment = .left
+    #expect(field.currentEditor()?.alignment == .left)
+
+    #expect(window.makeFirstResponder(replacement))
+    #expect(box.endedEditing == 1)
+    #expect(field.currentEditor() == nil)
+    #expect(window.firstResponder === replacement)
+}
+
+@Test func linuxNSViewWindowPropagationReachesNestedSubviews() async throws {
+    let window = NSWindow()
+    let root = NSView()
+    let child = NSView()
+    let grandchild = WindowPropagationProbeView()
+
+    child.addSubview(grandchild)
+    root.addSubview(child)
+    window.contentView = root
+
+    #expect(root.window === window)
+    #expect(child.window === window)
+    #expect(grandchild.window === window)
+    #expect(grandchild.willMoveWindowStates.contains(true))
+    #expect(grandchild.didMoveWindowStates.contains(true))
+
+    window.contentView = nil
+
+    #expect(root.window == nil)
+    #expect(child.window == nil)
+    #expect(grandchild.window == nil)
+    #expect(grandchild.willMoveWindowStates.contains(false))
+    #expect(grandchild.didMoveWindowStates.contains(false))
+}
+
+@Test func linuxNSViewTracksDraggedTypesAndAcceptsDraggingInfoSnapshots() async throws {
+    let pasteboard = NSPasteboard()
+    pasteboard.setString("drag-token", forType: .string)
+    let info = NSDraggingInfoSnapshot(
+        draggingPasteboard: pasteboard,
+        draggingLocation: NSPoint(x: 12, y: 34)
+    )
+    let view = DraggingProbeView()
+
+    view.registerForDraggedTypes([.string])
+    #expect(view.registeredDraggedTypes == [.string])
+    #expect(view.draggingEntered(info) == .move)
+    #expect(view.performDragOperation(info))
+    #expect(view.enteredPasteboardString == "drag-token")
+    #expect(view.performedPasteboardString == "drag-token")
+    #expect(view.lastLocation == NSPoint(x: 12, y: 34))
+
+    view.unregisterDraggedTypes()
+    #expect(view.registeredDraggedTypes.isEmpty)
+}
+
+@Test func linuxNSViewCoordinateConversionAccountsForNestedFrameOrigins() async throws {
+    let root = NSView(frame: NSRect(x: 10, y: 20, width: 300, height: 200))
+    let child = NSView(frame: NSRect(x: 30, y: 40, width: 100, height: 90))
+    let grandchild = NSView(frame: NSRect(x: 5, y: 6, width: 20, height: 10))
+
+    root.addSubview(child)
+    child.addSubview(grandchild)
+
+    #expect(grandchild.convert(NSPoint(x: 45, y: 66), from: nil) == NSPoint(x: 0, y: 0))
+    #expect(grandchild.convert(.zero, to: nil) == NSPoint(x: 45, y: 66))
+    #expect(root.convert(.zero, from: grandchild) == NSPoint(x: 35, y: 46))
+
+    let rect = grandchild.convert(NSRect(x: 45, y: 66, width: 8, height: 9), from: nil)
+    #expect(rect.origin == .zero)
+    #expect(rect.size == CGSize(width: 8, height: 9))
+}
+
+@Test func linuxDraggingLocationsConvertFromWindowCoordinatesToLocalViewCoordinates() async throws {
+    let pasteboard = NSPasteboard()
+    pasteboard.setString("drag-token", forType: .string)
+    let info = NSDraggingInfoSnapshot(
+        draggingPasteboard: pasteboard,
+        draggingLocation: NSPoint(x: 40, y: 60)
+    )
+    let root = NSView(frame: NSRect(x: 10, y: 20, width: 200, height: 200))
+    let view = DraggingConversionProbeView(frame: NSRect(x: 30, y: 40, width: 100, height: 80))
+
+    root.addSubview(view)
+
+    #expect(view.draggingUpdated(info) == .move)
+    #expect(view.lastLocalLocation == .zero)
+    #expect(view.bounds.contains(view.lastLocalLocation ?? NSPoint(x: -1, y: -1)))
+}
+
+@Test func linuxNSViewHitTestingWalksSubviewsAndSkipsTransparentOverlays() async throws {
+    let root = NSView(frame: NSRect(x: 0, y: 0, width: 200, height: 160))
+    let bottom = NSView(frame: NSRect(x: 20, y: 30, width: 80, height: 70))
+    let topTransparent = TransparentHitTestProbeView(frame: NSRect(x: 10, y: 10, width: 120, height: 110))
+
+    root.addSubview(bottom)
+    root.addSubview(topTransparent)
+
+    #expect(root.hitTest(NSPoint(x: 25, y: 35)) === bottom)
+    #expect(root.hitTest(NSPoint(x: 150, y: 120)) === root)
+    #expect(root.hitTest(NSPoint(x: 205, y: 10)) == nil)
+}
+
+@Test func swiftUIDragAndDropModifiersProvideLinuxClickFallback() async throws {
+    let runtime = _UIRuntime()
+    let box = SwiftUIDropProbeBox()
+
+    struct V: View {
+        let box: SwiftUIDropProbeBox
+        var body: some View {
+            VStack(alignment: .leading, spacing: 0) {
+                Text("Source")
+                    .onDrag { NSItemProvider(object: "drag-token") }
+                Text("Target")
+                    .onDrop(of: [.plainText], delegate: SwiftUIDropProbeDelegate(box: box))
+            }
+        }
+    }
+
+    let first = runtime.render(V(box: box), size: _Size(width: 30, height: 4))
+    first.click(x: 0, y: 0)
+
+    let second = runtime.render(V(box: box), size: _Size(width: 30, height: 4))
+    second.click(x: 0, y: 1)
+
+    #expect(box.entered == 1)
+    #expect(box.updated == 1)
+    #expect(box.performed == 1)
+    #expect(box.providers.compactMap { $0.object as? String } == ["drag-token"])
+}
+
+@Test func swiftUIDragFallbackDoesNotReplaceExistingTapInteraction() async throws {
+    final class Box: @unchecked Sendable {
+        var taps = 0
+    }
+
+    let runtime = _UIRuntime()
+    let box = Box()
+
+    struct V: View {
+        let box: Box
+        var body: some View {
+            Text("Selectable row")
+                .onTapGesture { box.taps += 1 }
+                .onDrag { NSItemProvider(object: "drag-token") }
+        }
+    }
+
+    let first = runtime.render(V(box: box), size: _Size(width: 30, height: 2))
+    first.click(x: 0, y: 0)
+
+    #expect(box.taps == 1)
+}
+
+@Test func swiftUIDragFallbackCanStartFromViewWithExistingTapInteraction() async throws {
+    final class Box: @unchecked Sendable {
+        var taps = 0
+    }
+
+    let runtime = _UIRuntime()
+    let tapBox = Box()
+    let dropBox = SwiftUIDropProbeBox()
+
+    struct V: View {
+        let tapBox: Box
+        let dropBox: SwiftUIDropProbeBox
+
+        var body: some View {
+            VStack(alignment: .leading, spacing: 0) {
+                Text("Draggable row")
+                    .onTapGesture { tapBox.taps += 1 }
+                    .onDrag { NSItemProvider(object: "drag-token") }
+                Text("Target")
+                    .onDrop(of: [.plainText], delegate: SwiftUIDropProbeDelegate(box: dropBox))
+            }
+        }
+    }
+
+    let first = runtime.render(V(tapBox: tapBox, dropBox: dropBox), size: _Size(width: 30, height: 4))
+    first.drag(from: _Point(x: 0, y: 0), to: _Point(x: 8, y: 0))
+
+    let second = runtime.render(V(tapBox: tapBox, dropBox: dropBox), size: _Size(width: 30, height: 4))
+    second.drag(from: _Point(x: 0, y: 0), to: _Point(x: 0, y: 1))
+
+    #expect(tapBox.taps == 0)
+    #expect(dropBox.entered == 1)
+    #expect(dropBox.updated == 1)
+    #expect(dropBox.performed == 1)
+    #expect(dropBox.providers.compactMap { $0.object as? String } == ["drag-token"])
+}
+
+@Test func swiftUIDragFallbackCanDropOntoNativeRegisteredNSView() async throws {
+    let runtime = _UIRuntime()
+    let box = NativeDropFallbackProbeBox()
+
+    struct V: View {
+        let box: NativeDropFallbackProbeBox
+
+        var body: some View {
+            VStack(alignment: .leading, spacing: 0) {
+                Text("Native source")
+                    .onDrag { NSItemProvider(object: "native-drag-token") }
+                NativeDropFallbackRepresentable(box: box)
+            }
+        }
+    }
+
+    let first = runtime.render(V(box: box), size: _Size(width: 40, height: 4))
+    first.click(x: 0, y: 0)
+
+    let second = runtime.render(V(box: box), size: _Size(width: 40, height: 4))
+    second.click(x: 7, y: 1)
+
+    #expect(box.entered == 1)
+    #expect(box.updated == 1)
+    #expect(box.performedString == "native-drag-token")
+    #expect(box.performedLocation == NSPoint(x: 7, y: 1))
+}
+
+@Test func linuxItemProviderReportsTypesAndLoadsCommonStringAndURLObjects() async throws {
+    let textProvider = NSItemProvider(object: "drag-token" as NSString)
+    #expect(textProvider.hasItemConformingToTypeIdentifier(UTType.plainText.identifier))
+    #expect(textProvider.hasItemConformingToTypeIdentifier(UTType.text.identifier))
+    #expect(textProvider.canLoadObject(ofClass: NSString.self))
+
+    var loadedText: Any?
+    textProvider.loadItem(forTypeIdentifier: UTType.plainText.identifier) { item, error in
+        #expect(error == nil)
+        loadedText = item
+    }
+    #expect(loadedText as? String == "drag-token")
+
+    let fileURL = URL(fileURLWithPath: "/tmp/readme.md")
+    let fileProvider = NSItemProvider(object: fileURL as NSURL)
+    #expect(fileProvider.hasItemConformingToTypeIdentifier(UTType.fileURL.identifier))
+    #expect(fileProvider.hasItemConformingToTypeIdentifier(UTType.url.identifier))
+    #expect(fileProvider.canLoadObject(ofClass: NSURL.self))
+
+    var loadedURL: Any?
+    fileProvider.loadObject(ofClass: NSURL.self) { item, error in
+        #expect(error == nil)
+        loadedURL = item
+    }
+    #expect((loadedURL as? URL)?.path == "/tmp/readme.md")
+
+    let info = DropInfo(itemProviders: [fileProvider])
+    #expect(info.hasItemsConforming(to: [.fileURL]))
+    #expect(info.hasItemsConforming(to: [.url]))
+    #expect(info.itemProviders(for: [.plainText]).isEmpty)
+}
+
+@Test func linuxStatusItemAndPopoverLifecycleMirrorAppKitState() async throws {
+    let statusBar = NSStatusBar.system
+    let existingItems = statusBar.statusItems
+    for item in existingItems {
+        statusBar.removeStatusItem(item)
+    }
+
+    let item = statusBar.statusItem(withLength: NSStatusItem.variableLength)
+    #expect(statusBar.statusItems.contains { $0 === item })
+    #expect(item.length == NSStatusItem.variableLength)
+    item.button?.toolTip = "CPU: 10%\nweb: up\n:8080: down"
+    #expect(item.button?.toolTip == "CPU: 10%\nweb: up\n:8080: down")
+    #expect(statusBar.fallbackLabels == ["CPU: 10% · web: up · :8080: down"])
+    item.button?.image = NSImage(size: NSSize(width: 12, height: 8), flipped: false) { _ in
+        NSColor.labelColor.setFill()
+        NSRect(x: 0, y: 0, width: 2, height: 1).fill()
+        NSRect(x: 3, y: 0, width: 2, height: 4).fill()
+        NSRect(x: 6, y: 0, width: 2, height: 8).fill()
+        NSColor.labelColor.withAlphaComponent(0.2).setFill()
+        NSBezierPath(ovalIn: NSRect(x: 9, y: 1, width: 3, height: 3)).fill()
+        NSColor.systemGreen.setFill()
+        NSBezierPath(ovalIn: NSRect(x: 9, y: 5, width: 3, height: 3)).fill()
+        return true
+    }
+    #expect(statusBar.fallbackLabels == ["▂▅█ ○● · CPU: 10% · web: up · :8080: down"])
+
+    let actionView = ResponderActionProbeView()
+    let window = NSWindow()
+    window.contentView = actionView
+    window.makeKey()
+    #expect(window.makeFirstResponder(actionView))
+    item.button?.target = actionView
+    item.button?.action = Selector("copy:")
+    #expect(statusBar.performStatusItem(at: 0))
+    #expect(actionView.copied == 1)
+
+    final class CustomStatusTarget: NSObject {
+        var senderIsButton = false
+    }
+    let customTarget = CustomStatusTarget()
+    customTarget._omniRegisterSelectorAction(Selector("buttonClicked")) { sender in
+        customTarget.senderIsButton = sender as? NSButton === item.button
+    }
+    item.button?.target = customTarget
+    item.button?.action = Selector("buttonClicked")
+    #expect(statusBar.performStatusItem(at: 0))
+    #expect(customTarget.senderIsButton)
+
+    let controller = NSViewController()
+    let popover = NSPopover()
+    popover.contentViewController = controller
+    popover.show(relativeTo: .zero, of: item.button ?? NSButton(), preferredEdge: .minY)
+    #expect(popover.isShown)
+    #expect(controller.view.window != nil)
+
+    popover.performClose(nil)
+    #expect(!popover.isShown)
+    #expect(controller.view.window == nil)
+
+    statusBar.removeStatusItem(item)
+    #expect(!statusBar.statusItems.contains { $0 === item })
+    #expect(statusBar.fallbackLabels.isEmpty)
+}
+
+@Test func linuxMenuBarExtraInstallsStatusItemAndHostedPopoverContent() async throws {
+    final class Box {
+        var actionCount = 0
+    }
+    struct ProbeScene: Scene {
+        let box: Box
+
+        var body: some Scene {
+            WindowGroup {
+                Text("Main")
+            }
+            MenuBarExtra("Probe Extra") {
+                Button("Do Thing") { box.actionCount += 1 }
+            }
+        }
+    }
+    let box = Box()
+
+    let statusBar = NSStatusBar.system
+    let existingItems = statusBar.statusItems
+    for item in existingItems {
+        statusBar.removeStatusItem(item)
+    }
+
+    _ = _sceneRootView(ProbeScene(box: box).body)
+
+    #expect(statusBar.fallbackLabels.contains("Probe Extra"))
+    guard let index = statusBar.fallbackLabels.firstIndex(of: "Probe Extra") else {
+        Issue.record("MenuBarExtra did not install a status item")
+        return
+    }
+    #expect(statusBar.performStatusItem(at: index))
+    let activeContent = try #require(NSPopover.activeContentView)
+    let runtime = _UIRuntime()
+    let popover = runtime.debugRender(activeContent, size: _Size(width: 36, height: 8))
+    #expect(popover.text.contains("[Do Thing]"))
+    guard let button = _findButton(popover, title: "Do Thing") else {
+        Issue.record("MenuBarExtra popover did not expose its button as an action")
+        return
+    }
+    popover.click(x: button.x, y: button.y)
+    #expect(box.actionCount == 1)
+}
+
+@Test func linuxWindowMakeFirstResponderCallsResponderHooks() async throws {
+    let window = NSWindow()
+    let first = FirstResponderProbeView()
+    let second = FirstResponderProbeView()
+    let rejecting = FirstResponderProbeView()
+    rejecting.acceptsFirstResponder = false
+
+    #expect(window.makeFirstResponder(first))
+    #expect(window.firstResponder === first)
+    #expect(first.becomeCount == 1)
+
+    #expect(!window.makeFirstResponder(rejecting))
+    #expect(window.firstResponder === first)
+    #expect(rejecting.becomeCount == 1)
+    #expect(first.resignCount == 0)
+
+    #expect(window.makeFirstResponder(second))
+    #expect(window.firstResponder === second)
+    #expect(second.becomeCount == 1)
+    #expect(first.resignCount == 1)
+
+    #expect(window.makeFirstResponder(nil))
+    #expect(window.firstResponder == nil)
+    #expect(second.resignCount == 1)
+}
+
+@Test func linuxNSImageDrawingInitializerPreservesRequestedSize() async throws {
+    final class RectBox: @unchecked Sendable {
+        private let lock = NSLock()
+        private var value = NSRect.zero
+
+        func set(_ rect: NSRect) {
+            lock.lock()
+            value = rect
+            lock.unlock()
+        }
+
+        var rect: NSRect {
+            lock.lock()
+            let current = value
+            lock.unlock()
+            return current
+        }
+    }
+
+    let drawnRect = RectBox()
+    let image = NSImage(size: NSSize(width: 17, height: 22), flipped: true) { rect in
+        drawnRect.set(rect)
+        NSColor.systemGreen.setFill()
+        NSRect(x: 2, y: 3, width: 4, height: 5).fill()
+        NSColor.labelColor.withAlphaComponent(0.25).setStroke()
+        NSBezierPath(ovalIn: NSRect(x: 7, y: 8, width: 3, height: 3)).stroke()
+        return true
+    }
+
+    #expect(image.size == NSSize(width: 17, height: 22))
+    #expect(drawnRect.rect == NSRect(origin: .zero, size: NSSize(width: 17, height: 22)))
+    #expect(image._omniDrawingCommands.count == 2)
+    #expect(image._omniDrawingCommands[0].kind == .fillRect)
+    #expect(image._omniDrawingCommands[0].rect == NSRect(x: 2, y: 3, width: 4, height: 5))
+    #expect(image._omniDrawingCommands[0].colorName == "systemGreen")
+    #expect(image._omniDrawingCommands[1].kind == .strokeOval)
+    #expect(image._omniDrawingCommands[1].rect == NSRect(x: 7, y: 8, width: 3, height: 3))
+    #expect(image._omniDrawingCommands[1].alpha == 0.25)
+
+    image.isTemplate = true
+    #expect(image.isTemplate)
+}
+
+@Test func linuxNSBezierPathRecordsMovedLineStrokes() async throws {
+    let image = NSImage(size: NSSize(width: 20, height: 8), flipped: false) { _ in
+        NSColor.labelColor.withAlphaComponent(0.5).setStroke()
+        let underline = NSBezierPath()
+        underline.move(to: NSPoint(x: 2, y: 4))
+        underline.line(to: NSPoint(x: 18, y: 4))
+        underline.lineWidth = 2
+        underline.stroke()
+        return true
+    }
+
+    #expect(image._omniDrawingCommands.count == 1)
+    #expect(image._omniDrawingCommands[0].kind == .strokeLine)
+    #expect(image._omniDrawingCommands[0].rect == NSRect(x: 2, y: 3, width: 16, height: 2))
+    #expect(image._omniDrawingCommands[0].alpha == 0.5)
+}
+
+@Test func linuxPopoverTracksActiveHostedSwiftUIView() async throws {
+    let button = NSButton()
+    let controller = NSHostingController(rootView: Text("Menu Item"))
+    let popover = NSPopover()
+    let notifications = ThreadSafeCounter()
+    let token = NotificationCenter.default.addObserver(
+        forName: NSPopover.didChangePopoverNotification,
+        object: nil,
+        queue: nil
+    ) { _ in
+        notifications.increment()
+    }
+    defer {
+        NotificationCenter.default.removeObserver(token)
+    }
+
+    popover.contentViewController = controller
+    popover.show(relativeTo: .zero, of: button, preferredEdge: .minY)
+    #expect(popover.isShown)
+    #expect(NSPopover.activeContentView != nil)
+    #expect(notifications.count == 1)
+
+    popover.performClose(nil)
+    #expect(!popover.isShown)
+    #expect(NSPopover.activeContentView == nil)
+    #expect(notifications.count == 2)
+}
+
+@Test func linuxStandardResponderActionsDispatchThroughMenuItemsAndButtons() async throws {
+    let view = ResponderActionProbeView()
+    let window = NSWindow()
+    window.contentView = view
+    window.makeKey()
+    #expect(window.makeFirstResponder(view))
+
+    let copyItem = NSMenuItem(title: "Copy", action: Selector("copy:"), keyEquivalent: "")
+    copyItem.target = view
+    #expect(copyItem.isEnabled)
+    #expect(copyItem.performAction())
+    #expect(view.copied == 1)
+
+    let pasteButton = NSButton()
+    pasteButton.target = view
+    pasteButton.action = Selector("paste:")
+    pasteButton.performClick(nil)
+    #expect(view.pasted == 1)
+
+    #expect(NSApp.sendAction(Selector("selectAll:"), to: nil, from: nil))
+    #expect(view.selectedAll == 1)
+
+    let menu = NSMenu()
+    let pasteItem = NSMenuItem(title: "Paste", action: Selector("paste:"), keyEquivalent: "")
+    pasteItem.target = view
+    menu.addItem(pasteItem)
+    #expect(menu.performActionForItem(at: 0))
+    #expect(view.pasted == 2)
+}
+
+@Test func linuxCustomSelectorActionsDispatchThroughRegisteredHandlers() async throws {
+    final class Target: NSObject {
+        var senders: [Any] = []
+    }
+
+    let target = Target()
+    let selector = Selector("performCustomAction:")
+    target._omniRegisterSelectorAction(selector) { sender in
+        target.senders.append(sender as Any)
+    }
+
+    let item = NSMenuItem(title: "Custom", action: selector, keyEquivalent: "")
+    item.target = target
+    #expect(item.isEnabled)
+    #expect(item.performAction("menu-sender"))
+    #expect(target.senders.count == 1)
+    #expect(target.senders.first as? String == "menu-sender")
+
+    let button = NSButton()
+    button.target = target
+    button.action = selector
+    button.performClick("button-sender")
+    #expect(target.senders.count == 2)
+    #expect(target.senders.last as? String == "button-sender")
+}
+
+@Test func linuxSelectorsNormalizeQualifiedGeneratedSpellings() async throws {
+    final class Target: NSObject {
+        var count = 0
+    }
+
+    let target = Target()
+    target._omniRegisterSelectorAction(Selector("Coordinator.submit")) { _ in
+        target.count += 1
+    }
+
+    #expect(Selector("NSResponder.insertNewline:") == Selector("insertNewline:"))
+    #expect(NSApp.sendAction(Selector("submit"), to: target, from: nil))
+    #expect(target.count == 1)
+}
+
+@Test func linuxWindowSendEventInterceptorsCanConsumeEventsBeforeLocalMonitors() async throws {
+    let window = NSWindow()
+    let event = NSEvent()
+    event.type = .leftMouseDown
+    event.locationInWindow = NSPoint(x: 12, y: 34)
+
+    let interceptedLocations = PointCaptureBox()
+    let interceptor = NSWindow._omniAddSendEventInterceptor { interceptedWindow, interceptedEvent in
+        guard interceptedWindow === window else { return false }
+        interceptedLocations.append(interceptedEvent.locationInWindow)
+        return true
+    }
+    defer { NSWindow._omniRemoveSendEventInterceptor(interceptor) }
+
+    var monitorCount = 0
+    let monitor = NSEvent.addLocalMonitorForEvents(matching: [.leftMouseDown]) { event in
+        _ = event
+        monitorCount += 1
+        return event
+    }
+    defer {
+        if let monitor {
+            NSEvent.removeMonitor(monitor)
+        }
+    }
+
+    window.sendEvent(event)
+
+    #expect(interceptedLocations.snapshot == [NSPoint(x: 12, y: 34)])
+    #expect(window.mouseLocationOutsideOfEventStream == NSPoint(x: 12, y: 34))
+    #expect(monitorCount == 0)
+}
+
+@Test func linuxApplicationSendEventRoutesThroughKeyWindow() async throws {
+    let previousKeyWindow = NSApp.keyWindow
+    defer {
+        NSApp.keyWindow = previousKeyWindow
+    }
+
+    let window = NSWindow()
+    window.makeKey()
+
+    let event = NSEvent()
+    event.type = .leftMouseDown
+    event.locationInWindow = NSPoint(x: 44, y: 55)
+
+    let interceptedLocations = PointCaptureBox()
+    let interceptor = NSWindow._omniAddSendEventInterceptor { interceptedWindow, interceptedEvent in
+        guard interceptedWindow === window else { return false }
+        interceptedLocations.append(interceptedEvent.locationInWindow)
+        return true
+    }
+    defer { NSWindow._omniRemoveSendEventInterceptor(interceptor) }
+
+    var monitorCount = 0
+    let monitor = NSEvent.addLocalMonitorForEvents(matching: .leftMouseDown) { event in
+        _ = event
+        monitorCount += 1
+        return event
+    }
+    defer {
+        if let monitor {
+            NSEvent.removeMonitor(monitor)
+        }
+    }
+
+    NSApp.sendEvent(event)
+
+    #expect(interceptedLocations.snapshot == [NSPoint(x: 44, y: 55)])
+    #expect(window.mouseLocationOutsideOfEventStream == NSPoint(x: 44, y: 55))
+    #expect(monitorCount == 0)
+}
+
+@Test func linuxWindowSendEventPresentsContextMenuAfterMonitorsDecline() async throws {
+    NSMenu.dismissActiveMenu()
+    let previousKeyWindow = NSApp.keyWindow
+    defer {
+        NSApp.keyWindow = previousKeyWindow
+        NSMenu.dismissActiveMenu()
+    }
+
+    let view = ContextMenuProbeView(frame: NSRect(x: 0, y: 0, width: 120, height: 80))
+    let window = NSWindow()
+    window.contentView = view
+    window.makeKey()
+
+    var monitorCount = 0
+    let monitor = NSEvent.addLocalMonitorForEvents(matching: .rightMouseDown) { event in
+        monitorCount += 1
+        return event
+    }
+    defer {
+        if let monitor {
+            NSEvent.removeMonitor(monitor)
+        }
+    }
+
+    let event = NSEvent()
+    event.type = .rightMouseDown
+    event.locationInWindow = NSPoint(x: 10, y: 12)
+
+    window.sendEvent(event)
+
+    #expect(monitorCount == 1)
+    #expect(view.menuPresentationCount == 1)
+    #expect(NSMenu.activeMenu?.title == "Context")
+}
+
+@Test func linuxWindowSendEventRoutesScrollWheelAfterMonitorsDecline() async throws {
+    let previousKeyWindow = NSApp.keyWindow
+    defer {
+        NSApp.keyWindow = previousKeyWindow
+    }
+
+    let root = ScrollWheelProbeView(frame: NSRect(x: 0, y: 0, width: 320, height: 240))
+    let child = ScrollWheelProbeView(frame: NSRect(x: 40, y: 50, width: 120, height: 80))
+    root.addSubview(child)
+
+    let window = NSWindow()
+    window.contentView = root
+    window.makeKey()
+
+    var monitorCount = 0
+    let monitor = NSEvent.addLocalMonitorForEvents(matching: .scrollWheel) { event in
+        monitorCount += 1
+        return event
+    }
+    defer {
+        if let monitor {
+            NSEvent.removeMonitor(monitor)
+        }
+    }
+
+    let event = NSEvent()
+    event.type = .scrollWheel
+    event.locationInWindow = NSPoint(x: 70, y: 90)
+    event.scrollingDeltaX = 4
+    event.scrollingDeltaY = -9
+
+    window.sendEvent(event)
+
+    #expect(monitorCount == 1)
+    #expect(child.scrollEvents.count == 1)
+    #expect(root.scrollEvents.count == 1)
+    #expect(child.scrollEvents.first?.scrollingDeltaY == -9)
+}
+
+@Test func linuxMenusTrackAppKitStyleItemStateAndStructure() async throws {
+    let view = ResponderActionProbeView()
+    let window = NSWindow()
+    window.contentView = view
+    window.makeKey()
+    #expect(window.makeFirstResponder(view))
+
+    let menu = NSMenu(title: "Terminal")
+    let copyItem = NSMenuItem(title: "Copy", action: Selector("copy:"), keyEquivalent: "c")
+    copyItem.target = view
+    copyItem.keyEquivalentModifierMask = [.command]
+    copyItem.state = .on
+    copyItem.representedObject = "copy-command"
+    copyItem.toolTip = "Copy selection"
+    copyItem.tag = 42
+
+    let submenu = NSMenu(title: "Open With")
+    copyItem.submenu = submenu
+    menu.addItem(copyItem)
+
+    #expect(menu.title == "Terminal")
+    #expect(menu.numberOfItems == 1)
+    #expect(menu.item(at: 0) === copyItem)
+    #expect(menu.index(of: copyItem) == 0)
+    #expect(copyItem.menu === menu)
+    #expect(copyItem.submenu === submenu)
+    #expect(submenu.supermenu === menu)
+    #expect(copyItem.keyEquivalentModifierMask.contains(.command))
+    #expect(copyItem.state == .on)
+    #expect(copyItem.representedObject as? String == "copy-command")
+    #expect(copyItem.toolTip == "Copy selection")
+    #expect(copyItem.tag == 42)
+    #expect(menu.performActionForItem(at: 0))
+    #expect(view.copied == 1)
+
+    copyItem.isEnabled = false
+    #expect(!copyItem.isEnabled)
+    #expect(!menu.performActionForItem(at: 0))
+    #expect(view.copied == 1)
+
+    copyItem.isEnabled = true
+    copyItem.isHidden = true
+    #expect(!menu.performActionForItem(at: 0))
+    #expect(view.copied == 1)
+
+    let separator = NSMenuItem.separator()
+    menu.insertItem(separator, at: 0)
+    #expect(menu.numberOfItems == 2)
+    #expect(separator.isSeparatorItem)
+    #expect(separator.menu === menu)
+    #expect(!menu.performActionForItem(at: 0))
+
+    menu.removeItem(separator)
+    #expect(separator.menu == nil)
+    #expect(menu.numberOfItems == 1)
+
+    menu.removeAllItems()
+    #expect(menu.items.isEmpty)
+    #expect(copyItem.menu == nil)
+    #expect(submenu.supermenu == nil)
+}
+
+@Test func linuxContextMenusCanBePresentedFromFirstResponder() async throws {
+    let view = ContextMenuProbeView()
+    let window = NSWindow()
+    window.contentView = view
+    window.makeKey()
+    #expect(window.makeFirstResponder(view))
+
+    let event = NSEvent()
+    event.type = .rightMouseDown
+    event.locationInWindow = NSPoint(x: 8, y: 9)
+
+    #expect(_omniPresentContextMenu(for: event))
+    #expect(NSMenu.activeMenu?.title == "Context")
+    #expect(NSMenu.activeMenu?.numberOfItems == 3)
+    #expect(NSMenu.activeContentView != nil)
+
+    #expect(NSMenu.activeMenu?.performActionForItem(at: 0) == true)
+    #expect(view.copied == 1)
+
+    NSMenu.dismissActiveMenu()
+    #expect(NSMenu.activeMenu == nil)
+}
+
+@Test func linuxContextMenusUseClickedNativeViewBeforeFirstResponder() async throws {
+    let root = NSView(frame: NSRect(x: 0, y: 0, width: 320, height: 240))
+    let clicked = ContextMenuProbeView(frame: NSRect(x: 40, y: 50, width: 120, height: 80))
+    let responder = ResponderActionProbeView(frame: NSRect(x: 180, y: 40, width: 60, height: 60))
+    root.addSubview(clicked)
+    root.addSubview(responder)
+
+    let window = NSWindow()
+    window.contentView = root
+    window.makeKey()
+    #expect(window.makeFirstResponder(responder))
+
+    let event = NSEvent()
+    event.type = .rightMouseDown
+    event.locationInWindow = NSPoint(x: 70, y: 90)
+
+    #expect(_omniPresentContextMenu(for: event))
+    #expect(clicked.menuPresentationCount == 1)
+    #expect(clicked.lastMenuEventLocation == NSPoint(x: 70, y: 90))
+    #expect(NSMenu.activeMenu?.title == "Context")
+
+    NSMenu.dismissActiveMenu()
+}
+
+@Test func linuxScrollWheelDispatchesThroughClickedNativeViewHierarchy() async throws {
+    let root = ScrollWheelProbeView(frame: NSRect(x: 0, y: 0, width: 320, height: 240))
+    let clicked = ScrollWheelProbeView(frame: NSRect(x: 40, y: 50, width: 120, height: 80))
+    root.addSubview(clicked)
+
+    let window = NSWindow()
+    window.contentView = root
+    window.makeKey()
+    window._recordMouseLocation(NSPoint(x: 72, y: 96))
+
+    let event = NSEvent()
+    event.type = .scrollWheel
+    event.locationInWindow = window.mouseLocationOutsideOfEventStream
+    event.scrollingDeltaX = 3
+    event.scrollingDeltaY = -7
+
+    #expect(_omniDispatchScrollWheel(for: event))
+    #expect(clicked.scrollEvents.count == 1)
+    #expect(clicked.scrollEvents.first?.locationInWindow == NSPoint(x: 72, y: 96))
+    #expect(clicked.scrollEvents.first?.scrollingDeltaX == 3)
+    #expect(clicked.scrollEvents.first?.scrollingDeltaY == -7)
+    #expect(root.scrollEvents.count == 1)
+}
+
+@Test func linuxApplicationTracksWindowsKeyWindowAndRunningApplication() async throws {
+    let existingWindows = NSApp.windows
+    for window in existingWindows {
+        NSApp.windows.removeAll { $0 === window }
+    }
+    NSApp.keyWindow = nil
+
+    let first = NSWindow()
+    let second = NSWindow()
+    #expect(NSApp.windows.contains { $0 === first })
+    #expect(NSApp.windows.contains { $0 === second })
+
+    second.makeKeyAndOrderFront(nil)
+    #expect(NSApp.keyWindow === second)
+
+    let bundleID = "dev.omnikit.tests"
+    let running = NSRunningApplication.runningApplications(withBundleIdentifier: bundleID)
+    #expect(running.count == 1)
+    #expect(running.first?.bundleIdentifier == bundleID)
+    #expect(running.first?.processIdentifier == ProcessInfo.processInfo.processIdentifier)
+
+    _ = first
+    _ = second
+}
+
+@Test func linuxWindowKeyTransitionsPostAppKitNotifications() async throws {
+    final class Box: @unchecked Sendable {
+        var events: [String] = []
+    }
+
+    let existingWindows = NSApp.windows
+    for window in existingWindows {
+        NSApp.windows.removeAll { $0 === window }
+    }
+    NSApp.keyWindow = nil
+
+    let first = NSWindow()
+    let second = NSWindow()
+    let box = Box()
+    let center = NotificationCenter.default
+    let firstID = ObjectIdentifier(first)
+    @Sendable func label(for note: Notification, firstLabel: String, secondLabel: String) -> String {
+        guard let object = note.object as AnyObject? else { return secondLabel }
+        return ObjectIdentifier(object) == firstID ? firstLabel : secondLabel
+    }
+    let tokens = [
+        center.addObserver(forName: NSWindow.didBecomeKeyNotification, object: nil, queue: nil) { note in
+            box.events.append(label(for: note, firstLabel: "first became key", secondLabel: "second became key"))
+        },
+        center.addObserver(forName: NSWindow.didBecomeMainNotification, object: nil, queue: nil) { note in
+            box.events.append(label(for: note, firstLabel: "first became main", secondLabel: "second became main"))
+        },
+        center.addObserver(forName: NSWindow.didResignKeyNotification, object: nil, queue: nil) { note in
+            box.events.append(label(for: note, firstLabel: "first resigned key", secondLabel: "second resigned key"))
+        },
+        center.addObserver(forName: NSWindow.didResignMainNotification, object: nil, queue: nil) { note in
+            box.events.append(label(for: note, firstLabel: "first resigned main", secondLabel: "second resigned main"))
+        },
+    ]
+    defer {
+        for token in tokens { center.removeObserver(token) }
+    }
+
+    first.makeKey()
+    second.makeKey()
+    second.makeKey()
+
+    #expect(box.events == [
+        "first became key",
+        "first became main",
+        "first resigned key",
+        "first resigned main",
+        "second became key",
+        "second became main",
+    ])
+}
+
+@Test func linuxApplicationActivateAndOrderFrontInvokeActivationHandler() async throws {
+    #if os(Linux)
+    final class Box: @unchecked Sendable {
+        var activations = 0
+    }
+
+    let box = Box()
+    _omniSetApplicationActivationHandler {
+        box.activations += 1
+    }
+    defer { _omniSetApplicationActivationHandler(nil) }
+
+    NSApp.activate(ignoringOtherApps: true)
+    #expect(box.activations == 1)
+
+    let window = NSWindow()
+    window.makeKeyAndOrderFront(nil)
+    #expect(NSApp.keyWindow === window)
+    #expect(box.activations == 2)
+
+    NSRunningApplication(processIdentifier: ProcessInfo.processInfo.processIdentifier)
+        .activate(options: [])
+    #expect(box.activations == 3)
+    #endif
+}
+
+@Test func linuxApplicationTerminatePostsWillTerminateNotification() async throws {
+    let previous = getenv("OMNIKIT_SUPPRESS_TERMINATE").map { String(cString: $0) }
+    defer {
+        if let previous {
+            setenv("OMNIKIT_SUPPRESS_TERMINATE", previous, 1)
+        } else {
+            unsetenv("OMNIKIT_SUPPRESS_TERMINATE")
+        }
+    }
+    setenv("OMNIKIT_SUPPRESS_TERMINATE", "1", 1)
+
+    final class Box: @unchecked Sendable {
+        var notifications: [Notification] = []
+    }
+
+    let box = Box()
+    let observer = NotificationCenter.default.addObserver(
+        forName: NSApplication.willTerminateNotification,
+        object: NSApp,
+        queue: nil
+    ) { notification in
+        box.notifications.append(notification)
+    }
+    defer { NotificationCenter.default.removeObserver(observer) }
+
+    NSApp.terminate("quit")
+
+    #expect(box.notifications.count == 1)
+    #expect(box.notifications.first?.object as? NSApplication === NSApp)
+}
+
+@Test func linuxApplicationDelegateAdaptorInstallsDelegateOnSharedApplication() async throws {
+    final class TestApplicationDelegate: NSApplicationDelegate {
+        var sender: NSApplication?
+
+        init() {}
+
+        func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
+            self.sender = sender
+            return true
+        }
+    }
+
+    let previousDelegate = NSApp.delegate
+    defer { NSApp.delegate = previousDelegate }
+
+    let adaptor = NSApplicationDelegateAdaptor(TestApplicationDelegate.self)
+
+    #expect(NSApp.delegate === adaptor.wrappedValue)
+    #expect(NSApp.applicationShouldTerminateAfterLastWindowClosed())
+    #expect(adaptor.wrappedValue.sender === NSApp)
+}
+
+@Test func linuxNSAlertTracksButtonsAndSupportsHeadlessResponseOverride() async throws {
+    #if os(Linux)
+    let captureURL = URL(fileURLWithPath: NSTemporaryDirectory())
+        .appendingPathComponent("omnikit-alert-\(UUID().uuidString).log")
+    let previous = getenv("OMNIKIT_ALERT_RESPONSE").map { String(cString: $0) }
+    let previousCapture = getenv("OMNIKIT_DESKTOP_PROCESS_CAPTURE").map { String(cString: $0) }
+    defer {
+        try? FileManager.default.removeItem(at: captureURL)
+        if let previous {
+            setenv("OMNIKIT_ALERT_RESPONSE", previous, 1)
+        } else {
+            unsetenv("OMNIKIT_ALERT_RESPONSE")
+        }
+        if let previousCapture {
+            setenv("OMNIKIT_DESKTOP_PROCESS_CAPTURE", previousCapture, 1)
+        } else {
+            unsetenv("OMNIKIT_DESKTOP_PROCESS_CAPTURE")
+        }
+    }
+    unsetenv("OMNIKIT_ALERT_RESPONSE")
+    setenv("OMNIKIT_DESKTOP_PROCESS_CAPTURE", captureURL.path, 1)
+
+    let alert = NSAlert()
+    alert.messageText = "Install CLI Symlink"
+    alert.informativeText = "Created /usr/local/bin/example-cli"
+    alert.alertStyle = .informational
+    alert.showsSuppressionButton = true
+    let first = alert.addButton(withTitle: "OK")
+    let second = alert.addButton(withTitle: "Show Details")
+
+    #expect(first.title == "OK")
+    #expect(second.title == "Show Details")
+    #expect(alert.buttons.map(\.title) == ["OK", "Show Details"])
+    #expect(alert.runModal() == .OK)
+    let captured = try String(contentsOf: captureURL, encoding: .utf8)
+    #expect(captured.contains("zenity\t--question"))
+    #expect(captured.contains("--ok-label=OK"))
+
+    setenv("OMNIKIT_ALERT_RESPONSE", "\(NSApplication.ModalResponse.alertSecondButtonReturn.rawValue)", 1)
+    #expect(alert.runModal() == .alertSecondButtonReturn)
+    #endif
+}
+
+@Test func linuxWorkspaceOpenUsesDesktopProcessCaptureForFileAndAppLaunches() async throws {
+    #if os(Linux)
+    let captureURL = URL(fileURLWithPath: NSTemporaryDirectory())
+        .appendingPathComponent("omnikit-workspace-\(UUID().uuidString).log")
+    let previous = getenv("OMNIKIT_DESKTOP_PROCESS_CAPTURE").map { String(cString: $0) }
+    defer {
+        try? FileManager.default.removeItem(at: captureURL)
+        if let previous {
+            setenv("OMNIKIT_DESKTOP_PROCESS_CAPTURE", previous, 1)
+        } else {
+            unsetenv("OMNIKIT_DESKTOP_PROCESS_CAPTURE")
+        }
+    }
+    setenv("OMNIKIT_DESKTOP_PROCESS_CAPTURE", captureURL.path, 1)
+    let launcherURL = URL(fileURLWithPath: NSTemporaryDirectory())
+        .appendingPathComponent("omnikit-launcher-\(UUID().uuidString)")
+    try "#!/bin/sh\nexit 0\n".write(to: launcherURL, atomically: true, encoding: .utf8)
+    chmod(launcherURL.path, 0o755)
+    defer { try? FileManager.default.removeItem(at: launcherURL) }
+
+    #expect(NSWorkspace.shared.open(URL(fileURLWithPath: "/tmp/Omni Notes/readme.md")))
+    #expect(NSWorkspace.shared.open(URL(string: "https://example.com/docs")!))
+    #expect(NSWorkspace.shared.open(
+        [URL(fileURLWithPath: "/tmp/one.md"), URL(fileURLWithPath: "/tmp/two.md")],
+        withApplicationAt: launcherURL,
+        configuration: NSWorkspace.OpenConfiguration()
+    ))
+    NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: "/tmp/three.md")])
+    #expect(NSWorkspace.shared.selectFile(nil, inFileViewerRootedAtPath: "/tmp/root"))
+
+    let lines = (try String(contentsOf: captureURL, encoding: .utf8))
+        .split(separator: "\n")
+        .map(String.init)
+
+    #expect(lines.contains("gio\topen\t/tmp/Omni Notes/readme.md"))
+    #expect(lines.contains("gio\topen\thttps://example.com/docs"))
+    #expect(lines.contains("\(launcherURL.path)\t/tmp/one.md"))
+    #expect(lines.contains("\(launcherURL.path)\t/tmp/two.md"))
+    #expect(lines.contains("gio\topen\t/tmp/three.md"))
+    #expect(lines.contains("gio\topen\t/tmp/root"))
+    #endif
+}
+
+@Test func linuxWorkspaceOpenResolvesExecutableInsideAppBundles() async throws {
+    #if os(Linux)
+    let captureURL = URL(fileURLWithPath: NSTemporaryDirectory())
+        .appendingPathComponent("omnikit-workspace-app-\(UUID().uuidString).log")
+    let bundleURL = URL(fileURLWithPath: NSTemporaryDirectory())
+        .appendingPathComponent("DemoEditor.app", isDirectory: true)
+    let executableDirectory = bundleURL
+        .appendingPathComponent("Contents", isDirectory: true)
+        .appendingPathComponent("MacOS", isDirectory: true)
+    let executableURL = executableDirectory.appendingPathComponent("DemoEditor")
+    let previous = getenv("OMNIKIT_DESKTOP_PROCESS_CAPTURE").map { String(cString: $0) }
+    defer {
+        try? FileManager.default.removeItem(at: captureURL)
+        try? FileManager.default.removeItem(at: bundleURL)
+        if let previous {
+            setenv("OMNIKIT_DESKTOP_PROCESS_CAPTURE", previous, 1)
+        } else {
+            unsetenv("OMNIKIT_DESKTOP_PROCESS_CAPTURE")
+        }
+    }
+    try FileManager.default.createDirectory(at: executableDirectory, withIntermediateDirectories: true)
+    try "#!/bin/sh\nexit 0\n".write(to: executableURL, atomically: true, encoding: .utf8)
+    chmod(executableURL.path, 0o755)
+    setenv("OMNIKIT_DESKTOP_PROCESS_CAPTURE", captureURL.path, 1)
+
+    #expect(NSWorkspace.shared.open(
+        [URL(fileURLWithPath: "/tmp/one.md")],
+        withApplicationAt: bundleURL,
+        configuration: NSWorkspace.OpenConfiguration()
+    ))
+
+    let lines = (try String(contentsOf: captureURL, encoding: .utf8))
+        .split(separator: "\n")
+        .map(String.init)
+    #expect(lines == ["\(executableURL.path)\t/tmp/one.md"])
+    #endif
+}
+
+@Test func linuxWorkspaceOpenReportsFailureForMissingExplicitApplication() async throws {
+    #if os(Linux)
+    let previous = getenv("OMNIKIT_DESKTOP_PROCESS_CAPTURE").map { String(cString: $0) }
+    defer {
+        if let previous {
+            setenv("OMNIKIT_DESKTOP_PROCESS_CAPTURE", previous, 1)
+        } else {
+            unsetenv("OMNIKIT_DESKTOP_PROCESS_CAPTURE")
+        }
+    }
+    unsetenv("OMNIKIT_DESKTOP_PROCESS_CAPTURE")
+
+    #expect(!NSWorkspace.shared.open(
+        [URL(fileURLWithPath: "/tmp/one.md")],
+        withApplicationAt: URL(fileURLWithPath: "/definitely/not/a/linux/editor"),
+        configuration: NSWorkspace.OpenConfiguration()
+    ))
+    #endif
+}
+
+@Test func linuxFilePanelsHonorSelectionOverrideForDirectoriesAndMultipleFiles() async throws {
+    #if os(Linux)
+    let previous = getenv("OMNIKIT_FILE_PANEL_SELECTION").map { String(cString: $0) }
+    defer {
+        if let previous {
+            setenv("OMNIKIT_FILE_PANEL_SELECTION", previous, 1)
+        } else {
+            unsetenv("OMNIKIT_FILE_PANEL_SELECTION")
+        }
+    }
+
+    setenv("OMNIKIT_FILE_PANEL_SELECTION", "/tmp/one.md\n/tmp/two.md", 1)
+    let openPanel = NSOpenPanel()
+    openPanel.allowsMultipleSelection = true
+    #expect(openPanel.runModal() == .OK)
+    #expect(openPanel.url?.path == "/tmp/one.md")
+    #expect(openPanel.urls.map(\.path) == ["/tmp/one.md", "/tmp/two.md"])
+
+    setenv("OMNIKIT_FILE_PANEL_SELECTION", "file:///tmp/omni-workspace", 1)
+    let directoryPanel = NSOpenPanel()
+    directoryPanel.title = "Select Directory"
+    directoryPanel.canChooseDirectories = true
+    directoryPanel.canChooseFiles = false
+    directoryPanel.allowsMultipleSelection = false
+    directoryPanel.canCreateDirectories = false
+    #expect(directoryPanel.runModal() == .OK)
+    #expect(directoryPanel.url?.path == "/tmp/omni-workspace")
+    #expect(directoryPanel.urls.map(\.path) == ["/tmp/omni-workspace"])
+
+    setenv("OMNIKIT_FILE_PANEL_SELECTION", "file:///tmp/new-omni-workspace", 1)
+    let newDirectoryPanel = NSOpenPanel()
+    newDirectoryPanel.title = "Choose Directory"
+    newDirectoryPanel.canChooseDirectories = true
+    newDirectoryPanel.canChooseFiles = false
+    newDirectoryPanel.allowsMultipleSelection = false
+    newDirectoryPanel.canCreateDirectories = true
+    #expect(newDirectoryPanel.runModal() == .OK)
+    #expect(newDirectoryPanel.url?.path == "/tmp/new-omni-workspace")
+    #expect(newDirectoryPanel.urls.map(\.path) == ["/tmp/new-omni-workspace"])
+
+    let savePanel = NSSavePanel()
+    savePanel.allowedContentTypes = [UTType(filenameExtension: "md") ?? .plainText, .plainText]
+    savePanel.nameFieldStringValue = "draft.md"
+    savePanel.directoryURL = URL(fileURLWithPath: "/tmp", isDirectory: true)
+    setenv("OMNIKIT_FILE_PANEL_SELECTION", "/tmp/notes.md", 1)
+    #expect(savePanel.runModal() == .OK)
+    #expect(savePanel.url?.path == "/tmp/notes.md")
+
+    let bareSavePanel = NSSavePanel()
+    bareSavePanel.allowedContentTypes = [UTType(filenameExtension: "md") ?? .plainText]
+    setenv("OMNIKIT_FILE_PANEL_SELECTION", "/tmp/notes-without-extension", 1)
+    #expect(bareSavePanel.runModal() == .OK)
+    #expect(bareSavePanel.url?.path == "/tmp/notes-without-extension.md")
+
+    let hiddenExtensionSavePanel = NSSavePanel()
+    hiddenExtensionSavePanel.allowedContentTypes = [UTType(filenameExtension: "md") ?? .plainText]
+    hiddenExtensionSavePanel.isExtensionHidden = true
+    setenv("OMNIKIT_FILE_PANEL_SELECTION", "/tmp/hidden-extension-choice", 1)
+    #expect(hiddenExtensionSavePanel.runModal() == .OK)
+    #expect(hiddenExtensionSavePanel.url?.path == "/tmp/hidden-extension-choice")
+
+    let legacyPanel = NSSavePanel()
+    legacyPanel.allowedFileTypes = ["markdown", ".txt"]
+    legacyPanel.nameFieldStringValue = "draft"
+    legacyPanel.prompt = "Choose"
+    legacyPanel.message = "Pick a markdown file"
+    legacyPanel.showsHiddenFiles = true
+    setenv("OMNIKIT_FILE_PANEL_SELECTION", "/tmp/legacy-choice", 1)
+    var sheetResponse: NSApplication.ModalResponse?
+    legacyPanel.beginSheetModal(for: NSWindow()) { response in
+        sheetResponse = response
+    }
+    #expect(sheetResponse == .OK)
+    #expect(legacyPanel.allowedFileTypes == ["markdown", "txt"])
+    #expect(legacyPanel.url?.path == "/tmp/legacy-choice.markdown")
+    #endif
+}
+
+@Test func linuxGTKFilePanelsMapAppKitDirectoryOptions() async throws {
+    #if os(Linux)
+    let testFile = URL(fileURLWithPath: #filePath)
+    let repositoryRoot = testFile
+        .deletingLastPathComponent()
+        .deletingLastPathComponent()
+        .deletingLastPathComponent()
+    let source = try String(
+        contentsOf: repositoryRoot.appendingPathComponent("Sources/OmniUICore/AppKitLinuxCompat.swift"),
+        encoding: .utf8
+    )
+
+    #expect(source.contains("let createDirectories = canCreateDirectories ? \"1\" : \"0\""))
+    #expect(source.contains("let showHidden = showsHiddenFiles ? \"1\" : \"0\""))
+    #expect(source.contains("dialog.set_create_folders(True)"))
+    #expect(source.contains("dialog.set_show_hidden(True)"))
+    #expect(source.contains("accept = prompt if prompt else"))
+    #expect(source.contains("if multiple == \"1\" and mode != \"save\":"))
+    #expect(source.contains("mode, chooserTitle, message, prompt, directory, name, multiple, createDirectories, showHidden, extensions"))
+    #endif
+}
+
+@Test func linuxPasteboardSupportsStringAndURLObjects() async throws {
+    let pasteboard = NSPasteboard()
+    pasteboard.clearContents()
+
+    #expect(pasteboard.setString("/tmp/file.txt", forType: .fileURL))
+    #expect(pasteboard.string(forType: .fileURL) == "/tmp/file.txt")
+    #expect(pasteboard.string(forType: .string) == "/tmp/file.txt")
+    #expect(pasteboard.types.contains(.fileURL))
+
+    pasteboard.clearContents()
+    #expect(pasteboard.writeObjects([URL(fileURLWithPath: "/tmp/readme.md"), "fallback"]))
+    #expect(pasteboard.string(forType: .fileURL) == "file:///tmp/readme.md")
+    #expect(pasteboard.canReadObject(forClasses: [NSURL.self]))
+    #expect(pasteboard.canReadObject(forClasses: [NSString.self]))
+    let urls = pasteboard.readObjects(forClasses: [NSURL.self]) as? [NSURL]
+    #expect(urls?.first?.path == "/tmp/readme.md")
+
+    pasteboard.clearContents()
+    #expect(pasteboard.writeObjects([
+        URL(fileURLWithPath: "/tmp/one.md"),
+        URL(fileURLWithPath: "/tmp/two.md"),
+    ]))
+    let multipleURLs = pasteboard.readObjects(forClasses: [NSURL.self]) as? [NSURL]
+    #expect(multipleURLs?.map(\.path) == ["/tmp/one.md", "/tmp/two.md"])
+
+    pasteboard.clearContents()
+    #expect(pasteboard.writeObjects([URL(string: "https://example.com/docs")!]))
+    #expect(pasteboard.string(forType: .URL) == "https://example.com/docs")
+    let remoteURLs = pasteboard.readObjects(forClasses: [NSURL.self]) as? [NSURL]
+    #expect(remoteURLs?.first?.absoluteString == "https://example.com/docs")
+}
+
+@Test func linuxPasteboardSupportsDataPropertyListsAndDeclaredTypes() async throws {
+    let pasteboard = NSPasteboard()
+    let customType: NSPasteboard.PasteboardType = "com.example.payload"
+    let plistType: NSPasteboard.PasteboardType = "com.example.property-list"
+
+    #expect(pasteboard.declareTypes([customType, .string], owner: nil) == 2)
+    #expect(pasteboard.availableType(from: [.fileURL, customType, .string]) == customType)
+
+    let payload = Data([0xde, 0xad, 0xbe, 0xef])
+    #expect(pasteboard.setData(payload, forType: customType))
+    #expect(pasteboard.data(forType: customType) == payload)
+    #expect(!pasteboard.canReadObject(forClasses: [NSURL.self]))
+
+    let propertyList: [String: Any] = ["path": "/tmp/readme.md", "count": 2]
+    #expect(pasteboard.setPropertyList(propertyList, forType: plistType))
+    let readBack = pasteboard.propertyList(forType: plistType) as? [String: Any]
+    #expect(readBack?["path"] as? String == "/tmp/readme.md")
+    #expect(readBack?["count"] as? Int == 2)
+    #expect(pasteboard.availableType(from: [.URL, plistType]) == plistType)
+}
+
+@Test func generalPasteboardClearAndSetSynchronizeLinuxDesktopClipboard() async throws {
+    #if os(Linux)
+    let captureURL = URL(fileURLWithPath: NSTemporaryDirectory())
+        .appendingPathComponent("omnikit-pasteboard-\(UUID().uuidString).log")
+    let previous = getenv("OMNIKIT_DESKTOP_PROCESS_CAPTURE").map { String(cString: $0) }
+    defer {
+        try? FileManager.default.removeItem(at: captureURL)
+        if let previous {
+            setenv("OMNIKIT_DESKTOP_PROCESS_CAPTURE", previous, 1)
+        } else {
+            unsetenv("OMNIKIT_DESKTOP_PROCESS_CAPTURE")
+        }
+    }
+    setenv("OMNIKIT_DESKTOP_PROCESS_CAPTURE", captureURL.path, 1)
+
+    NSPasteboard.general.clearContents()
+    NSPasteboard.general.setString("copied path", forType: .string)
+
+    let captured = try String(contentsOf: captureURL, encoding: .utf8)
+    #expect(captured.contains("wl-copy"))
+    #endif
+}
+
+@Test func linuxScrollViewOwnsClipViewAndDocumentHierarchy() async throws {
+    final class WheelProbeView: NSView {
+        var wheelCount = 0
+        override func scrollWheel(with event: NSEvent) {
+            _ = event
+            wheelCount += 1
+        }
+    }
+
+    let scrollView = NSScrollView()
+    let first = WheelProbeView()
+    scrollView.documentView = first
+
+    #expect(scrollView.subviews.contains { $0 === scrollView.contentView })
+    #expect(scrollView.contentView.superview === scrollView)
+    #expect(first.superview === scrollView.contentView)
+    #expect(first.enclosingScrollView === scrollView)
+    #expect(scrollView.contentView.documentView === first)
+
+    let window = NSWindow()
+    window.contentView = scrollView
+    #expect(first.window === window)
+
+    let event = NSEvent()
+    scrollView.scrollWheel(with: event)
+    #expect(first.wheelCount == 1)
+
+    let second = NSView()
+    scrollView.documentView = second
+    #expect(first.superview == nil)
+    #expect(first.window == nil)
+    #expect(second.superview === scrollView.contentView)
+    #expect(second.enclosingScrollView === scrollView)
+}
+
+@Test func linuxLocalEventMonitorsFilterAndCanConsumeEvents() async throws {
+    var observed: [NSEvent.EventType] = []
+    let keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
+        observed.append(event.type)
+        return event
+    }
+    let mouseMonitor = NSEvent.addLocalMonitorForEvents(matching: [.leftMouseDown, .mouseMoved]) { event in
+        observed.append(event.type)
+        return event.type == .leftMouseDown ? nil : event
+    }
+    defer {
+        if let keyMonitor { NSEvent.removeMonitor(keyMonitor) }
+        if let mouseMonitor { NSEvent.removeMonitor(mouseMonitor) }
+    }
+
+    let key = NSEvent()
+    key.type = .keyDown
+    key.charactersIgnoringModifiers = "k"
+    #expect(NSEvent._deliverLocalMonitors(key) === key)
+
+    let click = NSEvent()
+    click.type = .leftMouseDown
+    click.locationInWindow = NSPoint(x: 10, y: 12)
+    #expect(NSEvent._deliverLocalMonitors(click) == nil)
+
+    let move = NSEvent()
+    move.type = .mouseMoved
+    #expect(NSEvent._deliverLocalMonitors(move) === move)
+
+    #expect(observed == [.keyDown, .leftMouseDown, .mouseMoved])
+
+    if let keyMonitor { NSEvent.removeMonitor(keyMonitor) }
+    let secondKey = NSEvent()
+    secondKey.type = .keyDown
+    _ = NSEvent._deliverLocalMonitors(secondKey)
+    #expect(observed == [.keyDown, .leftMouseDown, .mouseMoved])
+}
+
+@Test func linuxGlobalEventMonitorsObserveDeliveredEventsWithoutConsumingThem() async throws {
+    var globalObserved: [NSEvent.EventType] = []
+    let globalMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.keyDown, .leftMouseDown]) { event in
+        globalObserved.append(event.type)
+    }
+    let consumingLocalMonitor = NSEvent.addLocalMonitorForEvents(matching: .leftMouseDown) { _ in
+        nil
+    }
+    defer {
+        if let globalMonitor { NSEvent.removeMonitor(globalMonitor) }
+        if let consumingLocalMonitor { NSEvent.removeMonitor(consumingLocalMonitor) }
+    }
+
+    let key = NSEvent()
+    key.type = .keyDown
+    #expect(NSEvent._deliverLocalMonitors(key) === key)
+
+    let click = NSEvent()
+    click.type = .leftMouseDown
+    #expect(NSEvent._deliverLocalMonitors(click) == nil)
+
+    #expect(globalObserved == [.keyDown])
+
+    if let consumingLocalMonitor {
+        NSEvent.removeMonitor(consumingLocalMonitor)
+    }
+    #expect(NSEvent._deliverLocalMonitors(click) === click)
+    #expect(globalObserved == [.keyDown, .leftMouseDown])
+
+    if let globalMonitor {
+        NSEvent.removeMonitor(globalMonitor)
+    }
+    _ = NSEvent._deliverLocalMonitors(key)
+    #expect(globalObserved == [.keyDown, .leftMouseDown])
+}
+
+@Test func linuxWindowSendEventUpdatesMouseLocationAndRunsLocalMonitors() async throws {
+    let window = NSWindow()
+    var observedLocation: NSPoint?
+    let monitor = NSEvent.addLocalMonitorForEvents(matching: .mouseMoved) { event in
+        observedLocation = event.locationInWindow
+        return event
+    }
+    defer {
+        if let monitor { NSEvent.removeMonitor(monitor) }
+    }
+
+    let event = NSEvent()
+    event.type = .mouseMoved
+    event.locationInWindow = NSPoint(x: 24, y: 36)
+    window.sendEvent(event)
+
+    #expect(window.mouseLocationOutsideOfEventStream == NSPoint(x: 24, y: 36))
+    #expect(observedLocation == NSPoint(x: 24, y: 36))
+}
+
+@Test func linuxWindowStandardButtonsExposeStableTitlebarHierarchy() async throws {
+    let window = NSWindow()
+    let closeButton = try #require(window.standardWindowButton(.closeButton))
+    let secondCloseLookup = try #require(window.standardWindowButton(.closeButton))
+    let zoomButton = try #require(window.standardWindowButton(.zoomButton))
+
+    #expect(closeButton === secondCloseLookup)
+    #expect(closeButton !== zoomButton)
+    #expect(closeButton.superview != nil)
+    #expect(closeButton.superview?.superview != nil)
+    #expect(closeButton.isBordered == false)
+}
+
+@Test func linuxWindowToggleFullScreenTracksStyleMaskAndNotifications() async throws {
+    let window = NSWindow()
+    let entered = ThreadSafeCounter()
+    let exited = ThreadSafeCounter()
+    let nc = NotificationCenter.default
+    let enterObserver = nc.addObserver(forName: NSWindow.didEnterFullScreenNotification, object: window, queue: nil) { _ in
+        entered.increment()
+    }
+    let exitObserver = nc.addObserver(forName: NSWindow.didExitFullScreenNotification, object: window, queue: nil) { _ in
+        exited.increment()
+    }
+    defer {
+        nc.removeObserver(enterObserver)
+        nc.removeObserver(exitObserver)
+    }
+
+    #expect(!window.styleMask.contains(.fullScreen))
+    window.toggleFullScreen(nil)
+    #expect(window.styleMask.contains(.fullScreen))
+    #expect(entered.count == 1)
+    #expect(exited.count == 0)
+
+    window.toggleFullScreen(nil)
+    #expect(!window.styleMask.contains(.fullScreen))
+    #expect(entered.count == 1)
+    #expect(exited.count == 1)
+}
+
+@Test func linuxKeyDownModifierMappingTreatsControlAsCommandForMacShortcutsOnly() async throws {
+    let controlOnly = NSEvent.ModifierFlags.control.rawValue
+    let keyFlags = NSEvent._omniMacCompatibleModifierFlags(rawValue: controlOnly, eventType: .keyDown)
+    #expect(keyFlags.contains(.command))
+    #expect(!keyFlags.contains(.control))
+
+    let mouseFlags = NSEvent._omniMacCompatibleModifierFlags(rawValue: controlOnly, eventType: .leftMouseDown)
+    #expect(mouseFlags.contains(.control))
+    #expect(!mouseFlags.contains(.command))
+
+    let flagsChanged = NSEvent._omniMacCompatibleModifierFlags(rawValue: controlOnly, eventType: .flagsChanged)
+    #expect(flagsChanged.contains(.control))
+    #expect(!flagsChanged.contains(.command))
+}
+
+private final class _CursorNameCapture: @unchecked Sendable {
+    private let lock = NSLock()
+    private var storage: [String?] = []
+
+    func append(_ name: String?) {
+        lock.lock()
+        storage.append(name)
+        lock.unlock()
+    }
+
+    var values: [String?] {
+        lock.lock()
+        defer { lock.unlock() }
+        return storage
+    }
+}
+
+@Test func linuxCursorPushPopPublishesSystemCursorNames() async throws {
+    let names = _CursorNameCapture()
+    _omniSetCursorHandler { names.append($0) }
+    defer {
+        while NSCursor.currentSystemCursorName != nil {
+            NSCursor.pop()
+        }
+        _omniSetCursorHandler(nil)
+    }
+
+    NSCursor.pointingHand.push()
+    NSCursor.resizeLeftRight.push()
+    NSCursor.pop()
+    NSCursor.pop()
+
+    #expect(names.values.suffix(4).map { $0 ?? "nil" } == ["pointer", "ew-resize", "pointer", "nil"])
 }
 #endif
 
@@ -229,6 +2943,44 @@ private struct ConfigurableWebViewRepresentableProbe: NSViewRepresentable {
     let runtime = _UIRuntime()
     let snapshot = runtime.debugRender(V(), size: _Size(width: 60, height: 4))
     #expect(snapshot.text.contains("Environment label: Injected environment"))
+}
+
+@Test func typed_environment_object_tracks_observable_changes() async throws {
+    final class Model: OmniUICore.ObservableObject {
+        let _$observationRegistrar = _ObservationRegistrar()
+        var title = "Initial title" {
+            didSet { _$observationRegistrar.notify() }
+        }
+    }
+
+    struct Child: View {
+        @Environment(Model.self) private var model
+
+        var body: some View {
+            Text("Environment object title: \(model.title)")
+        }
+    }
+
+    struct V: View {
+        let model: Model
+
+        var body: some View {
+            Child()
+                .environment(model)
+        }
+    }
+
+    let runtime = _UIRuntime()
+    let model = Model()
+    let size = _Size(width: 80, height: 4)
+    let initial = runtime.debugRender(V(model: model), size: size)
+    #expect(initial.text.contains("Environment object title: Initial title"))
+
+    model.title = "Updated title"
+    #expect(runtime.renderInvalidationReason(size: size) != nil)
+
+    let updated = runtime.debugRender(V(model: model), size: size)
+    #expect(updated.text.contains("Environment object title: Updated title"))
 }
 
 @Test func semanticSnapshot_preserves_native_control_roles() async throws {
@@ -509,6 +3261,57 @@ private struct ConfigurableWebViewRepresentableProbe: NSViewRepresentable {
     #expect(containsAccessibilityIdentifier(snapshot.root))
 }
 
+@Test func semanticSnapshot_preserves_accessibility_value_and_hint_modifiers() async throws {
+    struct V: View {
+        var body: some View {
+            Button("Sync") {}
+                .accessibilityValue("Idle")
+                .accessibilityHint("Starts synchronization")
+        }
+    }
+
+    let runtime = _UIRuntime()
+    let snapshot = runtime.semanticSnapshot(V(), size: _Size(width: 80, height: 10))
+
+    func containsValue(_ node: SemanticNode) -> Bool {
+        if case .modifier(.accessibilityValue("Idle")) = node.kind {
+            return true
+        }
+        return node.children.contains(where: containsValue)
+    }
+
+    func containsHint(_ node: SemanticNode) -> Bool {
+        if case .modifier(.accessibilityHint("Starts synchronization")) = node.kind {
+            return true
+        }
+        return node.children.contains(where: containsHint)
+    }
+
+    #expect(containsValue(snapshot.root))
+    #expect(containsHint(snapshot.root))
+}
+
+@Test func semanticSnapshot_preserves_help_modifier_as_accessibility_description_metadata() async throws {
+    struct V: View {
+        var body: some View {
+            Button("Refresh") {}
+                .help("Reload current panel")
+        }
+    }
+
+    let runtime = _UIRuntime()
+    let snapshot = runtime.semanticSnapshot(V(), size: _Size(width: 80, height: 10))
+
+    func containsHelp(_ node: SemanticNode) -> Bool {
+        if case .modifier(.help("Reload current panel")) = node.kind {
+            return true
+        }
+        return node.children.contains(where: containsHelp)
+    }
+
+    #expect(containsHelp(snapshot.root))
+}
+
 @Test func semanticSnapshot_preserves_liquid_glass_modifier_for_native_renderers() async throws {
     struct V: View {
         var body: some View {
@@ -551,6 +3354,40 @@ private struct ConfigurableWebViewRepresentableProbe: NSViewRepresentable {
     #expect(containsCRT(snapshot.root))
 }
 
+@Test func semanticSnapshot_preserves_contextMenu_items_for_native_renderers() async throws {
+    struct V: View {
+        var body: some View {
+            Text("Document")
+                .contextMenu {
+                    Button("Copy Path") {}
+                    Button("Reveal in Files") {}
+                }
+        }
+    }
+
+    let runtime = _UIRuntime()
+    let snapshot = runtime.semanticSnapshot(V(), size: _Size(width: 80, height: 10))
+
+    func contextMenuItems(in node: SemanticNode) -> [SemanticContextMenuItem]? {
+        if case .modifier(.contextMenu(let items)) = node.kind {
+            return items
+        }
+        for child in node.children {
+            if let items = contextMenuItems(in: child) {
+                return items
+            }
+        }
+        return nil
+    }
+
+    guard let items = contextMenuItems(in: snapshot.root) else {
+        #expect(Bool(false), "Missing semantic context menu modifier")
+        return
+    }
+    #expect(items.map(\.label) == ["Copy Path", "Reveal in Files"])
+    #expect(items.allSatisfy { $0.actionID > 0 })
+}
+
 @Test func appStorage_updates_visible_state_and_user_defaults() async throws {
     let suiteName = "OmniUICoreTests.appStorage.\(UUID().uuidString)"
     let store = UserDefaults(suiteName: suiteName)!
@@ -587,6 +3424,90 @@ private struct ConfigurableWebViewRepresentableProbe: NSViewRepresentable {
     let next = runtime.debugRender(V(store: store), size: size)
     #expect(next.text.contains("Stored count: 1"))
     #expect(store.integer(forKey: "count") == 1)
+}
+
+@Test func appStorage_reads_external_user_defaults_changes_after_runtime_invalidation() async throws {
+    let suiteName = "OmniUICoreTests.appStorage.external.\(UUID().uuidString)"
+    let store = UserDefaults(suiteName: suiteName)!
+    defer { store.removePersistentDomain(forName: suiteName) }
+
+    enum Mode: String {
+        case light
+        case dark
+    }
+
+    struct V: View {
+        let store: UserDefaults
+        @AppStorage("theme", store: UserDefaults.standard) private var theme: Mode = .light
+        @AppStorage("name", store: UserDefaults.standard) private var name = "Local"
+
+        init(store: UserDefaults) {
+            self.store = store
+            self._theme = AppStorage(wrappedValue: .light, "theme", store: store)
+            self._name = AppStorage(wrappedValue: "Local", "name", store: store)
+        }
+
+        var body: some View {
+            Text("\(theme.rawValue):\(name)")
+        }
+    }
+
+    let runtime = _UIRuntime()
+    let size = _Size(width: 40, height: 3)
+    #expect(runtime.debugRender(V(store: store), size: size).text.contains("light:Local"))
+
+    store.set("dark", forKey: "theme")
+    store.set("Remote", forKey: "name")
+    runtime._markDirtyFromExternalResource()
+
+    #expect(runtime.debugRender(V(store: store), size: size).text.contains("dark:Remote"))
+}
+
+@Test func appStorage_uses_distinct_state_slots_for_multiple_keys_in_same_view() async throws {
+    let suiteName = "OmniUICoreTests.appStorage.distinct.\(UUID().uuidString)"
+    let store = UserDefaults(suiteName: suiteName)!
+    defer { store.removePersistentDomain(forName: suiteName) }
+
+    struct V: View {
+        let store: UserDefaults
+        @AppStorage("selectedIssueID", store: UserDefaults.standard) private var selectedIssueID = ""
+        @AppStorage("sidebarVisible", store: UserDefaults.standard) private var sidebarVisible = true
+
+        init(store: UserDefaults) {
+            self.store = store
+            self._selectedIssueID = AppStorage(wrappedValue: "", "selectedIssueID", store: store)
+            self._sidebarVisible = AppStorage(wrappedValue: true, "sidebarVisible", store: store)
+        }
+
+        var body: some View {
+            VStack {
+                Text("selected=\(selectedIssueID)")
+                Text("sidebar=\(sidebarVisible ? "visible" : "hidden")")
+                Button("Mutate") {
+                    selectedIssueID = "issue-1"
+                    sidebarVisible = false
+                }
+            }
+        }
+    }
+
+    let runtime = _UIRuntime()
+    let size = _Size(width: 60, height: 6)
+    let initial = runtime.debugRender(V(store: store), size: size)
+    #expect(initial.text.contains("selected="))
+    #expect(initial.text.contains("sidebar=visible"))
+
+    guard let button = _findButton(initial, title: "Mutate") else {
+        #expect(Bool(false), "Could not find AppStorage mutate button")
+        return
+    }
+    initial.click(x: button.x, y: button.y)
+
+    let updated = runtime.debugRender(V(store: store), size: size)
+    #expect(updated.text.contains("selected=issue-1"))
+    #expect(updated.text.contains("sidebar=hidden"))
+    #expect(store.string(forKey: "selectedIssueID") == "issue-1")
+    #expect(store.bool(forKey: "sidebarVisible") == false)
 }
 
 @Test func bindable_text_field_updates_observable_model_state() async throws {
@@ -840,6 +3761,67 @@ struct TextEditorNativeInputView: View {
     #expect(rendered.text.contains("Value: GTK"))
 }
 
+@Test func settingsStyleNumberTextFieldAndStepperUpdateSharedBinding() async throws {
+    struct NumericSettingsRow: View {
+        @State private var lines = 900
+
+        var body: some View {
+            HStack(spacing: 1) {
+                Text("Scrollback")
+                TextField("", value: $lines, format: .number)
+                    .textFieldStyle(.roundedBorder)
+                    .frame(width: 8)
+                Stepper("", value: $lines, in: 800...1000, step: 50)
+                    .labelsHidden()
+                Text("value=\(lines)")
+            }
+        }
+    }
+
+    func textFieldActionID(in node: SemanticNode) -> Int? {
+        if case .textField(let actionID, _, _, _, _, _) = node.kind {
+            return actionID
+        }
+        for child in node.children {
+            if let id = textFieldActionID(in: child) {
+                return id
+            }
+        }
+        return nil
+    }
+
+    let runtime = _UIRuntime()
+    let size = _Size(width: 60, height: 4)
+
+    let semantic = runtime.semanticSnapshot(NumericSettingsRow(), size: size)
+    guard let fieldID = textFieldActionID(in: semantic.root) else {
+        Issue.record("Expected numeric settings TextField action")
+        return
+    }
+
+    runtime.replaceTextForRawActionID(fieldID, previous: "900", next: "950")
+    let edited = runtime.debugRender(NumericSettingsRow(), size: size)
+    #expect(edited.text.contains("value=950"))
+
+    guard let increment = _findButton(edited, title: "+") else {
+        Issue.record("Expected Stepper increment button")
+        return
+    }
+    edited.click(x: increment.x, y: increment.y)
+
+    let incremented = runtime.debugRender(NumericSettingsRow(), size: size)
+    #expect(incremented.text.contains("value=1000"))
+
+    guard let cappedIncrement = _findButton(incremented, title: "+") else {
+        Issue.record("Expected capped Stepper increment button")
+        return
+    }
+    incremented.click(x: cappedIncrement.x, y: cappedIncrement.y)
+
+    let capped = runtime.debugRender(NumericSettingsRow(), size: size)
+    #expect(capped.text.contains("value=1000"))
+}
+
 struct FocusedTextFieldNativeView: View {
     @FocusState private var isFocused: Bool
 
@@ -1001,6 +3983,51 @@ struct SimplePickerView: View {
     #expect(s2.text.contains("Choice: C"))
 }
 
+@Test func debugSnapshot_contextMenuFallbackExposesMenuActions() async throws {
+    struct V: View {
+        @State private var value = "Idle"
+        let filePath = "/tmp/Omni Notes/readme.md"
+
+        var body: some View {
+            Text(value)
+                .contextMenu {
+                    Button("Copy Name") {
+                        NSPasteboard.general.clearContents()
+                        NSPasteboard.general.setString(URL(fileURLWithPath: filePath).lastPathComponent, forType: .string)
+                    }
+                    Button("Copy Path") {
+                        value = "Copied"
+                        NSPasteboard.general.clearContents()
+                        NSPasteboard.general.setString(filePath, forType: .string)
+                    }
+                }
+        }
+    }
+
+    let runtime = _UIRuntime()
+    let size = _Size(width: 30, height: 8)
+    let initial = runtime.debugRender(V(), size: size)
+    #expect(initial.text.contains("Idle"))
+    #expect(initial.text.contains("...") || initial.text.contains("⋯"))
+
+    guard let menuButton = _findButton(initial, title: "⋯") ?? _findButton(initial, title: "...") else {
+        #expect(Bool(false), "Could not find context menu fallback button")
+        return
+    }
+    initial.click(x: menuButton.x, y: menuButton.y)
+
+    let expanded = runtime.debugRender(V(), size: size)
+    guard let action = _findButton(expanded, title: "Copy Path") else {
+        #expect(Bool(false), "Could not find context menu action")
+        return
+    }
+    expanded.click(x: action.x, y: action.y)
+
+    let next = runtime.debugRender(V(), size: size)
+    #expect(next.text.contains("Copied"))
+    #expect(NSPasteboard.general.string(forType: .string) == "/tmp/Omni Notes/readme.md")
+}
+
 struct PickerOverlayView: View {
     enum Choice: String, Hashable {
         case a = "A"
@@ -1049,6 +4076,72 @@ struct ListRenderView: View {
     let s0 = runtime.debugRender(ListRenderView(), size: _Size(width: 20, height: 10))
     #expect(s0.text.contains("Row 0"))
     #expect(s0.text.contains("Row 4"))
+}
+
+@Test func listSelection_usesTagsThroughRowModifiers() async throws {
+    struct WrappedTaggedList: View {
+        let selection: Binding<String?>
+
+        var body: some View {
+            List(selection: selection) {
+                ForEach(["First", "Second"], id: \.self) { value in
+                    Text(value)
+                        .tag(value)
+                        .padding(.vertical, 1)
+                        .background(Color.gray.opacity(0.1))
+                }
+            }
+        }
+    }
+
+    let runtime = _UIRuntime()
+    var selection: String?
+    let binding = Binding<String?>(
+        get: { selection },
+        set: { selection = $0 }
+    )
+
+    let snap = runtime.debugRender(WrappedTaggedList(selection: binding), size: _Size(width: 30, height: 10))
+    guard let second = _findButton(snap, title: "Second") else {
+        Issue.record("Expected wrapped tagged list row to be focusable")
+        return
+    }
+
+    snap.click(x: second.x, y: second.y)
+    #expect(selection == "Second")
+}
+
+@Test func listSelection_supportsOptionalNilTagsThroughRowModifiers() async throws {
+    struct OptionalTaggedList: View {
+        let selection: Binding<String?>
+
+        var body: some View {
+            List(selection: selection) {
+                Text("System Default")
+                    .tag(Optional<String>.none)
+                    .padding(.vertical, 1)
+                Text("Menlo")
+                    .tag(Optional("Menlo"))
+                    .padding(.vertical, 1)
+            }
+        }
+    }
+
+    let runtime = _UIRuntime()
+    var selection: String? = "Menlo"
+    let binding = Binding<String?>(
+        get: { selection },
+        set: { selection = $0 }
+    )
+
+    let snap = runtime.debugRender(OptionalTaggedList(selection: binding), size: _Size(width: 30, height: 10))
+    guard let systemDefault = _findButton(snap, title: "System Default") else {
+        Issue.record("Expected nil optional tagged list row to be focusable")
+        return
+    }
+
+    snap.click(x: systemDefault.x, y: systemDefault.y)
+    #expect(selection == nil)
 }
 
 @Test func debugSnapshot_kitchensink_contains_list_row() async throws {
@@ -1307,6 +4400,122 @@ struct TapGestureView: View {
 
     let s1 = runtime.debugRender(TapGestureView(), size: size)
     #expect(s1.text.contains("tapped: 1"))
+}
+
+struct MultiTapGestureView: View {
+    @State private var selected = false
+    @State private var edited = false
+
+    var body: some View {
+        VStack(spacing: 0) {
+            Text("selected: \(selected)")
+            Text("edited: \(edited)")
+            Text("Issue Row")
+                .onTapGesture(count: 2) { edited = true }
+                .onTapGesture { selected = true }
+        }
+    }
+}
+
+@Test func debugSnapshot_onTapGesture_count_distinguishes_single_and_double_click() async throws {
+    let runtime = _UIRuntime()
+    let size = _Size(width: 30, height: 5)
+
+    let initial = runtime.debugRender(MultiTapGestureView(), size: size)
+    initial.click(x: 0, y: 2)
+
+    let selected = runtime.debugRender(MultiTapGestureView(), size: size)
+    #expect(selected.text.contains("selected: true"))
+    #expect(selected.text.contains("edited: false"))
+
+    selected.click(x: 0, y: 2, count: 2)
+
+    let edited = runtime.debugRender(MultiTapGestureView(), size: size)
+    #expect(edited.text.contains("selected: true"))
+    #expect(edited.text.contains("edited: true"))
+}
+
+@Test func debugSnapshot_dragGesture_reportsStartLocationAndTranslation() async throws {
+    final class Box: @unchecked Sendable {
+        var changed: DragGesture.Value?
+        var ended: DragGesture.Value?
+    }
+
+    let runtime = _UIRuntime()
+    let box = Box()
+
+    struct V: View {
+        let box: Box
+
+        var body: some View {
+            Text("Handle")
+                .contentShape(Rectangle())
+                .gesture(
+                    DragGesture().onChanged { value in
+                        box.changed = value
+                    }.onEnded { value in
+                        box.ended = value
+                    }
+                )
+        }
+    }
+
+    let snapshot = runtime.debugRender(V(box: box), size: _Size(width: 20, height: 2))
+    snapshot.drag(from: _Point(x: 1, y: 0), to: _Point(x: 7, y: 0))
+
+    #expect(box.changed?.startLocation == CGPoint(x: 1, y: 0))
+    #expect(box.changed?.location == CGPoint(x: 7, y: 0))
+    #expect(box.changed?.translation == CGSize(width: 6, height: 0))
+    #expect(box.ended?.translation == CGSize(width: 6, height: 0))
+}
+
+@Test func runtimeNativeDragEventsDispatchRegisteredDragGesture() async throws {
+    final class Box: @unchecked Sendable {
+        var changed: [DragGesture.Value] = []
+        var ended: DragGesture.Value?
+    }
+
+    let runtime = _UIRuntime()
+    let box = Box()
+
+    struct V: View {
+        let box: Box
+
+        var body: some View {
+            Text("Native Handle")
+                .gesture(
+                    DragGesture().onChanged { value in
+                        box.changed.append(value)
+                    }.onEnded { value in
+                        box.ended = value
+                    }
+                )
+        }
+    }
+
+    let snapshot = runtime.semanticSnapshot(V(box: box), size: _Size(width: 30, height: 2))
+
+    func firstButtonActionID(in node: SemanticNode) -> Int? {
+        if case .button(let actionID, _) = node.kind {
+            return actionID
+        }
+        for child in node.children {
+            if let actionID = firstButtonActionID(in: child) {
+                return actionID
+            }
+        }
+        return nil
+    }
+
+    let actionID = try #require(firstButtonActionID(in: snapshot.root))
+
+    #expect(runtime._handleNativeDragEvent(actionID: actionID, eventType: 1, x: 10, y: 4))
+    #expect(runtime._handleNativeDragEvent(actionID: 0, eventType: 5, x: 16, y: 9))
+    #expect(runtime._handleNativeDragEvent(actionID: 0, eventType: 2, x: 20, y: 10))
+
+    #expect(box.changed.count == 3)
+    #expect(box.changed.last?.translation == CGSize(width: 6, height: 5))
+    #expect(box.ended?.translation == CGSize(width: 10, height: 6))
 }
 
 struct MenuGestureView: View {
@@ -1734,6 +4943,9 @@ private func _semanticButtonActionID(in node: SemanticNode, title: String) -> In
     if case .button(let actionID, _) = node.kind, _semanticContainsText(node, title) {
         return actionID
     }
+    if case .tapTarget(let actionID, _) = node.kind, _semanticContainsText(node, title) {
+        return actionID
+    }
     for child in node.children {
         if let actionID = _semanticButtonActionID(in: child, title: title) {
             return actionID
@@ -2004,6 +5216,170 @@ struct _EditableListProbeView: View {
     #expect(s2.text.contains("Item 20"))
 }
 
+@Test func customLayoutLowersToFlowSemanticNode() async throws {
+    struct WrappingLayout: Layout {
+        var horizontalSpacing: CGFloat = 5
+        var verticalSpacing: CGFloat = 7
+    }
+
+    struct LayoutProbe: View {
+        var body: some View {
+            WrappingLayout {
+                Text("One")
+                Text("Two")
+            }
+        }
+    }
+
+    let runtime = _UIRuntime()
+    let snapshot = runtime.semanticSnapshot(LayoutProbe(), size: _Size(width: 40, height: 10))
+
+    guard case .flowLayout(let horizontalSpacing, let verticalSpacing) = snapshot.root.kind else {
+        #expect(Bool(false), "Expected custom Layout to lower as a flow layout")
+        return
+    }
+
+    #expect(horizontalSpacing == 5)
+    #expect(verticalSpacing == 7)
+    #expect(snapshot.root.children.count == 2)
+}
+
+struct _MovableForEachProbeView: View {
+    @State private var items: [Int] = [10, 20, 30]
+
+    var body: some View {
+        List {
+            ForEach(items, id: \.self) { item in
+                Text("Item \(item)")
+            }
+            .onMove { offsets, destination in
+                let moving = offsets.sorted()
+                guard let source = moving.first, moving.count == 1, items.indices.contains(source) else { return }
+                let value = items.remove(at: source)
+                let adjusted = destination > source ? destination - 1 : destination
+                items.insert(value, at: max(0, min(items.count, adjusted)))
+            }
+        }
+    }
+}
+
+@Test func forEach_onMove_exposes_fallback_move_controls() async throws {
+    let runtime = _UIRuntime()
+    let size = _Size(width: 60, height: 10)
+
+    let s0 = runtime.debugRender(_MovableForEachProbeView(), size: size)
+    #expect(s0.text.contains("Item 10"))
+    #expect(s0.text.contains("[ Down ]"))
+
+    guard let down = _findButton(s0, title: "Down", occurrence: 0) else {
+        #expect(Bool(false), "Could not find Down fallback button")
+        return
+    }
+    s0.click(x: down.x, y: down.y)
+
+    let s1 = runtime.debugRender(_MovableForEachProbeView(), size: size)
+    let first = s1.text.range(of: "Item 20")?.lowerBound
+    let second = s1.text.range(of: "Item 10")?.lowerBound
+    #expect(first != nil)
+    #expect(second != nil)
+    #expect(first! < second!)
+}
+
+private struct _BindingForEachProbeItem: Identifiable {
+    let id: Int
+    var name: String
+}
+
+@Test func forEach_overBindingCollectionMutatesParentElements() async throws {
+    struct BindingCollectionProbe: View {
+        @State private var items: [_BindingForEachProbeItem] = [
+            _BindingForEachProbeItem(id: 1, name: "One"),
+            _BindingForEachProbeItem(id: 2, name: "Two"),
+        ]
+
+        var body: some View {
+            VStack(spacing: 1) {
+                Text(items.map(\.name).joined(separator: ","))
+                ForEach($items) { $item in
+                    Button(item.name) {
+                        item.name += "!"
+                    }
+                }
+            }
+        }
+    }
+
+    let runtime = _UIRuntime()
+    let initial = runtime.debugRender(BindingCollectionProbe(), size: _Size(width: 40, height: 8))
+    #expect(initial.text.contains("One,Two"))
+
+    guard let second = _findButton(initial, title: "Two") else {
+        Issue.record("Expected binding ForEach row to be interactive")
+        return
+    }
+    initial.click(x: second.x, y: second.y)
+
+    let updated = runtime.debugRender(BindingCollectionProbe(), size: _Size(width: 40, height: 8))
+    #expect(updated.text.contains("One,Two!"))
+}
+
+@Test func forEach_overBindingCollectionPickerMutatesParentElement() async throws {
+    enum Mode: String, CaseIterable, Hashable {
+        case safari = "Safari"
+        case native = "Native"
+    }
+
+    struct Rule: Identifiable {
+        let id: Int
+        var host: String
+        var mode: Mode
+    }
+
+    struct BindingPickerProbe: View {
+        @State private var rules: [Rule] = [
+            Rule(id: 1, host: "example.com", mode: .safari),
+            Rule(id: 2, host: "docs.example.com", mode: .native),
+        ]
+
+        var body: some View {
+            VStack(spacing: 1) {
+                Text(rules.map { "\($0.host)=\($0.mode.rawValue)" }.joined(separator: "|"))
+                ForEach($rules) { $rule in
+                    HStack {
+                        Text(rule.host)
+                        Picker("User Agent", selection: $rule.mode) {
+                            ForEach(Mode.allCases, id: \.self) { mode in
+                                Text(mode.rawValue).tag(mode)
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    let runtime = _UIRuntime()
+    let size = _Size(width: 70, height: 12)
+    let initial = runtime.debugRender(BindingPickerProbe(), size: size)
+    #expect(initial.text.contains("example.com=Safari|docs.example.com=Native"))
+
+    guard let firstPicker = _findButton(initial, title: "User Agent: Safari") ?? _findButton(initial, title: "Safari") else {
+        Issue.record("Expected first bound-row picker")
+        return
+    }
+    initial.click(x: firstPicker.x, y: firstPicker.y)
+
+    let expanded = runtime.debugRender(BindingPickerProbe(), size: size)
+    guard let native = _findButton(expanded, title: "Native") else {
+        Issue.record("Expected Native picker option")
+        return
+    }
+    expanded.click(x: native.x, y: native.y)
+
+    let updated = runtime.debugRender(BindingPickerProbe(), size: size)
+    #expect(updated.text.contains("example.com=Native|docs.example.com=Native"))
+}
+
 final class _StableModelRecord {
     var id: Int
     init(id: Int) { self.id = id }
@@ -2188,6 +5564,29 @@ struct _SheetSearchInteractionProbeView: View {
     }
 }
 
+struct _SheetKeyboardShortcutProbeView: View {
+    @State private var isPresented: Bool = false
+    @State private var baseCount: Int = 0
+    @State private var sheetCount: Int = 0
+
+    var body: some View {
+        VStack(spacing: 1) {
+            Text("base: \(baseCount)")
+            Text("sheet: \(sheetCount)")
+            Button("Base Default") { baseCount += 1 }
+                .keyboardShortcut(.defaultAction)
+            Button("Show") { isPresented = true }
+        }
+        .sheet(isPresented: $isPresented) {
+            VStack(spacing: 1) {
+                Text("Shortcut Sheet")
+                Button("Sheet Default") { sheetCount += 1 }
+                    .keyboardShortcut(.defaultAction)
+            }
+        }
+    }
+}
+
 struct _PopoverProbeView: View {
     @State private var isPresented: Bool = false
 
@@ -2333,6 +5732,35 @@ struct PresentationOverlayTests {
         let final = runtime.debugRender(_SheetSearchInteractionProbeView(), size: size)
         #expect(final.text.contains("submitted: navan"))
         #expect(!final.text.contains("Search Gopherspace"))
+    }
+
+    @Test func sheet_keyboard_shortcuts_prefer_overlay_controls() async throws {
+        let runtime = _UIRuntime()
+        let size = _Size(width: 50, height: 16)
+
+        let initial = runtime.debugRender(_SheetKeyboardShortcutProbeView(), size: size)
+        #expect(initial.text.contains("base: 0"))
+        #expect(initial.text.contains("sheet: 0"))
+
+        #expect(runtime.invokeKeyboardShortcut(.return))
+        let baseInvoked = runtime.debugRender(_SheetKeyboardShortcutProbeView(), size: size)
+        #expect(baseInvoked.text.contains("base: 1"))
+        #expect(baseInvoked.text.contains("sheet: 0"))
+
+        guard let show = _findButton(baseInvoked, title: "Show") else {
+            #expect(Bool(false), "Could not find Show button")
+            return
+        }
+        baseInvoked.click(x: show.x, y: show.y)
+
+        let sheet = runtime.debugRender(_SheetKeyboardShortcutProbeView(), size: size)
+        #expect(sheet.text.contains("Shortcut Sheet"))
+
+        #expect(runtime.invokeKeyboardShortcut(.return))
+        let final = runtime.debugRender(_SheetKeyboardShortcutProbeView(), size: size)
+        #expect(final.text.contains("base: 1"))
+        #expect(final.text.contains("sheet: 1"))
+        #expect(final.text.contains("Shortcut Sheet"))
     }
 
     @Test func popover_isPresented_shows_and_dismisses() async throws {
@@ -2901,6 +6329,36 @@ struct _ToolbarSemanticProbe: View {
     #expect(buttonCount(in: snapshot.root) == 3)
 }
 
+@Test func toolbar_color_scheme_styles_toolbar_foreground() async throws {
+    struct V: View {
+        let scheme: ColorScheme
+
+        var body: some View {
+            Text("Base")
+                .toolbar {
+                    ToolbarItem(placement: .topBarLeading) {
+                        Text("Lead")
+                    }
+                }
+                .toolbarColorScheme(scheme, for: .windowToolbar)
+        }
+    }
+
+    func foregroundForLead(in snapshot: DebugSnapshot) -> Color? {
+        guard let row = snapshot.lines.firstIndex(where: { $0.contains("Lead") }),
+              let column = snapshot.lines[row].firstIndex(of: "L")?.utf16Offset(in: snapshot.lines[row])
+        else { return nil }
+        return snapshot.styledCells[row * snapshot.size.width + column].fg
+    }
+
+    let runtime = _UIRuntime()
+    let light = runtime.debugRender(V(scheme: .light), size: _Size(width: 30, height: 6))
+    #expect(foregroundForLead(in: light) == .black)
+
+    let dark = runtime.debugRender(V(scheme: .dark), size: _Size(width: 30, height: 6))
+    #expect(foregroundForLead(in: dark) == .white)
+}
+
 struct _SceneCommandProbe: Scene {
     @SceneBuilder var body: some Scene {
         WindowGroup {
@@ -3068,6 +6526,52 @@ struct _TabViewSelectionFallbackProbe: View {
     #expect(snapshot.text.contains("[First]"))
     #expect(snapshot.text.contains("First body"))
     #expect(selection == "first")
+}
+
+@Test func tabView_selection_tabs_update_enum_binding() async throws {
+    enum SettingsSection: Hashable {
+        case general
+        case terminal
+        case web
+    }
+
+    struct SettingsTabsProbe: View {
+        let selection: Binding<SettingsSection>
+
+        var body: some View {
+            TabView(selection: selection) {
+                Text("General body")
+                    .tabItem { Label("General", systemImage: "gearshape") }
+                    .tag(SettingsSection.general)
+                Text("Terminal body")
+                    .tabItem { Label("Terminal", systemImage: "terminal") }
+                    .tag(SettingsSection.terminal)
+                Text("Web body")
+                    .tabItem { Label("Web", systemImage: "globe") }
+                    .tag(SettingsSection.web)
+            }
+        }
+    }
+
+    let runtime = _UIRuntime()
+    var selection = SettingsSection.general
+    let binding = Binding(get: { selection }, set: { selection = $0 })
+
+    let initial = runtime.debugRender(SettingsTabsProbe(selection: binding), size: _Size(width: 60, height: 10))
+    #expect(initial.text.contains("[General]"))
+    #expect(initial.text.contains("General body"))
+
+    guard let terminal = _findButton(initial, title: "Terminal") else {
+        Issue.record("Expected Terminal tab button")
+        return
+    }
+    initial.click(x: terminal.x, y: terminal.y)
+
+    let updated = runtime.debugRender(SettingsTabsProbe(selection: binding), size: _Size(width: 60, height: 10))
+    #expect(selection == .terminal)
+    #expect(updated.text.contains("[Terminal]"))
+    #expect(updated.text.contains("Terminal body"))
+    #expect(!updated.text.contains("General body"))
 }
 
 // MARK: - iGopher Parity Tests (23 Features)
@@ -3294,14 +6798,65 @@ struct _TabViewSelectionFallbackProbe: View {
     struct CPView: View {
         @State var color: Color = .red
         var body: some View {
-            ColorPicker("Tint", selection: $color)
+            VStack(spacing: 1) {
+                Text("Color: \(color.name)")
+                ColorPicker("Tint", selection: $color)
+            }
         }
     }
     let runtime = _UIRuntime()
     let snap = runtime.debugRender(CPView(), size: _Size(width: 40, height: 6))
+    #expect(snap.text.contains("Color: red"))
     #expect(snap.text.contains("Tint"))
+    #expect(snap.text.contains("■"))
     // Should have HSL bar indicators
     #expect(snap.text.contains("H:") || snap.text.contains("S:") || snap.text.contains("L:"))
+
+    guard let white = _findButton(snap, title: "■", occurrence: 1) else {
+        Issue.record("Expected a clickable color swatch")
+        return
+    }
+    snap.click(x: white.x, y: white.y)
+
+    let updated = runtime.debugRender(CPView(), size: _Size(width: 40, height: 6))
+    #expect(updated.text.contains("Color: white"))
+}
+
+@Test func colorPicker_labelsHiddenOmitsTitleRow() async throws {
+    struct HiddenLabelColorPickerView: View {
+        @State var color: Color = .blue
+
+        var body: some View {
+            VStack(spacing: 0) {
+                Text("Before")
+                ColorPicker("Accent", selection: $color, supportsOpacity: false)
+                    .labelsHidden()
+                Text("After")
+            }
+        }
+    }
+
+    let runtime = _UIRuntime()
+    let snap = runtime.debugRender(HiddenLabelColorPickerView(), size: _Size(width: 42, height: 8))
+    #expect(!snap.text.contains("Accent"))
+    #expect(snap.text.contains("Before"))
+    #expect(snap.text.contains("After"))
+    #expect(snap.text.contains("#0000FF"))
+}
+
+@Test func colorPicker_emptyTitleDoesNotRenderBlankTitleChrome() async throws {
+    struct EmptyTitleColorPickerView: View {
+        @State var color: Color = .red
+
+        var body: some View {
+            ColorPicker("", selection: $color, supportsOpacity: false)
+        }
+    }
+
+    let runtime = _UIRuntime()
+    let snap = runtime.debugRender(EmptyTitleColorPickerView(), size: _Size(width: 42, height: 6))
+    #expect(!snap.text.contains(": #FF0000"))
+    #expect(snap.text.contains("#FF0000"))
 }
 
 // Feature #13: ContentUnavailableView.search factory
@@ -3606,4 +7161,61 @@ private struct _BrowserChromeHotLoopProbe: View {
     }
 
     #expect(!runtime.needsRender(size: size))
+}
+
+private final class _FrameSizeProbeView: NSView {
+    var observedSizes: [NSSize] = []
+
+    override func setFrameSize(_ newSize: NSSize) {
+        super.setFrameSize(newSize)
+        observedSizes.append(newSize)
+    }
+}
+
+@Test func linuxNSLayoutConstraintsApplyEdgePinnedSubviewFrames() {
+    let container = NSView(frame: NSRect(x: 0, y: 0, width: 320, height: 180))
+    let child = _FrameSizeProbeView()
+    child.translatesAutoresizingMaskIntoConstraints = false
+    container.addSubview(child)
+
+    NSLayoutConstraint.activate([
+        child.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: 10),
+        child.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -12),
+        child.topAnchor.constraint(equalTo: container.topAnchor, constant: 8),
+        child.bottomAnchor.constraint(equalTo: container.bottomAnchor, constant: -14),
+    ])
+
+    container.layoutSubtreeIfNeeded()
+
+    #expect(child.frame.origin == NSPoint(x: 10, y: 8))
+    #expect(child.frame.size == NSSize(width: 298, height: 158))
+    #expect(child.observedSizes.contains(NSSize(width: 298, height: 158)))
+
+    container.setFrameSize(NSSize(width: 500, height: 240))
+
+    #expect(child.frame.origin == NSPoint(x: 10, y: 8))
+    #expect(child.frame.size == NSSize(width: 478, height: 218))
+    #expect(child.observedSizes.contains(NSSize(width: 478, height: 218)))
+}
+
+@Test func linuxNSScrollViewLaysOutDocumentViewWithConstraints() {
+    let scrollView = NSScrollView(frame: NSRect(x: 0, y: 0, width: 320, height: 180))
+    let document = _FrameSizeProbeView()
+    document.translatesAutoresizingMaskIntoConstraints = false
+    scrollView.documentView = document
+
+    let clipView = scrollView.contentView
+    NSLayoutConstraint.activate([
+        document.topAnchor.constraint(equalTo: clipView.topAnchor),
+        document.bottomAnchor.constraint(equalTo: clipView.bottomAnchor),
+        document.leadingAnchor.constraint(equalTo: clipView.leadingAnchor),
+        document.widthAnchor.constraint(equalToConstant: 10_000),
+    ])
+
+    scrollView.layoutSubtreeIfNeeded()
+
+    #expect(scrollView.contentView.frame == scrollView.bounds)
+    #expect(document.frame.origin == .zero)
+    #expect(document.frame.size == NSSize(width: 10_000, height: 180))
+    #expect(document.observedSizes.contains(NSSize(width: 10_000, height: 180)))
 }

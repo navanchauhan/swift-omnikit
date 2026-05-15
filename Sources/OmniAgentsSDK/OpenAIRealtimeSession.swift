@@ -361,7 +361,8 @@ public final actor OpenAIRealtimeSession<TContext: Sendable> {
         )
 
         do {
-            let output = try await invokeRealtimeFunctionTool(functionTool, context: toolContext, rawArguments: arguments)
+            let toolOutput = try await invokeRealtimeFunctionTool(functionTool, context: toolContext, rawArguments: arguments)
+            let output = toolOutput.value
             let serialized = try serializeRealtimeToolOutput(output)
             try await client.sendFunctionCallOutput(callId: callID, output: serialized)
             try await client.createResponse()
@@ -436,10 +437,16 @@ public final class OpenAIRealtimeRunner<TContext: Sendable>: Sendable {
 }
 
 @available(macOS 12.0, iOS 15.0, watchOS 8.0, tvOS 15.0, *)
-private func invokeRealtimeFunctionTool<TContext>(_ tool: FunctionTool, context: ToolContext<TContext>, rawArguments: String) async throws -> Any {
-    try await withRealtimeTimeout(seconds: tool.timeoutSeconds) {
+private struct RealtimeToolOutput: @unchecked Sendable {
+    var value: Any
+}
+
+@available(macOS 12.0, iOS 15.0, watchOS 8.0, tvOS 15.0, *)
+private func invokeRealtimeFunctionTool<TContext>(_ tool: FunctionTool, context: ToolContext<TContext>, rawArguments: String) async throws -> RealtimeToolOutput {
+    let output = try await withRealtimeTimeout(seconds: tool.timeoutSeconds) {
         try await tool.onInvokeTool(ToolContext<Any>(context: context.context as Any, usage: context.usage, toolName: context.toolName, toolCallID: context.toolCallID, toolArguments: context.toolArguments, toolCall: context.toolCall, agent: context.agent, runConfig: context.runConfig, turnInput: context.turnInput, toolInput: context.toolInput), rawArguments)
     }
+    return RealtimeToolOutput(value: output)
 }
 
 @available(macOS 12.0, iOS 15.0, watchOS 8.0, tvOS 15.0, *)

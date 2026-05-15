@@ -138,8 +138,8 @@ enum _OmniPlatformColor {
 
     private static func _parseRGBFunction(_ s: String) -> (CGFloat, CGFloat, CGFloat)? {
         // Supports `rgb(r,g,b)` where r/g/b are Doubles.
-        guard s.hasPrefix("rgb("), s.hasSuffix(")") else { return nil }
-        let inner = s.dropFirst(4).dropLast()
+        guard let start = s.range(of: "rgb("), s.hasSuffix(")") else { return nil }
+        let inner = s[start.upperBound..<s.index(before: s.endIndex)]
         let parts = inner.split(separator: ",", omittingEmptySubsequences: false).map { String($0) }
         guard parts.count == 3 else { return nil }
         guard

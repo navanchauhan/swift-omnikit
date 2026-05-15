@@ -11,7 +11,7 @@ public func runDemoLoop<TContext>(
 
     while true {
         print("\n> ", terminator: "")
-        fflush(stdout)
+        fflush(nil)
         guard let line = readLine() else { break }
         let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
         if ["exit", "quit"].contains(trimmed.lowercased()) {

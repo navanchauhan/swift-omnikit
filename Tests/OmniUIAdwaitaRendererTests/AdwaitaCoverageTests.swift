@@ -69,17 +69,28 @@ import Testing
     #expect(!omniUIFacade.contains("OMNIKIT_RENDERER"))
     #expect(header.contains("OmniAdwApp *omni_adw_app_new"))
     #expect(header.contains("OmniAdwNode *omni_adw_button_new"))
+    #expect(header.contains("OmniAdwNode *omni_adw_flow_new"))
     #expect(header.contains("OmniAdwNode *omni_adw_overlay_new"))
     #expect(header.contains("OmniAdwNode *omni_adw_drawing_new"))
     #expect(header.contains("omni_adw_app_share_url"))
+    #expect(header.contains("omni_adw_app_present_main_window"))
+    #expect(header.contains("omni_adw_app_set_cursor"))
     #expect(shim.contains("adw_application_new"))
     #expect(shim.contains("adw_application_window_new"))
+    #expect(shim.contains("void omni_adw_app_present_main_window"))
+    #expect(shim.contains("void omni_adw_app_set_cursor"))
+    #expect(shim.contains("gtk_widget_set_cursor_from_name"))
     #expect(shim.contains("gtk_button_new_with_label"))
+    #expect(shim.contains("gtk_flow_box_new"))
     #expect(shim.contains("gtk_overlay_new"))
     #expect(shim.contains("gtk_overlay_add_overlay"))
     #expect(shim.contains("gtk_drawing_area_new"))
     #expect(renderer.contains("import CAdwaita"))
     #expect(renderer.contains("omni_adw_app_new"))
+    #expect(renderer.contains("_omniSetApplicationActivationHandler"))
+    #expect(renderer.contains("_omniSetCursorHandler"))
+    #expect(renderer.contains("omni_adw_app_present_main_window(appHandle)"))
+    #expect(renderer.contains("omni_adw_app_set_cursor"))
     #expect(renderer.contains("omni_adw_app_set_root_focused"))
 }
 
@@ -215,6 +226,36 @@ import Testing
     #expect(shim.contains("gtk_icon_theme_has_icon"))
     #expect(shim.contains("gtk_widget_set_sensitive(button, FALSE)"))
     #expect(shim.contains("omni_accessible_set_disabled(button, TRUE)"))
+}
+
+@Test func adwaitaContextMenuBridgeUsesGenericSecondaryClickPopover() throws {
+    let nodes = try readRepositoryFile("Sources/OmniUICore/Nodes.swift")
+    let modifiers = try readRepositoryFile("Sources/OmniUICore/Modifiers.swift")
+    let semantic = try readRepositoryFile("Sources/OmniUICore/SemanticTree.swift")
+    let renderer = try readRepositoryFile("Sources/OmniUIAdwaitaRenderer/AdwaitaRenderer.swift")
+    let header = try readRepositoryFile("Sources/CAdwaita/include/CAdwaita.h")
+    let shim = try readRepositoryFile("Sources/CAdwaita/shim.c")
+
+    #expect(nodes.contains("case contextMenu(items: [(id: _ActionID, label: String)], child: _VNode)"))
+    #expect(modifiers.contains("struct _ContextMenuModifier"))
+    #expect(modifiers.contains("return .contextMenu(items: contextItems, child: child)"))
+    #expect(semantic.contains("public struct SemanticContextMenuItem"))
+    #expect(semantic.contains("case contextMenu(items: [SemanticContextMenuItem])"))
+    #expect(renderer.contains("case .contextMenu(let items):"))
+    #expect(renderer.contains("omni_adw_context_menu_new"))
+    #expect(header.contains("omni_adw_context_menu_new"))
+    #expect(shim.contains("on_context_menu_pressed"))
+    #expect(shim.contains("GDK_BUTTON_SECONDARY"))
+    #expect(shim.contains("omni-context-menu-popover"))
+}
+
+@Test func adwaitaRendererBridgesAppKitStatusItemsIntoHeaderActions() throws {
+    let renderer = try readRepositoryFile("Sources/OmniUIAdwaitaRenderer/AdwaitaRenderer.swift")
+
+    #expect(renderer.contains("private let adwaitaStatusItemActionOffset = 3_000_000"))
+    #expect(renderer.contains("NSStatusBar.system.performStatusItem(at: rawID - adwaitaStatusItemActionOffset)"))
+    #expect(renderer.contains("NSStatusBar.system.fallbackLabels.enumerated().map"))
+    #expect(renderer.contains("AdwaitaHeaderToolbar.Action(label: label, actionID: adwaitaStatusItemActionOffset + index, placement: .end)"))
 }
 
 @Test func adwaitaSceneInitializerInstallsNativeSettingsAndCommandsChrome() throws {
@@ -666,7 +707,7 @@ import Testing
     #expect(semantic.contains("case .crt(let style, let child):"))
     #expect(semantic.contains("kind: .modifier(.glass(descriptor))"))
     #expect(semantic.contains("kind: .modifier(.crt(style))"))
-    #expect(renderer.contains("case .foreground, .background, .shadow, .glass, .crt, .clip, .accessibilityLabel, .noOp:"))
+    #expect(renderer.contains("case .shadow, .glass, .crt, .clip, .accessibilityLabel, .noOp:"))
     #expect(renderer.contains("return primaryContent()"))
     #expect(renderer.contains("visibleChildren(forOverlayChildren:"))
     #expect(renderer.contains("isDecorativeDrawing"))
@@ -790,7 +831,7 @@ import Testing
 
     #expect(renderer.contains("case .button:\n            return node.children.contains(where: hasFlexibleHorizontalFrame)"))
     #expect(renderer.contains("case .group, .zstack, .stack, .container:\n            return node.children.contains(where: hasFlexibleHorizontalFrame)"))
-    #expect(renderer.contains("case .opacity, .clip, .background, .padding, .accessibilityLabel, .accessibilityIdentifier, .noOp, .foreground, .shadow, .glass, .crt:"))
+    #expect(renderer.contains("case .opacity, .clip, .background, .padding, .accessibilityLabel, .accessibilityIdentifier, .accessibilityValue, .accessibilityHint, .help, .noOp, .foreground, .shadow, .glass, .crt:"))
     #expect(renderer.contains("omni_adw_box_set_homogeneous(parent, 1)"))
     #expect(renderer.contains("let homogeneousHorizontal = !vertical && shouldUseHomogeneousHorizontalBox(children)"))
     #expect(renderer.contains("if homogeneousHorizontal, !isZeroWidthFrame(child)"))
@@ -833,7 +874,112 @@ import Testing
     #expect(shim.contains("\"AXScrollDown\""))
     #expect(shim.contains("accessibilityPerformScrollDown"))
     #expect(shim.contains("if (g_object_get_data(G_OBJECT(widget), \"omni-macos-web-view\")) return \"AXScrollArea\";"))
+    #expect(shim.contains("g_str_has_prefix(value, \"Terminal\\n\")"))
     #expect(shim.contains("if (omni_macos_web_view_handle_key(keyval, state)) return TRUE;"))
+}
+
+@Test func linuxWebViewBridgeReloadsChangedHTMLForStableIdentities() throws {
+    let shim = try readRepositoryFile("Sources/CAdwaita/shim.c")
+
+    #expect(shim.contains("omni_webkit_html_signature"))
+    #expect(shim.contains("g_compute_checksum_for_string(G_CHECKSUM_SHA256, html, -1)"))
+    #expect(shim.contains("\"omni-last-html-signature\""))
+    #expect(shim.contains("omni_webkit_load_html_if_changed(existing"))
+    #expect(shim.contains("omni_webkit_load_html(web_view, html, base_url, TRUE)"))
+    #expect(shim.contains("omni_webkit_clear_html_signature(web_view);"))
+    #expect(!shim.contains("if (current && target && strcmp(current, target) == 0) return;\n  if (html)"))
+}
+
+@Test func linuxWebViewReuseRefreshesScriptsContentRulesAndMessageHandlers() throws {
+    let shim = try readRepositoryFile("Sources/CAdwaita/shim.c")
+
+    #expect(shim.contains("static void omni_webkit_sync_user_scripts("))
+    #expect(shim.contains("webkit_user_content_manager_remove_all_scripts(manager);"))
+    #expect(shim.contains("static void omni_webkit_sync_message_handlers("))
+    #expect(shim.contains("webkit_user_content_manager_unregister_script_message_handler(manager, name, NULL);"))
+    #expect(shim.contains("omni_webkit_sync_user_scripts(\n        manager,\n        script_sources,"))
+    #expect(shim.contains("webkit_user_content_manager_remove_all_filters(manager);"))
+    #expect(shim.contains("omni_webkit_install_content_filters(manager, content_rule_identifiers, content_rule_sources, content_rule_count, NULL);"))
+    #expect(shim.contains("omni_webkit_sync_message_handlers(manager, bridge, message_handler_names, message_handler_count);"))
+    #expect(shim.contains("omni_webkit_load_if_needed("))
+}
+
+@Test func adwaitaRendererInvalidatesAllRuntimesForUserDefaultsChanges() throws {
+    let renderer = try readRepositoryFile("Sources/OmniUIAdwaitaRenderer/AdwaitaRenderer.swift")
+
+    #expect(renderer.contains("forName: UserDefaults.didChangeNotification"))
+    #expect(renderer.contains("runtime._markDirtyFromExternalResource()"))
+    #expect(renderer.contains("settingsRuntime._markDirtyFromExternalResource()"))
+    #expect(renderer.contains("commandRuntime._markDirtyFromExternalResource()"))
+    #expect(renderer.contains("popoverRuntime._markDirtyFromExternalResource()"))
+}
+
+@Test func adwaitaRendererCanDumpMainSettingsAndCommandSemanticTrees() throws {
+    let renderer = try readRepositoryFile("Sources/OmniUIAdwaitaRenderer/AdwaitaRenderer.swift")
+
+    #expect(renderer.contains("AdwaitaSemanticDumper.dumpIfRequested(settingsRoot, section: \"SETTINGS\")"))
+    #expect(renderer.contains("AdwaitaSemanticDumper.dumpIfRequested(commandRoot, section: \"COMMANDS\")"))
+    #expect(renderer.contains("AdwaitaSemanticDumper.dumpToolbarIfRequested(presentation.toolbar)"))
+    #expect(renderer.contains("AdwaitaSemanticDumper.dumpIfRequested(displaySnapshot.root, section: \"MAIN\")"))
+    #expect(renderer.contains("static func dumpToolbarIfRequested(_ toolbar: AdwaitaHeaderToolbar, section: \"TOOLBAR\")"))
+    #expect(renderer.contains("OMNIUI_ADWAITA_SEMANTIC_BEGIN \\(section)"))
+    #expect(renderer.contains("action(actionID: \\(action.actionID), placement: \\(action.placement)"))
+    #expect(renderer.contains("private static var didDumpSections = Set<String>()"))
+    #expect(renderer.contains("OMNIUI_ADWAITA_SEMANTIC_BEGIN \\(section)"))
+    #expect(renderer.contains("OMNIUI_ADWAITA_SEMANTIC_END \\(section)"))
+    #expect(renderer.contains("OMNIUI_ADWAITA_AUTOMATION_ACTIONS"))
+    #expect(renderer.contains("OMNIUI_ADWAITA_AUTOMATION_SEQUENCE"))
+    #expect(renderer.contains("OMNIUI_ADWAITA_AUTOMATION_LABELS"))
+    #expect(renderer.contains("OMNIUI_ADWAITA_AUTOMATION_PICKERS"))
+    #expect(renderer.contains("OMNIUI_ADWAITA_AUTOMATION_CONTEXT_MENUS"))
+    #expect(renderer.contains("OMNIUI_ADWAITA_AUTOMATION_TEXT"))
+    #expect(renderer.contains("OMNIUI_ADWAITA_AUTOMATION_PASTEBOARD_DUMP"))
+    #expect(renderer.contains("runAdwaitaAutomationIfRequested(box: box.takeUnretainedValue(), rerender: rerender)"))
+    #expect(renderer.contains("private func invokeAdwaitaRawAction(_ rawID: Int, box: CallbackBox)"))
+    #expect(renderer.contains("private func adwaitaActionID(matchingVisibleText label: String, in node: SemanticNode) -> Int?"))
+    #expect(renderer.contains("private func adwaitaPickerOptionActionID(title: String, option: String, box: CallbackBox) -> Int?"))
+    #expect(renderer.contains("private func adwaitaContextMenuActionID(target: String, item: String, box: CallbackBox) -> Int?"))
+    #expect(renderer.contains("private func adwaitaTextInput(matchingVisibleText label: String, box: CallbackBox) -> (actionID: Int, text: String)?"))
+    #expect(renderer.contains("private func replaceAdwaitaText(actionID rawID: Int, previous: String, next: String, box: CallbackBox)"))
+    #expect(renderer.contains("private func runAdwaitaAutomationSequenceIfRequested(box: CallbackBox, rerender: @MainActor () -> Void) -> Bool"))
+    #expect(renderer.contains("private func scheduleAdwaitaAutomationSequenceRetriesIfNeeded(box: CallbackBox, rerender: @MainActor @escaping () -> Void)"))
+    #expect(renderer.contains("var didCompleteAutomationSequence = false"))
+    #expect(renderer.contains("private func invokeAdwaitaLabel(_ label: String, box: CallbackBox) -> Bool"))
+    #expect(renderer.contains("callbackBox.textValuesByActionID = adwaitaTextValues(box: callbackBox, displayRoot: displaySnapshot.root)"))
+    #expect(renderer.contains("var previousSettingsRoot: SemanticNode?"))
+    #expect(renderer.contains("var previousCommandRoot: SemanticNode?"))
+    #expect(renderer.contains("var previousModalRoot: SemanticNode?"))
+    #expect(renderer.contains("box.takeUnretainedValue().previousSettingsRoot = settingsRoot"))
+    #expect(renderer.contains("box.takeUnretainedValue().previousCommandRoot = commandRoot"))
+    #expect(renderer.contains("callbackBox.previousModalRoot = transientPresentation"))
+    #expect(renderer.contains("var previousToolbar: AdwaitaHeaderToolbar?"))
+    #expect(renderer.contains("box.previousToolbar?.actions.first { $0.label == label }?.actionID"))
+    #expect(renderer.contains("toolbarActionID ?? settingsActionID ?? commandActionID ?? modalActionID ?? rootActionID"))
+    #expect(renderer.contains("SemanticContextMenuItem(label: $0.label, actionID: $0.actionID + offset)"))
+    #expect(renderer.contains("private func runAdwaitaLabelAutomationIfRequested(box: CallbackBox, rerender: @MainActor () -> Void)"))
+    #expect(renderer.contains("private func runAdwaitaPickerAutomationIfRequested(box: CallbackBox, rerender: @MainActor () -> Void)"))
+    #expect(renderer.contains("private func runAdwaitaContextMenuAutomationIfRequested(box: CallbackBox, rerender: @MainActor () -> Void)"))
+    #expect(renderer.contains("private func runAdwaitaTextAutomationIfRequested(box: CallbackBox, rerender: @MainActor () -> Void)"))
+    #expect(renderer.contains("private func dumpAdwaitaAutomationPasteboardIfRequested()"))
+}
+
+@Test func adwaitaRendererPropagatesPreferredColorSchemeToNativeAdwaita() throws {
+    let renderer = try readRepositoryFile("Sources/OmniUIAdwaitaRenderer/AdwaitaRenderer.swift")
+
+    #expect(renderer.contains("var initialPreferredColorScheme: ColorScheme?"))
+    #expect(renderer.contains("initialPreferredColorScheme = settingsRuntime.lastPreferredColorScheme"))
+    #expect(renderer.contains("syncPreferredColorScheme(initialPreferredColorScheme)"))
+    #expect(renderer.contains("var activePreferredColorScheme: ColorScheme?"))
+    #expect(renderer.contains("activePreferredColorScheme = settingsRuntime.lastPreferredColorScheme"))
+    #expect(renderer.contains("activePreferredColorScheme = runtime.lastPreferredColorScheme ?? activePreferredColorScheme"))
+    #expect(renderer.contains("syncPreferredColorScheme(activePreferredColorScheme)"))
+    #expect(renderer.contains("private func syncPreferredColorScheme(_ scheme: ColorScheme?)"))
+    #expect(renderer.contains("_omniSetPreferredColorScheme(scheme)"))
+    #expect(renderer.contains("switch scheme ?? _omniCurrentApplicationAppearanceColorScheme()"))
+    #expect(renderer.contains("nativeScheme = \"light\""))
+    #expect(renderer.contains("nativeScheme = \"dark\""))
+    #expect(renderer.contains("nativeScheme = \"system\""))
+    #expect(renderer.contains("nativeScheme.withCString { omni_adw_set_color_scheme($0) }"))
 }
 
 @Test func cAdwaitaShimCanReplaceNamedSemanticSubtrees() throws {
@@ -914,6 +1060,31 @@ import Testing
     #expect(primitives.contains("value == 13 ? UnicodeScalar(10)! : scalar"))
 }
 
+@Test func adwaitaRecordsNativeActivationPointsForDragFallbacks() throws {
+    let renderer = try readRepositoryFile("Sources/OmniUIAdwaitaRenderer/AdwaitaRenderer.swift")
+    let runtime = try readRepositoryFile("Sources/OmniUICore/Runtime.swift")
+    let semantic = try readRepositoryFile("Sources/OmniUICore/SemanticTree.swift")
+    let shim = try readRepositoryFile("Sources/CAdwaita/shim.c")
+    let header = try readRepositoryFile("Sources/CAdwaita/include/CAdwaita.h")
+
+    #expect(renderer.contains("box.runtime._recordNativeActivationPoint(actionID: rawActionID, x: x, y: y)"))
+    #expect(renderer.contains("box.settingsRuntime._recordNativeActivationPoint("))
+    #expect(renderer.contains("box.commandRuntime._recordNativeActivationPoint("))
+    #expect(renderer.contains("omni_adw_node_set_drag_source_action(node, Int32(actionID))"))
+    #expect(semantic.contains("case dragSource(actionID: Int)"))
+    #expect(semantic.contains("kind: .modifier(.dragSource(actionID: id.raw))"))
+    #expect(header.contains("void omni_adw_node_set_drag_source_action(OmniAdwNode *node, int32_t action_id);"))
+    #expect(shim.contains("\"omni-drag-source-action-id\""))
+    #expect(shim.contains("int drag_action_id = GPOINTER_TO_INT(g_object_get_data(G_OBJECT(action_widget), \"omni-drag-source-action-id\"));"))
+    #expect(runtime.contains("private var activationPointsByActionID: [_ActionID: CGPoint] = [:]"))
+    #expect(runtime.contains("private var dropFallbackActionIDs: Set<_ActionID> = []"))
+    #expect(runtime.contains("func _registerDropFallbackAction(_ id: _ActionID)"))
+    #expect(runtime.contains("func _performDropFallback(at point: CGPoint) -> Bool"))
+    #expect(runtime.contains("_performDropFallback(at: point)"))
+    #expect(runtime.contains("let activationPoint = activationPointsByActionID[currentInvokedActionID]"))
+    #expect(runtime.contains("NSDraggingInfoSnapshot(draggingPasteboard: pasteboard, draggingLocation: windowPoint)"))
+}
+
 @Test func adwaitaRendererMapsCommonLayoutModifiersToNativeGtkProperties() throws {
     let source = try readRepositoryFile("Sources/OmniUIAdwaitaRenderer/AdwaitaRenderer.swift")
     let requiredTerms = [
@@ -949,6 +1120,9 @@ import Testing
         "case badge(String)",
         "case accessibilityLabel(String)",
         "case accessibilityIdentifier(String)",
+        "case accessibilityValue(String)",
+        "case accessibilityHint(String)",
+        "case help(String)",
     ]
     for term in semanticTerms {
         #expect(semantic.contains(term))
@@ -962,6 +1136,10 @@ import Testing
         "case .badge:",
         "css = \"accent\"",
         "case .accessibilityIdentifier:",
+        "case .accessibilityValue(let value):",
+        "case .help(let text), .accessibilityHint(let text):",
+        "omni_adw_node_set_accessibility_value(node, value)",
+        "omni_adw_node_set_accessibility_description(node, text)",
         "AdwaitaHeaderEntry.extract",
         "omni_adw_app_set_header_entry",
         "metadataID = identifier",
@@ -985,6 +1163,7 @@ import Testing
         "gtk_widget_set_name(node->widget, copy)",
         "gtk_accessible_update_property(GTK_ACCESSIBLE(widget), GTK_ACCESSIBLE_PROPERTY_LABEL",
         "gtk_accessible_update_property(GTK_ACCESSIBLE(widget), GTK_ACCESSIBLE_PROPERTY_DESCRIPTION",
+        "gtk_widget_set_tooltip_text(node->widget, description)",
         "gtk_accessible_update_relation(",
         "GDK_KEY_Return",
         "GDK_KEY_Escape",

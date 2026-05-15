@@ -7,10 +7,12 @@
 public struct ButtonStyleConfiguration {
     public let label: AnyView
     public let isPressed: Bool
+    public let role: ButtonRole?
 
-    public init(label: AnyView, isPressed: Bool) {
+    public init(label: AnyView, isPressed: Bool, role: ButtonRole? = nil) {
         self.label = label
         self.isPressed = isPressed
+        self.role = role
     }
 }
 
@@ -49,6 +51,10 @@ public extension ButtonStyle where Self == BorderedButtonStyle {
     static var bordered: BorderedButtonStyle { BorderedButtonStyle() }
 }
 
+public extension ButtonStyle where Self == BorderlessButtonStyle {
+    static var borderless: BorderlessButtonStyle { BorderlessButtonStyle() }
+}
+
 public extension ButtonStyle where Self == BorderedProminentButtonStyle {
     static var borderedProminent: BorderedProminentButtonStyle { BorderedProminentButtonStyle() }
 }
@@ -58,9 +64,14 @@ public extension ButtonStyle where Self == BorderedProminentButtonStyle {
 public protocol ToggleStyle {}
 
 public struct SwitchToggleStyle: ToggleStyle, Hashable, Sendable { public init() {} }
+public struct CheckboxToggleStyle: ToggleStyle, Hashable, Sendable { public init() {} }
 
 public extension ToggleStyle where Self == SwitchToggleStyle {
     static var `switch`: SwitchToggleStyle { SwitchToggleStyle() }
+}
+
+public extension ToggleStyle where Self == CheckboxToggleStyle {
+    static var checkbox: CheckboxToggleStyle { CheckboxToggleStyle() }
 }
 
 // MARK: - PickerStyle
@@ -128,6 +139,13 @@ public extension ListStyle where Self == PlainListStyle {
 
 public extension ListStyle where Self == SidebarListStyle {
     static var sidebar: SidebarListStyle { SidebarListStyle() }
+}
+
+public extension ListStyle where Self == BorderedListStyle {
+    static var bordered: BorderedListStyle { BorderedListStyle() }
+    static func bordered(alternatesRowBackgrounds: Bool) -> BorderedListStyle {
+        BorderedListStyle(alternatesRowBackgrounds: alternatesRowBackgrounds)
+    }
 }
 
 // MARK: - FormStyle

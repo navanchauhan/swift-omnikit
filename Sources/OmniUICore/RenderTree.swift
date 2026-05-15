@@ -31,15 +31,33 @@ public struct RenderSnapshot: Sendable {
     public let activePicker: _PickerInfo?
     public let activeTextField: _TextFieldInfo?
 
-    let hitRegions: [(_Rect, _ActionID)]
+    let hitRegions: [_HitRegion]
     let hoverRegions: [(_Rect, _HoverID)]
     public let scrollRegions: [_ScrollRegion]
     let runtime: _UIRuntime
 
     public func click(x: Int, y: Int) {
+        click(x: x, y: y, count: 1)
+    }
+
+    public func click(x: Int, y: Int, count: Int) {
         let p = _Point(x: x, y: y)
-        guard let (_, id) = hitRegions.last(where: { $0.0.contains(p) }) else { return }
-        runtime._invokeAction(id)
+        guard let hit = hitRegions.last(where: { $0.matches(p, tapCount: count) && $0.dragGestureID == nil })
+            ?? hitRegions.last(where: { $0.matches(p, tapCount: count) }) else { return }
+        runtime._recordNativeActivationPoint(actionID: hit.actionID.raw, x: Double(x), y: Double(y))
+        runtime._invokeAction(hit.actionID)
+    }
+
+    public func drag(from start: _Point, to end: _Point) {
+        guard let hit = hitRegions.last(where: { $0.rect.contains(start) && $0.dragGestureID != nil }),
+              let dragGestureID = hit.dragGestureID else { return }
+        runtime._invokeDragGesture(
+            dragGestureID,
+            start: CGPoint(x: start.x, y: start.y),
+            current: CGPoint(x: end.x, y: end.y),
+            ended: true
+        )
+        _ = runtime._performDropFallback(at: CGPoint(x: end.x, y: end.y))
     }
 
     public func scroll(x: Int, y: Int, deltaY: Int) {
@@ -105,7 +123,7 @@ public struct _TextFieldInfo: Sendable {
 enum _RenderLayout {
     struct Result {
         var ops: [RenderOp]
-        var hitRegions: [(_Rect, _ActionID)]
+        var hitRegions: [_HitRegion]
         var hoverRegions: [(_Rect, _HoverID)]
         var scrollRegions: [_ScrollRegion]
         var scrollTargets: [_ScrollTarget]
@@ -156,7 +174,9 @@ enum _RenderLayout {
              .crt(_, let child),
              .hover(_, let child),
              .clip(_, let child),
-             .gestureTarget(_, let child),
+             .gestureTarget(_, _, let child),
+             .dragSource(_, _, let child),
+             .contextMenu(_, let child),
              .fixedSize(_, _, let child),
              .badge(_, let child),
              .anchorPreference(_, _, _, let child),
@@ -173,7 +193,7 @@ enum _RenderLayout {
 
     static func layout(node: _VNode, size: _Size) -> Result {
         var ops: [RenderOp] = []
-        var hits: [(_Rect, _ActionID)] = []
+        var hits: [_HitRegion] = []
         var hovers: [(_Rect, _HoverID)] = []
         var scrolls: [_ScrollRegion] = []
         var scrollTargets: [_ScrollTarget] = []
@@ -263,7 +283,7 @@ enum _RenderLayout {
         maxSize: _Size,
         ctx: inout _Ctx,
         ops: inout [RenderOp],
-        hitRegions: inout [(_Rect, _ActionID)],
+        hitRegions: inout [_HitRegion],
         hoverRegions: inout [(_Rect, _HoverID)],
         scrollRegions: inout [_ScrollRegion],
         scrollTargets: inout [_ScrollTarget],
@@ -390,7 +410,7 @@ enum _RenderLayout {
                 if !offsets.isEmpty {
                     var shadowOps: [RenderOp] = []
                     shadowOps.reserveCapacity(64)
-                    var dummyHits: [(_Rect, _ActionID)] = []
+                    var dummyHits: [_HitRegion] = []
                     var dummyHovers: [(_Rect, _HoverID)] = []
                     var dummyScrolls: [_ScrollRegion] = []
                     var dummyScrollTargets: [_ScrollTarget] = []
@@ -577,6 +597,25 @@ enum _RenderLayout {
             }
             return used
 
+        case .flowLayout(_, let verticalSpacing, let children):
+            return draw(
+                node: .stack(axis: .vertical, spacing: verticalSpacing, children: children),
+                origin: origin,
+                maxSize: maxSize,
+                ctx: &ctx,
+                ops: &ops,
+                hitRegions: &hitRegions,
+                hoverRegions: &hoverRegions,
+                scrollRegions: &scrollRegions,
+                scrollTargets: &scrollTargets,
+                shapeRegions: &shapeRegions,
+                cursorPosition: &cursorPosition,
+                activeMenu: &activeMenu,
+                activePicker: &activePicker,
+                activeTextField: &activeTextField,
+                scrollContext: scrollContext
+            )
+
         case .text(let s):
             emitText(s, at: origin)
             return _Size(width: min(s.count, maxSize.width), height: 1)
@@ -662,7 +701,8 @@ enum _RenderLayout {
                     return isFlexibleCandidate(label)
                 case .edgePadding(_, _, _, _, let child):
                     return isFlexibleCandidate(child)
-                case .gestureTarget(_, let child):
+                case .gestureTarget(_, _, let child),
+                     .dragSource(_, _, let child):
                     return isFlexibleCandidate(child)
                 case .fixedSize(_, _, let child):
                     return isFlexibleCandidate(child)
@@ -691,6 +731,8 @@ enum _RenderLayout {
                 case .group(let nodes):
                     return nodes.contains(where: isFlexibleCandidate)
                 case .zstack(let nodes):
+                    return nodes.contains(where: isFlexibleCandidate)
+                case .flowLayout(_, _, let nodes):
                     return nodes.contains(where: isFlexibleCandidate)
                 case .stack(let childAxis, _, let nodes):
                     guard childAxis == axis else { return false }
@@ -721,7 +763,8 @@ enum _RenderLayout {
                 case .shadow(let child, _, _, _, _): return extractPriority(child)
                 case .hover(_, let child): return extractPriority(child)
                 case .onDelete(_, _, let child): return extractPriority(child)
-                case .gestureTarget(_, let child): return extractPriority(child)
+                case .gestureTarget(_, _, let child): return extractPriority(child)
+                case .dragSource(_, _, let child): return extractPriority(child)
                 case .alignmentGuide(_, _, let child): return extractPriority(child)
                 case .preferenceNode(_, let child): return extractPriority(child)
                 case .rotationEffect(_, let child): return extractPriority(child)
@@ -947,10 +990,10 @@ enum _RenderLayout {
             let buttonWidth = min(maxSize.width, (isFocused ? 1 : 0) + 4 + labelSize.width)
             let hitWidth = wantsFullHitRect ? maxSize.width : buttonWidth
             let rect = _Rect(origin: origin, size: _Size(width: min(maxSize.width, hitWidth), height: 1))
-            hitRegions.append((rect, id))
+            hitRegions.append(_HitRegion(rect: rect, actionID: id))
             return _Size(width: buttonWidth, height: 1)
 
-        case .tapTarget(let id, let child):
+        case .tapTarget(let id, let count, let child):
             let wantsFullHitRect = hasContentShapeRect(child)
             let s = draw(node: child, origin: origin, maxSize: maxSize, ctx: &ctx, ops: &ops, hitRegions: &hitRegions, hoverRegions: &hoverRegions, scrollRegions: &scrollRegions, scrollTargets: &scrollTargets, shapeRegions: &shapeRegions, cursorPosition: &cursorPosition, activeMenu: &activeMenu, activePicker: &activePicker, activeTextField: &activeTextField,
                 scrollContext: scrollContext)
@@ -958,16 +1001,25 @@ enum _RenderLayout {
             let h = min(maxSize.height, max(1, s.height))
             let hitWidth = wantsFullHitRect ? maxSize.width : w
             let rect = _Rect(origin: origin, size: _Size(width: min(maxSize.width, hitWidth), height: h))
-            hitRegions.append((rect, id))
+            hitRegions.append(_HitRegion(rect: rect, actionID: id, tapCount: count))
             return s
 
-        case .gestureTarget(let gid, let gchild):
+        case .gestureTarget(let gid, let dragID, let gchild):
             let s = draw(node: gchild, origin: origin, maxSize: maxSize, ctx: &ctx, ops: &ops, hitRegions: &hitRegions, hoverRegions: &hoverRegions, scrollRegions: &scrollRegions, scrollTargets: &scrollTargets, shapeRegions: &shapeRegions, cursorPosition: &cursorPosition, activeMenu: &activeMenu, activePicker: &activePicker, activeTextField: &activeTextField,
                 scrollContext: scrollContext)
             let w = min(maxSize.width, max(1, s.width))
             let h = min(maxSize.height, max(1, s.height))
             let rect = _Rect(origin: origin, size: _Size(width: w, height: h))
-            hitRegions.append((rect, gid))
+            hitRegions.append(_HitRegion(rect: rect, actionID: gid, dragGestureID: dragID))
+            return s
+
+        case .dragSource(let id, let dragID, let child):
+            let s = draw(node: child, origin: origin, maxSize: maxSize, ctx: &ctx, ops: &ops, hitRegions: &hitRegions, hoverRegions: &hoverRegions, scrollRegions: &scrollRegions, scrollTargets: &scrollTargets, shapeRegions: &shapeRegions, cursorPosition: &cursorPosition, activeMenu: &activeMenu, activePicker: &activePicker, activeTextField: &activeTextField,
+                scrollContext: scrollContext)
+            let w = min(maxSize.width, max(1, s.width))
+            let h = min(maxSize.height, max(1, s.height))
+            let rect = _Rect(origin: origin, size: _Size(width: w, height: h))
+            hitRegions.append(_HitRegion(rect: rect, actionID: id, dragGestureID: dragID))
             return s
 
         case .hover(let id, let child):
@@ -988,7 +1040,7 @@ enum _RenderLayout {
                 scrollContext: scrollContext)
             let width = min(maxSize.width, (isFocused ? 1 : 0) + box.count + labelSize.width)
             let rect = _Rect(origin: origin, size: _Size(width: width, height: 1))
-            hitRegions.append((rect, id))
+            hitRegions.append(_HitRegion(rect: rect, actionID: id))
             return _Size(width: width, height: 1)
 
         case .textField(let id, let placeholder, let text, let cursor, let isFocused, let isSecure, let style):
@@ -1028,7 +1080,7 @@ enum _RenderLayout {
                     actionID: id.raw
                 )
             }
-            hitRegions.append((rect, id))
+            hitRegions.append(_HitRegion(rect: rect, actionID: id))
             return _Size(width: renderedWidth, height: 1)
 
         case .scrollView(let id, let path, let isFocused, let axis, let offset, let content):
@@ -1047,7 +1099,7 @@ enum _RenderLayout {
             let viewportSize = _Size(width: viewportWidth, height: viewportHeight)
 
             let rect = _Rect(origin: origin, size: viewportSize)
-            hitRegions.append((rect, id))
+            hitRegions.append(_HitRegion(rect: rect, actionID: id))
 
             let maxOffsetY: Int = (axis == .vertical) ? max(0, contentSize.height - viewportHeight) : 0
             let maxOffsetX: Int = (axis == .horizontal) ? max(0, contentSize.width - viewportWidth) : 0
@@ -1161,7 +1213,7 @@ enum _RenderLayout {
             emitGlyph("]", at: _Point(x: closeX, y: origin.y))
             let headWidth = min(maxSize.width, (isFocused ? 1 : 0) + 2 + innerClipped.count)
             let headerRect = _Rect(origin: origin, size: _Size(width: headWidth, height: 1))
-            hitRegions.append((headerRect, id))
+            hitRegions.append(_HitRegion(rect: headerRect, actionID: id))
 
             if !isExpanded || items.isEmpty || maxSize.height < 3 {
                 return _Size(width: headWidth, height: 1)
@@ -1205,7 +1257,7 @@ enum _RenderLayout {
                 emitText(labelClipped, at: _Point(x: overlayOrigin.x + 1 + prefix.count, y: y))
 
                 let optRect = _Rect(origin: _Point(x: overlayOrigin.x, y: y), size: _Size(width: boxWidth, height: 1))
-                hitRegions.append((optRect, item.id))
+                hitRegions.append(_HitRegion(rect: optRect, actionID: item.id))
             }
 
             let bottomY = overlayOrigin.y + visibleItems + 1
@@ -1492,6 +1544,9 @@ enum _RenderLayout {
 
         case .geometryReaderProxy(_, let child):
             return draw(node: child, origin: origin, maxSize: maxSize, ctx: &ctx, ops: &ops, hitRegions: &hitRegions, hoverRegions: &hoverRegions, scrollRegions: &scrollRegions, scrollTargets: &scrollTargets, shapeRegions: &shapeRegions, cursorPosition: &cursorPosition, activeMenu: &activeMenu, activePicker: &activePicker, activeTextField: &activeTextField, scrollContext: scrollContext)
+
+        case .contextMenu(_, let child):
+            return draw(node: child, origin: origin, maxSize: maxSize, ctx: &ctx, ops: &ops, hitRegions: &hitRegions, hoverRegions: &hoverRegions, scrollRegions: &scrollRegions, scrollTargets: &scrollTargets, shapeRegions: &shapeRegions, cursorPosition: &cursorPosition, activeMenu: &activeMenu, activePicker: &activePicker, activeTextField: &activeTextField, scrollContext: scrollContext)
         }
     }
 
@@ -1531,7 +1586,10 @@ enum _RenderLayout {
             return hasContentShapeRect(child)
         case .clip(_, let child):
             return hasContentShapeRect(child)
-        case .gestureTarget(_, let child):
+        case .gestureTarget(_, _, let child),
+             .dragSource(_, _, let child):
+            return hasContentShapeRect(child)
+        case .contextMenu(_, let child):
             return hasContentShapeRect(child)
         case .fixedSize(_, _, let child):
             return hasContentShapeRect(child)
@@ -1603,6 +1661,8 @@ enum _RenderLayout {
             return measure(child, maxSize, mode: mode)
         case .tagged(_, let label):
             return measure(label, maxSize, mode: mode)
+        case .contextMenu(_, let child):
+            return measure(child, maxSize, mode: mode)
         case .frame(_, _, let minWidth, let maxWidth, let minHeight, let maxHeight, let child):
             if mode == .intrinsic {
                 let s = measure(child, maxSize, mode: .intrinsic)
@@ -1637,6 +1697,8 @@ enum _RenderLayout {
                 u.height = max(u.height, s.height)
             }
             return u
+        case .flowLayout(_, let verticalSpacing, let children):
+            return measure(.stack(axis: .vertical, spacing: verticalSpacing, children: children), maxSize, mode: mode)
         case .gradient:
             return maxSize
         case .offset(_, _, let child):
@@ -1697,9 +1759,10 @@ enum _RenderLayout {
             let labelMax = _Size(width: max(0, maxSize.width - (isFocused ? 5 : 4)), height: 1)
             let l = measure(label, labelMax, mode: mode)
             return _Size(width: min(maxSize.width, xPad + 4 + l.width), height: 1)
-        case .tapTarget(_, let child):
+        case .tapTarget(_, _, let child):
             return measure(child, maxSize, mode: mode)
-        case .gestureTarget(_, let child):
+        case .gestureTarget(_, _, let child),
+             .dragSource(_, _, let child):
             return measure(child, maxSize, mode: mode)
         case .toggle(_, let isFocused, _, let label):
             let xPad = isFocused ? 1 : 0

@@ -8,7 +8,7 @@ let package = Package(
         .library(name: "BashCommandKit", targets: ["BashCommandKit"]),
     ],
     targets: [
-        .target(name: "BashInterpreter"),
+        .target(name: "BashInterpreter", dependencies: ["BashCommandKit"]),
         .target(name: "BashCommandKit"),
     ]
 )
