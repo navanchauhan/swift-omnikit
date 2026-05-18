@@ -606,9 +606,7 @@ public final class _UIRuntime: @unchecked Sendable {
         node = withObservationTracking {
             build()
         } onChange: { [weak runtime] in
-            Task { @MainActor in
-                runtime?._markDirty(path: rootPath)
-            }
+            runtime?._markDirty(path: rootPath)
         }
         #else
         node = build()
@@ -1110,9 +1108,9 @@ public final class _UIRuntime: @unchecked Sendable {
                 entry.action()
             }
         }
-        // Actions typically mutate state (ObservableObject properties, navigation, etc.).
-        // Mark the action's owning subtree dirty so the change is reflected on the next frame.
-        _markDirty(path: entry.path)
+        // Actions can mutate shared reference state read by sibling or ancestor views.
+        // Rebuild from the root so navigation, selections, and toolbar state update together.
+        _markDirty()
     }
 
     /// Public entry point for invoking an action by its raw integer ID.

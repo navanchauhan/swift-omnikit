@@ -358,7 +358,9 @@ public final class AdwaitaApp<Root: View>: @unchecked Sendable {
                 print("OmniUI Adwaita rerender: full root set")
             }
         }
-        box.takeUnretainedValue().rerender = { Task { @MainActor in rerender() } }
+        box.takeUnretainedValue().rerender = {
+            scheduleAdwaitaRender(rerender)
+        }
         #if os(Linux)
         _omniSetAppearanceChangeHandler { [runtime, settingsRuntime, commandRuntime, popoverRuntime, box] scheme in
             let nativeScheme: String
@@ -512,6 +514,20 @@ private func syncPreferredColorScheme(_ scheme: ColorScheme?) {
         nativeScheme = "system"
     }
     nativeScheme.withCString { omni_adw_set_color_scheme($0) }
+}
+
+private func scheduleAdwaitaRender(_ render: @MainActor @escaping () -> Void) {
+    #if os(Linux)
+    if Thread.isMainThread {
+        MainActor.assumeIsolated {
+            render()
+        }
+        return
+    }
+    #endif
+    Task { @MainActor in
+        render()
+    }
 }
 
 @MainActor

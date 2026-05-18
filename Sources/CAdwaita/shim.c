@@ -854,7 +854,39 @@ static void omni_webkit_click_pressed(GtkGestureClick *gesture, int n_press, dou
   if (web_view) gtk_widget_grab_focus(web_view);
 }
 
+static gboolean omni_queue_widget_redraw_idle(gpointer data) {
+  GtkWidget *widget = GTK_WIDGET(data);
+  if (widget) {
+    gtk_widget_queue_resize(widget);
+    gtk_widget_queue_draw(widget);
+  }
+  g_object_unref(widget);
+  return G_SOURCE_REMOVE;
+}
+
+static void omni_queue_widget_redraw(GtkWidget *widget) {
+  if (!widget) return;
+  gtk_widget_queue_resize(widget);
+  gtk_widget_queue_draw(widget);
+  GtkNative *native = gtk_widget_get_native(widget);
+  GdkSurface *surface = native ? gtk_native_get_surface(native) : NULL;
+  if (surface) gdk_surface_queue_render(surface);
+  g_object_ref(widget);
+  g_idle_add(omni_queue_widget_redraw_idle, widget);
+}
+
+static void omni_queue_widget_and_ancestors_redraw(GtkWidget *widget) {
+  GtkWidget *current = widget;
+  int depth = 0;
+  while (current && depth < 8) {
+    omni_queue_widget_redraw(current);
+    current = gtk_widget_get_parent(current);
+    depth += 1;
+  }
+}
+
 static void omni_webkit_load_changed(WebKitWebView *web_view, WebKitLoadEvent load_event, gpointer user_data) {
+  if (web_view) omni_queue_widget_and_ancestors_redraw(GTK_WIDGET(web_view));
   OmniWebViewBridge *bridge = (OmniWebViewBridge *)user_data;
   const char *uri = webkit_web_view_get_uri(web_view);
   if (g_getenv("OMNI_WEBKITGTK_TRACE")) {
@@ -873,6 +905,7 @@ static void omni_webkit_load_changed(WebKitWebView *web_view, WebKitLoadEvent lo
 
 static void omni_webkit_title_changed(WebKitWebView *web_view, GParamSpec *pspec, gpointer user_data) {
   (void)pspec;
+  if (web_view) omni_queue_widget_and_ancestors_redraw(GTK_WIDGET(web_view));
   OmniWebViewBridge *bridge = (OmniWebViewBridge *)user_data;
   if (!bridge || !bridge->title_callback) return;
   const char *title = webkit_web_view_get_title(web_view);
@@ -881,6 +914,7 @@ static void omni_webkit_title_changed(WebKitWebView *web_view, GParamSpec *pspec
 
 static void omni_webkit_progress_changed(WebKitWebView *web_view, GParamSpec *pspec, gpointer user_data) {
   (void)pspec;
+  if (web_view) omni_queue_widget_and_ancestors_redraw(GTK_WIDGET(web_view));
   OmniWebViewBridge *bridge = (OmniWebViewBridge *)user_data;
   if (!bridge || !bridge->progress_callback) return;
   bridge->progress_callback(bridge->callback_context, webkit_web_view_get_estimated_load_progress(web_view));
@@ -1364,6 +1398,7 @@ static GtkWidget *omni_create_webkit_web_view_ex(
         request_header_count);
     if (accessibility_label && accessibility_label[0]) omni_accessible_label(GTK_WIDGET(existing), accessibility_label);
     if (accessibility_description && accessibility_description[0]) omni_accessible_description(GTK_WIDGET(existing), accessibility_description);
+    omni_queue_widget_and_ancestors_redraw(GTK_WIDGET(existing));
     return GTK_WIDGET(existing);
   }
 
@@ -1496,6 +1531,7 @@ static GtkWidget *omni_create_webkit_web_view_ex(
     GTK_ACCESSIBLE_PROPERTY_MULTI_LINE, TRUE,
     -1
   );
+  omni_queue_widget_redraw(web_view);
   return web_view;
 }
 
@@ -2249,10 +2285,14 @@ static void omni_macos_accessibility_schedule(OmniAdwApp *app);
 static void omni_macos_accessibility_schedule_after_scroll(OmniAdwApp *app);
 
 static void omni_flush_pending_ui(OmniAdwApp *app) {
-  if (app && app->window) gtk_widget_queue_draw(app->window);
+  if (app && app->content) omni_queue_widget_and_ancestors_redraw(app->content);
+  if (app && app->body_slot) omni_queue_widget_redraw(app->body_slot);
+  if (app && app->window) omni_queue_widget_redraw(app->window);
   while (g_main_context_pending(NULL)) {
     g_main_context_iteration(NULL, FALSE);
   }
+  GdkDisplay *display = gdk_display_get_default();
+  if (display) gdk_display_flush(display);
   omni_macos_accessibility_cancel_pending(app);
   omni_macos_accessibility_sync(app);
 }
@@ -5529,6 +5569,8 @@ void omni_adw_app_set_root_focused(OmniAdwApp *app, OmniAdwNode *root, int32_t f
   if (focused && gtk_widget_get_focusable(focused)) {
     gtk_widget_grab_focus(focused);
   }
+  omni_queue_widget_and_ancestors_redraw(app->content);
+  if (app->window) omni_queue_widget_redraw(app->window);
   omni_macos_accessibility_schedule(app);
   root->widget = NULL;
   omni_adw_node_free(root);
@@ -6214,6 +6256,7 @@ int32_t omni_adw_app_update_node(OmniAdwApp *app, const char *semantic_id, int32
   if (value[0] && kind != 10) {
     gtk_widget_set_tooltip_text(widget, value);
   }
+  omni_queue_widget_and_ancestors_redraw(widget);
   omni_macos_accessibility_schedule(app);
   return 1;
 }
@@ -6292,6 +6335,9 @@ int32_t omni_adw_app_replace_node(OmniAdwApp *app, const char *semantic_id, Omni
   if (focused && gtk_widget_get_focusable(focused)) {
     gtk_widget_grab_focus(focused);
   }
+  omni_queue_widget_and_ancestors_redraw(replacement_widget);
+  if (app->content) omni_queue_widget_redraw(app->content);
+  if (app->window) omni_queue_widget_redraw(app->window);
   omni_macos_accessibility_schedule(app);
   return 1;
 }
