@@ -388,6 +388,8 @@ enum SemanticLowerer {
             return SemanticNode(id: path, kind: .modifier(.badge(text)), children: [lower(child, path: path + ".content")])
         case .overlay(let child, let overlay):
             return SemanticNode(id: path, kind: .zstack, children: [lower(child, path: path + ".content"), lower(overlay, path: path + ".overlay")])
+        case .elevated(_, let child):
+            return lower(child, path: path + ".content")
         case .modalOverlay(_, _, _, let child):
             return SemanticNode(id: path, kind: .modifier(.background("adw-dialog")), children: [lower(child, path: path + ".content")])
         case .identified(let id, _, let child):

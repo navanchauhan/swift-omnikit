@@ -2477,7 +2477,9 @@ struct _BuildContext {
 
         if runtime._canReuseNode(path: childPath, pathKey: childPathKey, typeID: childTypeID, viewSignature: childSignature),
            let cached = runtime._reuseNode(pathKey: childPathKey) {
-            return cached
+            if !Self.requiresNativeRepresentableRefresh(cached) {
+                return cached
+            }
         }
 
         runtime._beginPathBuild(path: childPath, pathKey: childPathKey)
@@ -2497,6 +2499,57 @@ struct _BuildContext {
             hash &*= 1_099_511_628_211
         }
         return -1 - Int(hash & 0x3FFF_FFFF)
+    }
+
+    private static func requiresNativeRepresentableRefresh(_ node: _VNode) -> Bool {
+        switch node {
+        case .image(let name):
+            return name.hasPrefix("omni-webview:")
+        case .group(let children), .stack(_, _, let children), .flowLayout(_, _, let children), .zstack(let children), .viewThatFits(_, let children):
+            return children.contains(where: requiresNativeRepresentableRefresh)
+        case .style(_, _, let child),
+             .textStyled(_, let child),
+             .contentShapeRect(_, let child),
+             .clip(_, let child),
+             .shadow(let child, _, _, _, _),
+             .glass(_, _, let child),
+             .crt(_, let child),
+             .elevated(_, let child),
+             .modalOverlay(_, _, _, let child),
+             .frame(_, _, _, _, _, _, let child),
+             .edgePadding(_, _, _, _, let child),
+             .offset(_, _, let child),
+             .opacity(_, let child),
+             .button(_, _, let child),
+             .tapTarget(_, _, let child),
+             .hover(_, let child),
+             .toggle(_, _, _, let child),
+             .scrollView(_, _, _, _, _, let child),
+             .identified(_, _, let child),
+             .onDelete(_, _, let child),
+             .tagged(_, let child),
+             .gestureTarget(_, _, let child),
+             .dragSource(_, _, let child),
+             .contextMenu(_, let child),
+             .fixedSize(_, _, let child),
+             .layoutPriority(_, let child),
+             .aspectRatio(_, _, let child),
+             .alignmentGuide(_, _, let child),
+             .preferenceNode(_, let child),
+             .rotationEffect(_, let child),
+             .textCase(_, let child),
+             .blur(_, let child),
+             .badge(_, let child),
+             .anchorPreference(_, _, _, let child),
+             .geometryReaderProxy(_, let child):
+            return requiresNativeRepresentableRefresh(child)
+        case .background(let child, let background), .overlay(let child, let background):
+            return requiresNativeRepresentableRefresh(child) || requiresNativeRepresentableRefresh(background)
+        case .swipeActions(_, _, let actions, let child):
+            return requiresNativeRepresentableRefresh(child) || actions.contains(where: requiresNativeRepresentableRefresh)
+        case .empty, .text, .spacer, .gradient, .shape, .textField, .menu, .divider, .styledText, .truncatedText:
+            return false
+        }
     }
 }
 

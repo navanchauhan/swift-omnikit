@@ -128,6 +128,7 @@ OmniAdwNode *omni_adw_web_view_new_ex(
 int32_t omni_adw_web_view_load_uri(const char *identity, const char *url);
 int32_t omni_adw_web_view_load_request(const char *identity, const char *url, const char **header_names, const char **header_values, int32_t header_count);
 int32_t omni_adw_web_view_load_html(const char *identity, const char *html, const char *base_url);
+int32_t omni_adw_web_view_unregister(const char *identity);
 int32_t omni_adw_web_view_evaluate_javascript(const char *identity, const char *script, omni_adw_web_evaluate_callback callback, void *callback_context);
 int32_t omni_adw_web_view_go_back(const char *identity);
 int32_t omni_adw_web_view_go_forward(const char *identity);

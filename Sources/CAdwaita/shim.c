@@ -267,6 +267,70 @@ static GtkWidget *omni_create_webkit_web_view(const char *url, void *native_view
 }
 
 #if defined(__linux__)
+static void omni_webkit_signature_append_checksum(GString *signature, const char *value) {
+  if (!signature) return;
+  char *checksum = g_compute_checksum_for_string(G_CHECKSUM_SHA256, value ? value : "", -1);
+  g_string_append(signature, checksum ? checksum : "");
+  g_free(checksum);
+}
+
+static gboolean omni_webkit_signature_is_unchanged(GObject *object, const char *key, char *signature) {
+  if (!object || !key || !signature) {
+    g_free(signature);
+    return FALSE;
+  }
+  const char *previous = (const char *)g_object_get_data(object, key);
+  if (previous && strcmp(previous, signature) == 0) {
+    g_free(signature);
+    return TRUE;
+  }
+  g_object_set_data_full(object, key, signature, g_free);
+  return FALSE;
+}
+
+static char *omni_webkit_string_list_signature(const char **values, int32_t count) {
+  GString *signature = g_string_new(NULL);
+  if (!signature) return NULL;
+  g_string_append_printf(signature, "%d", count);
+  for (int32_t i = 0; i < count; i++) {
+    g_string_append_c(signature, '\n');
+    omni_webkit_signature_append_checksum(signature, values ? values[i] : NULL);
+  }
+  return g_string_free(signature, FALSE);
+}
+
+static char *omni_webkit_string_pair_list_signature(const char **keys, const char **values, int32_t count) {
+  GString *signature = g_string_new(NULL);
+  if (!signature) return NULL;
+  g_string_append_printf(signature, "%d", count);
+  for (int32_t i = 0; i < count; i++) {
+    g_string_append_c(signature, '\n');
+    omni_webkit_signature_append_checksum(signature, keys ? keys[i] : NULL);
+    g_string_append_c(signature, '=');
+    omni_webkit_signature_append_checksum(signature, values ? values[i] : NULL);
+  }
+  return g_string_free(signature, FALSE);
+}
+
+static char *omni_webkit_user_scripts_signature(
+    const char **script_sources,
+    const int32_t *script_injection_times,
+    const int32_t *script_main_frame_only,
+    int32_t script_count) {
+  GString *signature = g_string_new(NULL);
+  if (!signature) return NULL;
+  g_string_append_printf(signature, "%d", script_count);
+  for (int32_t i = 0; i < script_count; i++) {
+    g_string_append_printf(
+        signature,
+        "\n%d:%d:",
+        script_injection_times ? script_injection_times[i] : 1,
+        script_main_frame_only ? script_main_frame_only[i] : 0);
+    omni_webkit_signature_append_checksum(signature, script_sources ? script_sources[i] : NULL);
+  }
+  return g_string_free(signature, FALSE);
+}
+
 static char *omni_jsc_value_to_json(JSCValue *value) {
   if (!value) return g_strdup("null");
   if (jsc_value_is_null(value) || jsc_value_is_undefined(value)) return g_strdup("null");
@@ -337,6 +401,10 @@ static void omni_webkit_sync_message_handlers(
     const char **message_handler_names,
     int32_t message_handler_count) {
   if (!manager || !bridge) return;
+  char *signature = omni_webkit_string_list_signature(message_handler_names, message_handler_count);
+  if (omni_webkit_signature_is_unchanged(G_OBJECT(manager), "omni-webkit-message-handlers-signature", signature)) {
+    return;
+  }
   if (bridge->message_handler_ids) {
     GHashTableIter iter;
     gpointer key = NULL;
@@ -369,6 +437,14 @@ static void omni_webkit_sync_user_scripts(
     const int32_t *script_main_frame_only,
     int32_t script_count) {
   if (!manager) return;
+  char *signature = omni_webkit_user_scripts_signature(
+      script_sources,
+      script_injection_times,
+      script_main_frame_only,
+      script_count);
+  if (omni_webkit_signature_is_unchanged(G_OBJECT(manager), "omni-webkit-user-scripts-signature", signature)) {
+    return;
+  }
   webkit_user_content_manager_remove_all_scripts(manager);
   for (int32_t i = 0; i < script_count; i++) {
     if (!script_sources || !script_sources[i]) continue;
@@ -419,6 +495,57 @@ static void omni_webkit_free_string_array(char **values, int32_t count) {
   free(values);
 }
 
+static char *omni_webkit_request_signature(
+    const char *url,
+    const char **header_names,
+    const char **header_values,
+    int32_t header_count) {
+  if (!url || !url[0]) return NULL;
+  GString *signature = g_string_new(url);
+  if (!signature) return NULL;
+  for (int32_t i = 0; i < header_count; i++) {
+    g_string_append_c(signature, '\n');
+    omni_webkit_signature_append_checksum(signature, header_names ? header_names[i] : NULL);
+    g_string_append_c(signature, ':');
+    omni_webkit_signature_append_checksum(signature, header_values ? header_values[i] : NULL);
+  }
+  return g_string_free(signature, FALSE);
+}
+
+static void omni_webkit_clear_request_signature(WebKitWebView *web_view) {
+  if (!web_view) return;
+  g_object_set_data_full(G_OBJECT(web_view), "omni-last-request-signature", NULL, NULL);
+}
+
+static gboolean omni_webkit_request_is_current(
+    WebKitWebView *web_view,
+    const char *url,
+    const char **header_names,
+    const char **header_values,
+    int32_t header_count) {
+  if (!web_view || !url || !url[0]) return TRUE;
+  char *signature = omni_webkit_request_signature(url, header_names, header_values, header_count);
+  const char *previous = (const char *)g_object_get_data(G_OBJECT(web_view), "omni-last-request-signature");
+  if (signature && previous && strcmp(previous, signature) == 0) {
+    g_free(signature);
+    return TRUE;
+  }
+
+  const gboolean has_headers = header_names && header_values && header_count > 0;
+  const char *current = webkit_web_view_get_uri(web_view);
+  if (!has_headers && current && strcmp(current, url) == 0) {
+    if (signature) {
+      g_object_set_data_full(G_OBJECT(web_view), "omni-last-request-signature", signature, g_free);
+    }
+    return TRUE;
+  }
+
+  if (signature) {
+    g_object_set_data_full(G_OBJECT(web_view), "omni-last-request-signature", signature, g_free);
+  }
+  return FALSE;
+}
+
 static char *omni_webkit_html_signature(const char *html, const char *base_url) {
   if (!html) return NULL;
   char *checksum = g_compute_checksum_for_string(G_CHECKSUM_SHA256, html, -1);
@@ -444,6 +571,7 @@ static gboolean omni_webkit_load_html(WebKitWebView *web_view, const char *html,
   if (signature) {
     g_object_set_data_full(G_OBJECT(web_view), "omni-last-html-signature", signature, g_free);
   }
+  omni_webkit_clear_request_signature(web_view);
   webkit_web_view_load_html(web_view, html, base_url && base_url[0] ? base_url : NULL);
   return TRUE;
 }
@@ -452,17 +580,18 @@ static gboolean omni_webkit_load_html_if_changed(WebKitWebView *web_view, const 
   return omni_webkit_load_html(web_view, html, base_url, FALSE);
 }
 
-static void omni_webkit_load_uri_with_headers(
+static gboolean omni_webkit_load_uri_with_headers(
     WebKitWebView *web_view,
     const char *url,
     const char **header_names,
     const char **header_values,
     int32_t header_count) {
-  if (!web_view || !url || !url[0]) return;
+  if (!web_view || !url || !url[0]) return FALSE;
+  if (omni_webkit_request_is_current(web_view, url, header_names, header_values, header_count)) return FALSE;
   omni_webkit_clear_html_signature(web_view);
   if (!header_names || !header_values || header_count <= 0) {
     webkit_web_view_load_uri(web_view, url);
-    return;
+    return TRUE;
   }
 
   WebKitURIRequest *request = webkit_uri_request_new(url);
@@ -480,6 +609,7 @@ static void omni_webkit_load_uri_with_headers(
   } else {
     webkit_web_view_load_uri(web_view, url);
   }
+  return TRUE;
 }
 
 static OmniWebViewDeferredLoad *omni_webkit_deferred_load_new(
@@ -585,6 +715,21 @@ static void omni_webkit_install_content_filters(
     webkit_user_content_filter_store_save(store, identifiers[i], source, NULL, omni_webkit_filter_saved, install);
     g_bytes_unref(source);
   }
+}
+
+static void omni_webkit_sync_content_filters(
+    WebKitUserContentManager *manager,
+    const char **identifiers,
+    const char **sources,
+    int32_t count,
+    OmniWebViewDeferredLoad *deferred_load) {
+  if (!manager) return;
+  char *signature = omni_webkit_string_pair_list_signature(identifiers, sources, count);
+  if (omni_webkit_signature_is_unchanged(G_OBJECT(manager), "omni-webkit-content-filters-signature", signature)) {
+    return;
+  }
+  webkit_user_content_manager_remove_all_filters(manager);
+  omni_webkit_install_content_filters(manager, identifiers, sources, count, deferred_load);
 }
 
 static double omni_webkit_cookie_expires_at(SoupCookie *cookie) {
@@ -1022,33 +1167,82 @@ static void omni_webkit_load_if_needed(
     const char **request_header_values,
     int32_t request_header_count) {
   if (!web_view) return;
-  const char *target = html ? (base_url && base_url[0] ? base_url : "about:blank") : (url ? url : "about:blank");
-  const char *current = webkit_web_view_get_uri(web_view);
   if (html) {
     omni_webkit_load_html_if_changed(web_view, html, base_url);
   } else if (url && url[0]) {
-    if (current && target && strcmp(current, target) == 0) return;
-    if (request_header_count > 0 && request_header_names && request_header_values) {
-      WebKitURIRequest *request = webkit_uri_request_new(url);
-      SoupMessageHeaders *headers = webkit_uri_request_get_http_headers(request);
-      for (int32_t i = 0; i < request_header_count; i++) {
-        if (request_header_names[i] && request_header_values[i]) {
-          soup_message_headers_replace(headers, request_header_names[i], request_header_values[i]);
-        }
-      }
-      webkit_web_view_load_request(web_view, request);
-      g_object_unref(request);
-    } else {
-      omni_webkit_clear_html_signature(web_view);
-      webkit_web_view_load_uri(web_view, url);
-    }
+    omni_webkit_load_uri_with_headers(
+        web_view,
+        url,
+        request_header_names,
+        request_header_values,
+        request_header_count);
   }
 }
 
 static void omni_webkit_detach_for_reuse(GtkWidget *widget) {
   if (!widget) return;
   GtkWidget *parent = gtk_widget_get_parent(widget);
-  if (parent) gtk_widget_unparent(widget);
+  if (!parent) return;
+
+  g_object_ref(widget);
+  if (GTK_IS_BOX(parent)) {
+    gtk_box_remove(GTK_BOX(parent), widget);
+  } else if (GTK_IS_OVERLAY(parent)) {
+    if (gtk_overlay_get_child(GTK_OVERLAY(parent)) == widget) {
+      gtk_overlay_set_child(GTK_OVERLAY(parent), NULL);
+    } else {
+      gtk_overlay_remove_overlay(GTK_OVERLAY(parent), widget);
+    }
+  } else if (GTK_IS_LIST_BOX_ROW(parent)) {
+    if (gtk_list_box_row_get_child(GTK_LIST_BOX_ROW(parent)) == widget) {
+      gtk_list_box_row_set_child(GTK_LIST_BOX_ROW(parent), NULL);
+    } else {
+      gtk_widget_unparent(widget);
+    }
+  } else if (GTK_IS_SCROLLED_WINDOW(parent)) {
+    if (gtk_scrolled_window_get_child(GTK_SCROLLED_WINDOW(parent)) == widget) {
+      gtk_scrolled_window_set_child(GTK_SCROLLED_WINDOW(parent), NULL);
+    } else {
+      gtk_widget_unparent(widget);
+    }
+  } else if (GTK_IS_BUTTON(parent)) {
+    if (gtk_button_get_child(GTK_BUTTON(parent)) == widget) {
+      gtk_button_set_child(GTK_BUTTON(parent), NULL);
+    } else {
+      gtk_widget_unparent(widget);
+    }
+  } else if (GTK_IS_PANED(parent)) {
+    if (gtk_paned_get_start_child(GTK_PANED(parent)) == widget) {
+      gtk_paned_set_start_child(GTK_PANED(parent), NULL);
+    } else if (gtk_paned_get_end_child(GTK_PANED(parent)) == widget) {
+      gtk_paned_set_end_child(GTK_PANED(parent), NULL);
+    } else {
+      gtk_widget_unparent(widget);
+    }
+  } else if (ADW_IS_OVERLAY_SPLIT_VIEW(parent)) {
+    if (adw_overlay_split_view_get_sidebar(ADW_OVERLAY_SPLIT_VIEW(parent)) == widget) {
+      adw_overlay_split_view_set_sidebar(ADW_OVERLAY_SPLIT_VIEW(parent), NULL);
+    } else if (adw_overlay_split_view_get_content(ADW_OVERLAY_SPLIT_VIEW(parent)) == widget) {
+      adw_overlay_split_view_set_content(ADW_OVERLAY_SPLIT_VIEW(parent), NULL);
+    } else {
+      gtk_widget_unparent(widget);
+    }
+  } else if (ADW_IS_NAVIGATION_PAGE(parent)) {
+    if (adw_navigation_page_get_child(ADW_NAVIGATION_PAGE(parent)) == widget) {
+      adw_navigation_page_set_child(ADW_NAVIGATION_PAGE(parent), NULL);
+    } else {
+      gtk_widget_unparent(widget);
+    }
+  } else if (GTK_IS_WINDOW(parent)) {
+    if (gtk_window_get_child(GTK_WINDOW(parent)) == widget) {
+      gtk_window_set_child(GTK_WINDOW(parent), NULL);
+    } else {
+      gtk_widget_unparent(widget);
+    }
+  } else {
+    gtk_widget_unparent(widget);
+  }
+  g_object_unref(widget);
 }
 
 static void omni_webkit_bridge_free(gpointer data) {
@@ -1056,6 +1250,22 @@ static void omni_webkit_bridge_free(gpointer data) {
   if (!bridge) return;
   if (bridge->message_handler_ids) g_hash_table_destroy(bridge->message_handler_ids);
   free(bridge);
+}
+
+static void omni_webkit_clear_bridge_callbacks(WebKitWebView *web_view) {
+  if (!web_view) return;
+  OmniWebViewBridge *bridge = (OmniWebViewBridge *)g_object_get_data(G_OBJECT(web_view), "omni-webkit-bridge");
+  if (!bridge) return;
+  bridge->message_callback = NULL;
+  bridge->navigation_callback = NULL;
+  bridge->policy_callback = NULL;
+  bridge->response_policy_callback = NULL;
+  bridge->download_destination_callback = NULL;
+  bridge->title_callback = NULL;
+  bridge->progress_callback = NULL;
+  bridge->cookie_callback = NULL;
+  bridge->script_dialog_callback = NULL;
+  bridge->callback_context = NULL;
 }
 
 static GtkWidget *omni_create_webkit_web_view_ex(
@@ -1141,8 +1351,7 @@ static GtkWidget *omni_create_webkit_web_view_ex(
         script_main_frame_only,
         script_count);
     if (manager) {
-      webkit_user_content_manager_remove_all_filters(manager);
-      omni_webkit_install_content_filters(manager, content_rule_identifiers, content_rule_sources, content_rule_count, NULL);
+      omni_webkit_sync_content_filters(manager, content_rule_identifiers, content_rule_sources, content_rule_count, NULL);
     }
     omni_webkit_sync_message_handlers(manager, bridge, message_handler_names, message_handler_count);
     omni_webkit_load_if_needed(
@@ -1173,7 +1382,7 @@ static GtkWidget *omni_create_webkit_web_view_ex(
       request_header_names,
       request_header_values,
       request_header_count);
-  omni_webkit_install_content_filters(manager, content_rule_identifiers, content_rule_sources, content_rule_count, initial_load);
+  omni_webkit_sync_content_filters(manager, content_rule_identifiers, content_rule_sources, content_rule_count, initial_load);
 
   OmniWebViewBridge *bridge = calloc(1, sizeof(OmniWebViewBridge));
   bridge->web_view = WEBKIT_WEB_VIEW(web_view);
@@ -1312,7 +1521,7 @@ int32_t omni_adw_web_view_load_uri(const char *identity, const char *url) {
 #if defined(__linux__)
   WebKitWebView *web_view = WEBKIT_WEB_VIEW(omni_webkit_lookup_view(identity));
   if (!web_view || !url || !url[0]) return 0;
-  webkit_web_view_load_uri(web_view, url);
+  omni_webkit_load_uri_with_headers(web_view, url, NULL, NULL, 0);
   return 1;
 #else
   (void)identity; (void)url;
@@ -1340,6 +1549,22 @@ int32_t omni_adw_web_view_load_html(const char *identity, const char *html, cons
   return 1;
 #else
   (void)identity; (void)html; (void)base_url;
+  return 0;
+#endif
+}
+
+int32_t omni_adw_web_view_unregister(const char *identity) {
+#if defined(__linux__)
+  WebKitWebView *web_view = WEBKIT_WEB_VIEW(omni_webkit_lookup_view(identity));
+  if (!web_view || !omni_webkit_views_by_identity) return 0;
+  omni_webkit_clear_bridge_callbacks(web_view);
+  webkit_web_view_stop_loading(web_view);
+  if (g_getenv("OMNI_WEBKITGTK_TRACE")) {
+    g_printerr("OMNI_WEBKITGTK_UNREGISTER identity=%s view=%p\n", identity ? identity : "", web_view);
+  }
+  return g_hash_table_remove(omni_webkit_views_by_identity, identity) ? 1 : 0;
+#else
+  (void)identity;
   return 0;
 #endif
 }
@@ -2193,12 +2418,12 @@ static void omni_install_css_once(void) {
     ".omni-plain-list row:hover { background: transparent; }"
     ".omni-plain-list label { padding: 2px 6px; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; font-size: 13px; font-weight: 500; }"
     ".omni-list-row-button { min-height: 24px; padding: 0; border-radius: 0; background: transparent; box-shadow: none; }"
-    ".omni-list-row-button:hover { background: rgba(255,255,255,0.06); }"
+    ".omni-list-row-button:hover { background: alpha(@view_fg_color,0.06); }"
     ".omni-list-row-button label { padding: 2px 6px; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; font-size: 13px; font-weight: 500; }"
     ".omni-complex-button { padding: 0; margin: 0; border-radius: 0; background: transparent; background-color: transparent; box-shadow: none; }"
-    ".omni-complex-button:hover { background: rgba(255,255,255,0.04); background-color: rgba(255,255,255,0.04); }"
+    ".omni-complex-button:hover { background: alpha(@view_fg_color,0.04); background-color: alpha(@view_fg_color,0.04); }"
     ".omni-click-container { padding: 0; margin: 0; border-radius: 0; background: transparent; background-color: transparent; }"
-    ".omni-click-container:hover { background: rgba(255,255,255,0.04); background-color: rgba(255,255,255,0.04); }"
+    ".omni-click-container:hover { background: alpha(@view_fg_color,0.04); background-color: alpha(@view_fg_color,0.04); }"
     ".omni-inline-link-button { min-height: 18px; min-width: 0; padding: 0 3px; margin: 0 1px; border-radius: 4px; background: transparent; background-color: transparent; box-shadow: none; color: #ff6600; }"
     ".omni-inline-link-button:hover { background: rgba(255,102,0,0.12); background-color: rgba(255,102,0,0.12); }"
     ".omni-inline-link-button label { padding: 0; color: inherit; }"
@@ -2207,36 +2432,81 @@ static void omni_install_css_once(void) {
     ".omni-sidebar-list row:hover { background: transparent; }"
     ".omni-sidebar-list row:selected { background: @accent_bg_color; }"
     ".omni-sidebar-row-button { min-height: 25px; padding: 0; margin: 0 6px 1px 6px; border-radius: 6px; background: transparent; box-shadow: none; }"
-    ".omni-sidebar-row-button:hover { background: rgba(255,255,255,0.06); }"
+    ".omni-sidebar-row-button:hover { background: alpha(@view_fg_color,0.06); }"
     ".omni-sidebar-disclosure-button { min-width: 22px; min-height: 24px; padding: 0; border-radius: 6px; background: transparent; box-shadow: none; }"
-    ".omni-sidebar-disclosure-button:hover { background: rgba(255,255,255,0.08); }"
+    ".omni-sidebar-disclosure-button:hover { background: alpha(@view_fg_color,0.08); }"
     ".omni-sidebar-row { padding: 1px 6px; }"
     ".omni-sidebar-label { font-size: 13px; font-weight: 600; line-height: 1.22; }"
     ".omni-sidebar-disclosure { min-width: 14px; opacity: 0.75; }"
     ".navigation-view { padding: 0; border-radius: 0; background: @window_bg_color; }"
     ".view { padding: 2px; }"
-    ".accent { border-radius: 8px; padding: 6px 8px; background: @accent_bg_color; }"
-    ".omni-fg-clear, .omni-fg-clear label { color: transparent; }"
-    ".omni-fg-orange, .omni-fg-orange label { color: #ff9500; }"
-    ".omni-fg-orange-muted, .omni-fg-orange-muted label { color: rgba(255,149,0,0.45); }"
-    ".omni-fg-card, .omni-fg-card label { color: @view_fg_color; }"
-    ".omni-fg-accent, .omni-fg-accent label { color: @accent_color; }"
-    ".omni-fg-secondary, .omni-fg-secondary label { color: @dim_label_color; }"
-    ".omni-fg-tertiary, .omni-fg-tertiary label { color: alpha(@view_fg_color, 0.55); }"
-    ".omni-fg-quaternary, .omni-fg-quaternary label { color: alpha(@view_fg_color, 0.35); }"
-    ".omni-fg-white, .omni-fg-white label { color: white; }"
-    ".omni-fg-white-muted, .omni-fg-white-muted label { color: rgba(255,255,255,0.35); }"
-    ".omni-fg-black, .omni-fg-black label { color: black; }"
-    ".omni-fg-black-muted, .omni-fg-black-muted label { color: rgba(0,0,0,0.35); }"
-    ".omni-fg-gray, .omni-fg-gray label { color: #8e8e93; }"
+    ".accent { border-radius: 8px; padding: 6px 8px; background: @accent_bg_color; color: @accent_fg_color; }"
+    ".omni-fg-clear, .omni-fg-clear label, .omni-fg-clear image { color: transparent; }"
+    ".omni-fg-primary, .omni-fg-native, .omni-fg-card, .omni-fg-primary label, .omni-fg-native label, .omni-fg-card label, .omni-fg-primary image, .omni-fg-native image, .omni-fg-card image { color: @view_fg_color; }"
+    ".omni-fg-orange, .omni-fg-orange label, .omni-fg-orange image { color: #ff9500; }"
+    ".omni-fg-orange-muted, .omni-fg-orange-muted label, .omni-fg-orange-muted image { color: rgba(255,149,0,0.45); }"
+    ".omni-fg-accent, .omni-fg-accent label, .omni-fg-accent image { color: @accent_color; }"
+    ".omni-fg-secondary, .omni-fg-secondary label, .omni-fg-secondary image { color: alpha(@view_fg_color, 0.72); }"
+    ".omni-fg-tertiary, .omni-fg-tertiary label, .omni-fg-tertiary image { color: alpha(@view_fg_color, 0.55); }"
+    ".omni-fg-quaternary, .omni-fg-quaternary label, .omni-fg-quaternary image { color: alpha(@view_fg_color, 0.35); }"
+    ".omni-fg-white, .omni-fg-white label, .omni-fg-white image { color: white; }"
+    ".omni-fg-white-muted, .omni-fg-white-muted label, .omni-fg-white-muted image { color: rgba(255,255,255,0.55); }"
+    ".omni-fg-black, .omni-fg-black label, .omni-fg-black image { color: black; }"
+    ".omni-fg-black-muted, .omni-fg-black-muted label, .omni-fg-black-muted image { color: rgba(0,0,0,0.55); }"
+    ".omni-fg-gray, .omni-fg-gray label, .omni-fg-gray image { color: #8e8e93; }"
+    ".omni-fg-red, .omni-fg-red label, .omni-fg-red image { color: #ff453a; }"
+    ".omni-fg-red-muted, .omni-fg-red-muted label, .omni-fg-red-muted image { color: rgba(255,69,58,0.55); }"
+    ".omni-fg-yellow, .omni-fg-yellow label, .omni-fg-yellow image { color: #bf7f00; }"
+    ".omni-fg-yellow-muted, .omni-fg-yellow-muted label, .omni-fg-yellow-muted image { color: rgba(191,127,0,0.55); }"
+    ".omni-fg-green, .omni-fg-green label, .omni-fg-green image { color: #248a3d; }"
+    ".omni-fg-green-muted, .omni-fg-green-muted label, .omni-fg-green-muted image { color: rgba(36,138,61,0.55); }"
+    ".omni-fg-mint, .omni-fg-mint label, .omni-fg-mint image { color: #00a699; }"
+    ".omni-fg-mint-muted, .omni-fg-mint-muted label, .omni-fg-mint-muted image { color: rgba(0,166,153,0.55); }"
+    ".omni-fg-teal, .omni-fg-teal label, .omni-fg-teal image { color: #0a7f8f; }"
+    ".omni-fg-teal-muted, .omni-fg-teal-muted label, .omni-fg-teal-muted image { color: rgba(10,127,143,0.55); }"
+    ".omni-fg-cyan, .omni-fg-cyan label, .omni-fg-cyan image { color: #007a99; }"
+    ".omni-fg-cyan-muted, .omni-fg-cyan-muted label, .omni-fg-cyan-muted image { color: rgba(0,122,153,0.55); }"
+    ".omni-fg-blue, .omni-fg-blue label, .omni-fg-blue image { color: #0a84ff; }"
+    ".omni-fg-blue-muted, .omni-fg-blue-muted label, .omni-fg-blue-muted image { color: rgba(10,132,255,0.55); }"
+    ".omni-fg-indigo, .omni-fg-indigo label, .omni-fg-indigo image { color: #5e5ce6; }"
+    ".omni-fg-indigo-muted, .omni-fg-indigo-muted label, .omni-fg-indigo-muted image { color: rgba(94,92,230,0.55); }"
+    ".omni-fg-purple, .omni-fg-purple label, .omni-fg-purple image { color: #af52de; }"
+    ".omni-fg-purple-muted, .omni-fg-purple-muted label, .omni-fg-purple-muted image { color: rgba(175,82,222,0.55); }"
+    ".omni-fg-pink, .omni-fg-pink label, .omni-fg-pink image { color: #ff2d55; }"
+    ".omni-fg-pink-muted, .omni-fg-pink-muted label, .omni-fg-pink-muted image { color: rgba(255,45,85,0.55); }"
+    ".omni-fg-brown, .omni-fg-brown label, .omni-fg-brown image { color: #8e6e53; }"
+    ".omni-fg-brown-muted, .omni-fg-brown-muted label, .omni-fg-brown-muted image { color: rgba(142,110,83,0.55); }"
     ".omni-bg-clear { background: transparent; background-color: transparent; }"
     ".omni-bg-orange { background: rgba(255,149,0,0.18); background-color: rgba(255,149,0,0.18); }"
     ".omni-bg-orange-muted { background: rgba(255,149,0,0.12); background-color: rgba(255,149,0,0.12); }"
     ".omni-bg-card { background: alpha(@view_fg_color, 0.10); background-color: alpha(@view_fg_color, 0.10); border-radius: 10px; }"
-    ".omni-bg-accent { background: alpha(@accent_bg_color, 0.18); background-color: alpha(@accent_bg_color, 0.18); border-radius: 6px; }"
+    ".omni-bg-accent { background: @accent_bg_color; background-color: @accent_bg_color; color: @accent_fg_color; border-radius: 6px; }"
+    ".omni-bg-primary { background: alpha(@view_fg_color, 0.14); background-color: alpha(@view_fg_color, 0.14); border-radius: 6px; }"
     ".omni-bg-secondary { background: alpha(@view_fg_color, 0.10); background-color: alpha(@view_fg_color, 0.10); border-radius: 6px; }"
     ".omni-bg-tertiary { background: alpha(@view_fg_color, 0.08); background-color: alpha(@view_fg_color, 0.08); border-radius: 6px; }"
     ".omni-bg-quaternary { background: alpha(@view_fg_color, 0.06); background-color: alpha(@view_fg_color, 0.06); border-radius: 6px; }"
+    ".omni-bg-red { background: rgba(255,69,58,0.18); background-color: rgba(255,69,58,0.18); }"
+    ".omni-bg-red-muted { background: rgba(255,69,58,0.10); background-color: rgba(255,69,58,0.10); }"
+    ".omni-bg-yellow { background: rgba(191,127,0,0.18); background-color: rgba(191,127,0,0.18); }"
+    ".omni-bg-yellow-muted { background: rgba(191,127,0,0.10); background-color: rgba(191,127,0,0.10); }"
+    ".omni-bg-green { background: rgba(36,138,61,0.18); background-color: rgba(36,138,61,0.18); }"
+    ".omni-bg-green-muted { background: rgba(36,138,61,0.10); background-color: rgba(36,138,61,0.10); }"
+    ".omni-bg-mint { background: rgba(0,166,153,0.18); background-color: rgba(0,166,153,0.18); }"
+    ".omni-bg-mint-muted { background: rgba(0,166,153,0.10); background-color: rgba(0,166,153,0.10); }"
+    ".omni-bg-teal { background: rgba(10,127,143,0.18); background-color: rgba(10,127,143,0.18); }"
+    ".omni-bg-teal-muted { background: rgba(10,127,143,0.10); background-color: rgba(10,127,143,0.10); }"
+    ".omni-bg-cyan { background: rgba(0,122,153,0.18); background-color: rgba(0,122,153,0.18); }"
+    ".omni-bg-cyan-muted { background: rgba(0,122,153,0.10); background-color: rgba(0,122,153,0.10); }"
+    ".omni-bg-blue { background: rgba(10,132,255,0.18); background-color: rgba(10,132,255,0.18); }"
+    ".omni-bg-blue-muted { background: rgba(10,132,255,0.10); background-color: rgba(10,132,255,0.10); }"
+    ".omni-bg-indigo { background: rgba(94,92,230,0.18); background-color: rgba(94,92,230,0.18); }"
+    ".omni-bg-indigo-muted { background: rgba(94,92,230,0.10); background-color: rgba(94,92,230,0.10); }"
+    ".omni-bg-purple { background: rgba(175,82,222,0.18); background-color: rgba(175,82,222,0.18); }"
+    ".omni-bg-purple-muted { background: rgba(175,82,222,0.10); background-color: rgba(175,82,222,0.10); }"
+    ".omni-bg-pink { background: rgba(255,45,85,0.18); background-color: rgba(255,45,85,0.18); }"
+    ".omni-bg-pink-muted { background: rgba(255,45,85,0.10); background-color: rgba(255,45,85,0.10); }"
+    ".omni-bg-brown { background: rgba(142,110,83,0.18); background-color: rgba(142,110,83,0.18); }"
+    ".omni-bg-brown-muted { background: rgba(142,110,83,0.10); background-color: rgba(142,110,83,0.10); }"
     ".omni-bg-white { background: white; background-color: white; }"
     ".omni-bg-white-muted { background: rgba(255,255,255,0.12); background-color: rgba(255,255,255,0.12); }"
     ".omni-bg-black { background: black; background-color: black; }"
@@ -3218,16 +3488,17 @@ static const char *omni_available_symbolic_icon(const char *first, const char *s
 
 static const char *omni_symbolic_icon_name_for_label(const char *label) {
   if (!label || !label[0]) return NULL;
-  if (strcmp(label, "⌂") == 0) return omni_available_symbolic_icon("user-home-symbolic", "go-home-symbolic", NULL);
-  if (strcmp(label, "‹") == 0) return omni_available_symbolic_icon("go-previous-symbolic", "pan-start-symbolic", NULL);
-  if (strcmp(label, "›") == 0) return omni_available_symbolic_icon("go-next-symbolic", "pan-end-symbolic", NULL);
-  if (strcmp(label, "↻") == 0) return omni_available_symbolic_icon("view-refresh-symbolic", "emblem-synchronizing-symbolic", NULL);
+  if (strcmp(label, "⌂") == 0 || g_ascii_strcasecmp(label, "Home") == 0) return omni_available_symbolic_icon("user-home-symbolic", "go-home-symbolic", NULL);
+  if (strcmp(label, "‹") == 0 || g_ascii_strcasecmp(label, "Back") == 0) return omni_available_symbolic_icon("go-previous-symbolic", "pan-start-symbolic", NULL);
+  if (strcmp(label, "›") == 0 || g_ascii_strcasecmp(label, "Forward") == 0) return omni_available_symbolic_icon("go-next-symbolic", "pan-end-symbolic", NULL);
+  if (strcmp(label, "↻") == 0 || g_ascii_strcasecmp(label, "Refresh") == 0 || g_ascii_strcasecmp(label, "Reload") == 0 || g_ascii_strcasecmp(label, "Reload Page") == 0) return omni_available_symbolic_icon("view-refresh-symbolic", "emblem-synchronizing-symbolic", NULL);
   if (strcmp(label, "☰") == 0) return omni_available_symbolic_icon("open-menu-symbolic", "view-list-symbolic", NULL);
-  if (strcmp(label, "⚙") == 0) return omni_available_symbolic_icon("emblem-system-symbolic", "preferences-system-symbolic", NULL);
-  if (strcmp(label, "📄") == 0 || strcmp(label, "≣") == 0) return omni_available_symbolic_icon("text-x-generic-symbolic", "x-office-document-symbolic", NULL);
-  if (strcmp(label, "↗") == 0) return omni_available_symbolic_icon("adw-external-link-symbolic", "send-to-symbolic", "go-jump-symbolic");
-  if (strcmp(label, "◆") == 0 || strcmp(label, "◇") == 0) return omni_available_symbolic_icon("bookmark-new-symbolic", "user-bookmarks-symbolic", NULL);
-  if (strcmp(label, "🌐") == 0) return omni_available_symbolic_icon("web-browser-symbolic", "applications-internet-symbolic", "network-workgroup-symbolic");
+  if (strcmp(label, "⚙") == 0 || g_ascii_strcasecmp(label, "Settings") == 0 || g_ascii_strcasecmp(label, "Preferences") == 0) return omni_available_symbolic_icon("emblem-system-symbolic", "preferences-system-symbolic", NULL);
+  if (strcmp(label, "📄") == 0 || strcmp(label, "≣") == 0 || g_ascii_strcasecmp(label, "Reader Mode") == 0 || g_ascii_strcasecmp(label, "Exit Reader Mode") == 0) return omni_available_symbolic_icon("text-x-generic-symbolic", "x-office-document-symbolic", NULL);
+  if (strcmp(label, "↗") == 0 || g_ascii_strcasecmp(label, "Open") == 0 || g_ascii_strcasecmp(label, "Open externally") == 0) return omni_available_symbolic_icon("adw-external-link-symbolic", "send-to-symbolic", "go-jump-symbolic");
+  if (strcmp(label, "◆") == 0 || strcmp(label, "◇") == 0 || g_ascii_strcasecmp(label, "Bookmark") == 0 || g_ascii_strcasecmp(label, "Add Bookmark") == 0 || g_ascii_strcasecmp(label, "Remove Bookmark") == 0) return omni_available_symbolic_icon("bookmark-new-symbolic", "user-bookmarks-symbolic", NULL);
+  if (strcmp(label, "🌐") == 0 || g_ascii_strcasecmp(label, "Open in Browser") == 0 || g_ascii_strcasecmp(label, "Browser") == 0) return omni_available_symbolic_icon("web-browser-symbolic", "applications-internet-symbolic", "network-workgroup-symbolic");
+  if (g_ascii_strcasecmp(label, "Share") == 0) return omni_available_symbolic_icon("adw-share-symbolic", "emblem-shared-symbolic", "send-to-symbolic");
   if (strcmp(label, "◫") == 0) return omni_available_symbolic_icon("view-dual-symbolic", "view-grid-symbolic", "view-paged-symbolic");
   if (strcmp(label, "⊘") == 0) return omni_available_symbolic_icon("view-hidden-symbolic", "changes-prevent-symbolic", NULL);
   if (strcmp(label, "👁") == 0) return omni_available_symbolic_icon("view-visible-symbolic", "view-reveal-symbolic", NULL);
@@ -3240,17 +3511,17 @@ static const char *omni_symbolic_icon_name_for_label(const char *label) {
 
 static const char *omni_accessible_label_for_symbolic_label(const char *label) {
   if (!label || !label[0]) return NULL;
-  if (strcmp(label, "⌂") == 0) return "Home";
-  if (strcmp(label, "‹") == 0) return "Back";
-  if (strcmp(label, "›") == 0) return "Forward";
-  if (strcmp(label, "↻") == 0) return "Refresh";
+  if (strcmp(label, "⌂") == 0 || g_ascii_strcasecmp(label, "Home") == 0) return "Home";
+  if (strcmp(label, "‹") == 0 || g_ascii_strcasecmp(label, "Back") == 0) return "Back";
+  if (strcmp(label, "›") == 0 || g_ascii_strcasecmp(label, "Forward") == 0) return "Forward";
+  if (strcmp(label, "↻") == 0 || g_ascii_strcasecmp(label, "Refresh") == 0 || g_ascii_strcasecmp(label, "Reload") == 0 || g_ascii_strcasecmp(label, "Reload Page") == 0) return "Refresh";
   if (strcmp(label, "☰") == 0) return "Menu";
-  if (strcmp(label, "⚙") == 0) return "Settings";
-  if (strcmp(label, "📄") == 0 || strcmp(label, "≣") == 0) return "Document";
-  if (strcmp(label, "↗") == 0) return "Open externally";
-  if (strcmp(label, "◆") == 0) return "Bookmark";
-  if (strcmp(label, "◇") == 0) return "Bookmark";
-  if (strcmp(label, "🌐") == 0) return "Open in browser";
+  if (strcmp(label, "⚙") == 0 || g_ascii_strcasecmp(label, "Settings") == 0 || g_ascii_strcasecmp(label, "Preferences") == 0) return "Settings";
+  if (strcmp(label, "📄") == 0 || strcmp(label, "≣") == 0 || g_ascii_strcasecmp(label, "Reader Mode") == 0 || g_ascii_strcasecmp(label, "Exit Reader Mode") == 0) return "Reader Mode";
+  if (strcmp(label, "↗") == 0 || g_ascii_strcasecmp(label, "Open") == 0 || g_ascii_strcasecmp(label, "Open externally") == 0) return "Open externally";
+  if (strcmp(label, "◆") == 0 || strcmp(label, "◇") == 0 || g_ascii_strcasecmp(label, "Bookmark") == 0 || g_ascii_strcasecmp(label, "Add Bookmark") == 0 || g_ascii_strcasecmp(label, "Remove Bookmark") == 0) return "Bookmark";
+  if (strcmp(label, "🌐") == 0 || g_ascii_strcasecmp(label, "Open in Browser") == 0 || g_ascii_strcasecmp(label, "Browser") == 0) return "Open in browser";
+  if (g_ascii_strcasecmp(label, "Share") == 0) return "Share";
   if (strcmp(label, "◫") == 0) return "Split view";
   if (strcmp(label, "⊘") == 0) return "Hidden";
   if (strcmp(label, "👁") == 0) return "Visible";

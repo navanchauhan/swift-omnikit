@@ -27,6 +27,12 @@ private final class _OmniLockedDictionary<Value>: @unchecked Sendable {
         lock.unlock()
     }
 
+    func removeValue(for key: String) {
+        lock.lock()
+        storage.removeValue(forKey: key)
+        lock.unlock()
+    }
+
     func removeValues(where shouldRemove: (String) -> Bool) {
         var removed: [Value] = []
         lock.lock()
@@ -382,6 +388,10 @@ public protocol _OmniWebViewPayloadProviding: AnyObject {
     var _omniWebViewPayload: _OmniWebViewPayload { get }
 }
 
+public protocol _OmniNativeRepresentableDismantleAware: AnyObject {
+    func _omniBeginNativeRepresentableDismantle()
+}
+
 public enum _OmniWebViewRegistry {
     private static let payloads = _OmniLockedDictionary<_OmniWebViewPayload>()
 
@@ -393,6 +403,11 @@ public enum _OmniWebViewRegistry {
         let key = "omni-webview:\(stableIdentifier(for: payload.stableIdentity))"
         payloads.set(payload, for: key)
         return key
+    }
+
+    public static func remove(stableIdentity: String) {
+        let key = "omni-webview:\(stableIdentifier(for: stableIdentity))"
+        payloads.removeValues { $0 == key }
     }
 
     #if canImport(AppKit) && !os(Linux)
@@ -473,12 +488,15 @@ enum _OmniRepresentableFallback {
             #if os(Linux)
             hostWindow?.contentView = nil
             #endif
+            (nsView as? _OmniNativeRepresentableDismantleAware)?._omniBeginNativeRepresentableDismantle()
             dismantle()
         }
     }
 
     private static let nativeEntries = _OmniLockedDictionary<NativeEntry>()
     private static let activeNativeEntryKeys = _OmniLockedValue<Set<String>>([])
+    private static let inactiveNativeEntryFrameCounts = _OmniLockedDictionary<Int>()
+    private static let cleanupGraceFrames = 3
 
     static func beginFrame(runtimeID: String) {
         activeNativeEntryKeys.update { keys in
@@ -489,7 +507,21 @@ enum _OmniRepresentableFallback {
     static func endFrame(runtimeID: String) {
         let active = activeNativeEntryKeys.value()
         nativeEntries.removeValues { key in
-            key.hasPrefix(runtimeID) && !active.contains(key)
+            guard key.hasPrefix(runtimeID) else { return false }
+            if active.contains(key) {
+                inactiveNativeEntryFrameCounts.removeValue(for: key)
+                return false
+            }
+            let missedFrames = (inactiveNativeEntryFrameCounts.value(for: key) ?? 0) + 1
+            if missedFrames < cleanupGraceFrames {
+                inactiveNativeEntryFrameCounts.set(missedFrames, for: key)
+                return false
+            }
+            inactiveNativeEntryFrameCounts.removeValue(for: key)
+            if ProcessInfo.processInfo.environment["OMNIUI_NATIVE_FALLBACK_TRACE"] == "1" {
+                print("OmniUI fallback: remove native key=\(key)")
+            }
+            return true
         }
     }
 
@@ -509,6 +541,7 @@ enum _OmniRepresentableFallback {
     private static func nativeNode<R: NSViewRepresentable>(for view: R, erasedView: Any, path: [Int]) -> _VNode {
         let key = nativeRepresentableKey(typeName: String(reflecting: R.self), path: path)
         activeNativeEntryKeys.update { $0.insert(key) }
+        inactiveNativeEntryFrameCounts.removeValue(for: key)
         let entry: NativeEntry
         if let cached = nativeEntries.value(for: key) {
             entry = cached

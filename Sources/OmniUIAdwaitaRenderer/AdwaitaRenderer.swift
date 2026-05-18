@@ -314,6 +314,9 @@ public final class AdwaitaApp<Root: View>: @unchecked Sendable {
             callbackBox.previousToolbar = presentation.toolbar
             let transientPresentation = presentation.modal ?? appKitTransientPresentation(runtime: popoverRuntime, size: renderSize)
             callbackBox.previousModalRoot = transientPresentation
+            if let transientPresentation {
+                AdwaitaSemanticDumper.dumpIfRequested(transientPresentation, section: "MODAL")
+            }
             let changes = callbackBox.previousSnapshot.map {
                 SemanticDiff.changes(from: $0, to: displaySnapshot)
             } ?? []
@@ -1254,27 +1257,36 @@ private struct AdwaitaHeaderToolbar {
 
     private static func headerActions(in nodes: [SemanticNode], placement: Action.Placement) -> [Action] {
         var actions: [Action] = []
-        func visit(_ node: SemanticNode) {
+        func visit(_ node: SemanticNode, labelOverride: String? = nil) {
             switch node.kind {
             case .segmentedControl(_, let selectedIndex):
                 actions.append(contentsOf: segmentedActions(in: node, placement: placement, selectedIndex: selectedIndex))
             case .button(let actionID, _), .tapTarget(let actionID, _):
-                let label = AdwaitaReconciliation.accessibleLabel(for: node).trimmingCharacters(in: .whitespacesAndNewlines)
+                let visualLabel = AdwaitaReconciliation.accessibilityText(in: node).trimmingCharacters(in: .whitespacesAndNewlines)
+                let label = (labelOverride ?? AdwaitaReconciliation.accessibleLabel(for: node)).trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !isSuppressedSystemHeaderAction(label: label, visualLabel: visualLabel) else { return }
                 guard !label.isEmpty, label != "Action", label != "☰" else { return }
                 actions.append(Action(label: label, actionID: actionID, placement: placement))
             case .disabledButton:
-                let label = AdwaitaReconciliation.accessibleLabel(for: node).trimmingCharacters(in: .whitespacesAndNewlines)
+                let visualLabel = AdwaitaReconciliation.accessibilityText(in: node).trimmingCharacters(in: .whitespacesAndNewlines)
+                let label = (labelOverride ?? AdwaitaReconciliation.accessibleLabel(for: node)).trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !isSuppressedSystemHeaderAction(label: label, visualLabel: visualLabel) else { return }
                 guard !label.isEmpty, label != "Action", label != "☰" else { return }
                 actions.append(Action(label: label, actionID: 0, placement: placement))
             case .menu(let actionID, let title, let value, _):
-                let label = value.isEmpty ? title : value
+                let label = labelOverride ?? (value.isEmpty ? title : value)
                 guard !label.isEmpty else { return }
                 actions.append(Action(label: label, actionID: actionID, placement: placement))
             case .disabledToggle, .disabledMenu, .disabledTextField:
                 return
+            case .modifier(.help(let help)):
+                let override = help.trimmingCharacters(in: .whitespacesAndNewlines)
+                for child in node.children {
+                    visit(child, labelOverride: override.isEmpty ? labelOverride : override)
+                }
             case .stack, .group, .zstack, .container, .modifier:
                 for child in node.children {
-                    visit(child)
+                    visit(child, labelOverride: labelOverride)
                 }
             default:
                 return
@@ -1284,6 +1296,10 @@ private struct AdwaitaHeaderToolbar {
             visit(node)
         }
         return actions
+    }
+
+    private static func isSuppressedSystemHeaderAction(label: String, visualLabel: String) -> Bool {
+        visualLabel == "☰" && label == "Toggle Sidebar"
     }
 
     private static func segmentedActions(in node: SemanticNode, placement: Action.Placement, selectedIndex: Int) -> [Action] {
@@ -1700,6 +1716,9 @@ public enum AdwaitaReconciliation {
             return label ?? description ?? url
         }
         let collected = accessibilityText(in: node)
+        if let helpLabel = explicitHelpLabel(in: node), shouldPreferHelpLabel(over: collected) {
+            return helpLabel
+        }
         if !collected.isEmpty {
             return collected
         }
@@ -1754,6 +1773,29 @@ public enum AdwaitaReconciliation {
             }
         }
         return nil
+    }
+
+    private static func explicitHelpLabel(in node: SemanticNode) -> String? {
+        if case .modifier(.help(let label)) = node.kind, !label.isEmpty {
+            return label
+        }
+        for child in node.children {
+            if let label = explicitHelpLabel(in: child) {
+                return label
+            }
+        }
+        return nil
+    }
+
+    private static func shouldPreferHelpLabel(over label: String) -> Bool {
+        let trimmed = label.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.isEmpty || trimmed == "Action" {
+            return true
+        }
+        let symbolicLabels: Set<String> = [
+            "⌂", "‹", "›", "↻", "☰", "⚙", "📄", "≣", "↗", "◆", "◇", "🌐", "◫", "⊘", "👁", "⚠", "+", "⌕", "🔍", "✓"
+        ]
+        return symbolicLabels.contains(trimmed)
     }
 
     fileprivate static func menuItems(in node: SemanticNode) -> [(label: String, actionID: Int)] {
@@ -2519,6 +2561,8 @@ enum AdwaitaNodeBuilder {
             return alpha < 0.5 ? "\(prefix)-orange-muted" : "\(prefix)-orange"
         }
         switch base {
+        case "primary":
+            return "\(prefix)-primary"
         case "orange":
             return alpha < 0.5 ? "\(prefix)-orange-muted" : "\(prefix)-orange"
         case "accentcolor", "tint":
@@ -2535,6 +2579,8 @@ enum AdwaitaNodeBuilder {
             return alpha < 0.5 ? "\(prefix)-black-muted" : "\(prefix)-black"
         case "gray", "grey":
             return "\(prefix)-gray"
+        case "red", "yellow", "green", "mint", "teal", "cyan", "blue", "indigo", "purple", "pink", "brown":
+            return alpha < 0.5 ? "\(prefix)-\(base)-muted" : "\(prefix)-\(base)"
         default:
             return "\(prefix)-native"
         }

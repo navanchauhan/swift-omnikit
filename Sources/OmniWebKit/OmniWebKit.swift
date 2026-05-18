@@ -650,7 +650,7 @@ public final class WKWebViewConfiguration: NSObject, @unchecked Sendable {
     public var mediaTypesRequiringUserActionForPlayback: WKAudiovisualMediaTypes = []
 }
 
-public final class WKWebView: NSView, _OmniWebViewPayloadProviding, @unchecked Sendable {
+public final class WKWebView: NSView, _OmniWebViewPayloadProviding, _OmniNativeRepresentableDismantleAware, @unchecked Sendable {
     public typealias JavaScriptCompletion = (Any?, Error?) -> Void
 
     private final class EvaluationBox: @unchecked Sendable {
@@ -731,6 +731,7 @@ public final class WKWebView: NSView, _OmniWebViewPayloadProviding, @unchecked S
     private var lastEvaluation: String?
     private var requestHeaders: [String: String] = [:]
     private var preflightedPolicyURL: URL?
+    private var nativeRepresentableIsDismantling = false
     #if os(Linux)
     private var appearanceObservation: _OmniAppearanceChangeObservation?
     #endif
@@ -753,11 +754,22 @@ public final class WKWebView: NSView, _OmniWebViewPayloadProviding, @unchecked S
     }
 
     deinit {
+        _omniBeginNativeRepresentableDismantle()
         #if os(Linux)
         appearanceObservation?.invalidate()
         #endif
         configuration.userContentController.detach(self)
         configuration.preferences.detach(self)
+    }
+
+    public func _omniBeginNativeRepresentableDismantle() {
+        guard !nativeRepresentableIsDismantling else { return }
+        let identity = nativeIdentity
+        nativeRepresentableIsDismantling = true
+        _OmniWebViewRegistry.remove(stableIdentity: identity)
+        #if os(Linux)
+        identity.withCString { _ = omni_adw_web_view_unregister($0) }
+        #endif
     }
 
     private func observeApplicationAppearance() {
@@ -855,6 +867,9 @@ public final class WKWebView: NSView, _OmniWebViewPayloadProviding, @unchecked S
         requestHeaders = request.allHTTPHeaderFields ?? [:]
         loadState = .url(requestURL)
         let navigation = WKNavigation()
+        if nativeRepresentableIsDismantling {
+            return navigation
+        }
         #if os(Linux)
         let handedToNative = withNativeIdentity { identity in
             identity.withCString { identityPointer in
@@ -884,12 +899,17 @@ public final class WKWebView: NSView, _OmniWebViewPayloadProviding, @unchecked S
             invalidatePayload()
             return navigation
         }
-        #endif
+        updateBackForward()
+        notifyObservers()
+        invalidatePayload()
+        return navigation
+        #else
         begin(navigation: navigation)
         commit(navigation: navigation)
         finish(navigation: navigation)
         invalidatePayload()
         return navigation
+        #endif
     }
 
     @discardableResult
@@ -898,6 +918,9 @@ public final class WKWebView: NSView, _OmniWebViewPayloadProviding, @unchecked S
         requestHeaders = [:]
         loadState = .html(string, baseURL: baseURL)
         let navigation = WKNavigation()
+        if nativeRepresentableIsDismantling {
+            return navigation
+        }
         #if os(Linux)
         let handedToNative = withNativeIdentity { identity in
             string.withCString { htmlPointer in
@@ -914,12 +937,17 @@ public final class WKWebView: NSView, _OmniWebViewPayloadProviding, @unchecked S
             invalidatePayload()
             return navigation
         }
-        #endif
+        updateBackForward()
+        notifyObservers()
+        invalidatePayload()
+        return navigation
+        #else
         begin(navigation: navigation)
         commit(navigation: navigation)
         finish(navigation: navigation)
         invalidatePayload()
         return navigation
+        #endif
     }
 
     public func evaluateJavaScript(_ javaScriptString: String, completionHandler: JavaScriptCompletion? = nil) {
@@ -1076,7 +1104,7 @@ public final class WKWebView: NSView, _OmniWebViewPayloadProviding, @unchecked S
         _OmniWebViewPayload(
             load: loadState,
             fallbackText: "Web content\n\((url ?? URL(string: "about:blank")!).absoluteString)",
-            stableIdentity: ObjectIdentifier(self).debugDescription,
+            stableIdentity: nativeIdentity,
             userAgentApplicationName: configuration.applicationNameForUserAgent,
             customUserAgent: customUserAgent,
             pageZoom: Double(pageZoom),
@@ -1117,7 +1145,7 @@ public final class WKWebView: NSView, _OmniWebViewPayloadProviding, @unchecked S
             dataStoreIdentifier: configuration.websiteDataStore.identifier,
             accessibilityLabel: url?.absoluteString,
             accessibilityDescription: "Web content",
-            swiftObject: self,
+            swiftObject: nil,
             messageCallback: WKWebView.messageCallback,
             navigationCallback: WKWebView.navigationCallback,
             policyCallback: WKWebView.policyCallback,
@@ -1285,7 +1313,8 @@ public final class WKWebView: NSView, _OmniWebViewPayloadProviding, @unchecked S
     }
 
     private func withNativeIdentity<Result>(_ body: (String) -> Result) -> Result? {
-        body(nativeIdentity)
+        guard !nativeRepresentableIsDismantling else { return nil }
+        return body(nativeIdentity)
     }
 
     private func withOptionalCString<Result>(_ value: String?, _ body: (UnsafePointer<CChar>?) -> Result) -> Result {
