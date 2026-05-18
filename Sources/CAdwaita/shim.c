@@ -132,6 +132,32 @@ static GdkModifierType omni_adw_current_controller_state(GtkEventController *con
   return gtk_event_controller_get_current_event_state(controller);
 }
 
+static gboolean omni_widget_or_parent_is_native_interactive(GtkWidget *widget) {
+  GtkWidget *current = widget;
+  while (current) {
+    if (
+      GTK_IS_BUTTON(current) ||
+      GTK_IS_CHECK_BUTTON(current) ||
+      GTK_IS_MENU_BUTTON(current) ||
+      GTK_IS_ENTRY(current) ||
+      GTK_IS_TEXT_VIEW(current) ||
+      GTK_IS_DROP_DOWN(current) ||
+      GTK_IS_SCALE(current) ||
+      GTK_IS_SPIN_BUTTON(current) ||
+      GTK_IS_CALENDAR(current) ||
+      GTK_IS_LIST_VIEW(current) ||
+      GTK_IS_LIST_BOX(current)
+#if defined(__linux__)
+      || WEBKIT_IS_WEB_VIEW(current)
+#endif
+    ) {
+      return TRUE;
+    }
+    current = gtk_widget_get_parent(current);
+  }
+  return FALSE;
+}
+
 struct OmniAdwNode {
   GtkWidget *widget;
   int32_t split_child_count;
@@ -852,6 +878,20 @@ static void omni_webkit_click_pressed(GtkGestureClick *gesture, int n_press, dou
   (void)y;
   GtkWidget *web_view = GTK_WIDGET(user_data);
   if (web_view) gtk_widget_grab_focus(web_view);
+}
+
+static gboolean omni_clear_suppressed_click_idle(gpointer data) {
+  GtkWidget *widget = GTK_WIDGET(data);
+  if (widget) g_object_set_data(G_OBJECT(widget), "omni-suppress-next-click", NULL);
+  g_object_unref(widget);
+  return G_SOURCE_REMOVE;
+}
+
+static void omni_suppress_next_clicked_signal(GtkWidget *widget) {
+  if (!widget) return;
+  g_object_set_data(G_OBJECT(widget), "omni-suppress-next-click", GINT_TO_POINTER(1));
+  g_object_ref(widget);
+  g_idle_add(omni_clear_suppressed_click_idle, widget);
 }
 
 static gboolean omni_queue_widget_redraw_idle(gpointer data) {
@@ -2307,6 +2347,8 @@ static gboolean on_key_pressed(GtkEventControllerKey *controller, guint keyval, 
 static void on_key_released(GtkEventControllerKey *controller, guint keyval, guint keycode, GdkModifierType state, gpointer data);
 static void on_window_click_pressed(GtkGestureClick *gesture, int n_press, double x, double y, gpointer data);
 static void on_window_click_released(GtkGestureClick *gesture, int n_press, double x, double y, gpointer data);
+static void on_header_action_pressed(GtkGestureClick *gesture, int n_press, double x, double y, gpointer data);
+static void on_header_action_released(GtkGestureClick *gesture, int n_press, double x, double y, gpointer data);
 static void on_required_click_released(GtkGestureClick *gesture, int n_press, double x, double y, gpointer data);
 static void on_window_motion(GtkEventControllerMotion *controller, double x, double y, gpointer data);
 static gboolean on_window_scroll(GtkEventControllerScroll *controller, double dx, double dy, gpointer data);
@@ -2965,14 +3007,39 @@ static gboolean on_main_window_close_request(GtkWindow *window, gpointer data) {
 }
 
 static void on_clicked(GtkButton *button, gpointer data) {
+  (void)data;
   OmniAdwApp *app = (OmniAdwApp *)g_object_get_data(G_OBJECT(button), "omni-app");
   int action_id = GPOINTER_TO_INT(g_object_get_data(G_OBJECT(button), "omni-action-id"));
   int required_click_count = GPOINTER_TO_INT(g_object_get_data(G_OBJECT(button), "omni-required-click-count"));
+  if (g_object_get_data(G_OBJECT(button), "omni-suppress-next-click") != NULL) {
+    g_object_set_data(G_OBJECT(button), "omni-suppress-next-click", NULL);
+    return;
+  }
   if (required_click_count > 1) return;
   if (app && app->callback) {
     app->callback(action_id, app->context);
     omni_flush_pending_ui(app);
   }
+}
+
+static void on_header_action_pressed(GtkGestureClick *gesture, int n_press, double x, double y, gpointer data) {
+  (void)data;
+  if (n_press != 1) return;
+  omni_record_click_start(gesture, x, y);
+}
+
+static void on_header_action_released(GtkGestureClick *gesture, int n_press, double x, double y, gpointer data) {
+  (void)data;
+  if (n_press != 1 || !omni_click_is_stationary(gesture, x, y)) return;
+  GtkWidget *widget = gtk_event_controller_get_widget(GTK_EVENT_CONTROLLER(gesture));
+  if (!widget || !GTK_IS_BUTTON(widget) || GTK_IS_CHECK_BUTTON(widget) || GTK_IS_MENU_BUTTON(widget)) return;
+  OmniAdwApp *app = (OmniAdwApp *)g_object_get_data(G_OBJECT(widget), "omni-app");
+  int action_id = GPOINTER_TO_INT(g_object_get_data(G_OBJECT(widget), "omni-action-id"));
+  if (action_id <= 0 || !app || !app->callback) return;
+  omni_suppress_next_clicked_signal(widget);
+  app->callback(action_id, app->context);
+  omni_flush_pending_ui(app);
+  gtk_gesture_set_state(GTK_GESTURE(gesture), GTK_EVENT_SEQUENCE_CLAIMED);
 }
 
 static void on_required_click_released(GtkGestureClick *gesture, int n_press, double x, double y, gpointer data) {
@@ -4104,6 +4171,7 @@ static void on_window_click_pressed(GtkGestureClick *gesture, int n_press, doubl
   guint action_payload = 0;
   GtkWidget *window = gtk_event_controller_get_widget(GTK_EVENT_CONTROLLER(gesture));
   GtkWidget *picked = window ? gtk_widget_pick(window, x, y, GTK_PICK_DEFAULT) : NULL;
+  gboolean native_interactive = omni_widget_or_parent_is_native_interactive(picked);
   GtkWidget *action_widget = picked;
   while (action_widget) {
     int drag_action_id = GPOINTER_TO_INT(g_object_get_data(G_OBJECT(action_widget), "omni-drag-source-action-id"));
@@ -4123,7 +4191,7 @@ static void on_window_click_pressed(GtkGestureClick *gesture, int n_press, doubl
     action_widget = gtk_widget_get_parent(action_widget);
   }
   if (omni_adw_dispatch_native_event(app, event_type, x, y, n_press, state, action_payload)) {
-    gtk_gesture_set_state(GTK_GESTURE(gesture), GTK_EVENT_SEQUENCE_CLAIMED);
+    if (!native_interactive) gtk_gesture_set_state(GTK_GESTURE(gesture), GTK_EVENT_SEQUENCE_CLAIMED);
     return;
   }
   omni_record_click_start(gesture, x, y);
@@ -4135,12 +4203,13 @@ static void on_window_click_released(GtkGestureClick *gesture, int n_press, doub
   guint button = gtk_gesture_single_get_current_button(GTK_GESTURE_SINGLE(gesture));
   int32_t event_type = button == GDK_BUTTON_SECONDARY ? OMNI_ADW_EVENT_RIGHT_MOUSE_UP : OMNI_ADW_EVENT_LEFT_MOUSE_UP;
   GdkModifierType state = omni_adw_current_controller_state(GTK_EVENT_CONTROLLER(gesture));
-  if (omni_adw_dispatch_native_event(app, event_type, x, y, n_press, state, 0)) {
-    gtk_gesture_set_state(GTK_GESTURE(gesture), GTK_EVENT_SEQUENCE_CLAIMED);
-    return;
-  }
   GtkWidget *window = gtk_event_controller_get_widget(GTK_EVENT_CONTROLLER(gesture));
   GtkWidget *picked = window ? gtk_widget_pick(window, x, y, GTK_PICK_DEFAULT) : NULL;
+  gboolean native_interactive = omni_widget_or_parent_is_native_interactive(picked);
+  if (omni_adw_dispatch_native_event(app, event_type, x, y, n_press, state, 0)) {
+    if (!native_interactive) gtk_gesture_set_state(GTK_GESTURE(gesture), GTK_EVENT_SEQUENCE_CLAIMED);
+    return;
+  }
   GtkWidget *action_widget = picked;
   while (action_widget) {
     int action_id = GPOINTER_TO_INT(g_object_get_data(G_OBJECT(action_widget), "omni-action-id"));
@@ -5405,6 +5474,11 @@ static GtkWidget *omni_create_header_action_button(OmniAdwApp *app, const char *
     g_object_set_data(G_OBJECT(button), "omni-app", app);
     g_object_set_data(G_OBJECT(button), "omni-action-id", GINT_TO_POINTER(action_id));
     g_signal_connect(button, "clicked", G_CALLBACK(on_clicked), NULL);
+    GtkGesture *click_controller = gtk_gesture_click_new();
+    gtk_event_controller_set_propagation_phase(GTK_EVENT_CONTROLLER(click_controller), GTK_PHASE_CAPTURE);
+    g_signal_connect(click_controller, "pressed", G_CALLBACK(on_header_action_pressed), app);
+    g_signal_connect(click_controller, "released", G_CALLBACK(on_header_action_released), app);
+    gtk_widget_add_controller(button, GTK_EVENT_CONTROLLER(click_controller));
   } else {
     gtk_widget_set_sensitive(button, FALSE);
     omni_accessible_set_disabled(button, TRUE);
