@@ -43,6 +43,7 @@ public final class _UIRuntime: @unchecked Sendable {
     private var nextActionID: Int = 1
     private var actions: [_ActionID: (path: [Int], env: EnvironmentValues, action: () -> Void)] = [:]
     private var dateSetters: [_ActionID: (path: [Int], env: EnvironmentValues, setter: (TimeInterval) -> Void)] = [:]
+    private var doubleSetters: [_ActionID: (path: [Int], env: EnvironmentValues, setter: (Double) -> Void)] = [:]
 
     private var nextFocusCaptureID: Int = 1
     private var focusCaptureResults: [Int: [Int]] = [:]
@@ -562,6 +563,7 @@ public final class _UIRuntime: @unchecked Sendable {
         nextActionID = 1
         actions.removeAll(keepingCapacity: true)
         dateSetters.removeAll(keepingCapacity: true)
+        doubleSetters.removeAll(keepingCapacity: true)
         textEditors.removeAll(keepingCapacity: true)
         focusOrder.removeAll(keepingCapacity: true)
         focusPriorities.removeAll(keepingCapacity: true)
@@ -1128,6 +1130,15 @@ public final class _UIRuntime: @unchecked Sendable {
         return id
     }
 
+    func _registerDoubleSetter(_ setter: @escaping (Double) -> Void, path: [Int]) -> _ActionID {
+        _noteBuildSideEffect()
+        let id = _ActionID(raw: nextActionID)
+        nextActionID += 1
+        let env = _UIRuntime._currentEnvironment ?? _baseEnvironment
+        doubleSetters[id] = (path: path, env: env, setter: setter)
+        return id
+    }
+
     @discardableResult
     public func setDateForRawActionID(_ rawID: Int, timestamp: TimeInterval) -> Bool {
         let id = _ActionID(raw: rawID)
@@ -1135,6 +1146,19 @@ public final class _UIRuntime: @unchecked Sendable {
         _UIRuntime.$_currentEnvironment.withValue(entry.env) {
             _BuildContext.withRuntime(self, path: entry.path) {
                 entry.setter(timestamp)
+            }
+        }
+        _markDirty(path: entry.path)
+        return true
+    }
+
+    @discardableResult
+    public func setDoubleForRawActionID(_ rawID: Int, value: Double) -> Bool {
+        let id = _ActionID(raw: rawID)
+        guard let entry = doubleSetters[id] else { return false }
+        _UIRuntime.$_currentEnvironment.withValue(entry.env) {
+            _BuildContext.withRuntime(self, path: entry.path) {
+                entry.setter(value)
             }
         }
         _markDirty(path: entry.path)

@@ -48,7 +48,7 @@ public struct SemanticNode: Sendable, Identifiable {
         case disabledTextField(placeholder: String, text: String, isSecure: Bool)
         case disabledMenu(title: String, value: String)
         case progress(label: String, fraction: Double?)
-        case slider(label: String, value: Double, lowerBound: Double, upperBound: Double, step: Double?, decrementActionID: Int?, incrementActionID: Int?)
+        case slider(label: String, value: Double, lowerBound: Double, upperBound: Double, step: Double?, setActionID: Int?, decrementActionID: Int?, incrementActionID: Int?)
         case stepper(label: String, value: Double?, decrementActionID: Int?, incrementActionID: Int?)
         case datePicker(label: String, value: String, timestamp: Double, setActionID: Int?, decrementActionID: Int?, incrementActionID: Int?)
         case segmentedControl(title: String, selectedIndex: Int)
@@ -312,6 +312,7 @@ enum SemanticLowerer {
                         lowerBound: slider.lowerBound,
                         upperBound: slider.upperBound,
                         step: slider.step,
+                        setActionID: slider.setActionID,
                         decrementActionID: actions.first,
                         incrementActionID: actions.dropFirst().first
                     ),

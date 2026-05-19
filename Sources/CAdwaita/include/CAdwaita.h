@@ -179,7 +179,7 @@ OmniAdwNode *omni_adw_text_view_new(const char *text, int32_t action_id);
 OmniAdwNode *omni_adw_dropdown_new(const char *title, const char *value, const char **labels, const int32_t *action_ids, int32_t count, int32_t expanded);
 OmniAdwNode *omni_adw_segmented_new(const char *title, const char **labels, const int32_t *action_ids, int32_t selected_index, int32_t count);
 OmniAdwNode *omni_adw_progress_new(const char *label, double fraction);
-OmniAdwNode *omni_adw_scale_new(const char *label, double value, double lower, double upper, double step, int32_t decrement_action_id, int32_t increment_action_id);
+OmniAdwNode *omni_adw_scale_new(const char *label, double value, double lower, double upper, double step, int32_t set_action_id, int32_t decrement_action_id, int32_t increment_action_id);
 OmniAdwNode *omni_adw_spin_new(const char *label, double value, int32_t decrement_action_id, int32_t increment_action_id);
 OmniAdwNode *omni_adw_date_new(const char *label, const char *value, double timestamp, int32_t set_action_id, int32_t decrement_action_id, int32_t increment_action_id);
 OmniAdwNode *omni_adw_scroll_new(int32_t vertical, double offset);

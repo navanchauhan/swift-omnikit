@@ -66,6 +66,11 @@ public final class AdwaitaApp<Root: View>: @unchecked Sendable {
                     box.rerender()
                     return
                 }
+                if let value = Double(next), box.settingsRuntime.setDoubleForRawActionID(settingsRawID, value: value) {
+                    box.runtime._markDirtyFromExternalResource()
+                    box.rerender()
+                    return
+                }
                 let previous = box.textValuesByActionID[rawID] ?? ""
                 _ = box.settingsRuntime.focusByRawActionID(settingsRawID)
                 box.settingsRuntime.replaceTextForRawActionID(settingsRawID, previous: previous, next: next)
@@ -75,6 +80,10 @@ public final class AdwaitaApp<Root: View>: @unchecked Sendable {
                 return
             }
             if let timestamp = TimeInterval(next), box.runtime.setDateForRawActionID(rawID, timestamp: timestamp) {
+                box.rerender()
+                return
+            }
+            if let value = Double(next), box.runtime.setDoubleForRawActionID(rawID, value: value) {
                 box.rerender()
                 return
             }
@@ -754,9 +763,9 @@ private func adwaitaActionID(matchingVisibleText label: String, in node: Semanti
         if text == label {
             return actionID
         }
-    case .slider(let title, _, _, _, _, let decrementActionID, let incrementActionID):
+    case .slider(let title, _, _, _, _, let setActionID, let decrementActionID, let incrementActionID):
         if title == label {
-            return incrementActionID ?? decrementActionID
+            return setActionID ?? incrementActionID ?? decrementActionID
         }
     case .stepper(let title, _, let decrementActionID, let incrementActionID):
         if title == label {
@@ -794,7 +803,7 @@ private func adwaitaVisibleText(in node: SemanticNode) -> [String] {
         values.append(value)
     case .disabledToggle(let label, _),
          .progress(let label, _),
-         .slider(let label, _, _, _, _, _, _),
+         .slider(let label, _, _, _, _, _, _, _),
          .stepper(let label, _, _, _),
          .datePicker(let label, _, _, _, _, _),
          .segmentedControl(let label, _):
@@ -1694,7 +1703,7 @@ public enum AdwaitaReconciliation {
             return AdwaitaNativeLeafUpdate(id: node.id, kind: .dropdown, text: value)
         case .progress(let label, let fraction):
             return AdwaitaNativeLeafUpdate(id: node.id, kind: .progress, text: progressUpdateText(label: label, fraction: fraction))
-        case .slider(let label, let value, _, _, _, _, _):
+        case .slider(let label, let value, _, _, _, _, _, _):
             return AdwaitaNativeLeafUpdate(id: node.id, kind: .slider, text: "\(value)\n\(label)")
         case .stepper(let label, let value, _, _):
             return AdwaitaNativeLeafUpdate(id: node.id, kind: .stepper, text: "\(value ?? 0)\n\(label)")
@@ -1884,13 +1893,14 @@ enum AdwaitaNodeBuilder {
             kind = .textEditor(actionID: actionID + offset, text: text, cursor: cursor, isFocused: isFocused)
         case .menu(let actionID, let title, let value, let isExpanded):
             kind = .menu(actionID: actionID + offset, title: title, value: value, isExpanded: isExpanded)
-        case .slider(let label, let value, let lowerBound, let upperBound, let step, let decrementActionID, let incrementActionID):
+        case .slider(let label, let value, let lowerBound, let upperBound, let step, let setActionID, let decrementActionID, let incrementActionID):
             kind = .slider(
                 label: label,
                 value: value,
                 lowerBound: lowerBound,
                 upperBound: upperBound,
                 step: step,
+                setActionID: setActionID.map { $0 + offset },
                 decrementActionID: decrementActionID.map { $0 + offset },
                 incrementActionID: incrementActionID.map { $0 + offset }
             )
@@ -2041,9 +2051,9 @@ enum AdwaitaNodeBuilder {
             }
         case .progress(let label, let fraction):
             built = omni_adw_progress_new(progressLabel(label: label, fraction: fraction), max(0, min(1, fraction ?? 0)))
-        case .slider(let label, let value, let lowerBound, let upperBound, let step, let decrementActionID, let incrementActionID):
+        case .slider(let label, let value, let lowerBound, let upperBound, let step, let setActionID, let decrementActionID, let incrementActionID):
             guard let parent = omni_adw_box_new(1, 4) else { return nil }
-            if let scale = omni_adw_scale_new(label.isEmpty ? "Slider" : label, value, lowerBound, upperBound, step ?? 0, Int32(decrementActionID ?? 0), Int32(incrementActionID ?? 0)) {
+            if let scale = omni_adw_scale_new(label.isEmpty ? "Slider" : label, value, lowerBound, upperBound, step ?? 0, Int32(setActionID ?? 0), Int32(decrementActionID ?? 0), Int32(incrementActionID ?? 0)) {
                 omni_adw_node_set_metadata(scale, node.id, label.isEmpty ? "Slider" : label)
                 omni_adw_node_append(parent, scale)
             }
@@ -3024,7 +3034,7 @@ enum AdwaitaNodeBuilder {
             return value.isEmpty ? title : "\(title): \(value)"
         case .progress(let label, let fraction):
             return progressLabel(label: label, fraction: fraction)
-        case .slider(let label, let value, _, _, _, _, _):
+        case .slider(let label, let value, _, _, _, _, _, _):
             return label.isEmpty ? "Slider \(value)" : "\(label) \(value)"
         case .stepper(let label, let value, _, _):
             let prefix = label.isEmpty ? "Stepper" : label

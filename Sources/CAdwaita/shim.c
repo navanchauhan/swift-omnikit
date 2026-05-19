@@ -3645,13 +3645,25 @@ static void omni_button_set_label_or_symbolic_icon(GtkButton *button, const char
 static void on_scale_value_changed(GtkRange *range, gpointer data) {
   if (g_object_get_data(G_OBJECT(range), "omni-updating") != NULL) return;
   OmniAdwApp *app = (OmniAdwApp *)g_object_get_data(G_OBJECT(range), "omni-app");
-  if (!app || !app->callback) return;
+  if (!app) return;
 
   double previous = 0.0;
   double *previous_ptr = (double *)g_object_get_data(G_OBJECT(range), "omni-scale-value");
   if (previous_ptr) previous = *previous_ptr;
   double next = gtk_range_get_value(range);
   gtk_accessible_update_property(GTK_ACCESSIBLE(range), GTK_ACCESSIBLE_PROPERTY_VALUE_NOW, next, -1);
+
+  int set_action_id = GPOINTER_TO_INT(g_object_get_data(G_OBJECT(range), "omni-set-action-id"));
+  if (set_action_id > 0 && app->text_callback) {
+    char value_text[G_ASCII_DTOSTR_BUF_SIZE];
+    g_ascii_dtostr(value_text, sizeof(value_text), next);
+    if (previous_ptr) *previous_ptr = next;
+    app->text_callback(set_action_id, value_text, app->context);
+    omni_flush_pending_ui(app);
+    return;
+  }
+
+  if (!app->callback) return;
 
   int action_id = 0;
   if (next > previous) {
@@ -7172,7 +7184,7 @@ OmniAdwNode *omni_adw_progress_new(const char *label, double fraction) {
   return node;
 }
 
-OmniAdwNode *omni_adw_scale_new(const char *label, double value, double lower, double upper, double step, int32_t decrement_action_id, int32_t increment_action_id) {
+OmniAdwNode *omni_adw_scale_new(const char *label, double value, double lower, double upper, double step, int32_t set_action_id, int32_t decrement_action_id, int32_t increment_action_id) {
   OmniAdwNode *node = calloc(1, sizeof(OmniAdwNode));
   if (upper <= lower) upper = lower + 1.0;
   if (step <= 0.0) step = (upper - lower) / 10.0;
@@ -7194,6 +7206,7 @@ OmniAdwNode *omni_adw_scale_new(const char *label, double value, double lower, d
     GTK_ACCESSIBLE_PROPERTY_VALUE_NOW, value,
     -1
   );
+  g_object_set_data(G_OBJECT(node->widget), "omni-set-action-id", GINT_TO_POINTER(set_action_id));
   g_object_set_data(G_OBJECT(node->widget), "omni-decrement-action-id", GINT_TO_POINTER(decrement_action_id));
   g_object_set_data(G_OBJECT(node->widget), "omni-increment-action-id", GINT_TO_POINTER(increment_action_id));
   double *stored_value = malloc(sizeof(double));

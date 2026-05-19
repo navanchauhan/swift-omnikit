@@ -194,6 +194,7 @@ struct _SliderRole: Hashable, Sendable {
     let lowerBound: Double
     let upperBound: Double
     let step: Double?
+    let setActionID: Int?
 }
 
 struct _StepperRole: Hashable, Sendable {

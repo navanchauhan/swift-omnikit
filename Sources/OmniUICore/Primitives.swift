@@ -3332,6 +3332,10 @@ public struct Slider<Label: View, ValueLabel: View>: View, _PrimitiveView {
         let decFocused = runtime._isFocused(path: decPath)
         let incFocused = runtime._isFocused(path: incPath)
 
+        let setID = runtime._registerDoubleSetter({ next in
+            self.value.wrappedValue = min(self.bounds.upperBound, max(self.bounds.lowerBound, next))
+        }, path: actionScopePath)
+
         let decID = runtime._registerAction({
             runtime._setFocus(path: decPath)
             self.value.wrappedValue = max(self.bounds.lowerBound, self.value.wrappedValue - stepAmount)
@@ -3356,7 +3360,8 @@ public struct Slider<Label: View, ValueLabel: View>: View, _PrimitiveView {
                     value: value.wrappedValue,
                     lowerBound: bounds.lowerBound,
                     upperBound: bounds.upperBound,
-                    step: step
+                    step: step,
+                    setActionID: setID.raw
                 )),
                 label: node
             ),
