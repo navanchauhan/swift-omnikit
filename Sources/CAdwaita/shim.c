@@ -156,6 +156,33 @@ static gboolean omni_widget_or_parent_is_native_interactive(GtkWidget *widget) {
   return FALSE;
 }
 
+static gboolean omni_widget_or_parent_is_native_scrollable(GtkWidget *widget) {
+  GtkWidget *current = widget;
+  while (current) {
+    if (
+      GTK_IS_SCROLLED_WINDOW(current) ||
+      GTK_IS_TEXT_VIEW(current)
+#if defined(__linux__)
+      || WEBKIT_IS_WEB_VIEW(current)
+#endif
+    ) {
+      return TRUE;
+    }
+    current = gtk_widget_get_parent(current);
+  }
+  return FALSE;
+}
+
+static GtkWidget *omni_current_event_picked_widget(GtkEventController *controller) {
+  if (!controller) return NULL;
+  GtkWidget *widget = gtk_event_controller_get_widget(controller);
+  GdkEvent *event = gtk_event_controller_get_current_event(controller);
+  double x = 0.0;
+  double y = 0.0;
+  if (!widget || !event || !gdk_event_get_position(event, &x, &y)) return NULL;
+  return gtk_widget_pick(widget, x, y, GTK_PICK_DEFAULT);
+}
+
 struct OmniAdwNode {
   GtkWidget *widget;
   int32_t split_child_count;
@@ -2926,7 +2953,7 @@ static void on_app_activate(GApplication *application, gpointer data) {
     g_signal_connect(motion_controller, "motion", G_CALLBACK(on_window_motion), app);
     gtk_widget_add_controller(app->window, motion_controller);
     GtkEventController *scroll_controller = gtk_event_controller_scroll_new(GTK_EVENT_CONTROLLER_SCROLL_BOTH_AXES);
-    gtk_event_controller_set_propagation_phase(scroll_controller, GTK_PHASE_CAPTURE);
+    gtk_event_controller_set_propagation_phase(scroll_controller, GTK_PHASE_BUBBLE);
     g_signal_connect(scroll_controller, "scroll", G_CALLBACK(on_window_scroll), app);
     gtk_widget_add_controller(app->window, scroll_controller);
   }
@@ -4204,6 +4231,8 @@ static void on_window_motion(GtkEventControllerMotion *controller, double x, dou
 }
 
 static gboolean on_window_scroll(GtkEventControllerScroll *controller, double dx, double dy, gpointer data) {
+  GtkWidget *picked = omni_current_event_picked_widget(GTK_EVENT_CONTROLLER(controller));
+  if (omni_widget_or_parent_is_native_scrollable(picked)) return FALSE;
   OmniAdwApp *app = (OmniAdwApp *)data;
   GdkModifierType state = omni_adw_current_controller_state(GTK_EVENT_CONTROLLER(controller));
   return omni_adw_dispatch_native_event(app, OMNI_ADW_EVENT_SCROLL_WHEEL, dx, dy, 0, state, 0);
