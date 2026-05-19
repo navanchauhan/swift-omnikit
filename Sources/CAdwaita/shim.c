@@ -192,6 +192,9 @@ typedef struct {
   char **labels;
   int32_t *action_ids;
   int32_t *depths;
+  double *font_sizes;
+  char **font_weights;
+  int32_t *font_italics;
   gboolean *collapsed;
   int32_t *visible_indices;
   int32_t visible_count;
@@ -2067,9 +2070,17 @@ static void free_string_list_data(gpointer data) {
       free(list->labels[i]);
     }
   }
+  if (list->font_weights) {
+    for (int32_t i = 0; i < list->count; i++) {
+      free(list->font_weights[i]);
+    }
+  }
   free(list->labels);
   free(list->action_ids);
   free(list->depths);
+  free(list->font_sizes);
+  free(list->font_weights);
+  free(list->font_italics);
   free(list->collapsed);
   free(list->visible_indices);
   free(list->rows);
@@ -2192,6 +2203,56 @@ static void omni_widget_expand(GtkWidget *widget, gboolean vertical) {
   if (vertical) {
     gtk_widget_set_vexpand(widget, TRUE);
     gtk_widget_set_valign(widget, GTK_ALIGN_FILL);
+  }
+}
+
+static PangoWeight omni_font_weight_from_string(const char *weight) {
+  if (!weight || !weight[0]) return PANGO_WEIGHT_NORMAL;
+  if (g_ascii_strcasecmp(weight, "ultralight") == 0) return PANGO_WEIGHT_ULTRALIGHT;
+  if (g_ascii_strcasecmp(weight, "thin") == 0) return PANGO_WEIGHT_THIN;
+  if (g_ascii_strcasecmp(weight, "light") == 0) return PANGO_WEIGHT_LIGHT;
+  if (g_ascii_strcasecmp(weight, "medium") == 0) return PANGO_WEIGHT_MEDIUM;
+  if (g_ascii_strcasecmp(weight, "semibold") == 0) return PANGO_WEIGHT_SEMIBOLD;
+  if (g_ascii_strcasecmp(weight, "bold") == 0) return PANGO_WEIGHT_BOLD;
+  if (g_ascii_strcasecmp(weight, "heavy") == 0) return PANGO_WEIGHT_HEAVY;
+  if (g_ascii_strcasecmp(weight, "black") == 0) return PANGO_WEIGHT_ULTRAHEAVY;
+  return PANGO_WEIGHT_NORMAL;
+}
+
+static void omni_label_apply_font(GtkLabel *label, double size, const char *weight, gboolean italic) {
+  if (!label) return;
+  gboolean has_size = size > 0.0;
+  gboolean has_weight = weight && weight[0];
+  gboolean has_italic = italic != FALSE;
+  if (!has_size && !has_weight && !has_italic) {
+    gtk_label_set_attributes(label, NULL);
+    return;
+  }
+
+  PangoAttrList *attrs = pango_attr_list_new();
+  if (has_size) {
+    PangoAttribute *attr = pango_attr_size_new_absolute((int)(size * PANGO_SCALE));
+    pango_attr_list_insert(attrs, attr);
+  }
+  if (has_weight) {
+    PangoAttribute *attr = pango_attr_weight_new(omni_font_weight_from_string(weight));
+    pango_attr_list_insert(attrs, attr);
+  }
+  if (has_italic) {
+    PangoAttribute *attr = pango_attr_style_new(PANGO_STYLE_ITALIC);
+    pango_attr_list_insert(attrs, attr);
+  }
+  gtk_label_set_attributes(label, attrs);
+  pango_attr_list_unref(attrs);
+}
+
+static void omni_widget_apply_font_recursive(GtkWidget *widget, double size, const char *weight, gboolean italic) {
+  if (!widget) return;
+  if (GTK_IS_LABEL(widget)) {
+    omni_label_apply_font(GTK_LABEL(widget), size, weight, italic);
+  }
+  for (GtkWidget *child = gtk_widget_get_first_child(widget); child; child = gtk_widget_get_next_sibling(child)) {
+    omni_widget_apply_font_recursive(child, size, weight, italic);
   }
 }
 
@@ -3197,10 +3258,14 @@ static void on_string_list_bind(GtkSignalListItemFactory *factory, GtkListItem *
     text = gtk_string_object_get_string(GTK_STRING_OBJECT(item));
   }
   int32_t action_id = list && list->action_ids && original >= 0 && original < list->count ? list->action_ids[original] : 0;
+  double font_size = list && list->font_sizes && original >= 0 && original < list->count ? list->font_sizes[original] : 0.0;
+  const char *font_weight = list && list->font_weights && original >= 0 && original < list->count ? list->font_weights[original] : "";
+  int32_t font_italic = list && list->font_italics && original >= 0 && original < list->count ? list->font_italics[original] : 0;
   int32_t count = list && list->visible_indices ? list->visible_count : (list ? list->count : 0);
   gboolean native_accessible = count <= OMNI_NATIVE_ACCESSIBILITY_ROW_UPDATE_LIMIT;
 
   gtk_label_set_text(GTK_LABEL(label), text ? text : "");
+  omni_label_apply_font(GTK_LABEL(label), font_size, font_weight, font_italic != 0);
   if (native_accessible) {
     gtk_list_item_set_accessible_label(list_item, text ? text : "");
     gtk_list_item_set_accessible_description(list_item, action_id > 0 ? "Activates this list row" : "Static list row");
@@ -3279,9 +3344,12 @@ static void on_sidebar_disclosure_clicked(GtkButton *button, gpointer data) {
   omni_macos_accessibility_schedule(app);
 }
 
-static void omni_sidebar_content_set_text(GtkWidget *button, const char *text) {
+static void omni_sidebar_content_set_text(GtkWidget *button, const char *text, double font_size, const char *font_weight, gboolean font_italic) {
   GtkWidget *label = GTK_IS_BUTTON(button) ? gtk_button_get_child(GTK_BUTTON(button)) : NULL;
-  if (GTK_IS_LABEL(label)) gtk_label_set_text(GTK_LABEL(label), text ? text : "");
+  if (GTK_IS_LABEL(label)) {
+    gtk_label_set_text(GTK_LABEL(label), text ? text : "");
+    omni_label_apply_font(GTK_LABEL(label), font_size, font_weight, font_italic);
+  }
 }
 
 static GtkWidget *omni_sidebar_label_new(void) {
@@ -3346,6 +3414,9 @@ static void on_sidebar_list_bind(GtkSignalListItemFactory *factory, GtkListItem 
     : (GTK_IS_STRING_OBJECT(item) ? gtk_string_object_get_string(GTK_STRING_OBJECT(item)) : "");
   int32_t depth = list && list->depths && original >= 0 && original < list->count ? list->depths[original] : 0;
   int32_t action_id = list && list->action_ids && original >= 0 && original < list->count ? list->action_ids[original] : 0;
+  double font_size = list && list->font_sizes && original >= 0 && original < list->count ? list->font_sizes[original] : 0.0;
+  const char *font_weight = list && list->font_weights && original >= 0 && original < list->count ? list->font_weights[original] : "";
+  int32_t font_italic = list && list->font_italics && original >= 0 && original < list->count ? list->font_italics[original] : 0;
   int32_t count = list && list->visible_indices ? list->visible_count : (list ? list->count : 0);
   gboolean native_accessible = count <= OMNI_NATIVE_ACCESSIBILITY_ROW_UPDATE_LIMIT;
   gboolean has_children = sidebar_row_has_children(list, original);
@@ -3355,7 +3426,7 @@ static void on_sidebar_list_bind(GtkSignalListItemFactory *factory, GtkListItem 
   gtk_widget_set_margin_start(box, depth * 16);
   gtk_widget_set_visible(disclosure_button, has_children);
   gtk_label_set_text(GTK_LABEL(disclosure), has_children ? (list->collapsed && list->collapsed[original] ? "▸" : "▾") : "");
-  omni_sidebar_content_set_text(button, text ? text : "");
+  omni_sidebar_content_set_text(button, text ? text : "", font_size, font_weight, font_italic != 0);
   if (native_accessible) {
     gtk_list_item_set_accessible_label(list_item, text ? text : "");
     gtk_list_item_set_accessible_description(list_item, has_children ? "Collapsible sidebar item" : (action_id > 0 ? "Sidebar item" : "Static sidebar item"));
@@ -6464,18 +6535,24 @@ OmniAdwNode *omni_adw_list_new(void) {
   return node;
 }
 
-OmniAdwNode *omni_adw_string_list_new(const char **labels, const int32_t *action_ids, int32_t count) {
+OmniAdwNode *omni_adw_string_list_new(const char **labels, const int32_t *action_ids, const double *font_sizes, const char **font_weights, const int32_t *font_italics, int32_t count) {
   OmniAdwNode *node = calloc(1, sizeof(OmniAdwNode));
   OmniStringListData *data = calloc(1, sizeof(OmniStringListData));
   if (data && count > 0) {
     data->count = count;
     data->labels = calloc((size_t)count, sizeof(char *));
     data->action_ids = calloc((size_t)count, sizeof(int32_t));
+    data->font_sizes = calloc((size_t)count, sizeof(double));
+    data->font_weights = calloc((size_t)count, sizeof(char *));
+    data->font_italics = calloc((size_t)count, sizeof(int32_t));
   }
   for (int32_t i = 0; i < count; i++) {
     const char *label = labels && labels[i] ? labels[i] : "";
     if (data && data->labels) data->labels[i] = omni_strdup(label);
     if (data && data->action_ids) data->action_ids[i] = action_ids ? action_ids[i] : 0;
+    if (data && data->font_sizes) data->font_sizes[i] = font_sizes ? font_sizes[i] : 0.0;
+    if (data && data->font_weights) data->font_weights[i] = omni_strdup(font_weights && font_weights[i] ? font_weights[i] : "");
+    if (data && data->font_italics) data->font_italics[i] = font_italics ? font_italics[i] : 0;
   }
 
   OmniListModel *model = omni_list_model_new(data);
@@ -6499,7 +6576,7 @@ OmniAdwNode *omni_adw_string_list_new(const char **labels, const int32_t *action
   return node;
 }
 
-OmniAdwNode *omni_adw_plain_list_new(const char **labels, const int32_t *action_ids, int32_t count) {
+OmniAdwNode *omni_adw_plain_list_new(const char **labels, const int32_t *action_ids, const double *font_sizes, const char **font_weights, const int32_t *font_italics, int32_t count) {
   OmniAdwNode *node = calloc(1, sizeof(OmniAdwNode));
   node->widget = gtk_list_box_new();
   gtk_list_box_set_selection_mode(GTK_LIST_BOX(node->widget), GTK_SELECTION_NONE);
@@ -6517,6 +6594,12 @@ OmniAdwNode *omni_adw_plain_list_new(const char **labels, const int32_t *action_
     int32_t action_id = action_ids ? action_ids[i] : 0;
     GtkWidget *row = gtk_list_box_row_new();
     GtkWidget *label = gtk_label_new(text);
+    omni_label_apply_font(
+      GTK_LABEL(label),
+      font_sizes ? font_sizes[i] : 0.0,
+      font_weights && font_weights[i] ? font_weights[i] : "",
+      font_italics && font_italics[i] != 0
+    );
     gtk_label_set_xalign(GTK_LABEL(label), 0.0f);
     gtk_label_set_wrap(GTK_LABEL(label), FALSE);
     gtk_label_set_ellipsize(GTK_LABEL(label), PANGO_ELLIPSIZE_NONE);
@@ -6556,7 +6639,7 @@ OmniAdwNode *omni_adw_plain_list_new(const char **labels, const int32_t *action_
   return node;
 }
 
-OmniAdwNode *omni_adw_sidebar_list_new(const char **labels, const int32_t *action_ids, const int32_t *depths, int32_t count) {
+OmniAdwNode *omni_adw_sidebar_list_new(const char **labels, const int32_t *action_ids, const int32_t *depths, const double *font_sizes, const char **font_weights, const int32_t *font_italics, int32_t count) {
   OmniAdwNode *node = calloc(1, sizeof(OmniAdwNode));
   OmniStringListData *data = calloc(1, sizeof(OmniStringListData));
   if (data && count > 0) {
@@ -6564,11 +6647,17 @@ OmniAdwNode *omni_adw_sidebar_list_new(const char **labels, const int32_t *actio
     data->labels = calloc((size_t)count, sizeof(char *));
     data->action_ids = calloc((size_t)count, sizeof(int32_t));
     data->depths = calloc((size_t)count, sizeof(int32_t));
+    data->font_sizes = calloc((size_t)count, sizeof(double));
+    data->font_weights = calloc((size_t)count, sizeof(char *));
+    data->font_italics = calloc((size_t)count, sizeof(int32_t));
     data->collapsed = calloc((size_t)count, sizeof(gboolean));
     for (int32_t i = 0; i < count; i++) {
       data->labels[i] = omni_strdup(labels && labels[i] ? labels[i] : "");
       if (data->action_ids) data->action_ids[i] = action_ids ? action_ids[i] : 0;
       if (data->depths) data->depths[i] = depths ? depths[i] : 0;
+      if (data->font_sizes) data->font_sizes[i] = font_sizes ? font_sizes[i] : 0.0;
+      if (data->font_weights) data->font_weights[i] = omni_strdup(font_weights && font_weights[i] ? font_weights[i] : "");
+      if (data->font_italics) data->font_italics[i] = font_italics ? font_italics[i] : 0;
     }
   }
   if (count >= 128) {
@@ -6644,7 +6733,13 @@ OmniAdwNode *omni_adw_sidebar_list_new(const char **labels, const int32_t *actio
     gtk_widget_set_focus_on_click(button, TRUE);
     g_signal_connect(button, "clicked", G_CALLBACK(on_virtual_list_button_clicked), NULL);
     gtk_button_set_child(GTK_BUTTON(button), omni_sidebar_label_new());
-    omni_sidebar_content_set_text(button, text);
+    omni_sidebar_content_set_text(
+      button,
+      text,
+      font_sizes ? font_sizes[i] : 0.0,
+      font_weights && font_weights[i] ? font_weights[i] : "",
+      font_italics && font_italics[i] != 0
+    );
     gtk_box_append(GTK_BOX(box), button);
 
     gtk_list_box_row_set_child(GTK_LIST_BOX_ROW(row), box);
@@ -7445,6 +7540,11 @@ void omni_adw_node_set_accessibility_description(OmniAdwNode *node, const char *
 void omni_adw_node_set_accessibility_value(OmniAdwNode *node, const char *value) {
   if (!node || !node->widget || !value || !value[0]) return;
   omni_accessible_value_text(node->widget, value);
+}
+
+void omni_adw_node_apply_font(OmniAdwNode *node, double size, const char *weight, int32_t italic) {
+  if (!node || !node->widget) return;
+  omni_widget_apply_font_recursive(node->widget, size, weight, italic != 0);
 }
 
 void omni_adw_node_add_css_class(OmniAdwNode *node, const char *css_class) {

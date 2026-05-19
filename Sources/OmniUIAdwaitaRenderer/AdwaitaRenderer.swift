@@ -1464,7 +1464,7 @@ private enum AdwaitaPresentationExtractor {
             return true
         case .modifier(let modifier):
             switch modifier {
-            case .background, .frame, .padding, .clip, .shadow, .glass, .opacity, .offset, .help, .noOp:
+            case .background, .frame, .padding, .clip, .shadow, .glass, .font, .opacity, .offset, .help, .noOp:
                 return true
             default:
                 return false
@@ -2440,7 +2440,7 @@ enum AdwaitaNodeBuilder {
 
     private static func modifierAllowsLayoutDescent(_ modifier: SemanticModifier) -> Bool {
         switch modifier {
-        case .opacity, .clip, .background, .padding, .accessibilityLabel, .accessibilityIdentifier, .accessibilityValue, .accessibilityHint, .help, .noOp, .foreground, .shadow, .glass, .crt, .dragSource:
+        case .opacity, .clip, .background, .padding, .accessibilityLabel, .accessibilityIdentifier, .accessibilityValue, .accessibilityHint, .help, .noOp, .foreground, .font, .shadow, .glass, .crt, .dragSource:
             return true
         default:
             return false
@@ -2503,6 +2503,12 @@ enum AdwaitaNodeBuilder {
             css = colorCSSClass(prefix: "omni-fg", color: color)
         case .background(let color):
             css = colorCSSClass(prefix: "omni-bg", color: color)
+        case .font(let size, let weight, _, let italic):
+            if let node = primaryContent() {
+                omni_adw_node_apply_font(node, size ?? 0, weight ?? "", italic ? 1 : 0)
+                return node
+            }
+            return nil
         case .help(let text), .accessibilityHint(let text):
             if let node = primaryContent() {
                 omni_adw_node_set_accessibility_description(node, text)
@@ -2654,7 +2660,7 @@ enum AdwaitaNodeBuilder {
             return true
         case .group, .stack, .zstack:
             return node.children.allSatisfy(isSimpleButtonLabel)
-        case .modifier(.foreground), .modifier(.background), .modifier(.padding), .modifier(.opacity), .modifier(.frame), .modifier(.accessibilityLabel), .modifier(.accessibilityIdentifier), .modifier(.accessibilityValue), .modifier(.accessibilityHint), .modifier(.contextMenu), .modifier(.noOp):
+        case .modifier(.foreground), .modifier(.background), .modifier(.font), .modifier(.padding), .modifier(.opacity), .modifier(.frame), .modifier(.accessibilityLabel), .modifier(.accessibilityIdentifier), .modifier(.accessibilityValue), .modifier(.accessibilityHint), .modifier(.contextMenu), .modifier(.noOp):
             return node.children.allSatisfy(isSimpleButtonLabel)
         default:
             return false
@@ -2748,15 +2754,24 @@ enum AdwaitaNodeBuilder {
                 var ids = simpleList.rows.map { Int32($0.actionID ?? 0) }
                 let labels = simpleList.rows.map(\.label)
                 var depths = simpleList.rows.map { Int32($0.depth) }
+                var fontSizes = simpleList.rows.map { $0.fontSize ?? 0 }
+                let fontWeights = simpleList.rows.map { $0.fontWeight ?? "" }
+                var fontItalics = simpleList.rows.map { $0.fontItalic ? Int32(1) : Int32(0) }
                 let list = labels.withCStringArray { labelPointers in
-                    ids.withUnsafeMutableBufferPointer { idBuffer in
-                        depths.withUnsafeMutableBufferPointer { depthBuffer in
-                            if context == .sidebar {
-                                omni_adw_sidebar_list_new(labelPointers, idBuffer.baseAddress, depthBuffer.baseAddress, Int32(simpleList.rows.count))
-                            } else if simpleList.rows.count >= 128 {
-                                omni_adw_string_list_new(labelPointers, idBuffer.baseAddress, Int32(simpleList.rows.count))
-                            } else {
-                                omni_adw_plain_list_new(labelPointers, idBuffer.baseAddress, Int32(simpleList.rows.count))
+                    fontWeights.withCStringArray { weightPointers in
+                        ids.withUnsafeMutableBufferPointer { idBuffer in
+                            depths.withUnsafeMutableBufferPointer { depthBuffer in
+                                fontSizes.withUnsafeMutableBufferPointer { fontSizeBuffer in
+                                    fontItalics.withUnsafeMutableBufferPointer { fontItalicBuffer in
+                                        if context == .sidebar {
+                                            omni_adw_sidebar_list_new(labelPointers, idBuffer.baseAddress, depthBuffer.baseAddress, fontSizeBuffer.baseAddress, weightPointers, fontItalicBuffer.baseAddress, Int32(simpleList.rows.count))
+                                        } else if simpleList.rows.count >= 128 {
+                                            omni_adw_string_list_new(labelPointers, idBuffer.baseAddress, fontSizeBuffer.baseAddress, weightPointers, fontItalicBuffer.baseAddress, Int32(simpleList.rows.count))
+                                        } else {
+                                            omni_adw_plain_list_new(labelPointers, idBuffer.baseAddress, fontSizeBuffer.baseAddress, weightPointers, fontItalicBuffer.baseAddress, Int32(simpleList.rows.count))
+                                        }
+                                    }
+                                }
                             }
                         }
                     }
@@ -2816,8 +2831,17 @@ enum AdwaitaNodeBuilder {
         return scrollNode
     }
 
+    private struct SimpleListRow {
+        let label: String
+        let actionID: Int?
+        let depth: Int
+        let fontSize: Double?
+        let fontWeight: String?
+        let fontItalic: Bool
+    }
+
     private struct SimpleList {
-        let rows: [(label: String, actionID: Int?, depth: Int)]
+        let rows: [SimpleListRow]
         let scroll: (axis: SemanticAxis, offset: Int)?
     }
 
@@ -2830,8 +2854,8 @@ enum AdwaitaNodeBuilder {
         return SimpleList(rows: rows, scroll: (axis: axis, offset: offset))
     }
 
-    private static func simpleRows(in nodes: [SemanticNode]) -> [(label: String, actionID: Int?, depth: Int)]? {
-        var rows: [(label: String, actionID: Int?, depth: Int)] = []
+    private static func simpleRows(in nodes: [SemanticNode]) -> [SimpleListRow]? {
+        var rows: [SimpleListRow] = []
 
         func contentChildren(of node: SemanticNode) -> [SemanticNode] {
             node.children.filter { child in
@@ -2876,6 +2900,60 @@ enum AdwaitaNodeBuilder {
             return nil
         }
 
+        func rowFont(in node: SemanticNode) -> (size: Double?, weight: String?, italic: Bool) {
+            var maxSize: Double?
+            var selectedWeight: String?
+            var selectedWeightRank = -1
+            var italic = false
+
+            func weightRank(_ weight: String?) -> Int {
+                switch weight?.lowercased() {
+                case "ultralight": return 0
+                case "thin": return 1
+                case "light": return 2
+                case "regular": return 3
+                case "medium": return 4
+                case "semibold": return 5
+                case "bold": return 6
+                case "heavy": return 7
+                case "black": return 8
+                default: return -1
+                }
+            }
+
+            func visit(_ current: SemanticNode) {
+                if case .modifier(.font(let size, let weight, _, let isItalic)) = current.kind {
+                    if let size, size > (maxSize ?? 0) {
+                        maxSize = size
+                    }
+                    let rank = weightRank(weight)
+                    if rank > selectedWeightRank {
+                        selectedWeightRank = rank
+                        selectedWeight = weight
+                    }
+                    italic = italic || isItalic
+                }
+                for child in current.children {
+                    visit(child)
+                }
+            }
+
+            visit(node)
+            return (maxSize, selectedWeight, italic)
+        }
+
+        func appendRow(label: String, actionID: Int?, depth: Int, node: SemanticNode) {
+            let font = rowFont(in: node)
+            rows.append(SimpleListRow(
+                label: label,
+                actionID: actionID,
+                depth: depth,
+                fontSize: font.size,
+                fontWeight: font.weight,
+                fontItalic: font.italic
+            ))
+        }
+
         func containsMultiTapTarget(_ node: SemanticNode) -> Bool {
             if case .tapTarget(_, let tapCount) = node.kind, tapCount > 1 {
                 return true
@@ -2900,6 +2978,17 @@ enum AdwaitaNodeBuilder {
             case .modifier:
                 let children = contentChildren(of: node)
                 guard !children.isEmpty else { return true }
+                if case .modifier(.font) = node.kind, children.count == 1, let child = children.first {
+                    switch child.kind {
+                    case .text, .button, .tapTarget, .stack(axis: .horizontal, _), .zstack:
+                        let label = rowLabel(from: node)
+                        if label.isEmpty { return false }
+                        appendRow(label: label, actionID: firstButtonActionID(in: node), depth: leadingWhitespaceDepth(in: node), node: node)
+                        return true
+                    default:
+                        break
+                    }
+                }
                 if children.count == 1, let child = children.first {
                     return appendRows(from: child)
                 }
@@ -2910,24 +2999,24 @@ enum AdwaitaNodeBuilder {
             case .divider, .empty, .spacer, .drawingIsland:
                 return true
             case .text(let text):
-                rows.append((label: text, actionID: nil, depth: 0))
+                appendRow(label: text, actionID: nil, depth: 0, node: node)
                 return true
             case .button(let actionID, _):
                 let label = rowLabel(from: node)
                 if label.isEmpty { return false }
-                rows.append((label: label, actionID: actionID, depth: leadingWhitespaceDepth(in: node)))
+                appendRow(label: label, actionID: actionID, depth: leadingWhitespaceDepth(in: node), node: node)
                 return true
             case .tapTarget(let actionID, let tapCount):
                 if tapCount > 1 { return false }
                 let label = rowLabel(from: node)
                 if label.isEmpty { return false }
-                rows.append((label: label, actionID: actionID, depth: leadingWhitespaceDepth(in: node)))
+                appendRow(label: label, actionID: actionID, depth: leadingWhitespaceDepth(in: node), node: node)
                 return true
             case .stack(axis: .horizontal, _), .zstack:
                 if containsMultiTapTarget(node) { return false }
                 let label = rowLabel(from: node)
                 if label.isEmpty { return false }
-                rows.append((label: label, actionID: firstButtonActionID(in: node), depth: leadingWhitespaceDepth(in: node)))
+                appendRow(label: label, actionID: firstButtonActionID(in: node), depth: leadingWhitespaceDepth(in: node), node: node)
                 return true
             default:
                 return false
@@ -3052,6 +3141,9 @@ enum AdwaitaNodeBuilder {
             }
             if case .accessibilityIdentifier(let identifier) = modifier {
                 return identifier
+            }
+            if case .font = modifier, let child = node.children.last {
+                return accessibleLabel(for: child)
             }
             if case .help = modifier, let child = node.children.last {
                 return accessibleLabel(for: child)

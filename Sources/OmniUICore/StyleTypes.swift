@@ -161,6 +161,113 @@ public struct Font: Hashable, Sendable {
     }
 }
 
+struct _FontSemanticDescriptor: Hashable, Sendable {
+    let size: Double?
+    let weight: String?
+    let design: String?
+    let italic: Bool
+}
+
+extension Font {
+    var _semanticDescriptor: _FontSemanticDescriptor {
+        let lower = name.lowercased()
+        var size: Double?
+        var weight: String?
+        var design: String?
+
+        if let systemArguments = Self._arguments(in: lower, prefix: "system") {
+            if let first = systemArguments.first {
+                size = Double(first) ?? Self._namedTextStyleSize(first)
+            }
+            for argument in systemArguments.dropFirst() {
+                if Self._isKnownWeight(argument) {
+                    weight = argument
+                } else if Self._isKnownDesign(argument) {
+                    design = argument
+                }
+            }
+        } else if let customArguments = Self._arguments(in: lower, prefix: "custom") {
+            size = customArguments.reversed().lazy.compactMap(Double.init).first
+        } else {
+            size = Self._namedTextStyleSize(lower)
+        }
+
+        if lower.contains("ultralight") {
+            weight = "ultralight"
+        } else if lower.contains("semibold") {
+            weight = "semibold"
+        } else if lower.contains("black") {
+            weight = "black"
+        } else if lower.contains("heavy") {
+            weight = "heavy"
+        } else if lower.contains("bold") {
+            weight = "bold"
+        } else if lower.contains("medium") {
+            weight = "medium"
+        } else if lower.contains("regular") {
+            weight = "regular"
+        } else if lower.contains("light") {
+            weight = "light"
+        } else if lower.contains("thin") {
+            weight = "thin"
+        }
+
+        for knownDesign in ["monospaced", "rounded", "serif"] where lower.contains(knownDesign) {
+            design = knownDesign
+        }
+
+        return _FontSemanticDescriptor(
+            size: size,
+            weight: weight,
+            design: design,
+            italic: lower.contains("italic")
+        )
+    }
+
+    private static func _arguments(in value: String, prefix: String) -> [String]? {
+        let start = "\(prefix)("
+        guard value.hasPrefix(start), value.hasSuffix(")") else { return nil }
+        let inner = value.dropFirst(start.count).dropLast()
+        return inner
+            .split(separator: ",", omittingEmptySubsequences: false)
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+    }
+
+    private static func _namedTextStyleSize(_ style: String) -> Double? {
+        switch style {
+        case "largetitle": return 34
+        case "title": return 28
+        case "title2": return 22
+        case "title3": return 20
+        case "headline": return 17
+        case "body": return 17
+        case "callout": return 16
+        case "subheadline": return 15
+        case "caption": return 12
+        case "caption2": return 11
+        default: return nil
+        }
+    }
+
+    private static func _isKnownWeight(_ value: String) -> Bool {
+        switch value {
+        case "ultralight", "thin", "light", "regular", "medium", "semibold", "bold", "heavy", "black":
+            return true
+        default:
+            return false
+        }
+    }
+
+    private static func _isKnownDesign(_ value: String) -> Bool {
+        switch value {
+        case "default", "monospaced", "rounded", "serif":
+            return true
+        default:
+            return false
+        }
+    }
+}
+
 public enum TextAlignment: Sendable {
     case leading
     case center

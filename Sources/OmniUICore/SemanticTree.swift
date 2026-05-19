@@ -167,6 +167,7 @@ public enum SemanticModifier: Sendable, Equatable {
     case badge(String)
     case glass(String)
     case crt(String)
+    case font(size: Double?, weight: String?, design: String?, italic: Bool)
     case accessibilityLabel(String)
     case accessibilityIdentifier(String)
     case accessibilityValue(String)
@@ -288,6 +289,13 @@ enum SemanticLowerer {
             if let help = value.base as? _HelpText {
                 return SemanticNode(id: path, kind: .modifier(.help(help.value)), children: [lower(child, path: path + ".content")])
             }
+            if let font = value.base as? _FontRole {
+                return SemanticNode(
+                    id: path,
+                    kind: .modifier(.font(size: font.size, weight: font.weight, design: font.design, italic: font.italic)),
+                    children: [lower(child, path: path + ".content")]
+                )
+            }
             if let segmented = value.base as? _SegmentedPickerRole {
                 return SemanticNode(id: path, kind: .segmentedControl(title: segmented.title, selectedIndex: segmented.selectedIndex), children: [lower(child, path: path + ".content")])
             }
@@ -387,6 +395,16 @@ enum SemanticLowerer {
             return SemanticNode(id: path, kind: .modifier(.crt(style)), children: [lower(child, path: path + ".content")])
         case .badge(let text, let child):
             return SemanticNode(id: path, kind: .modifier(.badge(text)), children: [lower(child, path: path + ".content")])
+        case .textStyled(let style, let child):
+            let weight = style.contains(.bold) ? "bold" : nil
+            guard weight != nil || style.contains(.italic) else {
+                return lower(child, path: path + ".content")
+            }
+            return SemanticNode(
+                id: path,
+                kind: .modifier(.font(size: nil, weight: weight, design: nil, italic: style.contains(.italic))),
+                children: [lower(child, path: path + ".content")]
+            )
         case .overlay(let child, let overlay):
             return SemanticNode(id: path, kind: .zstack, children: [lower(child, path: path + ".content"), lower(overlay, path: path + ".overlay")])
         case .elevated(_, let child):

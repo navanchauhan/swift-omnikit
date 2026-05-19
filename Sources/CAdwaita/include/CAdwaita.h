@@ -68,9 +68,9 @@ OmniAdwNode *omni_adw_flow_new(int32_t horizontal_spacing, int32_t vertical_spac
 void omni_adw_box_set_homogeneous(OmniAdwNode *node, int32_t homogeneous);
 OmniAdwNode *omni_adw_overlay_new(void);
 OmniAdwNode *omni_adw_list_new(void);
-OmniAdwNode *omni_adw_string_list_new(const char **labels, const int32_t *action_ids, int32_t count);
-OmniAdwNode *omni_adw_plain_list_new(const char **labels, const int32_t *action_ids, int32_t count);
-OmniAdwNode *omni_adw_sidebar_list_new(const char **labels, const int32_t *action_ids, const int32_t *depths, int32_t count);
+OmniAdwNode *omni_adw_string_list_new(const char **labels, const int32_t *action_ids, const double *font_sizes, const char **font_weights, const int32_t *font_italics, int32_t count);
+OmniAdwNode *omni_adw_plain_list_new(const char **labels, const int32_t *action_ids, const double *font_sizes, const char **font_weights, const int32_t *font_italics, int32_t count);
+OmniAdwNode *omni_adw_sidebar_list_new(const char **labels, const int32_t *action_ids, const int32_t *depths, const double *font_sizes, const char **font_weights, const int32_t *font_italics, int32_t count);
 OmniAdwNode *omni_adw_form_new(void);
 OmniAdwNode *omni_adw_split_new(void);
 OmniAdwNode *omni_adw_text_new(const char *text);
@@ -194,6 +194,7 @@ void omni_adw_node_set_required_click_count(OmniAdwNode *node, int32_t click_cou
 void omni_adw_node_set_drag_source_action(OmniAdwNode *node, int32_t action_id);
 void omni_adw_node_set_accessibility_description(OmniAdwNode *node, const char *description);
 void omni_adw_node_set_accessibility_value(OmniAdwNode *node, const char *value);
+void omni_adw_node_apply_font(OmniAdwNode *node, double size, const char *weight, int32_t italic);
 void omni_adw_node_add_css_class(OmniAdwNode *node, const char *css_class);
 void omni_adw_node_append(OmniAdwNode *parent, OmniAdwNode *child);
 void omni_adw_node_set_expand(OmniAdwNode *node, int32_t horizontal, int32_t vertical);

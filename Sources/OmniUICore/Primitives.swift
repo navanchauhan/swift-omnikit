@@ -2895,12 +2895,24 @@ private func _applyTextEnvironment(content: String, env: EnvironmentValues) -> _
         node = .textStyled(style: .underline, child: node)
     }
     guard let font = env.font else { return node }
+    let descriptor = font._semanticDescriptor
     let lowercased = font.name.lowercased()
     if lowercased.contains("large") || lowercased.contains("title") || lowercased.contains("headline") || lowercased.contains("bold") || lowercased.contains("heavy") || lowercased.contains("black") || lowercased.contains("semibold") {
         node = .textStyled(style: .bold, child: node)
     }
     if lowercased.contains("caption") || lowercased.contains("subheadline") {
         node = .style(fg: .secondary, bg: nil, child: node)
+    }
+    if descriptor.size != nil || descriptor.weight != nil || descriptor.design != nil || descriptor.italic {
+        node = .tagged(
+            value: AnyHashable(_FontRole(
+                size: descriptor.size,
+                weight: descriptor.weight,
+                design: descriptor.design,
+                italic: descriptor.italic
+            )),
+            label: node
+        )
     }
     return node
 }

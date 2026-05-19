@@ -197,6 +197,13 @@ struct _SliderRole: Hashable, Sendable {
     let setActionID: Int?
 }
 
+struct _FontRole: Hashable, Sendable {
+    let size: Double?
+    let weight: String?
+    let design: String?
+    let italic: Bool
+}
+
 struct _StepperRole: Hashable, Sendable {
     let label: String
     let value: Double?
