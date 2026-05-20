@@ -1218,15 +1218,7 @@ private struct _ContextMenuModifier: View, _PrimitiveView {
             return (id: actionID, label: entry.label)
         }
 
-        let fallback = AnyView(
-            HStack(spacing: 1) {
-                content
-                Menu("⋯") {
-                    menuItems
-                }
-            }
-        )
-        let child = ctx.buildChild(fallback)
+        let child = ctx.buildChild(content)
         return .contextMenu(items: contextItems, child: child)
     }
 }

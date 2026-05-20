@@ -2976,6 +2976,9 @@ enum AdwaitaNodeBuilder {
                 }
                 return true
             case .modifier:
+                if case .modifier(.contextMenu) = node.kind {
+                    return false
+                }
                 let children = contentChildren(of: node)
                 guard !children.isEmpty else { return true }
                 if case .modifier(.font) = node.kind, children.count == 1, let child = children.first {

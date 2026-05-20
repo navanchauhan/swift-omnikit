@@ -136,6 +136,7 @@ static gboolean omni_widget_or_parent_is_native_interactive(GtkWidget *widget) {
   GtkWidget *current = widget;
   while (current) {
     if (
+      g_object_get_data(G_OBJECT(current), "omni-context-menu-popover") != NULL ||
       GTK_IS_BUTTON(current) ||
       GTK_IS_CHECK_BUTTON(current) ||
       GTK_IS_MENU_BUTTON(current) ||
@@ -3551,6 +3552,8 @@ static gboolean click_targets_different_nested_action(GtkWidget *controller_widg
 
 static void on_plain_list_row_released(GtkGestureClick *gesture, int n_press, double x, double y, gpointer data) {
   if (!omni_click_is_stationary(gesture, x, y)) return;
+  guint button = gtk_gesture_single_get_current_button(GTK_GESTURE_SINGLE(gesture));
+  if (button != GDK_BUTTON_PRIMARY) return;
   GtkWidget *controller_widget = gtk_event_controller_get_widget(GTK_EVENT_CONTROLLER(gesture));
   GtkWidget *row_widget = NULL;
   if (GTK_IS_LIST_BOX(controller_widget)) {
@@ -3593,6 +3596,8 @@ static void on_click_container_released(GtkGestureClick *gesture, int n_press, d
   (void)n_press;
   (void)data;
   if (!omni_click_is_stationary(gesture, x, y)) return;
+  guint button = gtk_gesture_single_get_current_button(GTK_GESTURE_SINGLE(gesture));
+  if (button != GDK_BUTTON_PRIMARY) return;
   GtkWidget *widget = gtk_event_controller_get_widget(GTK_EVENT_CONTROLLER(gesture));
   int action_id = GPOINTER_TO_INT(g_object_get_data(G_OBJECT(widget), "omni-action-id"));
   if (click_targets_different_nested_action(widget, x, y, action_id)) {
@@ -4245,6 +4250,7 @@ static void on_window_click_pressed(GtkGestureClick *gesture, int n_press, doubl
     return;
   }
   GtkWidget *action_widget = picked;
+  if (button != GDK_BUTTON_PRIMARY) return;
   while (action_widget) {
     int drag_action_id = GPOINTER_TO_INT(g_object_get_data(G_OBJECT(action_widget), "omni-drag-source-action-id"));
     if (drag_action_id > 0) {
@@ -4279,6 +4285,7 @@ static void on_window_click_released(GtkGestureClick *gesture, int n_press, doub
   GtkWidget *picked = window ? gtk_widget_pick(window, x, y, GTK_PICK_DEFAULT) : NULL;
   gboolean native_interactive = omni_widget_or_parent_is_native_interactive(picked);
   if (native_interactive) return;
+  if (button != GDK_BUTTON_PRIMARY) return;
   if (omni_adw_dispatch_native_event(app, event_type, x, y, n_press, state, 0)) {
     if (!native_interactive) gtk_gesture_set_state(GTK_GESTURE(gesture), GTK_EVENT_SEQUENCE_CLAIMED);
     return;
