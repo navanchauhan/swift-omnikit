@@ -1873,6 +1873,7 @@ enum AdwaitaNodeBuilder {
     private enum BuildContext: Equatable {
         case normal
         case sidebar
+        case horizontal
         case inline
     }
 
@@ -1955,7 +1956,7 @@ enum AdwaitaNodeBuilder {
         case .group:
             built = container(vertical: true, spacing: 6, children: node.children, context: context)
         case .zstack:
-            built = overlay(children: visibleChildren(forOverlayChildren: node.children), context: context)
+            built = overlay(children: node.children, context: context)
         case .spacer:
             built = omni_adw_box_new(1, 0)
         case .stack(let axis, let spacing):
@@ -1964,6 +1965,7 @@ enum AdwaitaNodeBuilder {
             built = flowContainer(horizontalSpacing: Int32(horizontalSpacing), verticalSpacing: Int32(verticalSpacing), children: node.children, context: context)
         case .text(let text):
             built = omni_adw_text_new(text)
+            applyInlineTextLayout(to: built, context: context)
         case .image(let text):
             if let payload = _OmniWebViewRegistry.payload(for: text) {
                 built = webViewNode(for: payload)
@@ -1973,6 +1975,7 @@ enum AdwaitaNodeBuilder {
                 }
             } else {
                 built = omni_adw_text_new(SFSymbolMap.unicode(for: text) ?? text)
+                applyInlineTextLayout(to: built, context: context)
             }
         case .webContent(let registryKey, _, _, _, _):
             if let payload = _OmniWebViewRegistry.payload(for: registryKey) {
@@ -1990,6 +1993,9 @@ enum AdwaitaNodeBuilder {
                 built = omni_adw_button_new(label, Int32(actionID))
             }
             if let built, rendersComplexButtonContent(node), let child = node.children.first, let childNode = build(child, context: .inline) {
+                if shouldExpandVertically(child) {
+                    omni_adw_node_set_expand(childNode, -1, 1)
+                }
                 omni_adw_node_append(built, childNode)
             }
         case .tapTarget(let actionID, let tapCount):
@@ -2005,6 +2011,9 @@ enum AdwaitaNodeBuilder {
                 omni_adw_node_set_required_click_count(built, Int32(max(1, tapCount)))
             }
             if let built, rendersComplexButtonContent(node), let child = node.children.first, let childNode = build(child, context: .inline) {
+                if shouldExpandVertically(child) {
+                    omni_adw_node_set_expand(childNode, -1, 1)
+                }
                 omni_adw_node_append(built, childNode)
             }
         case .toggle(let actionID, _, let isOn):
@@ -2099,8 +2108,8 @@ enum AdwaitaNodeBuilder {
             switch kind {
             case .shape(let name, let fill, _):
                 built = omni_adw_drawing_new("OmniUI shape(\(name))", fill)
-            case .gradient:
-                built = omni_adw_drawing_new("OmniUI gradient", nil)
+            case .gradient(let colors):
+                built = omni_adw_drawing_new("OmniUI gradient", colors.first)
             case .canvas:
                 built = omni_adw_drawing_new("OmniUI canvas", nil)
             }
@@ -2179,7 +2188,7 @@ enum AdwaitaNodeBuilder {
                     omni_adw_node_set_expand(built, 1, vertical ? 1 : 0)
                 }
             } else {
-                built = build(child, context: context)
+                built = build(child, context: childContext(forContainerVertical: vertical, parent: context))
             }
             if let built {
                 if homogeneousHorizontal, !isZeroWidthFrame(child) {
@@ -2195,6 +2204,18 @@ enum AdwaitaNodeBuilder {
             omni_adw_node_set_expand(parent, -1, 1)
         }
         return parent
+    }
+
+    private static func childContext(forContainerVertical vertical: Bool, parent: BuildContext) -> BuildContext {
+        if parent == .inline { return .inline }
+        if vertical { return parent == .horizontal ? .normal : parent }
+        return .horizontal
+    }
+
+    private static func applyInlineTextLayout(to node: OpaquePointer?, context: BuildContext) {
+        guard let node, context == .horizontal || context == .inline else { return }
+        omni_adw_node_set_expand(node, 0, -1)
+        omni_adw_node_set_text_wrap(node, 0)
     }
 
     private static func flowContainer(horizontalSpacing: Int32, verticalSpacing: Int32, children: [SemanticNode], context: BuildContext) -> OpaquePointer? {
@@ -2238,6 +2259,7 @@ enum AdwaitaNodeBuilder {
             return node.children.contains(where: shouldExpandVertically)
         case .modifier(.frame(_, let height, _, _, _, let maxHeight)):
             if height != nil || maxHeight == 0 { return false }
+            if maxHeight != nil { return true }
             return node.children.contains(where: shouldExpandVertically)
         case .modifier(let modifier) where modifierAllowsLayoutDescent(modifier):
             return node.children.contains(where: shouldExpandVertically)
@@ -2440,7 +2462,7 @@ enum AdwaitaNodeBuilder {
 
     private static func modifierAllowsLayoutDescent(_ modifier: SemanticModifier) -> Bool {
         switch modifier {
-        case .opacity, .clip, .background, .padding, .accessibilityLabel, .accessibilityIdentifier, .accessibilityValue, .accessibilityHint, .help, .noOp, .foreground, .font, .shadow, .glass, .crt, .dragSource:
+        case .opacity, .clip, .background, .padding, .accessibilityLabel, .accessibilityIdentifier, .accessibilityValue, .accessibilityHint, .help, .noOp, .foreground, .font, .shadow, .glass, .crt, .contextMenu, .dragSource:
             return true
         default:
             return false
@@ -2494,6 +2516,10 @@ enum AdwaitaNodeBuilder {
                 }
             }) else { return primaryContent() }
             if let content = primaryContent() {
+                if children.contains(where: shouldExpandVertically) {
+                    omni_adw_node_set_expand(wrapper, -1, 1)
+                    omni_adw_node_set_expand(content, -1, 1)
+                }
                 omni_adw_node_append(wrapper, content)
             }
             return wrapper
@@ -2560,6 +2586,8 @@ enum AdwaitaNodeBuilder {
         switch node.kind {
         case .drawingIsland(.shape(_, let fill, let stroke)):
             return fill ?? stroke
+        case .drawingIsland(.gradient(let colors)):
+            return colors.first
         case .modifier(.opacity(let alpha)):
             guard let color = node.children.lazy.compactMap(firstBackgroundShapeColor).first else { return nil }
             return colorString(color, multiplyingAlphaBy: alpha)

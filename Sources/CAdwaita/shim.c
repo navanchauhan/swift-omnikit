@@ -2207,6 +2207,18 @@ static void omni_widget_expand(GtkWidget *widget, gboolean vertical) {
   }
 }
 
+static gboolean omni_widget_is_textual_overlay(GtkWidget *widget) {
+  if (!widget) return FALSE;
+  if (GTK_IS_LABEL(widget) || GTK_IS_BUTTON(widget)) return TRUE;
+  if (!GTK_IS_BOX(widget)) return FALSE;
+  gboolean saw_child = FALSE;
+  for (GtkWidget *child = gtk_widget_get_first_child(widget); child; child = gtk_widget_get_next_sibling(child)) {
+    saw_child = TRUE;
+    if (!omni_widget_is_textual_overlay(child)) return FALSE;
+  }
+  return saw_child;
+}
+
 static PangoWeight omni_font_weight_from_string(const char *weight) {
   if (!weight || !weight[0]) return PANGO_WEIGHT_NORMAL;
   if (g_ascii_strcasecmp(weight, "ultralight") == 0) return PANGO_WEIGHT_ULTRALIGHT;
@@ -6832,6 +6844,12 @@ OmniAdwNode *omni_adw_text_new(const char *text) {
   return node;
 }
 
+void omni_adw_node_set_text_wrap(OmniAdwNode *node, int32_t wrap) {
+  if (!node || !node->widget || !GTK_IS_LABEL(node->widget)) return;
+  gtk_label_set_wrap(GTK_LABEL(node->widget), wrap != 0);
+  gtk_label_set_ellipsize(GTK_LABEL(node->widget), wrap != 0 ? PANGO_ELLIPSIZE_NONE : PANGO_ELLIPSIZE_END);
+}
+
 OmniAdwNode *omni_adw_web_view_new(const char *url, const char *fallback_text, void *native_view) {
   GtkWidget *web_view = omni_create_webkit_web_view(url, native_view);
   if (!web_view) {
@@ -7566,10 +7584,18 @@ void omni_adw_node_append(OmniAdwNode *parent, OmniAdwNode *child) {
   } else if (GTK_IS_FLOW_BOX(parent->widget)) {
     gtk_flow_box_append(GTK_FLOW_BOX(parent->widget), child->widget);
   } else if (GTK_IS_OVERLAY(parent->widget)) {
-    omni_widget_expand(child->widget, TRUE);
     if (!gtk_overlay_get_child(GTK_OVERLAY(parent->widget))) {
+      omni_widget_expand(child->widget, TRUE);
       gtk_overlay_set_child(GTK_OVERLAY(parent->widget), child->widget);
     } else {
+      if (omni_widget_is_textual_overlay(child->widget)) {
+        gtk_widget_set_hexpand(child->widget, FALSE);
+        gtk_widget_set_vexpand(child->widget, FALSE);
+        gtk_widget_set_halign(child->widget, GTK_ALIGN_CENTER);
+        gtk_widget_set_valign(child->widget, GTK_ALIGN_CENTER);
+      } else {
+        omni_widget_expand(child->widget, TRUE);
+      }
       gtk_overlay_add_overlay(GTK_OVERLAY(parent->widget), child->widget);
     }
   } else if (GTK_IS_LIST_BOX(parent->widget)) {

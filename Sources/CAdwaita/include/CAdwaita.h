@@ -74,6 +74,7 @@ OmniAdwNode *omni_adw_sidebar_list_new(const char **labels, const int32_t *actio
 OmniAdwNode *omni_adw_form_new(void);
 OmniAdwNode *omni_adw_split_new(void);
 OmniAdwNode *omni_adw_text_new(const char *text);
+void omni_adw_node_set_text_wrap(OmniAdwNode *node, int32_t wrap);
 OmniAdwNode *omni_adw_image_new(const uint8_t *data, int32_t length, const char *alternative_text);
 OmniAdwNode *omni_adw_web_view_new(const char *url, const char *fallback_text, void *native_view);
 OmniAdwNode *omni_adw_web_view_new_ex(

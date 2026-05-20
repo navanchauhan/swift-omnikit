@@ -133,7 +133,7 @@ public enum SemanticAxis: Sendable, Equatable {
 
 public enum SemanticDrawingKind: Sendable, Equatable {
     case shape(String, fill: String?, stroke: String?)
-    case gradient
+    case gradient(colors: [String])
     case canvas
 }
 
@@ -369,8 +369,8 @@ enum SemanticLowerer {
                     stroke: shape.strokeColor?.rawValue
                 ))
             )
-        case .gradient:
-            return SemanticNode(id: path, kind: .drawingIsland(.gradient))
+        case .gradient(let gradient):
+            return SemanticNode(id: path, kind: .drawingIsland(.gradient(colors: gradient.colors.map(\.rawValue))))
         case .background(let child, let background):
             return SemanticNode(id: path, kind: .modifier(.background("native/adwaita")), children: [lower(background, path: path + ".background"), lower(child, path: path + ".content")])
         case .style(let fg, let bg, let child):
