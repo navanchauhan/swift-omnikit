@@ -6630,7 +6630,9 @@ OmniAdwNode *omni_adw_string_list_new(const char **labels, const int32_t *action
   gtk_list_view_set_single_click_activate(GTK_LIST_VIEW(node->widget), TRUE);
   gtk_widget_add_css_class(node->widget, "boxed-list");
   gtk_widget_set_hexpand(node->widget, TRUE);
+  gtk_widget_set_vexpand(node->widget, TRUE);
   gtk_widget_set_halign(node->widget, GTK_ALIGN_FILL);
+  gtk_widget_set_valign(node->widget, GTK_ALIGN_FILL);
   omni_accessible_label(node->widget, "Content list");
   omni_accessible_description(node->widget, "Virtualized list");
   omni_accessible_role_description(node->widget, "list");
@@ -6647,7 +6649,9 @@ OmniAdwNode *omni_adw_plain_list_new(const char **labels, const int32_t *action_
   gtk_list_box_set_activate_on_single_click(GTK_LIST_BOX(node->widget), TRUE);
   gtk_widget_add_css_class(node->widget, "omni-plain-list");
   gtk_widget_set_hexpand(node->widget, TRUE);
+  gtk_widget_set_vexpand(node->widget, TRUE);
   gtk_widget_set_halign(node->widget, GTK_ALIGN_FILL);
+  gtk_widget_set_valign(node->widget, GTK_ALIGN_FILL);
   omni_accessible_label(node->widget, "Content list");
   omni_accessible_role_description(node->widget, "list");
   g_signal_connect(node->widget, "row-activated", G_CALLBACK(on_plain_list_row_activated), NULL);
@@ -6723,6 +6727,11 @@ OmniAdwNode *omni_adw_sidebar_list_new(const char **labels, const int32_t *actio
       if (data->font_weights) data->font_weights[i] = omni_strdup(font_weights && font_weights[i] ? font_weights[i] : "");
       if (data->font_italics) data->font_italics[i] = font_italics ? font_italics[i] : 0;
     }
+    for (int32_t i = 0; i < count; i++) {
+      if (sidebar_row_has_children(data, i) && data->depths && data->depths[i] > 0) {
+        data->collapsed[i] = TRUE;
+      }
+    }
   }
   if (count >= 128) {
     sidebar_rebuild_visible_indices(data);
@@ -6738,7 +6747,9 @@ OmniAdwNode *omni_adw_sidebar_list_new(const char **labels, const int32_t *actio
     gtk_list_view_set_single_click_activate(GTK_LIST_VIEW(node->widget), TRUE);
     gtk_widget_add_css_class(node->widget, "omni-sidebar-list");
     gtk_widget_set_hexpand(node->widget, TRUE);
+    gtk_widget_set_vexpand(node->widget, TRUE);
     gtk_widget_set_halign(node->widget, GTK_ALIGN_FILL);
+    gtk_widget_set_valign(node->widget, GTK_ALIGN_FILL);
     omni_accessible_label(node->widget, "Sidebar");
     omni_accessible_description(node->widget, "Virtualized sidebar outline");
     omni_accessible_role_description(node->widget, "sidebar list");
@@ -6753,7 +6764,9 @@ OmniAdwNode *omni_adw_sidebar_list_new(const char **labels, const int32_t *actio
   gtk_list_box_set_activate_on_single_click(GTK_LIST_BOX(node->widget), TRUE);
   gtk_widget_add_css_class(node->widget, "omni-sidebar-list");
   gtk_widget_set_hexpand(node->widget, TRUE);
+  gtk_widget_set_vexpand(node->widget, TRUE);
   gtk_widget_set_halign(node->widget, GTK_ALIGN_FILL);
+  gtk_widget_set_valign(node->widget, GTK_ALIGN_FILL);
   omni_accessible_label(node->widget, "Sidebar");
   omni_accessible_description(node->widget, "Sidebar outline");
   omni_accessible_role_description(node->widget, "sidebar list");
@@ -6831,6 +6844,9 @@ OmniAdwNode *omni_adw_sidebar_list_new(const char **labels, const int32_t *actio
       omni_accessible_description(button, depth == 0 ? "Top-level sidebar item" : "Nested sidebar item");
     }
     gtk_list_box_append(GTK_LIST_BOX(node->widget), row);
+  }
+  if (data && data->rows) {
+    sidebar_apply_visibility_to_rows(node->widget, data);
   }
   return node;
 }

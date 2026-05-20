@@ -2903,8 +2903,40 @@ enum AdwaitaNodeBuilder {
             }
         }
 
+        func rawText(in node: SemanticNode) -> String {
+            var parts: [String] = []
+            func visit(_ current: SemanticNode) {
+                if case .text(let text) = current.kind {
+                    parts.append(text)
+                }
+                for child in current.children {
+                    visit(child)
+                }
+            }
+            visit(node)
+            return parts.joined(separator: " ")
+        }
+
+        func containsTextNode(_ node: SemanticNode) -> Bool {
+            if case .text = node.kind {
+                return true
+            }
+            return node.children.contains(where: containsTextNode)
+        }
+
         func rowLabel(from node: SemanticNode) -> String {
+            let raw = rawText(in: node)
+            if !raw.isEmpty && raw.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                return raw
+            }
+            let trimmedRaw = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !trimmedRaw.isEmpty {
+                return trimmedRaw
+            }
             let label = accessibleLabel(for: node).trimmingCharacters(in: .whitespacesAndNewlines)
+            if label == "Action", containsTextNode(node) {
+                return " "
+            }
             return label == "Action" ? "" : label
         }
 
