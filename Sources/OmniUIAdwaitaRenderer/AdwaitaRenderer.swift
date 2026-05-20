@@ -1409,7 +1409,7 @@ private enum AdwaitaPresentationExtractor {
         }
 
         let children = node.children.compactMap { stripPresentation(from: $0, modal: &modal, toolbar: &toolbar) }
-        if node.kind == .zstack, children.count == 1 {
+        if case .zstack = node.kind, children.count == 1 {
             return children[0]
         }
         return SemanticNode(id: node.id, kind: node.kind, children: children)
@@ -1955,8 +1955,8 @@ enum AdwaitaNodeBuilder {
             built = omni_adw_box_new(1, 0)
         case .group:
             built = container(vertical: true, spacing: 6, children: node.children, context: context)
-        case .zstack:
-            built = overlay(children: node.children, context: context)
+        case .zstack(let alignment):
+            built = overlay(children: node.children, alignment: alignment, context: context)
         case .spacer:
             built = omni_adw_box_new(1, 0)
         case .stack(let axis, let spacing):
@@ -2231,14 +2231,14 @@ enum AdwaitaNodeBuilder {
         return parent
     }
 
-    private static func overlay(children: [SemanticNode], context: BuildContext) -> OpaquePointer? {
+    private static func overlay(children: [SemanticNode], alignment: String, context: BuildContext) -> OpaquePointer? {
         if children.count == 1, let child = children.first {
             return build(child, context: context)
         }
         guard let parent = omni_adw_overlay_new() else { return nil }
         for child in children {
             if let built = build(child, context: context) {
-                omni_adw_node_append(parent, built)
+                omni_adw_node_append_overlay(parent, built, alignment)
             }
         }
         if children.contains(where: shouldExpandVertically) {
@@ -2724,6 +2724,13 @@ enum AdwaitaNodeBuilder {
                 -1, -1, -1, -1,
                 -1
             )
+            if width != nil || height != nil {
+                omni_adw_node_set_expand(
+                    node,
+                    width == nil ? -1 : 0,
+                    height == nil ? -1 : 0
+                )
+            }
             if maxWidth != nil || maxHeight != nil {
                 omni_adw_node_set_visible(node, maxWidth == 0 || maxHeight == 0 ? 0 : 1)
                 omni_adw_node_set_expand(
@@ -2759,8 +2766,8 @@ enum AdwaitaNodeBuilder {
     }
 
     private static func scaled(_ value: Int?, by scale: Int) -> Int32 {
-        guard let value, value > 0 else { return -1 }
-        return Int32(value * scale)
+        guard let value else { return -1 }
+        return Int32(max(0, value) * scale)
     }
 
     private static func semanticContainer(_ role: SemanticContainerRole, children: [SemanticNode], context: BuildContext) -> OpaquePointer? {

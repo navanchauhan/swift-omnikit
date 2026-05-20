@@ -1808,7 +1808,7 @@ public struct ZStack<Content: View>: View, _PrimitiveView {
     func _makeNode(_ ctx: inout _BuildContext) -> _VNode {
         // Keep ZStack as a single node so parent stacks don't flatten it into siblings.
         let child = ctx.buildChild(content)
-        return .zstack(children: _flatten(child))
+        return .zstack(alignment: alignment, children: _flatten(child))
     }
 }
 
@@ -2788,7 +2788,7 @@ private func _collectTaggedPickerOptions<T: Hashable>(node: _VNode, valueType: T
                 if let t = labelText(c) { return t }
             }
             return nil
-        case .zstack(let children):
+        case .zstack(_, let children):
             for c in children {
                 if let t = labelText(c) { return t }
             }
@@ -2815,7 +2815,7 @@ private func _collectTaggedPickerOptions<T: Hashable>(node: _VNode, valueType: T
             for c in nodes { walk(c) }
         case .stack(_, _, let children):
             for c in children { walk(c) }
-        case .zstack(let children):
+        case .zstack(_, let children):
             for c in children { walk(c) }
         case .background(let child, let bg):
             // Picker content doesn't use this typically; but walk both to be safe.
@@ -3080,7 +3080,7 @@ private func _menuLabelText(from node: _VNode) -> String {
             for c in nodes { walk(c) }
         case .stack(_, _, let children):
             for c in children { walk(c) }
-        case .zstack(let children):
+        case .zstack(_, let children):
             for c in children { walk(c) }
         default:
             break

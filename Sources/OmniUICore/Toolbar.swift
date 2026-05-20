@@ -60,7 +60,7 @@ func _collectToolbarItems(from node: _VNode) -> _ToolbarLayoutItems {
             for child in children { walk(child) }
         case .stack(_, _, let children):
             for child in children { walk(child) }
-        case .zstack(let children):
+        case .zstack(_, let children):
             for child in children { walk(child) }
         case .background(let child, let background):
             walk(child)

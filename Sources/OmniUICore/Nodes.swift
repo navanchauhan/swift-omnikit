@@ -85,7 +85,7 @@ indirect enum _VNode {
     case spacer
     case stack(axis: _Axis, spacing: Int, children: [_VNode])
     case flowLayout(horizontalSpacing: Int, verticalSpacing: Int, children: [_VNode])
-    case zstack(children: [_VNode])
+    case zstack(alignment: Alignment, children: [_VNode])
     case gradient(_GradientNode)
     case shape(_ShapeNode)
     case offset(x: Int, y: Int, child: _VNode)

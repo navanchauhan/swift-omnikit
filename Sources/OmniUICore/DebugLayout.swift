@@ -143,7 +143,7 @@ enum _DebugLayout {
             return children.contains(where: hasContentShapeRect)
         case .flowLayout(_, _, let children):
             return children.contains(where: hasContentShapeRect)
-        case .zstack(let children):
+        case .zstack(_, let children):
             return children.contains(where: hasContentShapeRect)
         default:
             return false
@@ -179,7 +179,7 @@ enum _DebugLayout {
              .contentShapeRect(_, let child),
              .textStyled(_, let child):
             return allowsOverlayOverflow(child)
-        case .group(let nodes), .flowLayout(_, _, let nodes), .zstack(let nodes):
+        case .group(let nodes), .flowLayout(_, _, let nodes), .zstack(_, let nodes):
             return nodes.contains(where: allowsOverlayOverflow)
         default:
             return false
@@ -237,7 +237,7 @@ enum _DebugLayout {
                 width: min(maxSize.width, childSize.width + leading + trailing),
                 height: min(maxSize.height, childSize.height + top + bottom)
             )
-        case .group(let nodes), .flowLayout(_, _, let nodes), .zstack(let nodes):
+        case .group(let nodes), .flowLayout(_, _, let nodes), .zstack(_, let nodes):
             var size = _Size(width: 0, height: 0)
             for child in nodes {
                 let childSize = measureNode(child, maxSize)
@@ -371,7 +371,7 @@ enum _DebugLayout {
                 return isFlexibleCandidate(label, axis: axis)
             case .edgePadding(_, _, _, _, let child):
                 return isFlexibleCandidate(child, axis: axis)
-            case .group(let nodes), .zstack(let nodes):
+            case .group(let nodes), .zstack(_, let nodes):
                 return nodes.contains { isFlexibleCandidate($0, axis: axis) }
             case .stack(let childAxis, _, let nodes):
                 guard childAxis == axis else { return false }
@@ -534,7 +534,7 @@ enum _DebugLayout {
                 width: min(maxSize.width, size.width + leading + trailing),
                 height: min(maxSize.height, size.height + top + bottom)
             )
-        case .group(let nodes), .zstack(let nodes):
+        case .group(let nodes), .zstack(_, let nodes):
             var used = _Size(width: 0, height: 0)
             for child in nodes {
                 let size = collectScrollTargets(
@@ -1141,7 +1141,7 @@ enum _DebugLayout {
             }
             return used
 
-        case .zstack(let children):
+        case .zstack(_, let children):
             var used = _Size(width: 0, height: 0)
             for n in children {
                 let s = draw(
@@ -1420,7 +1420,7 @@ enum _DebugLayout {
                         }
                         return _Size(width: min(w, maxSize.width), height: min(h, maxSize.height))
                     }
-                case .zstack(let children):
+                case .zstack(_, let children):
                     var u = _Size(width: 0, height: 0)
                     for n in children {
                         let s = measure(n, maxSize)
@@ -1570,7 +1570,7 @@ enum _DebugLayout {
                 case .geometryReaderProxy(_, let child): return isFlexibleCandidate(child)
                 case .group(let nodes):
                     return nodes.contains(where: isFlexibleCandidate)
-                case .zstack(let nodes):
+                case .zstack(_, let nodes):
                     return nodes.contains(where: isFlexibleCandidate)
                 case .flowLayout(_, _, let nodes):
                     return nodes.contains(where: isFlexibleCandidate)
@@ -1954,7 +1954,7 @@ enum _DebugLayout {
                         return u
                     case .flowLayout(_, let verticalSpacing, let children):
                         return m(.stack(axis: .vertical, spacing: verticalSpacing, children: children), maxSize)
-                    case .zstack(let children):
+                    case .zstack(_, let children):
                         var u = _Size(width: 0, height: 0)
                         for n in children {
                             let s = m(n, maxSize)

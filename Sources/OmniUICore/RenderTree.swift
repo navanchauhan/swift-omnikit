@@ -192,7 +192,7 @@ enum _RenderLayout {
              .contentShapeRect(_, let child),
              .textStyled(_, let child):
             return allowsOverlayOverflow(child)
-        case .group(let nodes), .zstack(let nodes):
+        case .group(let nodes), .zstack(_, let nodes):
             return nodes.contains(where: allowsOverlayOverflow)
         default:
             return false
@@ -595,7 +595,7 @@ enum _RenderLayout {
             }
             return used
 
-        case .zstack(let children):
+        case .zstack(_, let children):
             var used = _Size(width: 0, height: 0)
             for n in children {
                 let s = draw(node: n, origin: origin, maxSize: maxSize, ctx: &ctx, ops: &ops, hitRegions: &hitRegions, hoverRegions: &hoverRegions, scrollRegions: &scrollRegions, scrollTargets: &scrollTargets, shapeRegions: &shapeRegions, cursorPosition: &cursorPosition, activeMenu: &activeMenu, activePicker: &activePicker, activeTextField: &activeTextField,
@@ -738,7 +738,7 @@ enum _RenderLayout {
                     return isFlexibleCandidate(child)
                 case .group(let nodes):
                     return nodes.contains(where: isFlexibleCandidate)
-                case .zstack(let nodes):
+                case .zstack(_, let nodes):
                     return nodes.contains(where: isFlexibleCandidate)
                 case .flowLayout(_, _, let nodes):
                     return nodes.contains(where: isFlexibleCandidate)
@@ -1627,7 +1627,7 @@ enum _RenderLayout {
             return nodes.contains(where: hasContentShapeRect)
         case .stack(_, _, let children):
             return children.contains(where: hasContentShapeRect)
-        case .zstack(let children):
+        case .zstack(_, let children):
             return children.contains(where: hasContentShapeRect)
         default:
             return false
@@ -1697,7 +1697,7 @@ enum _RenderLayout {
                 u.height = max(u.height, s.height)
             }
             return u
-        case .zstack(let children):
+        case .zstack(_, let children):
             var u = _Size(width: 0, height: 0)
             for n in children {
                 let s = measure(n, maxSize, mode: mode)

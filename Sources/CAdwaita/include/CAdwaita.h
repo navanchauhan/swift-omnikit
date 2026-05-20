@@ -198,5 +198,6 @@ void omni_adw_node_set_accessibility_value(OmniAdwNode *node, const char *value)
 void omni_adw_node_apply_font(OmniAdwNode *node, double size, const char *weight, int32_t italic);
 void omni_adw_node_add_css_class(OmniAdwNode *node, const char *css_class);
 void omni_adw_node_append(OmniAdwNode *parent, OmniAdwNode *child);
+void omni_adw_node_append_overlay(OmniAdwNode *parent, OmniAdwNode *child, const char *alignment);
 void omni_adw_node_set_expand(OmniAdwNode *node, int32_t horizontal, int32_t vertical);
 void omni_adw_node_free(OmniAdwNode *node);

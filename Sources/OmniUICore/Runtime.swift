@@ -631,7 +631,7 @@ public final class _UIRuntime: @unchecked Sendable {
             let overlayNode = _UIRuntime.$_currentEnvironment.withValue(next) {
                 local.buildChild(entry.view)
             }
-            merged = .zstack(children: [merged, .elevated(zOffset: 1000, child: overlayNode)])
+            merged = .zstack(alignment: .center, children: [merged, .elevated(zOffset: 1000, child: overlayNode)])
         }
         return merged
     }
@@ -2192,7 +2192,7 @@ extension _UIRuntime {
         switch node {
         case .identified(_, let readerScopePath, let child):
             return readerScopePath != nil || _containsScrollReaderTarget(child)
-        case .group(let children), .stack(_, _, let children), .zstack(let children):
+        case .group(let children), .stack(_, _, let children), .zstack(_, let children):
             return children.contains(where: _containsScrollReaderTarget)
         case .style(_, _, let child),
              .textStyled(_, let child),
@@ -2527,7 +2527,7 @@ struct _BuildContext {
         switch node {
         case .image(let name):
             return name.hasPrefix("omni-webview:")
-        case .group(let children), .stack(_, _, let children), .flowLayout(_, _, let children), .zstack(let children), .viewThatFits(_, let children):
+        case .group(let children), .stack(_, _, let children), .flowLayout(_, _, let children), .zstack(_, let children), .viewThatFits(_, let children):
             return children.contains(where: requiresNativeRepresentableRefresh)
         case .style(_, _, let child),
              .textStyled(_, let child),

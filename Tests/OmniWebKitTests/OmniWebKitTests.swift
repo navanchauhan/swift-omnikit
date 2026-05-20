@@ -613,6 +613,35 @@ final class OmniWebKitTests: XCTestCase {
         XCTAssertTrue(handler.messages.first?.webView === webView)
     }
 
+    func testPayloadMessageCallbackDecodesPrimitiveBodies() throws {
+        let configuration = WKWebViewConfiguration()
+        let handler = ScriptHandlerProbe()
+        let received = expectation(description: "primitive script messages delivered")
+        handler.onMessage = { _ in
+            guard handler.messages.count == 3 else { return }
+            XCTAssertEqual(handler.messages[0].body as? Double, 0.625)
+            XCTAssertEqual(handler.messages[1].body as? Bool, true)
+            XCTAssertEqual(handler.messages[2].body as? String, "ready")
+            received.fulfill()
+        }
+        configuration.userContentController.add(handler, name: "bridge")
+
+        let webView = WKWebView(frame: .zero, configuration: configuration)
+        let payload = webView._omniWebViewPayload
+        let callback = try XCTUnwrap(payload.messageCallback)
+        let context = try XCTUnwrap(payload.callbackContext)
+
+        for body in ["0.625", "true", #""ready""#] {
+            "bridge".withCString { namePointer in
+                body.withCString { bodyPointer in
+                    callback(context, namePointer, bodyPointer)
+                }
+            }
+        }
+
+        wait(for: [received], timeout: 1)
+    }
+
     func testPayloadMessageCallbackDecodesCommandDictionaryStream() throws {
         let configuration = WKWebViewConfiguration()
         let handler = ScriptHandlerProbe()

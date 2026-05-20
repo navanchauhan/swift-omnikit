@@ -1741,7 +1741,7 @@ public final class WKWebView: NSView, _OmniWebViewPayloadProviding, _OmniNativeR
 
     private static func decodeJavaScriptBody(_ body: String) -> Any {
         guard let data = body.data(using: .utf8),
-              let value = try? JSONSerialization.jsonObject(with: data) else {
+              let value = try? JSONSerialization.jsonObject(with: data, options: [.fragmentsAllowed]) else {
             return body
         }
         return value

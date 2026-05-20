@@ -33,7 +33,7 @@ public struct SemanticNode: Sendable, Identifiable {
         case image(String)
         case stack(axis: SemanticAxis, spacing: Int)
         case flowLayout(horizontalSpacing: Int, verticalSpacing: Int)
-        case zstack
+        case zstack(alignment: String)
         case spacer
         case webContent(registryKey: String, stableIdentity: String, url: String, label: String?, description: String?)
         case scroll(axis: SemanticAxis, actionID: Int, offset: Int)
@@ -221,8 +221,8 @@ enum SemanticLowerer {
                 kind: .flowLayout(horizontalSpacing: horizontalSpacing, verticalSpacing: verticalSpacing),
                 children: lower(children, path: path)
             )
-        case .zstack(let children):
-            return SemanticNode(id: path, kind: .zstack, children: lower(children, path: path))
+        case .zstack(let alignment, let children):
+            return SemanticNode(id: path, kind: .zstack(alignment: alignment.raw), children: lower(children, path: path))
         case .spacer:
             return SemanticNode(id: path, kind: .spacer)
         case .button(let id, let focused, let label):
@@ -406,7 +406,7 @@ enum SemanticLowerer {
                 children: [lower(child, path: path + ".content")]
             )
         case .overlay(let child, let overlay):
-            return SemanticNode(id: path, kind: .zstack, children: [lower(child, path: path + ".content"), lower(overlay, path: path + ".overlay")])
+            return SemanticNode(id: path, kind: .zstack(alignment: Alignment.center.raw), children: [lower(child, path: path + ".content"), lower(overlay, path: path + ".overlay")])
         case .elevated(_, let child):
             return lower(child, path: path + ".content")
         case .modalOverlay(_, _, _, let child):

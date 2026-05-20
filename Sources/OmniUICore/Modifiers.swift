@@ -1689,7 +1689,7 @@ private func _omniContainsPrimaryInteraction(_ node: _VNode) -> Bool {
     switch node {
     case .button, .tapTarget, .gestureTarget, .dragSource, .toggle, .textField, .menu:
         return true
-    case .group(let children), .stack(_, _, let children), .flowLayout(_, _, let children), .zstack(let children), .viewThatFits(_, let children):
+    case .group(let children), .stack(_, _, let children), .flowLayout(_, _, let children), .zstack(_, let children), .viewThatFits(_, let children):
         return children.contains(where: _omniContainsPrimaryInteraction)
     case .style(_, _, let child),
          .textStyled(_, let child),

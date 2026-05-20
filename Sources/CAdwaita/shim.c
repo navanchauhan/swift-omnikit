@@ -2219,6 +2219,51 @@ static gboolean omni_widget_is_textual_overlay(GtkWidget *widget) {
   return saw_child;
 }
 
+static gboolean omni_widget_has_explicit_width(GtkWidget *widget) {
+  return widget && GPOINTER_TO_INT(g_object_get_data(G_OBJECT(widget), "omni-explicit-width")) != 0;
+}
+
+static gboolean omni_widget_has_explicit_height(GtkWidget *widget) {
+  return widget && GPOINTER_TO_INT(g_object_get_data(G_OBJECT(widget), "omni-explicit-height")) != 0;
+}
+
+static GtkAlign omni_overlay_horizontal_align(const char *alignment) {
+  if (!alignment) return GTK_ALIGN_CENTER;
+  if (strstr(alignment, "Trailing") || strstr(alignment, "trailing")) return GTK_ALIGN_END;
+  if (strstr(alignment, "Leading") || strstr(alignment, "leading")) return GTK_ALIGN_START;
+  return GTK_ALIGN_CENTER;
+}
+
+static GtkAlign omni_overlay_vertical_align(const char *alignment) {
+  if (!alignment) return GTK_ALIGN_CENTER;
+  if (strstr(alignment, "bottom") || strstr(alignment, "Bottom")) return GTK_ALIGN_END;
+  if (strstr(alignment, "top") || strstr(alignment, "Top")) return GTK_ALIGN_START;
+  return GTK_ALIGN_CENTER;
+}
+
+static void omni_overlay_prepare_child(GtkWidget *widget, const char *alignment) {
+  if (!widget) return;
+  gboolean textual = omni_widget_is_textual_overlay(widget);
+  gboolean explicit_width = omni_widget_has_explicit_width(widget);
+  gboolean explicit_height = omni_widget_has_explicit_height(widget);
+
+  if (textual || explicit_width) {
+    gtk_widget_set_hexpand(widget, FALSE);
+    gtk_widget_set_halign(widget, omni_overlay_horizontal_align(alignment));
+  } else {
+    gtk_widget_set_hexpand(widget, TRUE);
+    gtk_widget_set_halign(widget, GTK_ALIGN_FILL);
+  }
+
+  if (textual || explicit_height) {
+    gtk_widget_set_vexpand(widget, FALSE);
+    gtk_widget_set_valign(widget, omni_overlay_vertical_align(alignment));
+  } else {
+    gtk_widget_set_vexpand(widget, TRUE);
+    gtk_widget_set_valign(widget, GTK_ALIGN_FILL);
+  }
+}
+
 static PangoWeight omni_font_weight_from_string(const char *weight) {
   if (!weight || !weight[0]) return PANGO_WEIGHT_NORMAL;
   if (g_ascii_strcasecmp(weight, "ultralight") == 0) return PANGO_WEIGHT_ULTRALIGHT;
@@ -7489,6 +7534,8 @@ OmniAdwNode *omni_adw_frame_new(const char *css_classes, int32_t spacing) {
 
 void omni_adw_node_apply_layout(OmniAdwNode *node, int32_t width, int32_t height, int32_t min_width, int32_t min_height, int32_t margin_top, int32_t margin_start, int32_t margin_bottom, int32_t margin_end, double opacity) {
   if (!node || !node->widget) return;
+  g_object_set_data(G_OBJECT(node->widget), "omni-explicit-width", width >= 0 ? GINT_TO_POINTER(1) : NULL);
+  g_object_set_data(G_OBJECT(node->widget), "omni-explicit-height", height >= 0 ? GINT_TO_POINTER(1) : NULL);
   int request_width = width >= 0 ? width : min_width;
   int request_height = height >= 0 ? height : min_height;
   if (request_width >= 0 || request_height >= 0) {
@@ -7578,6 +7625,10 @@ void omni_adw_node_add_css_class(OmniAdwNode *node, const char *css_class) {
 }
 
 void omni_adw_node_append(OmniAdwNode *parent, OmniAdwNode *child) {
+  omni_adw_node_append_overlay(parent, child, "center");
+}
+
+void omni_adw_node_append_overlay(OmniAdwNode *parent, OmniAdwNode *child, const char *alignment) {
   if (!parent || !child || !parent->widget || !child->widget) return;
   if (GTK_IS_BOX(parent->widget)) {
     gtk_box_append(GTK_BOX(parent->widget), child->widget);
@@ -7588,14 +7639,7 @@ void omni_adw_node_append(OmniAdwNode *parent, OmniAdwNode *child) {
       omni_widget_expand(child->widget, TRUE);
       gtk_overlay_set_child(GTK_OVERLAY(parent->widget), child->widget);
     } else {
-      if (omni_widget_is_textual_overlay(child->widget)) {
-        gtk_widget_set_hexpand(child->widget, FALSE);
-        gtk_widget_set_vexpand(child->widget, FALSE);
-        gtk_widget_set_halign(child->widget, GTK_ALIGN_CENTER);
-        gtk_widget_set_valign(child->widget, GTK_ALIGN_CENTER);
-      } else {
-        omni_widget_expand(child->widget, TRUE);
-      }
+      omni_overlay_prepare_child(child->widget, alignment);
       gtk_overlay_add_overlay(GTK_OVERLAY(parent->widget), child->widget);
     }
   } else if (GTK_IS_LIST_BOX(parent->widget)) {
