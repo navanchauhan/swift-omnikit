@@ -2850,6 +2850,7 @@ enum AdwaitaNodeBuilder {
         let fontWeight: String?
         let fontItalic: Bool
         let isPlainText: Bool
+        let hasSymbolPrefix: Bool
     }
 
     private struct SimpleList {
@@ -2860,7 +2861,11 @@ enum AdwaitaNodeBuilder {
             if rows.count >= 128 { return true }
             if rows.allSatisfy(\.isPlainText) { return true }
             let plainTextRows = rows.filter(\.isPlainText).count
-            return rows.count >= 8 && plainTextRows >= max(3, rows.count / 3)
+            if rows.count >= 8 && plainTextRows >= max(3, rows.count / 3) {
+                return true
+            }
+            let symbolRows = rows.filter(\.hasSymbolPrefix).count
+            return rows.count >= 8 && symbolRows >= max(3, rows.count / 2)
         }
     }
 
@@ -3026,8 +3031,9 @@ enum AdwaitaNodeBuilder {
 
         func appendRow(label: String, actionID: Int?, depth: Int, node: SemanticNode) {
             let font = rowFont(in: node)
+            let symbol = actionID != nil ? firstImageSymbol(in: node) : nil
             let displayLabel: String
-            if actionID != nil, let symbol = firstImageSymbol(in: node), !label.hasPrefix(symbol) {
+            if let symbol, !label.hasPrefix(symbol) {
                 displayLabel = "\(symbol)  \(label)"
             } else {
                 displayLabel = label
@@ -3039,7 +3045,8 @@ enum AdwaitaNodeBuilder {
                 fontSize: font.size,
                 fontWeight: font.weight,
                 fontItalic: font.italic,
-                isPlainText: actionID == nil && isPlainTextRow(node)
+                isPlainText: actionID == nil && isPlainTextRow(node),
+                hasSymbolPrefix: symbol != nil
             ))
         }
 

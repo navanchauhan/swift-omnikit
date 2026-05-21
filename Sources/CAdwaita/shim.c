@@ -2734,8 +2734,8 @@ static void omni_install_css_once(void) {
     ".omni-fill-gray { background: rgba(142,142,147,0.35); background-color: rgba(142,142,147,0.35); }"
     ".omni-fill-accent { background: @accent_bg_color; background-color: @accent_bg_color; }"
     "button { border-radius: 8px; font-weight: 600; }"
-    ".omni-icon-button, .omni-icon-button:disabled { min-width: 38px; min-height: 34px; padding: 0; font-size: 16px; -gtk-icon-size: 16px; }"
-    ".omni-icon-button image, .omni-icon-button:disabled image, .omni-icon-button label, .omni-icon-button:disabled label { margin: 0; padding: 0; }"
+    ".omni-icon-button, .omni-icon-button:disabled { min-width: 38px; min-height: 34px; padding: 0; margin: 0; font-size: 16px; -gtk-icon-size: 16px; }"
+    ".omni-icon-button image, .omni-icon-button:disabled image, .omni-icon-button label, .omni-icon-button:disabled label { min-width: 16px; min-height: 16px; margin: 0; padding: 0; }"
     ".omni-go-button { min-width: 46px; min-height: 34px; padding: 0 12px; font-weight: 700; }"
     ".omni-segmented-control { margin: 0 4px; }"
     ".omni-segmented-control button { min-height: 30px; padding: 0 12px; border-radius: 0; }"
@@ -3734,10 +3734,16 @@ static const char *omni_accessible_label_for_symbolic_label(const char *label) {
 static gboolean omni_button_set_symbolic_icon(GtkButton *button, const char *label) {
   const char *icon_name = omni_symbolic_icon_name_for_label(label);
   if (!button || !icon_name) return FALSE;
-  gtk_button_set_icon_name(button, icon_name);
   GtkWidget *widget = GTK_WIDGET(button);
+  GtkWidget *image = gtk_image_new_from_icon_name(icon_name);
+  gtk_widget_set_size_request(image, 16, 16);
+  gtk_widget_set_halign(image, GTK_ALIGN_CENTER);
+  gtk_widget_set_valign(image, GTK_ALIGN_CENTER);
+  gtk_button_set_child(button, image);
   gtk_widget_add_css_class(widget, "omni-icon-button");
   gtk_widget_set_size_request(widget, 38, 34);
+  gtk_widget_set_halign(widget, GTK_ALIGN_CENTER);
+  gtk_widget_set_valign(widget, GTK_ALIGN_CENTER);
   gtk_widget_set_tooltip_text(widget, omni_accessible_label_for_symbolic_label(label));
   return TRUE;
 }
@@ -7028,7 +7034,7 @@ OmniAdwNode *omni_adw_button_new(const char *label, int32_t action_id) {
   const char *value = label ? label : "Button";
   node->widget = gtk_button_new_with_label(value);
   omni_button_set_label_or_symbolic_icon(GTK_BUTTON(node->widget), value);
-  gtk_widget_set_halign(node->widget, GTK_ALIGN_START);
+  gtk_widget_set_halign(node->widget, omni_label_looks_iconic(value) ? GTK_ALIGN_CENTER : GTK_ALIGN_START);
   gtk_widget_set_vexpand(node->widget, FALSE);
   gtk_widget_set_valign(node->widget, GTK_ALIGN_CENTER);
   if (omni_label_looks_iconic(value)) {
