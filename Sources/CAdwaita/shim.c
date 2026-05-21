@@ -2482,7 +2482,6 @@ static void on_window_motion(GtkEventControllerMotion *controller, double x, dou
 static gboolean on_window_scroll(GtkEventControllerScroll *controller, double dx, double dy, gpointer data);
 static void on_sidebar_toggle_toggled(GtkToggleButton *button, gpointer data);
 static void on_split_show_sidebar_notify(GObject *object, GParamSpec *pspec, gpointer data);
-static void on_new_tab_clicked(GtkButton *button, gpointer data);
 static void on_header_tab_clicked(GtkButton *button, gpointer data);
 static void on_entry_changed(GtkEditable *editable, gpointer data);
 static void on_entry_activate(GtkEntry *entry, gpointer data);
@@ -2621,29 +2620,35 @@ static void omni_install_css_once(void) {
     ".omni-body { padding: 0; }"
     ".card { border-radius: 10px; padding: 12px; margin: 0; background: @card_bg_color; }"
     ".adw-dialog { padding: 0; margin: 0; background: transparent; }"
-    ".omni-sheet-surface { padding: 18px 20px 12px 20px; margin: 0; border-radius: 18px; border: 1px solid rgba(255,255,255,0.24); background: #303036; background-color: #303036; color: #f6f6f7; }"
-    ".boxed-list { border-radius: 0; padding: 0; margin: 0; background: transparent; }"
+    ".omni-sheet-surface { padding: 12px 14px; margin: 0; border-radius: 12px; border: 0; background: @window_bg_color; background-color: @window_bg_color; color: @window_fg_color; }"
+    ".boxed-list { border-radius: 0; padding: 0; margin: 0; background: @view_bg_color; background-color: @view_bg_color; }"
+    ".boxed-list row { min-height: 0; padding: 0; margin: 0; border-radius: 0; background: transparent; background-color: transparent; border-bottom: 1px solid @borders; }"
+    ".boxed-list row:hover { background: alpha(@view_fg_color,0.035); background-color: alpha(@view_fg_color,0.035); }"
+    ".boxed-list row:selected { background: alpha(@accent_bg_color,0.18); background-color: alpha(@accent_bg_color,0.18); }"
+    ".boxed-list button { min-height: 0; padding: 0; margin: 0; border-radius: 0; border: 0; background: transparent; background-color: transparent; box-shadow: none; }"
+    ".boxed-list button:hover { background: alpha(@view_fg_color,0.04); background-color: alpha(@view_fg_color,0.04); }"
     ".omni-plain-list { background: transparent; }"
-    ".omni-plain-list row { min-height: 24px; padding: 0 0; background: transparent; border-bottom: 1px solid @borders; }"
+    ".omni-plain-list row { min-height: 14px; padding: 0; background: transparent; border-bottom: 0; }"
+    ".omni-plain-list row.omni-action-list-row { min-height: 24px; border-bottom: 1px solid @borders; }"
     ".omni-plain-list row:hover { background: transparent; }"
-    ".omni-plain-list label { padding: 2px 6px; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; font-size: 13px; font-weight: 500; }"
-    ".omni-list-row-button { min-height: 24px; padding: 0; border-radius: 0; background: transparent; box-shadow: none; }"
+    ".omni-plain-list label { padding: 0 16px; font-family: 'DejaVu Sans Mono', 'Liberation Mono', Consolas, Menlo, Monaco, 'SF Mono', 'SFMono-Regular', monospace; font-size: 12px; font-weight: 400; }"
+    ".omni-list-row-button { min-height: 24px; padding: 0; border-radius: 0; border: 0; background: transparent; background-color: transparent; box-shadow: none; }"
     ".omni-list-row-button:hover { background: alpha(@view_fg_color,0.06); }"
-    ".omni-list-row-button label { padding: 2px 6px; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; font-size: 13px; font-weight: 500; }"
-    ".omni-complex-button { padding: 0; margin: 0; border-radius: 0; background: transparent; background-color: transparent; box-shadow: none; }"
+    ".omni-list-row-button label { padding: 0 16px; font-family: 'DejaVu Sans Mono', 'Liberation Mono', Consolas, Menlo, Monaco, 'SF Mono', 'SFMono-Regular', monospace; font-size: 12px; font-weight: 400; }"
+    ".omni-complex-button { min-height: 0; padding: 0; margin: 0; border-radius: 0; border: 0; background: transparent; background-color: transparent; box-shadow: none; }"
     ".omni-complex-button:hover { background: alpha(@view_fg_color,0.04); background-color: alpha(@view_fg_color,0.04); }"
-    ".omni-click-container { padding: 0; margin: 0; border-radius: 0; background: transparent; background-color: transparent; }"
+    ".omni-click-container { min-height: 0; padding: 0; margin: 0; border-radius: 0; border: 0; background: transparent; background-color: transparent; box-shadow: none; }"
     ".omni-click-container:hover { background: alpha(@view_fg_color,0.04); background-color: alpha(@view_fg_color,0.04); }"
     ".omni-inline-link-button { min-height: 18px; min-width: 0; padding: 0 3px; margin: 0 1px; border-radius: 4px; background: transparent; background-color: transparent; box-shadow: none; color: #ff6600; }"
     ".omni-inline-link-button:hover { background: rgba(255,102,0,0.12); background-color: rgba(255,102,0,0.12); }"
     ".omni-inline-link-button label { padding: 0; color: inherit; }"
     ".omni-sidebar-list { background: @window_bg_color; padding: 8px 0; }"
-    ".omni-sidebar-list row { min-height: 25px; padding: 0; border-radius: 6px; margin: 0 6px 1px 6px; }"
+    ".omni-sidebar-list row { min-height: 25px; padding: 0; border-radius: 6px; margin: 0 6px 1px 6px; background: transparent; background-color: transparent; }"
     ".omni-sidebar-list row:hover { background: transparent; }"
     ".omni-sidebar-list row:selected { background: @accent_bg_color; }"
-    ".omni-sidebar-row-button { min-height: 25px; padding: 0; margin: 0 6px 1px 6px; border-radius: 6px; background: transparent; box-shadow: none; }"
+    ".omni-sidebar-row-button { min-height: 25px; padding: 0; margin: 0 6px 1px 6px; border-radius: 6px; border: 0; background: transparent; background-color: transparent; box-shadow: none; }"
     ".omni-sidebar-row-button:hover { background: alpha(@view_fg_color,0.06); }"
-    ".omni-sidebar-disclosure-button { min-width: 22px; min-height: 24px; padding: 0; border-radius: 6px; background: transparent; box-shadow: none; }"
+    ".omni-sidebar-disclosure-button { min-width: 22px; min-height: 24px; padding: 0; border-radius: 6px; border: 0; background: transparent; background-color: transparent; box-shadow: none; }"
     ".omni-sidebar-disclosure-button:hover { background: alpha(@view_fg_color,0.08); }"
     ".omni-sidebar-row { padding: 1px 6px; }"
     ".omni-sidebar-label { font-size: 13px; font-weight: 600; line-height: 1.22; }"
@@ -2729,7 +2734,8 @@ static void omni_install_css_once(void) {
     ".omni-fill-gray { background: rgba(142,142,147,0.35); background-color: rgba(142,142,147,0.35); }"
     ".omni-fill-accent { background: @accent_bg_color; background-color: @accent_bg_color; }"
     "button { border-radius: 8px; font-weight: 600; }"
-    ".omni-icon-button { min-width: 38px; min-height: 34px; padding: 0; font-size: 16px; }"
+    ".omni-icon-button, .omni-icon-button:disabled { min-width: 38px; min-height: 34px; padding: 0; font-size: 16px; -gtk-icon-size: 16px; }"
+    ".omni-icon-button image, .omni-icon-button:disabled image, .omni-icon-button label, .omni-icon-button:disabled label { margin: 0; padding: 0; }"
     ".omni-go-button { min-width: 46px; min-height: 34px; padding: 0 12px; font-weight: 700; }"
     ".omni-segmented-control { margin: 0 4px; }"
     ".omni-segmented-control button { min-height: 30px; padding: 0 12px; border-radius: 0; }"
@@ -2738,9 +2744,9 @@ static void omni_install_css_once(void) {
     ".omni-segmented-control button.omni-selected-segment { background: @accent_bg_color; background-color: @accent_bg_color; color: @accent_fg_color; }"
     ".omni-segmented-control button.omni-selected-segment image, .omni-segmented-control button.omni-selected-segment label { color: @accent_fg_color; }"
     ".omni-static-text-frame { background: @view_bg_color; background-color: @view_bg_color; }"
-    ".omni-static-text, .omni-static-text text { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; font-size: 13px; color: @view_fg_color; background: @view_bg_color; background-color: @view_bg_color; }"
+    ".omni-static-text, .omni-static-text text { font-family: 'DejaVu Sans Mono', 'Liberation Mono', Consolas, Menlo, Monaco, 'SF Mono', 'SFMono-Regular', monospace; font-size: 13px; color: @view_fg_color; background: @view_bg_color; background-color: @view_bg_color; }"
     ".omni-static-text { padding: 12px; }"
-    ".omni-monospace-text { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; font-size: 13px; }"
+    ".omni-monospace-text { font-family: 'DejaVu Sans Mono', 'Liberation Mono', Consolas, Menlo, Monaco, 'SF Mono', 'SFMono-Regular', monospace; font-size: 13px; }"
     ".omni-sidebar-toggle { min-width: 36px; min-height: 34px; padding: 0; }"
     "entry, textview, menubutton { border-radius: 8px; }";
 
@@ -2757,6 +2763,16 @@ static void omni_apply_color_scheme_from_environment(void) {
   const char *scheme = g_getenv("OMNIUI_ADWAITA_COLOR_SCHEME");
   if (!scheme || !scheme[0]) {
     scheme = g_getenv("OMNIUI_COLOR_SCHEME");
+  }
+  if (!scheme || !scheme[0]) {
+    const char *gtk_theme = g_getenv("GTK_THEME");
+    if (gtk_theme && gtk_theme[0]) {
+      char *lower_theme = g_ascii_strdown(gtk_theme, -1);
+      if (lower_theme && g_strrstr(lower_theme, "dark")) {
+        scheme = "dark";
+      }
+      g_free(lower_theme);
+    }
   }
   if (!scheme || !scheme[0]) return;
   omni_adw_set_color_scheme(scheme);
@@ -2915,18 +2931,7 @@ static void ensure_header_title_widget(OmniAdwApp *app) {
   g_signal_connect(app->header_entry, "activate", G_CALLBACK(on_entry_activate), NULL);
   gtk_box_append(GTK_BOX(app->header_entry_row), app->header_entry);
 
-  app->header_new_tab_button = gtk_button_new();
-  gtk_button_set_icon_name(GTK_BUTTON(app->header_new_tab_button), "adw-tab-new-symbolic");
-  gtk_widget_add_css_class(app->header_new_tab_button, "flat");
-  gtk_widget_add_css_class(app->header_new_tab_button, "omni-icon-button");
-  gtk_widget_set_size_request(app->header_new_tab_button, 38, 34);
-  gtk_widget_set_tooltip_text(app->header_new_tab_button, "New tab");
-  gtk_widget_set_vexpand(app->header_new_tab_button, FALSE);
-  gtk_widget_set_valign(app->header_new_tab_button, GTK_ALIGN_CENTER);
-  omni_accessible_label(app->header_new_tab_button, "New tab");
-  omni_accessible_description(app->header_new_tab_button, "Opens a new tab");
-  g_signal_connect(app->header_new_tab_button, "clicked", G_CALLBACK(on_new_tab_clicked), app);
-  gtk_box_append(GTK_BOX(app->header_entry_row), app->header_new_tab_button);
+  app->header_new_tab_button = NULL;
 
   gtk_box_append(GTK_BOX(app->header_title_box), app->header_entry_row);
   adw_header_bar_set_title_widget(ADW_HEADER_BAR(app->header), app->header_title_box);
@@ -2958,12 +2963,6 @@ static void on_app_quit_action(GSimpleAction *action, GVariant *parameter, gpoin
   g_application_quit(G_APPLICATION(app->application));
 }
 
-static void on_app_new_tab_action(GSimpleAction *action, GVariant *parameter, gpointer data) {
-  (void)action;
-  (void)parameter;
-  on_new_tab_clicked(NULL, data);
-}
-
 static void install_application_actions(OmniAdwApp *app) {
   if (!app || !app->application) return;
   if (app->application_actions_installed) return;
@@ -2971,16 +2970,13 @@ static void install_application_actions(OmniAdwApp *app) {
   const GActionEntry entries[] = {
     { "preferences", on_app_preferences_action, NULL, NULL, NULL },
     { "about", on_app_about_action, NULL, NULL, NULL },
-    { "new-tab", on_app_new_tab_action, NULL, NULL, NULL },
     { "quit", on_app_quit_action, NULL, NULL, NULL },
   };
   g_action_map_add_action_entries(G_ACTION_MAP(app->application), entries, G_N_ELEMENTS(entries), app);
 
   const char *settings_accels[] = { "<Meta>comma", NULL };
-  const char *new_tab_accels[] = { "<Meta>t", NULL };
   const char *quit_accels[] = { "<Meta>q", NULL };
   gtk_application_set_accels_for_action(GTK_APPLICATION(app->application), "app.preferences", settings_accels);
-  gtk_application_set_accels_for_action(GTK_APPLICATION(app->application), "app.new-tab", new_tab_accels);
   gtk_application_set_accels_for_action(GTK_APPLICATION(app->application), "app.quit", quit_accels);
 
   GMenu *menubar = g_menu_new();
@@ -2989,7 +2985,6 @@ static void install_application_actions(OmniAdwApp *app) {
   snprintf(about_label, sizeof(about_label), "About %s", app->title ? app->title : "OmniUI Adwaita");
   g_menu_append(app_menu, about_label, "app.about");
   g_menu_append(app_menu, "Settings...", "app.preferences");
-  g_menu_append(app_menu, "New Tab", "app.new-tab");
   g_menu_append(app_menu, "Quit", "app.quit");
   g_menu_append_submenu(menubar, app->title ? app->title : "OmniUI Adwaita", G_MENU_MODEL(app_menu));
   gtk_application_set_menubar(GTK_APPLICATION(app->application), G_MENU_MODEL(menubar));
@@ -3537,29 +3532,6 @@ static void on_sidebar_toggle_toggled(GtkToggleButton *button, gpointer data) {
   omni_macos_accessibility_schedule(app);
 }
 
-static void on_new_tab_clicked(GtkButton *button, gpointer data) {
-  (void)button;
-  OmniAdwApp *app = (OmniAdwApp *)data;
-  if (!app) return;
-  int32_t action_id = first_action_id_with_accessible_label(app->content, "New tab");
-  if (action_id > 0 && app->callback) {
-    app->callback(action_id, app->context);
-    omni_flush_pending_ui(app);
-  }
-  if (app->tab_count < 1) app->tab_count = 1;
-  app->tab_count += 1;
-  app->active_tab = app->tab_count - 1;
-  update_header_tab_strip(app);
-  if (app->header_entry) {
-    gtk_widget_grab_focus(app->header_entry);
-    if (app->header_entry_action_id > 0) {
-      gtk_editable_set_text(GTK_EDITABLE(app->header_entry), "");
-      gtk_editable_set_position(GTK_EDITABLE(app->header_entry), 0);
-    }
-  }
-  omni_macos_accessibility_schedule(app);
-}
-
 static void on_header_tab_clicked(GtkButton *button, gpointer data) {
   OmniAdwApp *app = (OmniAdwApp *)data;
   if (!app || !button) return;
@@ -3718,6 +3690,7 @@ static const char *omni_symbolic_icon_name_for_label(const char *label) {
   if (strcmp(label, "›") == 0 || g_ascii_strcasecmp(label, "Forward") == 0) return omni_available_symbolic_icon("go-next-symbolic", "pan-end-symbolic", NULL);
   if (strcmp(label, "↻") == 0 || g_ascii_strcasecmp(label, "Refresh") == 0 || g_ascii_strcasecmp(label, "Reload") == 0 || g_ascii_strcasecmp(label, "Reload Page") == 0) return omni_available_symbolic_icon("view-refresh-symbolic", "emblem-synchronizing-symbolic", NULL);
   if (strcmp(label, "☰") == 0) return omni_available_symbolic_icon("open-menu-symbolic", "view-list-symbolic", NULL);
+  if (strcmp(label, "▤") == 0 || g_ascii_strcasecmp(label, "Bookmarks") == 0 || g_ascii_strcasecmp(label, "Bookmarks and History") == 0) return omni_available_symbolic_icon("user-bookmarks-symbolic", "bookmark-new-symbolic", "x-office-address-book-symbolic");
   if (strcmp(label, "⚙") == 0 || g_ascii_strcasecmp(label, "Settings") == 0 || g_ascii_strcasecmp(label, "Preferences") == 0) return omni_available_symbolic_icon("emblem-system-symbolic", "preferences-system-symbolic", NULL);
   if (strcmp(label, "📄") == 0 || strcmp(label, "≣") == 0 || g_ascii_strcasecmp(label, "Reader Mode") == 0 || g_ascii_strcasecmp(label, "Exit Reader Mode") == 0) return omni_available_symbolic_icon("text-x-generic-symbolic", "x-office-document-symbolic", NULL);
   if (strcmp(label, "↗") == 0 || g_ascii_strcasecmp(label, "Open") == 0 || g_ascii_strcasecmp(label, "Open externally") == 0) return omni_available_symbolic_icon("adw-external-link-symbolic", "send-to-symbolic", "go-jump-symbolic");
@@ -3741,6 +3714,7 @@ static const char *omni_accessible_label_for_symbolic_label(const char *label) {
   if (strcmp(label, "›") == 0 || g_ascii_strcasecmp(label, "Forward") == 0) return "Forward";
   if (strcmp(label, "↻") == 0 || g_ascii_strcasecmp(label, "Refresh") == 0 || g_ascii_strcasecmp(label, "Reload") == 0 || g_ascii_strcasecmp(label, "Reload Page") == 0) return "Refresh";
   if (strcmp(label, "☰") == 0) return "Menu";
+  if (strcmp(label, "▤") == 0 || g_ascii_strcasecmp(label, "Bookmarks") == 0 || g_ascii_strcasecmp(label, "Bookmarks and History") == 0) return "Bookmarks";
   if (strcmp(label, "⚙") == 0 || g_ascii_strcasecmp(label, "Settings") == 0 || g_ascii_strcasecmp(label, "Preferences") == 0) return "Settings";
   if (strcmp(label, "📄") == 0 || strcmp(label, "≣") == 0 || g_ascii_strcasecmp(label, "Reader Mode") == 0 || g_ascii_strcasecmp(label, "Exit Reader Mode") == 0) return "Reader Mode";
   if (strcmp(label, "↗") == 0 || g_ascii_strcasecmp(label, "Open") == 0 || g_ascii_strcasecmp(label, "Open externally") == 0) return "Open externally";
@@ -3930,7 +3904,6 @@ static void omni_entry_cancel_pending_text_commit(GtkWidget *widget) {
 static void omni_entry_commit_text_now(GtkWidget *widget) {
   if (!widget || !GTK_IS_EDITABLE(widget)) return;
   omni_entry_cancel_pending_text_commit(widget);
-  if (g_object_get_data(G_OBJECT(widget), "omni-modal-native-entry") != NULL) return;
   OmniAdwApp *app = (OmniAdwApp *)g_object_get_data(G_OBJECT(widget), "omni-app");
   int action_id = GPOINTER_TO_INT(g_object_get_data(G_OBJECT(widget), "omni-action-id"));
   if (!app || !app->text_callback || action_id <= 0) return;
@@ -5468,6 +5441,16 @@ void omni_adw_app_share_url(OmniAdwApp *app, const char *url) {
     }
   }
 #endif
+#if defined(__linux__)
+  {
+    char *argv[] = { "xdg-open", (char *)url, NULL };
+    GError *error = NULL;
+    if (g_spawn_async(NULL, argv, NULL, G_SPAWN_SEARCH_PATH, NULL, NULL, NULL, &error)) {
+      return;
+    }
+    if (error) g_error_free(error);
+  }
+#endif
   if (app->window) {
     gtk_show_uri(GTK_WINDOW(app->window), url, GDK_CURRENT_TIME);
   }
@@ -5859,13 +5842,14 @@ static void on_alert_response(AdwAlertDialog *dialog, const char *response, gpoi
   }
 }
 
+static gboolean modal_button_label_is_close(const char *label);
 static gboolean modal_button_label_is_cancel(const char *label);
 
 static int modal_close_action_id(OmniModalSummary *summary) {
   if (!summary) return 0;
   for (guint i = 0; i < summary->button_labels->len; i++) {
     const char *label = (const char *)g_ptr_array_index(summary->button_labels, i);
-    if (label && strcmp(label, "Close") == 0) {
+    if (modal_button_label_is_close(label)) {
       return g_array_index(summary->action_ids, int, i);
     }
   }
@@ -5907,7 +5891,7 @@ static int count_entry_widgets(GtkWidget *widget) {
 }
 
 static gboolean modal_button_label_is_close(const char *label) {
-  return label && g_ascii_strcasecmp(label, "Close") == 0;
+  return label && (g_ascii_strcasecmp(label, "Close") == 0 || g_ascii_strcasecmp(label, "Done") == 0);
 }
 
 static gboolean modal_button_label_is_cancel(const char *label) {
@@ -5959,9 +5943,9 @@ static GtkWidget *omni_sheet_surface_new(void) {
   GtkWidget *surface = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
   gtk_widget_add_css_class(surface, "omni-sheet-surface");
   gtk_widget_set_hexpand(surface, TRUE);
-  gtk_widget_set_halign(surface, GTK_ALIGN_CENTER);
-  gtk_widget_set_vexpand(surface, FALSE);
-  gtk_widget_set_valign(surface, GTK_ALIGN_CENTER);
+  gtk_widget_set_halign(surface, GTK_ALIGN_FILL);
+  gtk_widget_set_vexpand(surface, TRUE);
+  gtk_widget_set_valign(surface, GTK_ALIGN_FILL);
   omni_accessible_label(surface, "Sheet");
   omni_accessible_description(surface, "Modal sheet");
   return surface;
@@ -6675,6 +6659,7 @@ OmniAdwNode *omni_adw_plain_list_new(const char **labels, const int32_t *action_
     gtk_widget_set_hexpand(label, TRUE);
     gtk_widget_set_halign(label, GTK_ALIGN_FILL);
     if (action_id > 0) {
+      gtk_widget_add_css_class(row, "omni-action-list-row");
       GtkWidget *button = gtk_button_new();
       gtk_widget_add_css_class(button, "omni-list-row-button");
       gtk_widget_set_hexpand(button, TRUE);
@@ -7719,6 +7704,10 @@ void omni_adw_node_append_overlay(OmniAdwNode *parent, OmniAdwNode *child, const
     gtk_widget_set_hexpand(child->widget, TRUE);
     gtk_widget_set_halign(child->widget, GTK_ALIGN_FILL);
     gtk_button_set_child(GTK_BUTTON(parent->widget), child->widget);
+    const char *label = (const char *)g_object_get_data(G_OBJECT(parent->widget), "omni-accessible-label");
+    if (label && label[0]) {
+      gtk_accessible_update_property(GTK_ACCESSIBLE(parent->widget), GTK_ACCESSIBLE_PROPERTY_LABEL, label, -1);
+    }
   }
   child->widget = NULL;
   omni_adw_node_free(child);

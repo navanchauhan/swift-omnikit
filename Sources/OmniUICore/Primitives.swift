@@ -2244,6 +2244,9 @@ public struct Label<Title: View, Icon: View>: View, _PrimitiveView {
         let iconNode = ctx.buildChild(icon)
         let titleNode = ctx.buildChild(title)
         if env.labelStyleKind == .iconOnly {
+            if let title = title as? Text, !title.content.isEmpty {
+                return .tagged(value: AnyHashable(_AccessibilityLabel(value: title.content)), label: iconNode)
+            }
             return iconNode
         }
         return .stack(axis: .horizontal, spacing: 1, children: [iconNode, titleNode])
@@ -2964,7 +2967,7 @@ private func _disabledButtonNode(label: _VNode) -> _VNode {
     .tagged(value: AnyHashable(_DisabledControlRole.button), label: .style(
         fg: .secondary,
         bg: nil,
-        child: .stack(axis: .horizontal, spacing: 1, children: [.text("["), label, .text("]")])
+        child: label
     ))
 }
 

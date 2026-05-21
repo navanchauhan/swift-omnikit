@@ -312,9 +312,6 @@ public final class AdwaitaApp<Root: View>: @unchecked Sendable {
                 activeTextField: snapshot.activeTextField
             )
             AdwaitaSemanticDumper.dumpIfRequested(displaySnapshot.root, section: "MAIN")
-            if let headerEntry = AdwaitaHeaderEntry.extract(from: displaySnapshot.root) {
-                omni_adw_app_set_header_entry(cApp, headerEntry.placeholder, headerEntry.text, Int32(headerEntry.actionID))
-            }
             if let title = presentation.toolbar.title {
                 title.withCString { omni_adw_app_set_header_title(cApp, $0) }
             }
@@ -372,15 +369,7 @@ public final class AdwaitaApp<Root: View>: @unchecked Sendable {
         }
         #if os(Linux)
         _omniSetAppearanceChangeHandler { [runtime, settingsRuntime, commandRuntime, popoverRuntime, box] scheme in
-            let nativeScheme: String
-            switch scheme {
-            case .some(.light):
-                nativeScheme = "light"
-            case .some(.dark):
-                nativeScheme = "dark"
-            case .none:
-                nativeScheme = "system"
-            }
+            let nativeScheme = nativeColorSchemeName(preferredScheme: scheme)
             nativeScheme.withCString { omni_adw_set_color_scheme($0) }
             Task { @MainActor in
                 runtime._markDirtyFromExternalResource()
@@ -513,16 +502,32 @@ public final class AdwaitaApp<Root: View>: @unchecked Sendable {
 
 private func syncPreferredColorScheme(_ scheme: ColorScheme?) {
     _omniSetPreferredColorScheme(scheme)
-    let nativeScheme: String
-    switch scheme ?? _omniCurrentApplicationAppearanceColorScheme() {
-    case .some(.light):
-        nativeScheme = "light"
-    case .some(.dark):
-        nativeScheme = "dark"
-    case .none:
-        nativeScheme = "system"
-    }
+    let nativeScheme = nativeColorSchemeName(preferredScheme: scheme)
     nativeScheme.withCString { omni_adw_set_color_scheme($0) }
+}
+
+private func nativeColorSchemeName(preferredScheme scheme: ColorScheme?) -> String {
+    switch scheme ?? _omniCurrentApplicationAppearanceColorScheme() ?? environmentColorSchemeOverride() {
+    case .some(.light):
+        return "light"
+    case .some(.dark):
+        return "dark"
+    case .none:
+        return "system"
+    }
+}
+
+private func environmentColorSchemeOverride() -> ColorScheme? {
+    let environment = ProcessInfo.processInfo.environment
+    for key in ["OMNIUI_ADWAITA_COLOR_SCHEME", "OMNIUI_COLOR_SCHEME"] {
+        guard let value = environment[key]?.lowercased(), !value.isEmpty else { continue }
+        if value.contains("dark") { return .dark }
+        if value.contains("light") { return .light }
+    }
+    if let gtkTheme = environment["GTK_THEME"]?.lowercased(), gtkTheme.contains("dark") {
+        return .dark
+    }
+    return nil
 }
 
 private func scheduleAdwaitaRender(_ render: @MainActor @escaping () -> Void) {
@@ -588,36 +593,6 @@ private enum AdwaitaSemanticDumper {
 
     private static func write(_ line: String) {
         FileHandle.standardError.write(Data((line + "\n").utf8))
-    }
-}
-
-private struct AdwaitaHeaderEntry {
-    let placeholder: String
-    let text: String
-    let actionID: Int
-
-    static func extract(from root: SemanticNode) -> AdwaitaHeaderEntry? {
-        if case .modifier(.accessibilityIdentifier("url-field")) = root.kind {
-            return firstTextField(in: root)
-        }
-        for child in root.children {
-            if let entry = extract(from: child) {
-                return entry
-            }
-        }
-        return nil
-    }
-
-    private static func firstTextField(in node: SemanticNode) -> AdwaitaHeaderEntry? {
-        if case .textField(let actionID, let placeholder, let text, _, _, _) = node.kind {
-            return AdwaitaHeaderEntry(placeholder: placeholder, text: text, actionID: actionID)
-        }
-        for child in node.children {
-            if let entry = firstTextField(in: child) {
-                return entry
-            }
-        }
-        return nil
     }
 }
 
@@ -2785,7 +2760,8 @@ enum AdwaitaNodeBuilder {
             if isEmptyListContent(children) {
                 return omni_adw_box_new(1, 0)
             }
-            if let simpleList = simpleListRows(from: children) {
+            if let simpleList = simpleListRows(from: children),
+               context == .sidebar || simpleList.shouldUseCompactRenderer {
                 var ids = simpleList.rows.map { Int32($0.actionID ?? 0) }
                 let labels = simpleList.rows.map(\.label)
                 var depths = simpleList.rows.map { Int32($0.depth) }
@@ -2873,11 +2849,19 @@ enum AdwaitaNodeBuilder {
         let fontSize: Double?
         let fontWeight: String?
         let fontItalic: Bool
+        let isPlainText: Bool
     }
 
     private struct SimpleList {
         let rows: [SimpleListRow]
         let scroll: (axis: SemanticAxis, offset: Int)?
+
+        var shouldUseCompactRenderer: Bool {
+            if rows.count >= 128 { return true }
+            if rows.allSatisfy(\.isPlainText) { return true }
+            let plainTextRows = rows.filter(\.isPlainText).count
+            return rows.count >= 8 && plainTextRows >= max(3, rows.count / 3)
+        }
     }
 
     private static func simpleListRows(from children: [SemanticNode]) -> SimpleList? {
@@ -2917,6 +2901,18 @@ enum AdwaitaNodeBuilder {
             return parts.joined(separator: " ")
         }
 
+        func firstImageSymbol(in node: SemanticNode) -> String? {
+            if case .image(let imageName) = node.kind {
+                return _terminalSymbolString(imageName)
+            }
+            for child in node.children {
+                if let symbol = firstImageSymbol(in: child) {
+                    return symbol
+                }
+            }
+            return nil
+        }
+
         func containsTextNode(_ node: SemanticNode) -> Bool {
             if case .text = node.kind {
                 return true
@@ -2926,12 +2922,17 @@ enum AdwaitaNodeBuilder {
 
         func rowLabel(from node: SemanticNode) -> String {
             let raw = rawText(in: node)
-            if !raw.isEmpty && raw.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                return raw
-            }
-            let trimmedRaw = raw.trimmingCharacters(in: .whitespacesAndNewlines)
-            if !trimmedRaw.isEmpty {
-                return trimmedRaw
+            if !raw.isEmpty {
+                if firstButtonActionID(in: node) == nil && firstImageSymbol(in: node) == nil {
+                    return raw
+                }
+                if raw.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    return raw
+                }
+                let trimmedRaw = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+                if !trimmedRaw.isEmpty {
+                    return trimmedRaw
+                }
             }
             let label = accessibleLabel(for: node).trimmingCharacters(in: .whitespacesAndNewlines)
             if label == "Action", containsTextNode(node) {
@@ -3009,15 +3010,36 @@ enum AdwaitaNodeBuilder {
             return (maxSize, selectedWeight, italic)
         }
 
+        func isPlainTextRow(_ node: SemanticNode) -> Bool {
+            switch node.kind {
+            case .text:
+                return true
+            case .modifier(let modifier):
+                guard modifierAllowsLayoutDescent(modifier) else { return false }
+                return node.children.allSatisfy(isPlainTextRow)
+            case .group, .stack(axis: .vertical, _), .container(.lazyVStack):
+                return node.children.allSatisfy(isPlainTextRow)
+            default:
+                return false
+            }
+        }
+
         func appendRow(label: String, actionID: Int?, depth: Int, node: SemanticNode) {
             let font = rowFont(in: node)
+            let displayLabel: String
+            if actionID != nil, let symbol = firstImageSymbol(in: node), !label.hasPrefix(symbol) {
+                displayLabel = "\(symbol)  \(label)"
+            } else {
+                displayLabel = label
+            }
             rows.append(SimpleListRow(
-                label: label,
+                label: displayLabel,
                 actionID: actionID,
                 depth: depth,
                 fontSize: font.size,
                 fontWeight: font.weight,
-                fontItalic: font.italic
+                fontItalic: font.italic,
+                isPlainText: actionID == nil && isPlainTextRow(node)
             ))
         }
 

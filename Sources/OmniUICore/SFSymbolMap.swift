@@ -121,8 +121,8 @@ public enum SFSymbolMap: Sendable {
         // iGopher / additional symbols
         "bookmark": "◇",
         "bookmark.fill": "◆",
-        "book": "☰",
-        "book.closed": "☰",
+        "book": "▤",
+        "book.closed": "▤",
         "link": "🔗",
         "doc.plaintext": "▤",
         "doc.plaintext.fill": "▤",
