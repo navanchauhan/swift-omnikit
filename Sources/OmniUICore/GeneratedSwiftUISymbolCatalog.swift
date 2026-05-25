@@ -333,7 +333,7 @@ public enum ButtonToggleStyle {
 }
 
 
-#if !os(Linux)
+#if false
 public enum CheckboxToggleStyle {
     public enum Body {
     }
@@ -730,13 +730,13 @@ public enum DropConfiguration {
 }
 
 
-#if !os(Linux)
+#if false
 public enum DropDelegate {
 }
 #endif
 
 
-#if !os(Linux)
+#if false
 public enum DropInfo {
 }
 #endif
@@ -763,7 +763,7 @@ public enum DropOperation {
 }
 
 
-#if !os(Linux)
+#if false
 public enum DropProposal {
 }
 #endif
@@ -1552,7 +1552,7 @@ public enum OpenImmersiveSpaceAction {
 }
 
 
-#if !os(Linux)
+#if false
 public enum OpenSettingsAction {
 }
 #endif

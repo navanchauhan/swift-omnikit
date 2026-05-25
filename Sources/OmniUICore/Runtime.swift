@@ -1,6 +1,190 @@
 import Foundation
+#if os(macOS)
+import AppKit
+#endif
 #if canImport(Observation)
 import Observation
+#endif
+
+#if os(macOS)
+private final class _OmniAppKitAppearanceState: @unchecked Sendable {
+    static let shared = _OmniAppKitAppearanceState()
+
+    private let lock = NSLock()
+    private var preferredColorScheme: ColorScheme?
+    private var applicationAppearanceWasSet = false
+    private var lastDeliveredColorScheme: ColorScheme?
+    private var handler: (@Sendable (ColorScheme?) -> Void)?
+    private var isObservingApplicationAppearance = false
+    private var appearanceObservation: NSKeyValueObservation?
+    private var effectiveAppearanceObservation: NSKeyValueObservation?
+
+    func currentColorScheme() -> ColorScheme? {
+        lock.lock()
+        let preferred = preferredColorScheme
+        let useApplicationAppearance = applicationAppearanceWasSet
+        lock.unlock()
+        if let preferred { return preferred }
+        if let explicit = Self.currentExplicitApplicationColorScheme() {
+            return explicit
+        }
+        if useApplicationAppearance {
+            return Self.currentApplicationColorScheme() ?? Self.environmentColorSchemeOverride()
+        }
+        return Self.environmentColorSchemeOverride() ?? Self.currentApplicationColorScheme()
+    }
+
+    func setPreferredColorScheme(_ scheme: ColorScheme?) {
+        let callback: (@Sendable (ColorScheme?) -> Void)?
+        let previous = currentColorScheme()
+        lock.lock()
+        preferredColorScheme = scheme
+        callback = handler
+        lock.unlock()
+        let effective = currentColorScheme()
+        lock.lock()
+        lastDeliveredColorScheme = effective
+        lock.unlock()
+        if effective != previous {
+            callback?(effective)
+        }
+    }
+
+    func setChangeHandler(_ next: (@Sendable (ColorScheme?) -> Void)?) {
+        installApplicationAppearanceObserversIfNeeded()
+        let scheme = currentColorScheme()
+        lock.lock()
+        handler = next
+        lastDeliveredColorScheme = scheme
+        lock.unlock()
+        next?(scheme)
+    }
+
+    static func currentApplicationColorScheme() -> ColorScheme? {
+        if Thread.isMainThread {
+            return currentApplicationColorSchemeOnMain()
+        }
+        var scheme: ColorScheme?
+        DispatchQueue.main.sync {
+            scheme = currentApplicationColorSchemeOnMain()
+        }
+        return scheme
+    }
+
+    static func currentExplicitApplicationColorScheme() -> ColorScheme? {
+        if Thread.isMainThread {
+            return currentExplicitApplicationColorSchemeOnMain()
+        }
+        var scheme: ColorScheme?
+        DispatchQueue.main.sync {
+            scheme = currentExplicitApplicationColorSchemeOnMain()
+        }
+        return scheme
+    }
+
+    private static func currentApplicationColorSchemeOnMain() -> ColorScheme? {
+        MainActor.assumeIsolated {
+            if let explicit = colorScheme(for: NSApplication.shared.appearance) {
+                return explicit
+            }
+            return colorScheme(for: NSApplication.shared.effectiveAppearance)
+        }
+    }
+
+    private static func currentExplicitApplicationColorSchemeOnMain() -> ColorScheme? {
+        MainActor.assumeIsolated {
+            colorScheme(for: NSApplication.shared.appearance)
+        }
+    }
+
+    private func installApplicationAppearanceObserversIfNeeded() {
+        lock.lock()
+        guard !isObservingApplicationAppearance else {
+            lock.unlock()
+            return
+        }
+        isObservingApplicationAppearance = true
+        lock.unlock()
+        DispatchQueue.main.async { [weak self] in
+            MainActor.assumeIsolated {
+                guard let self else { return }
+                let app = NSApplication.shared
+                let appearance = app.observe(\.appearance, options: [.new]) { [weak self] _, _ in
+                    self?.applicationAppearanceChanged(explicitApplicationAppearance: true)
+                }
+                let effectiveAppearance = app.observe(\.effectiveAppearance, options: [.new]) { [weak self] _, _ in
+                    self?.applicationAppearanceChanged(explicitApplicationAppearance: false)
+                }
+                self.lock.lock()
+                self.appearanceObservation = appearance
+                self.effectiveAppearanceObservation = effectiveAppearance
+                self.lock.unlock()
+            }
+        }
+    }
+
+    private func applicationAppearanceChanged(explicitApplicationAppearance: Bool) {
+        if explicitApplicationAppearance {
+            lock.lock()
+            applicationAppearanceWasSet = true
+            lock.unlock()
+        }
+        let effective = currentColorScheme()
+        let callback: (@Sendable (ColorScheme?) -> Void)?
+        let shouldNotify: Bool
+        lock.lock()
+        callback = handler
+        shouldNotify = effective != lastDeliveredColorScheme
+        if shouldNotify {
+            lastDeliveredColorScheme = effective
+        }
+        lock.unlock()
+        if shouldNotify {
+            callback?(effective)
+        }
+    }
+
+    private static func colorScheme(for appearance: NSAppearance?) -> ColorScheme? {
+        guard let match = appearance?.bestMatch(from: [.aqua, .darkAqua]) else { return nil }
+        if match == .darkAqua { return .dark }
+        if match == .aqua { return .light }
+        return nil
+    }
+
+    private static func environmentColorSchemeOverride() -> ColorScheme? {
+        let environment = ProcessInfo.processInfo.environment
+        for key in ["OMNIUI_ADWAITA_COLOR_SCHEME", "OMNIUI_COLOR_SCHEME"] {
+            guard let raw = environment[key]?.lowercased(), !raw.isEmpty else { continue }
+            if raw == "dark" || raw == "force-dark" { return .dark }
+            if raw == "light" || raw == "force-light" { return .light }
+            if raw == "system" || raw == "default" { return nil }
+        }
+        if let gtkTheme = environment["GTK_THEME"]?.lowercased(), gtkTheme.contains(":dark") {
+            return .dark
+        }
+        return nil
+    }
+}
+
+public func _omniSetAppearanceChangeHandler(_ handler: (@Sendable (ColorScheme?) -> Void)?) {
+    _OmniAppKitAppearanceState.shared.setChangeHandler(handler)
+}
+
+public func _omniCurrentAppearanceColorScheme() -> ColorScheme? {
+    _OmniAppKitAppearanceState.shared.currentColorScheme()
+}
+
+public func _omniCurrentApplicationAppearanceColorScheme() -> ColorScheme? {
+    _OmniAppKitAppearanceState.currentApplicationColorScheme()
+}
+
+public func _omniEffectiveAppearanceColorScheme() -> ColorScheme {
+    _omniCurrentAppearanceColorScheme() ?? .light
+}
+
+public func _omniSetPreferredColorScheme(_ scheme: ColorScheme?) {
+    _OmniAppKitAppearanceState.shared.setPreferredColorScheme(scheme)
+}
 #endif
 
 // Safety: OmniUI runtime state is confined to a single render/event loop owner.
@@ -415,7 +599,7 @@ public final class _UIRuntime: @unchecked Sendable {
     }
 
     private func _beginFrameBuild(size: _Size) {
-        #if os(Linux)
+        #if os(Linux) || os(macOS)
         _baseEnvironment.colorScheme = _omniEffectiveAppearanceColorScheme()
         #endif
         let runtimeID = "runtime:\(ObjectIdentifier(self)):"
@@ -1041,6 +1225,7 @@ public final class _UIRuntime: @unchecked Sendable {
     }
 
     func _performNativeDragFallback(on view: NSView) -> Bool {
+#if os(Linux)
         guard !activeDragItemProviders.isEmpty, !view.registeredDraggedTypes.isEmpty else { return false }
         let pasteboard = NSPasteboard()
         guard pasteboard.writeObjects(activeDragItemProviders.map(\.object)) else { return false }
@@ -1061,6 +1246,10 @@ public final class _UIRuntime: @unchecked Sendable {
             _endDragFallback()
         }
         return performed
+#else
+        _ = view
+        return false
+#endif
     }
 
     func _hasActiveDragFallback() -> Bool {

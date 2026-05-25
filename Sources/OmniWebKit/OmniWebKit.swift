@@ -1,8 +1,14 @@
 import Dispatch
 import Foundation
 import OmniUICore
-#if os(Linux)
+#if canImport(AppKit) && !os(Linux)
+import AppKit
+import CoreGraphics
+#endif
+#if os(Linux) || os(macOS)
 import CAdwaita
+#endif
+#if os(Linux)
 import Glibc
 #endif
 #if canImport(FoundationNetworking)
@@ -650,7 +656,7 @@ public final class WKWebViewConfiguration: NSObject, @unchecked Sendable {
     public var mediaTypesRequiringUserActionForPlayback: WKAudiovisualMediaTypes = []
 }
 
-public final class WKWebView: NSView, _OmniWebViewPayloadProviding, _OmniNativeRepresentableDismantleAware, @unchecked Sendable {
+public final class WKWebView: NSView, @preconcurrency _OmniWebViewPayloadProviding, @preconcurrency _OmniNativeRepresentableDismantleAware, @unchecked Sendable {
     public typealias JavaScriptCompletion = (Any?, Error?) -> Void
 
     private final class EvaluationBox: @unchecked Sendable {
@@ -666,7 +672,7 @@ public final class WKWebView: NSView, _OmniWebViewPayloadProviding, _OmniNativeR
     public weak var uiDelegate: WKUIDelegate?
     public var allowsBackForwardNavigationGestures: Bool = false {
         didSet {
-            #if os(Linux)
+            #if os(Linux) || os(macOS)
             withNativeIdentity { identity in
                 identity.withCString {
                     _ = omni_adw_web_view_set_allows_back_forward_navigation_gestures($0, allowsBackForwardNavigationGestures ? 1 : 0)
@@ -699,11 +705,6 @@ public final class WKWebView: NSView, _OmniWebViewPayloadProviding, _OmniNativeR
         }
     }
 
-    public override func viewEffectiveAppearanceDidChange() {
-        super.viewEffectiveAppearanceDidChange()
-        syncNativeAppearance()
-        invalidatePayload()
-    }
     public var underPageBackgroundColor: NSColor?
 
     public private(set) var url: URL?
@@ -715,7 +716,7 @@ public final class WKWebView: NSView, _OmniWebViewPayloadProviding, _OmniNativeR
 
     public var pageZoom: CGFloat = 1 {
         didSet {
-            #if os(Linux)
+            #if os(Linux) || os(macOS)
             withNativeIdentity { identity in
                 identity.withCString { _ = omni_adw_web_view_set_zoom($0, Double(pageZoom)) }
             }
@@ -737,9 +738,8 @@ public final class WKWebView: NSView, _OmniWebViewPayloadProviding, _OmniNativeR
     #endif
 
     public init(frame: CGRect = .zero, configuration: WKWebViewConfiguration) {
-        _ = frame
         self.configuration = configuration
-        super.init()
+        super.init(frame: frame)
         configuration.userContentController.attach(self)
         configuration.preferences.attach(self)
         observeApplicationAppearance()
@@ -767,7 +767,7 @@ public final class WKWebView: NSView, _OmniWebViewPayloadProviding, _OmniNativeR
         let identity = nativeIdentity
         nativeRepresentableIsDismantling = true
         _OmniWebViewRegistry.remove(stableIdentity: identity)
-        #if os(Linux)
+        #if os(Linux) || os(macOS)
         identity.withCString { _ = omni_adw_web_view_unregister($0) }
         #endif
     }
@@ -870,7 +870,7 @@ public final class WKWebView: NSView, _OmniWebViewPayloadProviding, _OmniNativeR
         if nativeRepresentableIsDismantling {
             return navigation
         }
-        #if os(Linux)
+        #if os(Linux) || os(macOS)
         let handedToNative = withNativeIdentity { identity in
             identity.withCString { identityPointer in
                 requestURL.absoluteString.withCString { urlPointer in
@@ -921,7 +921,7 @@ public final class WKWebView: NSView, _OmniWebViewPayloadProviding, _OmniNativeR
         if nativeRepresentableIsDismantling {
             return navigation
         }
-        #if os(Linux)
+        #if os(Linux) || os(macOS)
         let handedToNative = withNativeIdentity { identity in
             string.withCString { htmlPointer in
                 withOptionalCString(baseURL?.absoluteString) { baseURLPointer in
@@ -952,7 +952,7 @@ public final class WKWebView: NSView, _OmniWebViewPayloadProviding, _OmniNativeR
 
     public func evaluateJavaScript(_ javaScriptString: String, completionHandler: JavaScriptCompletion? = nil) {
         lastEvaluation = javaScriptString
-        #if os(Linux)
+        #if os(Linux) || os(macOS)
         if withNativeIdentity({ identity in
             let context: UnsafeMutableRawPointer?
             let callback: omni_adw_web_evaluate_callback?
@@ -996,7 +996,7 @@ public final class WKWebView: NSView, _OmniWebViewPayloadProviding, _OmniNativeR
 
     @discardableResult
     public func goBack() -> WKNavigation? {
-        #if os(Linux)
+        #if os(Linux) || os(macOS)
         if withNativeIdentity({ identity in
             identity.withCString { omni_adw_web_view_go_back($0) != 0 }
         }) == true {
@@ -1011,7 +1011,7 @@ public final class WKWebView: NSView, _OmniWebViewPayloadProviding, _OmniNativeR
 
     @discardableResult
     public func goForward() -> WKNavigation? {
-        #if os(Linux)
+        #if os(Linux) || os(macOS)
         if withNativeIdentity({ identity in
             identity.withCString { omni_adw_web_view_go_forward($0) != 0 }
         }) == true {
@@ -1026,7 +1026,7 @@ public final class WKWebView: NSView, _OmniWebViewPayloadProviding, _OmniNativeR
 
     @discardableResult
     public func reload() -> WKNavigation? {
-        #if os(Linux)
+        #if os(Linux) || os(macOS)
         if withNativeIdentity({ identity in
             identity.withCString { omni_adw_web_view_reload($0) != 0 }
         }) == true {
@@ -1038,7 +1038,7 @@ public final class WKWebView: NSView, _OmniWebViewPayloadProviding, _OmniNativeR
     }
 
     public func stopLoading() {
-        #if os(Linux)
+        #if os(Linux) || os(macOS)
         _ = withNativeIdentity { identity in
             identity.withCString { omni_adw_web_view_stop_loading($0) != 0 }
         }
@@ -1049,7 +1049,7 @@ public final class WKWebView: NSView, _OmniWebViewPayloadProviding, _OmniNativeR
 
     @discardableResult
     public override func becomeFirstResponder() -> Bool {
-        #if os(Linux)
+        #if os(Linux) || os(macOS)
         return withNativeIdentity { identity in
             identity.withCString { omni_adw_web_view_focus($0) != 0 }
         } ?? false
@@ -1060,7 +1060,7 @@ public final class WKWebView: NSView, _OmniWebViewPayloadProviding, _OmniNativeR
 
     @discardableResult
     public func scrollBy(deltaX: Double = 0, deltaY: Double) -> Bool {
-        #if os(Linux)
+        #if os(Linux) || os(macOS)
         return withNativeIdentity { identity in
             identity.withCString { omni_adw_web_view_scroll_by($0, deltaX, deltaY) != 0 }
         } ?? false
@@ -1073,7 +1073,7 @@ public final class WKWebView: NSView, _OmniWebViewPayloadProviding, _OmniNativeR
 
     @discardableResult
     public func scrollPage(direction: Int32) -> Bool {
-        #if os(Linux)
+        #if os(Linux) || os(macOS)
         return withNativeIdentity { identity in
             identity.withCString { omni_adw_web_view_scroll_page($0, direction) != 0 }
         } ?? false
@@ -1088,6 +1088,7 @@ public final class WKWebView: NSView, _OmniWebViewPayloadProviding, _OmniNativeR
         options: NSKeyValueObservingOptions = [],
         changeHandler: @escaping (WKWebView, NSKeyValueObservedChange<Value>) -> Void
     ) -> NSKeyValueObservation {
+#if os(Linux)
         let id = UUID()
         observers[id] = { webView in
             changeHandler(webView, NSKeyValueObservedChange(newValue: webView[keyPath: keyPath]))
@@ -1098,6 +1099,13 @@ public final class WKWebView: NSView, _OmniWebViewPayloadProviding, _OmniNativeR
         return NSKeyValueObservation { [weak self] in
             self?.observers.removeValue(forKey: id)
         }
+#else
+        _ = keyPath
+        _ = options
+        _ = changeHandler
+        let sentinel = NSObject()
+        return sentinel.observe(\.description, options: []) { _, _ in }
+#endif
     }
 
     public var _omniWebViewPayload: _OmniWebViewPayload {
@@ -1341,7 +1349,7 @@ public final class WKWebView: NSView, _OmniWebViewPayloadProviding, _OmniNativeR
     }
 
     private func refreshNativeBackForwardState() {
-        #if os(Linux)
+        #if os(Linux) || os(macOS)
         withNativeIdentity { identity in
             identity.withCString { identityPointer in
                 canGoBack = omni_adw_web_view_can_go_back(identityPointer) != 0
@@ -1355,14 +1363,14 @@ public final class WKWebView: NSView, _OmniWebViewPayloadProviding, _OmniNativeR
     }
 
     fileprivate func syncNativeAppearance() {
-        #if os(Linux)
+        #if os(Linux) || os(macOS)
         guard let scheme = webAppearanceColorScheme else { return }
         evaluateJavaScript(Self.webAppearanceScript(for: scheme))
         #endif
     }
 
     fileprivate func syncNativeUserAgent() {
-        #if os(Linux)
+        #if os(Linux) || os(macOS)
         withNativeIdentity { identity in
             identity.withCString { identityPointer in
                 withOptionalCString(configuration.applicationNameForUserAgent) { applicationNamePointer in
@@ -1376,7 +1384,7 @@ public final class WKWebView: NSView, _OmniWebViewPayloadProviding, _OmniNativeR
     }
 
     fileprivate func syncNativePopupPolicy() {
-        #if os(Linux)
+        #if os(Linux) || os(macOS)
         withNativeIdentity { identity in
             identity.withCString {
                 _ = omni_adw_web_view_set_javascript_can_open_windows(
@@ -1389,7 +1397,7 @@ public final class WKWebView: NSView, _OmniWebViewPayloadProviding, _OmniNativeR
     }
 
     fileprivate func syncNativeJavaScriptEnabled() {
-        #if os(Linux)
+        #if os(Linux) || os(macOS)
         withNativeIdentity { identity in
             identity.withCString {
                 _ = omni_adw_web_view_set_javascript_enabled($0, configuration.preferences.javaScriptEnabled ? 1 : 0)
@@ -1399,7 +1407,7 @@ public final class WKWebView: NSView, _OmniWebViewPayloadProviding, _OmniNativeR
     }
 
     fileprivate func syncNativeMinimumFontSize() {
-        #if os(Linux)
+        #if os(Linux) || os(macOS)
         withNativeIdentity { identity in
             identity.withCString {
                 _ = omni_adw_web_view_set_minimum_font_size($0, Double(configuration.preferences.minimumFontSize))
@@ -1409,7 +1417,7 @@ public final class WKWebView: NSView, _OmniWebViewPayloadProviding, _OmniNativeR
     }
 
     fileprivate func syncNativeInspectable() {
-        #if os(Linux)
+        #if os(Linux) || os(macOS)
         withNativeIdentity { identity in
             identity.withCString {
                 _ = omni_adw_web_view_set_inspectable($0, isInspectable ? 1 : 0)
@@ -1419,7 +1427,7 @@ public final class WKWebView: NSView, _OmniWebViewPayloadProviding, _OmniNativeR
     }
 
     fileprivate func installNative(userScript: WKUserScript) {
-        #if os(Linux)
+        #if os(Linux) || os(macOS)
         withNativeIdentity { identity in
             identity.withCString { identityPointer in
                 userScript.source.withCString { sourcePointer in
@@ -1436,7 +1444,7 @@ public final class WKWebView: NSView, _OmniWebViewPayloadProviding, _OmniNativeR
     }
 
     fileprivate func removeAllNativeUserScripts() {
-        #if os(Linux)
+        #if os(Linux) || os(macOS)
         withNativeIdentity { identity in
             identity.withCString { _ = omni_adw_web_view_remove_all_user_scripts($0) }
         }
@@ -1444,7 +1452,7 @@ public final class WKWebView: NSView, _OmniWebViewPayloadProviding, _OmniNativeR
     }
 
     fileprivate func registerNativeMessageHandler(name: String) {
-        #if os(Linux)
+        #if os(Linux) || os(macOS)
         withNativeIdentity { identity in
             identity.withCString { identityPointer in
                 name.withCString { namePointer in
@@ -1456,7 +1464,7 @@ public final class WKWebView: NSView, _OmniWebViewPayloadProviding, _OmniNativeR
     }
 
     fileprivate func unregisterNativeMessageHandler(name: String) {
-        #if os(Linux)
+        #if os(Linux) || os(macOS)
         withNativeIdentity { identity in
             identity.withCString { identityPointer in
                 name.withCString { namePointer in
@@ -1468,7 +1476,7 @@ public final class WKWebView: NSView, _OmniWebViewPayloadProviding, _OmniNativeR
     }
 
     fileprivate func installNative(contentRuleList: WKContentRuleList) {
-        #if os(Linux)
+        #if os(Linux) || os(macOS)
         withNativeIdentity { identity in
             identity.withCString { identityPointer in
                 contentRuleList.identifier.withCString { identifierPointer in
@@ -1482,7 +1490,7 @@ public final class WKWebView: NSView, _OmniWebViewPayloadProviding, _OmniNativeR
     }
 
     fileprivate func removeAllNativeContentRules() {
-        #if os(Linux)
+        #if os(Linux) || os(macOS)
         withNativeIdentity { identity in
             identity.withCString { _ = omni_adw_web_view_remove_all_content_rules($0) }
         }
@@ -1508,7 +1516,7 @@ public final class WKWebView: NSView, _OmniWebViewPayloadProviding, _OmniNativeR
         }
     }
 
-    #if os(Linux)
+    #if os(Linux) || os(macOS)
     private static let evaluateCallback: omni_adw_web_evaluate_callback = { context, bodyPointer, errorPointer in
         guard let context else { return }
         let box = Unmanaged<EvaluationBox>.fromOpaque(context).takeRetainedValue()
@@ -1535,6 +1543,7 @@ public final class WKWebView: NSView, _OmniWebViewPayloadProviding, _OmniNativeR
                 print("OMNIWEBKIT_NAV event=\(event) url=\(url?.absoluteString ?? "") error=\(error ?? "")")
             }
             if let url { webView.url = url }
+            webView.refreshNativeBackForwardState()
             let navigation = WKNavigation()
             switch event {
             case 0:

@@ -20,6 +20,10 @@ let imessageTargetDependencies: [Target.Dependency] = [
 ]
 
 #if os(macOS)
+let appKitTargetName = "OmniAppKit"
+let combineTargetName = "OmniCombine"
+let securityTargetName = "OmniSecurity"
+let omniUIAdwaitaProductTargets = ["OmniUIAdwaita", "OmniWebKit", "OmniFoundationExtras"]
 let zlibPkgConfig: String? = nil
 let zlibProviders: [SystemPackageProvider]? = nil
 let sqlitePkgConfig: String? = nil
@@ -29,6 +33,10 @@ let adwaitaProviders: [SystemPackageProvider]? = nil
 let webKitGTKPkgConfig: String? = nil
 let webKitGTKProviders: [SystemPackageProvider]? = nil
 #else
+let appKitTargetName = "AppKit"
+let combineTargetName = "Combine"
+let securityTargetName = "Security"
+let omniUIAdwaitaProductTargets = ["OmniUIAdwaita", "OmniWebKit", "Security", "AppKit", "Combine", "OmniFoundationExtras"]
 let zlibPkgConfig: String? = "zlib"
 let zlibProviders: [SystemPackageProvider]? = [
     .apt(["zlib1g-dev"]),
@@ -132,7 +140,7 @@ let package = Package(
         ),
         .library(
             name: "OmniUIAdwaita",
-            targets: ["OmniUIAdwaita", "OmniWebKit", "Security", "AppKit", "Combine", "OmniFoundationExtras"]
+            targets: omniUIAdwaitaProductTargets
         ),
         .library(
             name: "WebKit",
@@ -144,15 +152,15 @@ let package = Package(
         ),
         .library(
             name: "Security",
-            targets: ["Security"]
+            targets: [securityTargetName]
         ),
         .library(
             name: "AppKit",
-            targets: ["AppKit"]
+            targets: [appKitTargetName]
         ),
         .library(
             name: "Combine",
-            targets: ["Combine"]
+            targets: [combineTargetName]
         ),
         .library(
             name: "OmniFoundationExtras",
@@ -319,6 +327,8 @@ let package = Package(
                 .linkedLibrary("glib-2.0", .when(platforms: [.linux, .macOS])),
                 .linkedLibrary("gobject-2.0", .when(platforms: [.linux, .macOS])),
                 .linkedLibrary("gio-2.0", .when(platforms: [.linux, .macOS])),
+                .linkedLibrary("pango-1.0", .when(platforms: [.linux, .macOS])),
+                .unsafeFlags(["-lcairo"], .when(platforms: [.linux, .macOS])),
                 .linkedLibrary("webkitgtk-6.0", .when(platforms: [.linux])),
                 .linkedLibrary("javascriptcoregtk-6.0", .when(platforms: [.linux])),
                 .linkedLibrary("soup-3.0", .when(platforms: [.linux])),
@@ -483,18 +493,18 @@ let package = Package(
             swiftSettings: commonSwiftSettings
         ),
         .target(
-            name: "Security",
+            name: securityTargetName,
             path: "Sources/Security",
             swiftSettings: commonSwiftSettings
         ),
         .target(
-            name: "AppKit",
+            name: appKitTargetName,
             dependencies: ["OmniUICore"],
             path: "Sources/AppKit",
             swiftSettings: commonSwiftSettings
         ),
         .target(
-            name: "Combine",
+            name: combineTargetName,
             dependencies: ["OmniUICore"],
             path: "Sources/Combine",
             swiftSettings: commonSwiftSettings
@@ -568,7 +578,16 @@ let package = Package(
         ),
         .target(
             name: "OmniUIAdwaita",
-            dependencies: ["OmniUICore", "OmniUIAdwaitaRenderer", "OmniWebKit", "Security", "AppKit", "Combine", "OmniFoundationExtras", "SwiftUIMacros"],
+            dependencies: [
+                "OmniUICore",
+                "OmniUIAdwaitaRenderer",
+                "OmniWebKit",
+                .target(name: securityTargetName, condition: .when(platforms: [.linux])),
+                .target(name: appKitTargetName, condition: .when(platforms: [.linux])),
+                .target(name: combineTargetName, condition: .when(platforms: [.linux])),
+                "OmniFoundationExtras",
+                "SwiftUIMacros",
+            ],
             swiftSettings: commonSwiftSettings
         ),
         .target(

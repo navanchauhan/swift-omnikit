@@ -170,7 +170,7 @@ public struct Image: View, _PrimitiveView {
     }
 }
 
-public struct DropInfo: Sendable {
+public struct DropInfo: @unchecked Sendable {
     public let location: CGPoint
     public let itemProviders: [NSItemProvider]
 

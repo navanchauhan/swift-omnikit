@@ -133,7 +133,7 @@ public enum SemanticAxis: Sendable, Equatable {
 
 public enum SemanticDrawingKind: Sendable, Equatable {
     case shape(String, fill: String?, stroke: String?)
-    case gradient(colors: [String])
+    case gradient(colors: [String], startX: Double, startY: Double, endX: Double, endY: Double)
     case canvas
 }
 
@@ -186,6 +186,25 @@ enum _DisabledControlRole: Hashable {
 }
 
 enum SemanticLowerer {
+    private static func semanticGradientPoints(for kind: _GradientKind) -> (startX: Double, startY: Double, endX: Double, endY: Double) {
+        switch kind {
+        case .linear(let startPoint, let endPoint):
+            return (
+                startX: Double(startPoint.x),
+                startY: Double(startPoint.y),
+                endX: Double(endPoint.x),
+                endY: Double(endPoint.y)
+            )
+        case .radial(let center, _, _):
+            return (
+                startX: Double(center.x),
+                startY: Double(center.y),
+                endX: Double(center.x),
+                endY: Double(center.y + 1)
+            )
+        }
+    }
+
     static func lower(_ node: _VNode, path: String = "0") -> SemanticNode {
         switch node {
         case .empty:
@@ -370,7 +389,17 @@ enum SemanticLowerer {
                 ))
             )
         case .gradient(let gradient):
-            return SemanticNode(id: path, kind: .drawingIsland(.gradient(colors: gradient.colors.map(\.rawValue))))
+            let points = Self.semanticGradientPoints(for: gradient.kind)
+            return SemanticNode(
+                id: path,
+                kind: .drawingIsland(.gradient(
+                    colors: gradient.colors.map(\.rawValue),
+                    startX: points.startX,
+                    startY: points.startY,
+                    endX: points.endX,
+                    endY: points.endY
+                ))
+            )
         case .background(let child, let background):
             return SemanticNode(id: path, kind: .modifier(.background("native/adwaita")), children: [lower(background, path: path + ".background"), lower(child, path: path + ".content")])
         case .style(let fg, let bg, let child):

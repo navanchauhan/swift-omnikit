@@ -39,6 +39,7 @@ Scene `.defaultSize(width:height:)` metadata is read by `AdwaitaApp(scene:)` and
 - `ForEach(..., id:)` elements use stable ID-derived runtime path components and semantic identity wrappers, so row-local state remains attached to the same data ID when list data reorders.
 - `SemanticDiff` indexes previous and next semantic trees by stable ID and reports inserted, removed, updated, and reordered nodes.
 - The Adwaita renderer applies simple leaf updates (`Text`, `Image`, `Button`, `Toggle`, `TextField`, `SecureField`, `TextEditor`, `Menu`, `ProgressView`, `Slider`, `Stepper`, `DatePicker`) in place through native GTK mutation when the diff contains only supported updates.
+- `Image(systemName:)` lowers to GTK symbolic icon names before falling back to the terminal Unicode symbol map, so Linux and macOS Adwaita runs use the same native icon vocabulary.
 - Localized insertions, removals, child reorders, and unsupported node updates replace the smallest existing named semantic subtree when all changed IDs fall under one stable ancestor. Ambiguous structural changes still use full-tree GTK replacement.
 - Full-tree GTK replacement preserves named `GtkScrolledWindow` vertical offsets across rebuilds and restores focused text/action controls through the semantic snapshot's focused action ID.
 - Native action callbacks invoke OmniUI action IDs, compute the next semantic snapshot, and reconcile the GTK tree.
@@ -52,6 +53,7 @@ The renderer uses drawing islands where there is no appropriate native GTK contr
 
 - `Canvas` lowers to a `GtkDrawingArea`.
 - `Path`, shapes, and gradients lower to semantic drawing islands.
+- Linear gradients preserve their color stops and direction and paint through a native GTK drawing surface.
 - Drawing islands carry tooltips/metadata so they remain inspectable in the native tree.
 
 ## Style And Modifier Approximations

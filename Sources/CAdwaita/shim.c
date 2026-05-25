@@ -5,6 +5,9 @@
 #if defined(__linux__)
 #include <webkit/webkit.h>
 #include <jsc/jsc.h>
+#else
+typedef void WebKitUserContentManager;
+typedef void WebKitWebView;
 #endif
 #if defined(__APPLE__)
 #include <objc/message.h>
@@ -18,6 +21,73 @@
 
 #if defined(__APPLE__)
 GtkWidget *omni_macos_web_view_new(const char *url, void *native_view);
+GtkWidget *omni_macos_web_view_new_ex(
+    const char *identity,
+    const char *url,
+    const char *html,
+    const char *base_url,
+    const char **request_header_names,
+    const char **request_header_values,
+    int32_t request_header_count,
+    const char *application_name,
+    const char *custom_user_agent,
+    double page_zoom,
+    int32_t allows_back_forward_navigation_gestures,
+    int32_t javascript_can_open_windows,
+    int32_t javascript_enabled,
+    double minimum_font_size,
+    int32_t is_inspectable,
+    int32_t allows_inline_media_playback,
+    int32_t media_playback_requires_user_gesture,
+    void *native_view,
+    const char **script_sources,
+    const int32_t *script_injection_times,
+    const int32_t *script_main_frame_only,
+    int32_t script_count,
+    const char **content_rule_identifiers,
+    const char **content_rule_sources,
+    int32_t content_rule_count,
+    const char **message_handler_names,
+    int32_t message_handler_count,
+    const char *accessibility_label,
+    const char *accessibility_description,
+    omni_adw_web_message_callback message_callback,
+    omni_adw_web_navigation_callback navigation_callback,
+    omni_adw_web_policy_callback policy_callback,
+    omni_adw_web_response_policy_callback response_policy_callback,
+    omni_adw_web_download_destination_callback download_destination_callback,
+    omni_adw_web_title_callback title_callback,
+    omni_adw_web_progress_callback progress_callback,
+    omni_adw_web_cookie_callback cookie_callback,
+    omni_adw_web_script_dialog_callback script_dialog_callback,
+    void *callback_context);
+int32_t omni_macos_web_view_unregister(const char *identity);
+int32_t omni_macos_web_view_evaluate_javascript(const char *identity, const char *script, omni_adw_web_evaluate_callback callback, void *callback_context);
+int32_t omni_macos_web_view_load_uri(const char *identity, const char *url);
+int32_t omni_macos_web_view_load_request(const char *identity, const char *url, const char **header_names, const char **header_values, int32_t header_count);
+int32_t omni_macos_web_view_load_html(const char *identity, const char *html, const char *base_url);
+int32_t omni_macos_web_view_go_back(const char *identity);
+int32_t omni_macos_web_view_go_forward(const char *identity);
+int32_t omni_macos_web_view_reload(const char *identity);
+int32_t omni_macos_web_view_stop_loading(const char *identity);
+int32_t omni_macos_web_view_can_go_back(const char *identity);
+int32_t omni_macos_web_view_can_go_forward(const char *identity);
+int32_t omni_macos_web_view_set_zoom(const char *identity, double page_zoom);
+int32_t omni_macos_web_view_set_allows_back_forward_navigation_gestures(const char *identity, int32_t enabled);
+int32_t omni_macos_web_view_set_javascript_can_open_windows(const char *identity, int32_t enabled);
+int32_t omni_macos_web_view_set_javascript_enabled(const char *identity, int32_t enabled);
+int32_t omni_macos_web_view_set_minimum_font_size(const char *identity, double size);
+int32_t omni_macos_web_view_set_inspectable(const char *identity, int32_t enabled);
+int32_t omni_macos_web_view_set_user_agent(const char *identity, const char *application_name, const char *custom_user_agent);
+int32_t omni_macos_web_view_add_user_script(const char *identity, const char *source, int32_t injection_time, int32_t main_frame_only);
+int32_t omni_macos_web_view_remove_all_user_scripts(const char *identity);
+int32_t omni_macos_web_view_register_message_handler_named(const char *identity, const char *name);
+int32_t omni_macos_web_view_unregister_message_handler_named(const char *identity, const char *name);
+int32_t omni_macos_web_view_add_content_rule(const char *identity, const char *identifier, const char *source);
+int32_t omni_macos_web_view_remove_all_content_rules(const char *identity);
+int32_t omni_macos_web_view_focus(const char *identity);
+int32_t omni_macos_web_view_scroll_by_identity(const char *identity, double dx, double dy);
+int32_t omni_macos_web_view_scroll_page_identity(const char *identity, int32_t direction);
 gboolean omni_macos_web_view_handle_key(guint keyval, GdkModifierType state);
 gboolean omni_macos_web_view_widget_scroll(GtkWidget *widget, double dx, double dy);
 gboolean omni_macos_web_view_widget_scroll_page(GtkWidget *widget, int direction);
@@ -143,12 +213,15 @@ static gboolean omni_widget_or_parent_is_native_interactive(GtkWidget *widget) {
       GTK_IS_ENTRY(current) ||
       GTK_IS_TEXT_VIEW(current) ||
       GTK_IS_DROP_DOWN(current) ||
-      GTK_IS_SCALE(current) ||
-      GTK_IS_SPIN_BUTTON(current) ||
-      GTK_IS_CALENDAR(current)
-#if defined(__linux__)
-      || WEBKIT_IS_WEB_VIEW(current)
+	      GTK_IS_SCALE(current) ||
+	      GTK_IS_SPIN_BUTTON(current) ||
+	      GTK_IS_CALENDAR(current)
+#if defined(__APPLE__)
+	      || g_object_get_data(G_OBJECT(current), "omni-macos-web-view") != NULL
 #endif
+	#if defined(__linux__)
+	      || WEBKIT_IS_WEB_VIEW(current)
+	#endif
     ) {
       return TRUE;
     }
@@ -161,11 +234,14 @@ static gboolean omni_widget_or_parent_is_native_scrollable(GtkWidget *widget) {
   GtkWidget *current = widget;
   while (current) {
     if (
-      GTK_IS_SCROLLED_WINDOW(current) ||
-      GTK_IS_TEXT_VIEW(current)
-#if defined(__linux__)
-      || WEBKIT_IS_WEB_VIEW(current)
+	      GTK_IS_SCROLLED_WINDOW(current) ||
+	      GTK_IS_TEXT_VIEW(current)
+#if defined(__APPLE__)
+	      || g_object_get_data(G_OBJECT(current), "omni-macos-web-view") != NULL
 #endif
+	#if defined(__linux__)
+	      || WEBKIT_IS_WEB_VIEW(current)
+	#endif
     ) {
       return TRUE;
     }
@@ -208,6 +284,15 @@ typedef struct {
   double x;
   double y;
 } OmniClickStart;
+
+typedef struct {
+  GdkRGBA *stops;
+  int32_t count;
+  double start_x;
+  double start_y;
+  double end_x;
+  double end_y;
+} OmniAdwGradientData;
 
 typedef struct {
   omni_adw_tick_callback callback;
@@ -267,6 +352,8 @@ static GHashTable *omni_webkit_views_by_identity = NULL;
 static void omni_accessible_label(GtkWidget *widget, const char *label);
 static void omni_accessible_description(GtkWidget *widget, const char *description);
 static void omni_accessible_role_description(GtkWidget *widget, const char *description);
+static void omni_queue_widget_redraw(GtkWidget *widget);
+static void omni_queue_widget_and_ancestors_redraw(GtkWidget *widget);
 
 static GHashTable *omni_webkit_view_registry(void) {
   if (!omni_webkit_views_by_identity) {
@@ -1608,6 +1695,39 @@ static void omni_webkit_evaluate_finished(GObject *object, GAsyncResult *result,
 }
 #endif
 
+#if !defined(__linux__)
+static gboolean omni_queue_widget_redraw_idle(gpointer data) {
+  GtkWidget *widget = GTK_WIDGET(data);
+  if (widget) {
+    gtk_widget_queue_resize(widget);
+    gtk_widget_queue_draw(widget);
+  }
+  g_object_unref(widget);
+  return G_SOURCE_REMOVE;
+}
+
+static void omni_queue_widget_redraw(GtkWidget *widget) {
+  if (!widget) return;
+  gtk_widget_queue_resize(widget);
+  gtk_widget_queue_draw(widget);
+  GtkNative *native = gtk_widget_get_native(widget);
+  GdkSurface *surface = native ? gtk_native_get_surface(native) : NULL;
+  if (surface) gdk_surface_queue_render(surface);
+  g_object_ref(widget);
+  g_idle_add(omni_queue_widget_redraw_idle, widget);
+}
+
+static void omni_queue_widget_and_ancestors_redraw(GtkWidget *widget) {
+  GtkWidget *current = widget;
+  int depth = 0;
+  while (current && depth < 8) {
+    omni_queue_widget_redraw(current);
+    current = gtk_widget_get_parent(current);
+    depth += 1;
+  }
+}
+#endif
+
 int32_t omni_adw_web_view_load_uri(const char *identity, const char *url) {
 #if defined(__linux__)
   WebKitWebView *web_view = WEBKIT_WEB_VIEW(omni_webkit_lookup_view(identity));
@@ -1615,8 +1735,12 @@ int32_t omni_adw_web_view_load_uri(const char *identity, const char *url) {
   omni_webkit_load_uri_with_headers(web_view, url, NULL, NULL, 0);
   return 1;
 #else
+#if defined(__APPLE__)
+  return omni_macos_web_view_load_uri(identity, url);
+#else
   (void)identity; (void)url;
   return 0;
+#endif
 #endif
 }
 
@@ -1627,8 +1751,12 @@ int32_t omni_adw_web_view_load_request(const char *identity, const char *url, co
   omni_webkit_load_uri_with_headers(web_view, url, header_names, header_values, header_count);
   return 1;
 #else
+#if defined(__APPLE__)
+  return omni_macos_web_view_load_request(identity, url, header_names, header_values, header_count);
+#else
   (void)identity; (void)url; (void)header_names; (void)header_values; (void)header_count;
   return 0;
+#endif
 #endif
 }
 
@@ -1639,8 +1767,12 @@ int32_t omni_adw_web_view_load_html(const char *identity, const char *html, cons
   omni_webkit_load_html(web_view, html, base_url, TRUE);
   return 1;
 #else
+#if defined(__APPLE__)
+  return omni_macos_web_view_load_html(identity, html, base_url);
+#else
   (void)identity; (void)html; (void)base_url;
   return 0;
+#endif
 #endif
 }
 
@@ -1655,8 +1787,12 @@ int32_t omni_adw_web_view_unregister(const char *identity) {
   }
   return g_hash_table_remove(omni_webkit_views_by_identity, identity) ? 1 : 0;
 #else
+#if defined(__APPLE__)
+  return omni_macos_web_view_unregister(identity);
+#else
   (void)identity;
   return 0;
+#endif
 #endif
 }
 
@@ -1670,8 +1806,12 @@ int32_t omni_adw_web_view_evaluate_javascript(const char *identity, const char *
   webkit_web_view_evaluate_javascript(web_view, script, -1, NULL, NULL, NULL, omni_webkit_evaluate_finished, evaluation);
   return 1;
 #else
+#if defined(__APPLE__)
+  return omni_macos_web_view_evaluate_javascript(identity, script, callback, callback_context);
+#else
   (void)identity; (void)script; (void)callback; (void)callback_context;
   return 0;
+#endif
 #endif
 }
 
@@ -1727,8 +1867,12 @@ int32_t omni_adw_web_view_go_back(const char *identity) {
   webkit_web_view_go_back(web_view);
   return 1;
 #else
+#if defined(__APPLE__)
+  return omni_macos_web_view_go_back(identity);
+#else
   (void)identity;
   return 0;
+#endif
 #endif
 }
 
@@ -1739,8 +1883,12 @@ int32_t omni_adw_web_view_go_forward(const char *identity) {
   webkit_web_view_go_forward(web_view);
   return 1;
 #else
+#if defined(__APPLE__)
+  return omni_macos_web_view_go_forward(identity);
+#else
   (void)identity;
   return 0;
+#endif
 #endif
 }
 
@@ -1751,8 +1899,12 @@ int32_t omni_adw_web_view_reload(const char *identity) {
   webkit_web_view_reload(web_view);
   return 1;
 #else
+#if defined(__APPLE__)
+  return omni_macos_web_view_reload(identity);
+#else
   (void)identity;
   return 0;
+#endif
 #endif
 }
 
@@ -1763,8 +1915,12 @@ int32_t omni_adw_web_view_stop_loading(const char *identity) {
   webkit_web_view_stop_loading(web_view);
   return 1;
 #else
+#if defined(__APPLE__)
+  return omni_macos_web_view_stop_loading(identity);
+#else
   (void)identity;
   return 0;
+#endif
 #endif
 }
 
@@ -1773,8 +1929,12 @@ int32_t omni_adw_web_view_can_go_back(const char *identity) {
   WebKitWebView *web_view = WEBKIT_WEB_VIEW(omni_webkit_lookup_view(identity));
   return web_view && webkit_web_view_can_go_back(web_view) ? 1 : 0;
 #else
+#if defined(__APPLE__)
+  return omni_macos_web_view_can_go_back(identity);
+#else
   (void)identity;
   return 0;
+#endif
 #endif
 }
 
@@ -1783,8 +1943,12 @@ int32_t omni_adw_web_view_can_go_forward(const char *identity) {
   WebKitWebView *web_view = WEBKIT_WEB_VIEW(omni_webkit_lookup_view(identity));
   return web_view && webkit_web_view_can_go_forward(web_view) ? 1 : 0;
 #else
+#if defined(__APPLE__)
+  return omni_macos_web_view_can_go_forward(identity);
+#else
   (void)identity;
   return 0;
+#endif
 #endif
 }
 
@@ -1795,8 +1959,12 @@ int32_t omni_adw_web_view_set_zoom(const char *identity, double page_zoom) {
   webkit_web_view_set_zoom_level(web_view, page_zoom > 0 ? page_zoom : 1.0);
   return 1;
 #else
+#if defined(__APPLE__)
+  return omni_macos_web_view_set_zoom(identity, page_zoom);
+#else
   (void)identity; (void)page_zoom;
   return 0;
+#endif
 #endif
 }
 
@@ -1809,8 +1977,12 @@ int32_t omni_adw_web_view_set_allows_back_forward_navigation_gestures(const char
   webkit_settings_set_enable_back_forward_navigation_gestures(settings, enabled ? TRUE : FALSE);
   return 1;
 #else
+#if defined(__APPLE__)
+  return omni_macos_web_view_set_allows_back_forward_navigation_gestures(identity, enabled);
+#else
   (void)identity; (void)enabled;
   return 0;
+#endif
 #endif
 }
 
@@ -1823,8 +1995,12 @@ int32_t omni_adw_web_view_set_javascript_can_open_windows(const char *identity, 
   webkit_settings_set_javascript_can_open_windows_automatically(settings, enabled ? TRUE : FALSE);
   return 1;
 #else
+#if defined(__APPLE__)
+  return omni_macos_web_view_set_javascript_can_open_windows(identity, enabled);
+#else
   (void)identity; (void)enabled;
   return 0;
+#endif
 #endif
 }
 
@@ -1837,8 +2013,12 @@ int32_t omni_adw_web_view_set_javascript_enabled(const char *identity, int32_t e
   webkit_settings_set_enable_javascript(settings, enabled ? TRUE : FALSE);
   return 1;
 #else
+#if defined(__APPLE__)
+  return omni_macos_web_view_set_javascript_enabled(identity, enabled);
+#else
   (void)identity; (void)enabled;
   return 0;
+#endif
 #endif
 }
 
@@ -1851,8 +2031,12 @@ int32_t omni_adw_web_view_set_minimum_font_size(const char *identity, double siz
   webkit_settings_set_minimum_font_size(settings, size > 0 ? (guint)size : 0);
   return 1;
 #else
+#if defined(__APPLE__)
+  return omni_macos_web_view_set_minimum_font_size(identity, size);
+#else
   (void)identity; (void)size;
   return 0;
+#endif
 #endif
 }
 
@@ -1865,8 +2049,12 @@ int32_t omni_adw_web_view_set_inspectable(const char *identity, int32_t enabled)
   webkit_settings_set_enable_developer_extras(settings, enabled ? TRUE : FALSE);
   return 1;
 #else
+#if defined(__APPLE__)
+  return omni_macos_web_view_set_inspectable(identity, enabled);
+#else
   (void)identity; (void)enabled;
   return 0;
+#endif
 #endif
 }
 
@@ -1877,8 +2065,12 @@ int32_t omni_adw_web_view_set_user_agent(const char *identity, const char *appli
   omni_webkit_apply_user_agent(web_view, application_name, custom_user_agent);
   return 1;
 #else
+#if defined(__APPLE__)
+  return omni_macos_web_view_set_user_agent(identity, application_name, custom_user_agent);
+#else
   (void)identity; (void)application_name; (void)custom_user_agent;
   return 0;
+#endif
 #endif
 }
 
@@ -1900,8 +2092,12 @@ int32_t omni_adw_web_view_add_user_script(const char *identity, const char *sour
   webkit_user_script_unref(script);
   return 1;
 #else
+#if defined(__APPLE__)
+  return omni_macos_web_view_add_user_script(identity, source, injection_time, main_frame_only);
+#else
   (void)identity; (void)source; (void)injection_time; (void)main_frame_only;
   return 0;
+#endif
 #endif
 }
 
@@ -1914,8 +2110,12 @@ int32_t omni_adw_web_view_remove_all_user_scripts(const char *identity) {
   webkit_user_content_manager_remove_all_scripts(manager);
   return 1;
 #else
+#if defined(__APPLE__)
+  return omni_macos_web_view_remove_all_user_scripts(identity);
+#else
   (void)identity;
   return 0;
+#endif
 #endif
 }
 
@@ -1929,8 +2129,12 @@ int32_t omni_adw_web_view_register_message_handler(const char *identity, const c
   omni_webkit_install_message_handler(manager, bridge, name);
   return 1;
 #else
+#if defined(__APPLE__)
+  return omni_macos_web_view_register_message_handler_named(identity, name);
+#else
   (void)identity; (void)name;
   return 0;
+#endif
 #endif
 }
 
@@ -1951,8 +2155,12 @@ int32_t omni_adw_web_view_unregister_message_handler(const char *identity, const
   webkit_user_content_manager_unregister_script_message_handler(manager, name, NULL);
   return 1;
 #else
+#if defined(__APPLE__)
+  return omni_macos_web_view_unregister_message_handler_named(identity, name);
+#else
   (void)identity; (void)name;
   return 0;
+#endif
 #endif
 }
 
@@ -1965,8 +2173,12 @@ int32_t omni_adw_web_view_add_content_rule(const char *identity, const char *ide
   omni_webkit_install_content_filters(manager, &identifier, &source, 1, NULL);
   return 1;
 #else
+#if defined(__APPLE__)
+  return omni_macos_web_view_add_content_rule(identity, identifier, source);
+#else
   (void)identity; (void)identifier; (void)source;
   return 0;
+#endif
 #endif
 }
 
@@ -1979,8 +2191,12 @@ int32_t omni_adw_web_view_remove_all_content_rules(const char *identity) {
   webkit_user_content_manager_remove_all_filters(manager);
   return 1;
 #else
+#if defined(__APPLE__)
+  return omni_macos_web_view_remove_all_content_rules(identity);
+#else
   (void)identity;
   return 0;
+#endif
 #endif
 }
 
@@ -1992,8 +2208,12 @@ int32_t omni_adw_web_view_focus(const char *identity) {
   gtk_widget_grab_focus(web_view);
   return 1;
 #else
+#if defined(__APPLE__)
+  return omni_macos_web_view_focus(identity);
+#else
   (void)identity;
   return 0;
+#endif
 #endif
 }
 
@@ -2018,8 +2238,12 @@ int32_t omni_adw_web_view_scroll_by(const char *identity, double dx, double dy) 
   g_free(script);
   return 1;
 #else
+#if defined(__APPLE__)
+  return omni_macos_web_view_scroll_by_identity(identity, dx, dy);
+#else
   (void)identity; (void)dx; (void)dy;
   return 0;
+#endif
 #endif
 }
 
@@ -2039,8 +2263,12 @@ int32_t omni_adw_web_view_scroll_page(const char *identity, int32_t direction) {
   g_free(script);
   return 1;
 #else
+#if defined(__APPLE__)
+  return omni_macos_web_view_scroll_page_identity(identity, direction);
+#else
   (void)identity; (void)direction;
   return 0;
+#endif
 #endif
 }
 
@@ -2209,7 +2437,7 @@ static void omni_widget_expand(GtkWidget *widget, gboolean vertical) {
 
 static gboolean omni_widget_is_textual_overlay(GtkWidget *widget) {
   if (!widget) return FALSE;
-  if (GTK_IS_LABEL(widget) || GTK_IS_BUTTON(widget)) return TRUE;
+  if (GTK_IS_LABEL(widget) || GTK_IS_BUTTON(widget) || GTK_IS_IMAGE(widget)) return TRUE;
   if (!GTK_IS_BOX(widget)) return FALSE;
   gboolean saw_child = FALSE;
   for (GtkWidget *child = gtk_widget_get_first_child(widget); child; child = gtk_widget_get_next_sibling(child)) {
@@ -2225,6 +2453,18 @@ static gboolean omni_widget_has_explicit_width(GtkWidget *widget) {
 
 static gboolean omni_widget_has_explicit_height(GtkWidget *widget) {
   return widget && GPOINTER_TO_INT(g_object_get_data(G_OBJECT(widget), "omni-explicit-height")) != 0;
+}
+
+static void omni_widget_set_layout_size_recursive(GtkWidget *widget, int width, int height) {
+  if (!widget || (width < 0 && height < 0)) return;
+  gtk_widget_set_size_request(widget, width >= 0 ? width : -1, height >= 0 ? height : -1);
+
+  if (!GTK_IS_OVERLAY(widget)) return;
+  GtkWidget *base_child = gtk_overlay_get_child(GTK_OVERLAY(widget));
+  if (!base_child) return;
+  int child_width = width >= 0 && !omni_widget_has_explicit_width(base_child) ? width : -1;
+  int child_height = height >= 0 && !omni_widget_has_explicit_height(base_child) ? height : -1;
+  omni_widget_set_layout_size_recursive(base_child, child_width, child_height);
 }
 
 static GtkAlign omni_overlay_horizontal_align(const char *alignment) {
@@ -2262,6 +2502,34 @@ static void omni_overlay_prepare_child(GtkWidget *widget, const char *alignment)
     gtk_widget_set_vexpand(widget, TRUE);
     gtk_widget_set_valign(widget, GTK_ALIGN_FILL);
   }
+}
+
+static void omni_overlay_sync_base_child_size(GtkWidget *overlay) {
+  if (!overlay || !GTK_IS_OVERLAY(overlay)) return;
+  GtkWidget *child = gtk_overlay_get_child(GTK_OVERLAY(overlay));
+  if (!child) return;
+  int width = gtk_widget_get_width(overlay);
+  int height = gtk_widget_get_height(overlay);
+  int child_width = width > 0 && !omni_widget_has_explicit_width(child) ? width : -1;
+  int child_height = height > 0 && !omni_widget_has_explicit_height(child) ? height : -1;
+  if (child_width >= 0 || child_height >= 0) {
+    omni_widget_set_layout_size_recursive(child, child_width, child_height);
+    gtk_widget_queue_draw(child);
+  }
+}
+
+static void omni_overlay_size_notify(GObject *object, GParamSpec *pspec, gpointer user_data) {
+  (void)pspec;
+  (void)user_data;
+  omni_overlay_sync_base_child_size(GTK_WIDGET(object));
+}
+
+static void omni_overlay_install_size_sync(GtkWidget *overlay) {
+  if (!overlay || !GTK_IS_OVERLAY(overlay)) return;
+  if (g_object_get_data(G_OBJECT(overlay), "omni-overlay-size-sync-installed")) return;
+  g_signal_connect(overlay, "notify::width", G_CALLBACK(omni_overlay_size_notify), NULL);
+  g_signal_connect(overlay, "notify::height", G_CALLBACK(omni_overlay_size_notify), NULL);
+  g_object_set_data(G_OBJECT(overlay), "omni-overlay-size-sync-installed", GINT_TO_POINTER(1));
 }
 
 static PangoWeight omni_font_weight_from_string(const char *weight) {
@@ -2603,6 +2871,50 @@ static void omni_install_log_filter_once(void) {
   g_log_set_handler("Gtk", G_LOG_LEVEL_MASK | G_LOG_FLAG_FATAL | G_LOG_FLAG_RECURSION, omni_gtk_log_handler, NULL);
 }
 
+static GtkCssProvider *omni_semantic_color_provider = NULL;
+
+static void omni_install_semantic_color_css(gboolean dark) {
+  GdkDisplay *display = gdk_display_get_default();
+  if (!display) return;
+  if (omni_semantic_color_provider) {
+    gtk_style_context_remove_provider_for_display(display, GTK_STYLE_PROVIDER(omni_semantic_color_provider));
+    g_clear_object(&omni_semantic_color_provider);
+  }
+
+  const char *fg = dark ? "#f5f5f7" : "#1d1d1f";
+  const char *secondary = dark ? "rgba(245,245,247,0.72)" : "rgba(29,29,31,0.72)";
+  const char *tertiary = dark ? "rgba(245,245,247,0.55)" : "rgba(29,29,31,0.55)";
+  const char *quaternary = dark ? "rgba(245,245,247,0.35)" : "rgba(29,29,31,0.35)";
+  const char *card_bg = dark ? "rgba(245,245,247,0.10)" : "rgba(29,29,31,0.10)";
+  const char *primary_bg = dark ? "rgba(245,245,247,0.14)" : "rgba(29,29,31,0.14)";
+  const char *secondary_bg = dark ? "rgba(245,245,247,0.10)" : "rgba(29,29,31,0.10)";
+  const char *tertiary_bg = dark ? "rgba(245,245,247,0.08)" : "rgba(29,29,31,0.08)";
+  const char *quaternary_bg = dark ? "rgba(245,245,247,0.06)" : "rgba(29,29,31,0.06)";
+  char *css = g_strdup_printf(
+    ".omni-click-container, .omni-complex-button { color: %s; }"
+    ".omni-click-container label, .omni-click-container image, .omni-complex-button label, .omni-complex-button image, .omni-text, .omni-text label, .omni-text image, .omni-symbol-image { color: %s; }"
+    ".omni-fg-primary, .omni-fg-native, .omni-fg-card, .omni-fg-primary label, .omni-fg-native label, .omni-fg-card label, .omni-fg-primary image, .omni-fg-native image, .omni-fg-card image { color: %s; }"
+    ".omni-fg-secondary, .omni-fg-secondary label, .omni-fg-secondary image { color: %s; }"
+    ".omni-fg-tertiary, .omni-fg-tertiary label, .omni-fg-tertiary image { color: %s; }"
+    ".omni-fg-quaternary, .omni-fg-quaternary label, .omni-fg-quaternary image { color: %s; }"
+    ".omni-bg-card { background: %s; background-color: %s; border-radius: 10px; }"
+    ".omni-bg-primary { background: %s; background-color: %s; border-radius: 6px; }"
+    ".omni-bg-secondary { background: %s; background-color: %s; border-radius: 6px; }"
+    ".omni-bg-tertiary { background: %s; background-color: %s; border-radius: 6px; }"
+    ".omni-bg-quaternary { background: %s; background-color: %s; border-radius: 6px; }"
+    ".omni-bg-gray, .omni-bg-native { background: %s; background-color: %s; }",
+    fg, fg, fg, secondary, tertiary, quaternary,
+    card_bg, card_bg, primary_bg, primary_bg, secondary_bg, secondary_bg,
+    tertiary_bg, tertiary_bg, quaternary_bg, quaternary_bg, secondary_bg, secondary_bg);
+  omni_semantic_color_provider = gtk_css_provider_new();
+  gtk_css_provider_load_from_string(omni_semantic_color_provider, css);
+  gtk_style_context_add_provider_for_display(
+      display,
+      GTK_STYLE_PROVIDER(omni_semantic_color_provider),
+      GTK_STYLE_PROVIDER_PRIORITY_APPLICATION + 10);
+  g_free(css);
+}
+
 static void omni_install_css_once(void) {
   static gboolean installed = FALSE;
   if (installed) return;
@@ -2637,7 +2949,9 @@ static void omni_install_css_once(void) {
     ".omni-list-row-button label { padding: 0 16px; font-family: 'DejaVu Sans Mono', 'Liberation Mono', Consolas, Menlo, Monaco, 'SF Mono', 'SFMono-Regular', monospace; font-size: 12px; font-weight: 400; }"
     ".omni-complex-button { min-height: 0; padding: 0; margin: 0; border-radius: 0; border: 0; background: transparent; background-color: transparent; box-shadow: none; }"
     ".omni-complex-button:hover { background: alpha(@view_fg_color,0.04); background-color: alpha(@view_fg_color,0.04); }"
-    ".omni-click-container { min-height: 0; padding: 0; margin: 0; border-radius: 0; border: 0; background: transparent; background-color: transparent; box-shadow: none; }"
+    ".omni-click-container { min-height: 0; padding: 0; margin: 0; border-radius: 0; border: 0; background: transparent; background-color: transparent; box-shadow: none; color: @view_fg_color; }"
+    ".omni-complex-button { color: @view_fg_color; }"
+    ".omni-click-container label, .omni-click-container image, .omni-complex-button label, .omni-complex-button image, .omni-text, .omni-text label, .omni-text image, .omni-symbol-image { color: @view_fg_color; }"
     ".omni-click-container:hover { background: alpha(@view_fg_color,0.04); background-color: alpha(@view_fg_color,0.04); }"
     ".omni-inline-link-button { min-height: 18px; min-width: 0; padding: 0 3px; margin: 0 1px; border-radius: 4px; background: transparent; background-color: transparent; box-shadow: none; color: #ff6600; }"
     ".omni-inline-link-button:hover { background: rgba(255,102,0,0.12); background-color: rgba(255,102,0,0.12); }"
@@ -2736,6 +3050,7 @@ static void omni_install_css_once(void) {
     "button { border-radius: 8px; font-weight: 600; }"
     ".omni-icon-button, .omni-icon-button:disabled { min-width: 38px; min-height: 34px; padding: 0; margin: 0; font-size: 16px; -gtk-icon-size: 16px; }"
     ".omni-icon-button image, .omni-icon-button:disabled image, .omni-icon-button label, .omni-icon-button:disabled label { min-width: 16px; min-height: 16px; margin: 0; padding: 0; }"
+    ".omni-symbol-image { -gtk-icon-size: 16px; min-width: 16px; min-height: 16px; }"
     ".omni-go-button { min-width: 46px; min-height: 34px; padding: 0 12px; font-weight: 700; }"
     ".omni-segmented-control { margin: 0 4px; }"
     ".omni-segmented-control button { min-height: 30px; padding: 0 12px; border-radius: 0; }"
@@ -2782,23 +3097,28 @@ void omni_adw_set_color_scheme(const char *scheme) {
   if (!scheme || !scheme[0]) return;
   AdwStyleManager *manager = adw_style_manager_get_default();
   GtkSettings *settings = gtk_settings_get_default();
+  gboolean dark = FALSE;
 
   if (g_ascii_strcasecmp(scheme, "dark") == 0 || g_ascii_strcasecmp(scheme, "force-dark") == 0) {
     if (manager) adw_style_manager_set_color_scheme(manager, ADW_COLOR_SCHEME_FORCE_DARK);
     if (settings && g_object_class_find_property(G_OBJECT_GET_CLASS(settings), "gtk-interface-color-scheme")) {
       g_object_set(settings, "gtk-interface-color-scheme", GTK_INTERFACE_COLOR_SCHEME_DARK, NULL);
     }
+    dark = TRUE;
   } else if (g_ascii_strcasecmp(scheme, "light") == 0 || g_ascii_strcasecmp(scheme, "force-light") == 0) {
     if (manager) adw_style_manager_set_color_scheme(manager, ADW_COLOR_SCHEME_FORCE_LIGHT);
     if (settings && g_object_class_find_property(G_OBJECT_GET_CLASS(settings), "gtk-interface-color-scheme")) {
       g_object_set(settings, "gtk-interface-color-scheme", GTK_INTERFACE_COLOR_SCHEME_LIGHT, NULL);
     }
+    dark = FALSE;
   } else if (g_ascii_strcasecmp(scheme, "default") == 0 || g_ascii_strcasecmp(scheme, "system") == 0) {
     if (manager) adw_style_manager_set_color_scheme(manager, ADW_COLOR_SCHEME_DEFAULT);
     if (settings && g_object_class_find_property(G_OBJECT_GET_CLASS(settings), "gtk-interface-color-scheme")) {
       g_object_set(settings, "gtk-interface-color-scheme", GTK_INTERFACE_COLOR_SCHEME_DEFAULT, NULL);
     }
+    dark = manager ? adw_style_manager_get_dark(manager) : FALSE;
   }
+  omni_install_semantic_color_css(dark);
 }
 
 static void sync_header_entry(OmniAdwApp *app) {
@@ -3670,16 +3990,169 @@ static gboolean omni_label_looks_iconic(const char *label) {
   return TRUE;
 }
 
+static gboolean omni_known_resource_symbolic_icon(const char *name) {
+  if (!name || !name[0]) return FALSE;
+  static const char *icons[] = {
+    "adw-adaptive-preview-symbolic",
+    "adw-application-exit-symbolic",
+    "adw-avatar-default-symbolic",
+    "adw-entry-apply-symbolic",
+    "adw-entry-edit-symbolic",
+    "adw-external-link-symbolic",
+    "adw-mail-send-symbolic",
+    "adw-rotate-acw-symbolic",
+    "adw-rotate-cw-symbolic",
+    "adw-screenshot-symbolic",
+    "adw-sidebar-symbolic",
+    "adw-tab-icon-missing-symbolic",
+    "adw-tab-new-symbolic",
+    "adw-tab-overflow-symbolic",
+    "application-x-executable-symbolic",
+    "audio-volume-high-symbolic",
+    "audio-volume-low-symbolic",
+    "audio-volume-medium-symbolic",
+    "audio-volume-muted-symbolic",
+    "bookmark-new-symbolic",
+    "changes-prevent-symbolic",
+    "check-symbolic",
+    "dialog-error-symbolic",
+    "dialog-information-symbolic",
+    "dialog-question-symbolic",
+    "dialog-warning-symbolic",
+    "display-brightness-symbolic",
+    "document-open-recent-symbolic",
+    "document-open-symbolic",
+    "document-save-as-symbolic",
+    "document-save-symbolic",
+    "drive-harddisk-symbolic",
+    "edit-clear-symbolic",
+    "edit-copy-symbolic",
+    "edit-cut-symbolic",
+    "edit-delete-symbolic",
+    "edit-find-symbolic",
+    "edit-paste-symbolic",
+    "edit-redo-symbolic",
+    "edit-select-all-symbolic",
+    "edit-undo-symbolic",
+    "emblem-documents-symbolic",
+    "emblem-important-symbolic",
+    "emblem-system-symbolic",
+    "folder-documents-symbolic",
+    "folder-download-symbolic",
+    "folder-music-symbolic",
+    "folder-new-symbolic",
+    "folder-pictures-symbolic",
+    "folder-publicshare-symbolic",
+    "folder-remote-symbolic",
+    "folder-symbolic",
+    "folder-videos-symbolic",
+    "go-down-symbolic",
+    "go-next-symbolic",
+    "go-previous-symbolic",
+    "go-up-symbolic",
+    "image-missing",
+    "insert-image-symbolic",
+    "list-add-symbolic",
+    "list-remove-symbolic",
+    "media-playback-pause-symbolic",
+    "media-playback-start-symbolic",
+    "media-playback-stop-symbolic",
+    "media-record-symbolic",
+    "network-server-symbolic",
+    "network-workgroup-symbolic",
+    "object-select-symbolic",
+    "open-menu-symbolic",
+    "pan-down-symbolic",
+    "pan-end-symbolic",
+    "pan-start-symbolic",
+    "pan-up-symbolic",
+    "process-working-symbolic",
+    "starred-symbolic",
+    "system-run-symbolic",
+    "system-search-symbolic",
+    "text-x-generic-symbolic",
+    "user-home-symbolic",
+    "user-trash-symbolic",
+    "view-conceal-symbolic",
+    "view-fullscreen-symbolic",
+    "view-grid-symbolic",
+    "view-list-symbolic",
+    "view-more-symbolic",
+    "view-refresh-symbolic",
+    "view-reveal-symbolic",
+    "view-sidebar-end-symbolic",
+    "view-sidebar-start-symbolic",
+    "window-close-symbolic",
+    "window-maximize-symbolic",
+    "window-minimize-symbolic",
+    "window-restore-symbolic",
+    "zoom-in-symbolic",
+    "zoom-original-symbolic",
+    "zoom-out-symbolic",
+    NULL
+  };
+  for (const char **icon = icons; *icon; icon++) {
+    if (strcmp(name, *icon) == 0) return TRUE;
+  }
+  return FALSE;
+}
+
 static const char *omni_available_symbolic_icon(const char *first, const char *second, const char *third) {
   const char *candidates[] = { first, second, third, NULL };
   GdkDisplay *display = gdk_display_get_default();
   GtkIconTheme *theme = display ? gtk_icon_theme_get_for_display(display) : NULL;
   for (const char **candidate = candidates; candidate && *candidate; candidate++) {
     if (!*candidate || !(*candidate)[0]) continue;
-    if (!theme || gtk_icon_theme_has_icon(theme, *candidate)) {
+    if (!theme || gtk_icon_theme_has_icon(theme, *candidate) || omni_known_resource_symbolic_icon(*candidate)) {
       return *candidate;
     }
   }
+  return NULL;
+}
+
+static const char *omni_symbolic_icon_name_for_system_name(const char *system_name) {
+  if (!system_name || !system_name[0]) return NULL;
+  if (strcmp(system_name, "checkmark") == 0 || strcmp(system_name, "checkmark.circle") == 0 || strcmp(system_name, "checkmark.circle.fill") == 0) return omni_available_symbolic_icon("object-select-symbolic", "adw-entry-apply-symbolic", "check-symbolic");
+  if (strcmp(system_name, "xmark") == 0 || strcmp(system_name, "xmark.circle") == 0 || strcmp(system_name, "xmark.circle.fill") == 0) return omni_available_symbolic_icon("window-close-symbolic", "edit-clear-symbolic", NULL);
+  if (strcmp(system_name, "plus") == 0 || strcmp(system_name, "plus.circle") == 0) return omni_available_symbolic_icon("list-add-symbolic", "adw-tab-new-symbolic", NULL);
+  if (strcmp(system_name, "minus") == 0 || strcmp(system_name, "minus.circle") == 0) return omni_available_symbolic_icon("list-remove-symbolic", NULL, NULL);
+  if (strcmp(system_name, "gear") == 0 || strcmp(system_name, "gearshape") == 0) return omni_available_symbolic_icon("emblem-system-symbolic", "system-run-symbolic", NULL);
+  if (strcmp(system_name, "star") == 0 || strcmp(system_name, "star.fill") == 0) return omni_available_symbolic_icon("starred-symbolic", NULL, NULL);
+  if (strcmp(system_name, "trash") == 0) return omni_available_symbolic_icon("user-trash-symbolic", "edit-delete-symbolic", NULL);
+  if (strcmp(system_name, "pencil") == 0) return omni_available_symbolic_icon("adw-entry-edit-symbolic", NULL, NULL);
+  if (strcmp(system_name, "magnifyingglass") == 0 || strcmp(system_name, "magnifyingglass.circle") == 0 || strcmp(system_name, "magnifyingglass.circle.fill") == 0 || strcmp(system_name, "doc.text.magnifyingglass") == 0) return omni_available_symbolic_icon("system-search-symbolic", "edit-find-symbolic", NULL);
+  if (strcmp(system_name, "arrow.left") == 0 || strcmp(system_name, "chevron.left") == 0) return omni_available_symbolic_icon("go-previous-symbolic", "pan-start-symbolic", NULL);
+  if (strcmp(system_name, "arrow.right") == 0 || strcmp(system_name, "chevron.right") == 0) return omni_available_symbolic_icon("go-next-symbolic", "pan-end-symbolic", NULL);
+  if (strcmp(system_name, "arrow.up") == 0 || strcmp(system_name, "chevron.up") == 0) return omni_available_symbolic_icon("go-up-symbolic", "pan-up-symbolic", NULL);
+  if (strcmp(system_name, "arrow.down") == 0 || strcmp(system_name, "chevron.down") == 0) return omni_available_symbolic_icon("go-down-symbolic", "pan-down-symbolic", NULL);
+  if (strcmp(system_name, "arrow.clockwise") == 0) return omni_available_symbolic_icon("view-refresh-symbolic", "adw-rotate-cw-symbolic", NULL);
+  if (strcmp(system_name, "house") == 0 || strcmp(system_name, "house.fill") == 0) return omni_available_symbolic_icon("user-home-symbolic", NULL, NULL);
+  if (strcmp(system_name, "person") == 0 || strcmp(system_name, "person.fill") == 0) return omni_available_symbolic_icon("adw-avatar-default-symbolic", NULL, NULL);
+  if (strcmp(system_name, "envelope") == 0 || strcmp(system_name, "envelope.fill") == 0) return omni_available_symbolic_icon("adw-mail-send-symbolic", NULL, NULL);
+  if (strcmp(system_name, "terminal") == 0 || strcmp(system_name, "terminal.fill") == 0) return omni_available_symbolic_icon("application-x-executable-symbolic", "system-run-symbolic", NULL);
+  if (strcmp(system_name, "doc") == 0 || strcmp(system_name, "doc.fill") == 0 || strcmp(system_name, "doc.text") == 0 || strcmp(system_name, "doc.richtext") == 0 || strcmp(system_name, "doc.plaintext") == 0 || strcmp(system_name, "doc.plaintext.fill") == 0 || strcmp(system_name, "book") == 0 || strcmp(system_name, "book.closed") == 0) return omni_available_symbolic_icon("text-x-generic-symbolic", "document-open-symbolic", "emblem-documents-symbolic");
+  if (strcmp(system_name, "folder") == 0 || strcmp(system_name, "folder.fill") == 0) return omni_available_symbolic_icon("folder-symbolic", "folder-documents-symbolic", NULL);
+  if (strcmp(system_name, "clock") == 0 || strcmp(system_name, "clock.fill") == 0 || strcmp(system_name, "calendar") == 0) return omni_available_symbolic_icon("document-open-recent-symbolic", NULL, NULL);
+  if (strcmp(system_name, "exclamationmark.triangle") == 0 || strcmp(system_name, "exclamationmark.triangle.fill") == 0) return omni_available_symbolic_icon("dialog-warning-symbolic", "emblem-important-symbolic", NULL);
+  if (strcmp(system_name, "info.circle") == 0 || strcmp(system_name, "info.circle.fill") == 0 || strcmp(system_name, "questionmark.circle") == 0) return omni_available_symbolic_icon("dialog-information-symbolic", "dialog-question-symbolic", NULL);
+  if (strcmp(system_name, "eye") == 0 || strcmp(system_name, "eye.fill") == 0) return omni_available_symbolic_icon("view-reveal-symbolic", NULL, NULL);
+  if (strcmp(system_name, "eye.slash") == 0) return omni_available_symbolic_icon("view-conceal-symbolic", "changes-prevent-symbolic", NULL);
+  if (strcmp(system_name, "sun.max") == 0 || strcmp(system_name, "sun.max.fill") == 0) return omni_available_symbolic_icon("display-brightness-symbolic", NULL, NULL);
+  if (strcmp(system_name, "paintbrush") == 0 || strcmp(system_name, "paintbrush.fill") == 0 || strcmp(system_name, "photo") == 0) return omni_available_symbolic_icon("insert-image-symbolic", NULL, NULL);
+  if (strcmp(system_name, "wrench") == 0 || strcmp(system_name, "wrench.fill") == 0 || strcmp(system_name, "hammer") == 0 || strcmp(system_name, "hammer.fill") == 0) return omni_available_symbolic_icon("system-run-symbolic", NULL, NULL);
+  if (strcmp(system_name, "chart.bar") == 0 || strcmp(system_name, "chart.bar.fill") == 0) return omni_available_symbolic_icon("view-list-symbolic", NULL, NULL);
+  if (strcmp(system_name, "list.bullet") == 0 || strcmp(system_name, "sidebar.left") == 0 || strcmp(system_name, "sidebar.leading") == 0 || strcmp(system_name, "text.alignleft") == 0) return omni_available_symbolic_icon("open-menu-symbolic", "view-list-symbolic", NULL);
+  if (strcmp(system_name, "play") == 0 || strcmp(system_name, "play.fill") == 0) return omni_available_symbolic_icon("media-playback-start-symbolic", NULL, NULL);
+  if (strcmp(system_name, "pause") == 0 || strcmp(system_name, "pause.fill") == 0) return omni_available_symbolic_icon("media-playback-pause-symbolic", NULL, NULL);
+  if (strcmp(system_name, "stop") == 0 || strcmp(system_name, "stop.fill") == 0) return omni_available_symbolic_icon("media-playback-stop-symbolic", NULL, NULL);
+  if (strcmp(system_name, "speaker.wave.2") == 0 || strcmp(system_name, "speaker.wave.2.fill") == 0) return omni_available_symbolic_icon("audio-volume-high-symbolic", NULL, NULL);
+  if (strcmp(system_name, "globe") == 0 || strcmp(system_name, "safari") == 0) return omni_available_symbolic_icon("network-workgroup-symbolic", "adw-external-link-symbolic", NULL);
+  if (strcmp(system_name, "phone") == 0 || strcmp(system_name, "phone.fill") == 0 || strcmp(system_name, "bubble.right") == 0 || strcmp(system_name, "bubble.right.fill") == 0 || strcmp(system_name, "text.bubble") == 0 || strcmp(system_name, "text.bubble.fill") == 0) return omni_available_symbolic_icon("dialog-information-symbolic", NULL, NULL);
+  if (strcmp(system_name, "bookmark") == 0 || strcmp(system_name, "bookmark.fill") == 0) return omni_available_symbolic_icon("bookmark-new-symbolic", NULL, NULL);
+  if (strcmp(system_name, "link") == 0 || strcmp(system_name, "square.and.arrow.up") == 0) return omni_available_symbolic_icon("adw-external-link-symbolic", NULL, NULL);
+  if (strcmp(system_name, "square.and.arrow.down") == 0) return omni_available_symbolic_icon("folder-download-symbolic", "document-save-symbolic", NULL);
+  if (strcmp(system_name, "rectangle.split.2x1") == 0) return omni_available_symbolic_icon("widget-split-views-symbolic", "view-grid-symbolic", NULL);
+  if (strcmp(system_name, "ellipsis.circle") == 0 || strcmp(system_name, "ellipsis.circle.fill") == 0) return omni_available_symbolic_icon("view-more-symbolic", NULL, NULL);
   return NULL;
 }
 
@@ -6883,6 +7356,7 @@ OmniAdwNode *omni_adw_text_new(const char *text) {
     node = omni_adw_scrollable_text_node_new(value);
   } else {
     node->widget = gtk_label_new(value);
+    gtk_widget_add_css_class(node->widget, "omni-text");
     gtk_label_set_xalign(GTK_LABEL(node->widget), 0.0f);
     gtk_label_set_wrap(GTK_LABEL(node->widget), TRUE);
     omni_accessible_role_description(node->widget, "text");
@@ -6900,6 +7374,30 @@ void omni_adw_node_set_text_wrap(OmniAdwNode *node, int32_t wrap) {
   if (!node || !node->widget || !GTK_IS_LABEL(node->widget)) return;
   gtk_label_set_wrap(GTK_LABEL(node->widget), wrap != 0);
   gtk_label_set_ellipsize(GTK_LABEL(node->widget), wrap != 0 ? PANGO_ELLIPSIZE_NONE : PANGO_ELLIPSIZE_END);
+}
+
+OmniAdwNode *omni_adw_symbol_image_new(const char *system_name, const char *fallback_text, const char *alternative_text) {
+  OmniAdwNode *node = calloc(1, sizeof(OmniAdwNode));
+  const char *icon_name = omni_symbolic_icon_name_for_system_name(system_name);
+  const char *alt = alternative_text && alternative_text[0]
+      ? alternative_text
+      : (fallback_text && fallback_text[0] ? fallback_text : (system_name ? system_name : "Image"));
+  if (icon_name) {
+    node->widget = gtk_image_new_from_icon_name(icon_name);
+    gtk_widget_set_size_request(node->widget, 16, 16);
+    gtk_widget_set_halign(node->widget, GTK_ALIGN_CENTER);
+    gtk_widget_set_valign(node->widget, GTK_ALIGN_CENTER);
+    gtk_widget_add_css_class(node->widget, "omni-symbol-image");
+    omni_accessible_label(node->widget, alt);
+    gtk_widget_set_tooltip_text(node->widget, alt);
+    return node;
+  }
+
+  node->widget = gtk_label_new(alt);
+  gtk_widget_add_css_class(node->widget, "omni-text");
+  gtk_label_set_xalign(GTK_LABEL(node->widget), 0.0f);
+  omni_accessible_label(node->widget, alt);
+  return node;
 }
 
 OmniAdwNode *omni_adw_web_view_new(const char *url, const char *fallback_text, void *native_view) {
@@ -6964,7 +7462,48 @@ OmniAdwNode *omni_adw_web_view_new_ex(
     void *callback_context) {
   GtkWidget *web_view = NULL;
 #if defined(__APPLE__)
-  if (url && url[0]) web_view = omni_macos_web_view_new(url, native_view);
+  if ((url && url[0]) || (html && html[0])) {
+    web_view = omni_macos_web_view_new_ex(
+        identity,
+        url,
+        html,
+        base_url,
+        request_header_names,
+        request_header_values,
+        request_header_count,
+        application_name,
+        custom_user_agent,
+        page_zoom,
+        allows_back_forward_navigation_gestures,
+        javascript_can_open_windows,
+        javascript_enabled,
+        minimum_font_size,
+        is_inspectable,
+        allows_inline_media_playback,
+        media_playback_requires_user_gesture,
+        native_view,
+        script_sources,
+        script_injection_times,
+        script_main_frame_only,
+        script_count,
+        content_rule_identifiers,
+        content_rule_sources,
+        content_rule_count,
+        message_handler_names,
+        message_handler_count,
+        accessibility_label,
+        accessibility_description,
+        message_callback,
+        navigation_callback,
+        policy_callback,
+        response_policy_callback,
+        download_destination_callback,
+        title_callback,
+        progress_callback,
+        cookie_callback,
+        script_dialog_callback,
+        callback_context);
+  }
 #elif defined(__linux__)
   web_view = omni_create_webkit_web_view_ex(
       identity,
@@ -7502,6 +8041,160 @@ OmniAdwNode *omni_adw_separator_new(void) {
   return node;
 }
 
+static double omni_unit_clamp(double value) {
+  if (value < 0.0) return 0.0;
+  if (value > 1.0) return 1.0;
+  return value;
+}
+
+static void omni_set_rgba(GdkRGBA *color, double red, double green, double blue, double alpha) {
+  if (!color) return;
+  color->red = omni_unit_clamp(red);
+  color->green = omni_unit_clamp(green);
+  color->blue = omni_unit_clamp(blue);
+  color->alpha = omni_unit_clamp(alpha);
+}
+
+static gboolean omni_named_semantic_color(const char *name, GdkRGBA *color) {
+  if (!name || !name[0] || !color) return FALSE;
+  AdwStyleManager *manager = adw_style_manager_get_default();
+  gboolean dark = manager ? adw_style_manager_get_dark(manager) : FALSE;
+
+  if (g_ascii_strcasecmp(name, "clear") == 0) {
+    omni_set_rgba(color, 0.0, 0.0, 0.0, 0.0);
+  } else if (g_ascii_strcasecmp(name, "primary") == 0 || g_ascii_strcasecmp(name, "native") == 0) {
+    omni_set_rgba(color, dark ? 245.0 / 255.0 : 29.0 / 255.0, dark ? 245.0 / 255.0 : 29.0 / 255.0, dark ? 247.0 / 255.0 : 31.0 / 255.0, 1.0);
+  } else if (g_ascii_strcasecmp(name, "secondary") == 0) {
+    omni_set_rgba(color, dark ? 245.0 / 255.0 : 29.0 / 255.0, dark ? 245.0 / 255.0 : 29.0 / 255.0, dark ? 247.0 / 255.0 : 31.0 / 255.0, 0.72);
+  } else if (g_ascii_strcasecmp(name, "tertiary") == 0) {
+    omni_set_rgba(color, dark ? 245.0 / 255.0 : 29.0 / 255.0, dark ? 245.0 / 255.0 : 29.0 / 255.0, dark ? 247.0 / 255.0 : 31.0 / 255.0, 0.55);
+  } else if (g_ascii_strcasecmp(name, "quaternary") == 0) {
+    omni_set_rgba(color, dark ? 245.0 / 255.0 : 29.0 / 255.0, dark ? 245.0 / 255.0 : 29.0 / 255.0, dark ? 247.0 / 255.0 : 31.0 / 255.0, 0.35);
+  } else if (g_ascii_strcasecmp(name, "accentColor") == 0 || g_ascii_strcasecmp(name, "tint") == 0) {
+    omni_set_rgba(color, 53.0 / 255.0, 132.0 / 255.0, 228.0 / 255.0, 1.0);
+  } else if (g_ascii_strcasecmp(name, "black") == 0) {
+    omni_set_rgba(color, 0.0, 0.0, 0.0, 1.0);
+  } else if (g_ascii_strcasecmp(name, "white") == 0) {
+    omni_set_rgba(color, 1.0, 1.0, 1.0, 1.0);
+  } else if (g_ascii_strcasecmp(name, "gray") == 0 || g_ascii_strcasecmp(name, "grey") == 0) {
+    omni_set_rgba(color, 142.0 / 255.0, 142.0 / 255.0, 147.0 / 255.0, 1.0);
+  } else if (g_ascii_strcasecmp(name, "red") == 0) {
+    omni_set_rgba(color, 1.0, 69.0 / 255.0, 58.0 / 255.0, 1.0);
+  } else if (g_ascii_strcasecmp(name, "orange") == 0) {
+    omni_set_rgba(color, 1.0, 149.0 / 255.0, 0.0, 1.0);
+  } else if (g_ascii_strcasecmp(name, "yellow") == 0) {
+    omni_set_rgba(color, 191.0 / 255.0, 127.0 / 255.0, 0.0, 1.0);
+  } else if (g_ascii_strcasecmp(name, "green") == 0) {
+    omni_set_rgba(color, 36.0 / 255.0, 138.0 / 255.0, 61.0 / 255.0, 1.0);
+  } else if (g_ascii_strcasecmp(name, "mint") == 0) {
+    omni_set_rgba(color, 0.0, 166.0 / 255.0, 153.0 / 255.0, 1.0);
+  } else if (g_ascii_strcasecmp(name, "teal") == 0) {
+    omni_set_rgba(color, 10.0 / 255.0, 127.0 / 255.0, 143.0 / 255.0, 1.0);
+  } else if (g_ascii_strcasecmp(name, "cyan") == 0) {
+    omni_set_rgba(color, 0.0, 122.0 / 255.0, 153.0 / 255.0, 1.0);
+  } else if (g_ascii_strcasecmp(name, "blue") == 0) {
+    omni_set_rgba(color, 10.0 / 255.0, 132.0 / 255.0, 1.0, 1.0);
+  } else if (g_ascii_strcasecmp(name, "indigo") == 0) {
+    omni_set_rgba(color, 94.0 / 255.0, 92.0 / 255.0, 230.0 / 255.0, 1.0);
+  } else if (g_ascii_strcasecmp(name, "purple") == 0) {
+    omni_set_rgba(color, 175.0 / 255.0, 82.0 / 255.0, 222.0 / 255.0, 1.0);
+  } else if (g_ascii_strcasecmp(name, "pink") == 0) {
+    omni_set_rgba(color, 1.0, 45.0 / 255.0, 85.0 / 255.0, 1.0);
+  } else if (g_ascii_strcasecmp(name, "brown") == 0) {
+    omni_set_rgba(color, 142.0 / 255.0, 110.0 / 255.0, 83.0 / 255.0, 1.0);
+  } else {
+    return FALSE;
+  }
+  return TRUE;
+}
+
+static gboolean omni_parse_rgb_function(const char *base, GdkRGBA *color) {
+  if (!base || !color) return FALSE;
+  const char *rgb = strstr(base, "rgb(");
+  if (!rgb) return FALSE;
+  rgb += 4;
+
+  char *end = NULL;
+  double red = g_ascii_strtod(rgb, &end);
+  if (!end || *end != ',') return FALSE;
+  double green = g_ascii_strtod(end + 1, &end);
+  if (!end || *end != ',') return FALSE;
+  double blue = g_ascii_strtod(end + 1, &end);
+
+  if (red > 1.0 || green > 1.0 || blue > 1.0) {
+    red /= 255.0;
+    green /= 255.0;
+    blue /= 255.0;
+  }
+  omni_set_rgba(color, red, green, blue, 1.0);
+  return TRUE;
+}
+
+static gboolean omni_parse_semantic_color(const char *raw, GdkRGBA *color) {
+  if (!raw || !raw[0] || !color) return FALSE;
+  char *base = omni_strdup(raw);
+  double alpha_multiplier = 1.0;
+
+  char *alpha = strrchr(base, '|');
+  if (alpha) {
+    *alpha = '\0';
+    alpha++;
+    if (alpha[0]) {
+      alpha_multiplier = omni_unit_clamp(g_ascii_strtod(alpha, NULL));
+    }
+  }
+
+  gboolean parsed = omni_parse_rgb_function(base, color) ||
+    omni_named_semantic_color(base, color) ||
+    gdk_rgba_parse(color, base);
+  free(base);
+  if (!parsed) return FALSE;
+
+  color->alpha = omni_unit_clamp(color->alpha * alpha_multiplier);
+  return TRUE;
+}
+
+static void omni_adw_gradient_data_free(gpointer user_data) {
+  OmniAdwGradientData *data = user_data;
+  if (!data) return;
+  g_free(data->stops);
+  g_free(data);
+}
+
+static void omni_adw_gradient_draw(GtkDrawingArea *area, cairo_t *cr, int width, int height, gpointer user_data) {
+  (void)area;
+  OmniAdwGradientData *data = user_data;
+  if (!data || !data->stops || data->count <= 0 || !cr || width <= 0 || height <= 0) return;
+
+  if (data->count == 1) {
+    GdkRGBA color = data->stops[0];
+    cairo_set_source_rgba(cr, color.red, color.green, color.blue, color.alpha);
+    cairo_rectangle(cr, 0.0, 0.0, (double)width, (double)height);
+    cairo_fill(cr);
+    return;
+  }
+
+  double x0 = data->start_x * (double)width;
+  double y0 = data->start_y * (double)height;
+  double x1 = data->end_x * (double)width;
+  double y1 = data->end_y * (double)height;
+  if (x0 == x1 && y0 == y1) {
+    y1 = (double)height;
+  }
+
+  cairo_pattern_t *pattern = cairo_pattern_create_linear(x0, y0, x1, y1);
+  if (!pattern) return;
+  for (int32_t i = 0; i < data->count; i++) {
+    double offset = data->count <= 1 ? 0.0 : (double)i / (double)(data->count - 1);
+    GdkRGBA color = data->stops[i];
+    cairo_pattern_add_color_stop_rgba(pattern, offset, color.red, color.green, color.blue, color.alpha);
+  }
+  cairo_rectangle(cr, 0.0, 0.0, (double)width, (double)height);
+  cairo_set_source(cr, pattern);
+  cairo_fill(cr);
+  cairo_pattern_destroy(pattern);
+}
+
 OmniAdwNode *omni_adw_drawing_new(const char *label, const char *fill_color) {
   OmniAdwNode *node = calloc(1, sizeof(OmniAdwNode));
   node->widget = gtk_drawing_area_new();
@@ -7523,17 +8216,68 @@ OmniAdwNode *omni_adw_drawing_new(const char *label, const char *fill_color) {
   return node;
 }
 
+static OmniAdwGradientData *omni_adw_gradient_data_new(const char **colors, int32_t color_count, double start_x, double start_y, double end_x, double end_y) {
+  OmniAdwGradientData *data = calloc(1, sizeof(OmniAdwGradientData));
+  if (!data) return NULL;
+  int32_t capacity = color_count > 0 ? color_count : 1;
+  data->stops = g_new0(GdkRGBA, capacity);
+  data->start_x = start_x;
+  data->start_y = start_y;
+  data->end_x = end_x;
+  data->end_y = end_y;
+  if (!data->stops) {
+    omni_adw_gradient_data_free(data);
+    return NULL;
+  }
+
+  for (int32_t i = 0; i < color_count; i++) {
+    GdkRGBA parsed = {0};
+    if (colors && colors[i] && omni_parse_semantic_color(colors[i], &parsed)) {
+      data->stops[data->count++] = parsed;
+    }
+  }
+  if (data->count == 0) {
+    omni_set_rgba(&data->stops[data->count++], 0.0, 0.0, 0.0, 0.0);
+  }
+  return data;
+}
+
+OmniAdwNode *omni_adw_gradient_new(const char *label, const char **colors, int32_t color_count, double start_x, double start_y, double end_x, double end_y) {
+  OmniAdwNode *node = calloc(1, sizeof(OmniAdwNode));
+  node->widget = gtk_drawing_area_new();
+  gtk_widget_set_size_request(node->widget, 1, 1);
+  gtk_widget_add_css_class(node->widget, "omni-drawing-island");
+  omni_widget_expand(node->widget, TRUE);
+
+  OmniAdwGradientData *data = omni_adw_gradient_data_new(colors, color_count, start_x, start_y, end_x, end_y);
+  if (data) {
+    gtk_drawing_area_set_content_width(GTK_DRAWING_AREA(node->widget), 1);
+    gtk_drawing_area_set_content_height(GTK_DRAWING_AREA(node->widget), 1);
+    gtk_drawing_area_set_draw_func(GTK_DRAWING_AREA(node->widget), omni_adw_gradient_draw, data, omni_adw_gradient_data_free);
+  }
+
+  omni_accessible_label(node->widget, label ? label : "OmniUI gradient");
+  gtk_widget_set_tooltip_text(node->widget, label ? label : "OmniUI gradient");
+  return node;
+}
+
 OmniAdwNode *omni_adw_frame_new(const char *css_classes, int32_t spacing) {
   OmniAdwNode *node = calloc(1, sizeof(OmniAdwNode));
   node->widget = gtk_box_new(GTK_ORIENTATION_VERTICAL, spacing);
+  gboolean clips_native_children = FALSE;
   if (css_classes && css_classes[0]) {
     char *copy = omni_strdup(css_classes);
     char *token = strtok(copy, " ");
     while (token) {
       gtk_widget_add_css_class(node->widget, token);
+      if (strcmp(token, "omni-clip") == 0) clips_native_children = TRUE;
       token = strtok(NULL, " ");
     }
     free(copy);
+  }
+  if (clips_native_children) {
+    gtk_widget_set_overflow(node->widget, GTK_OVERFLOW_HIDDEN);
+    g_object_set_data(G_OBJECT(node->widget), "omni-native-clip", GINT_TO_POINTER(1));
   }
   omni_widget_expand(node->widget, FALSE);
   return node;
@@ -7541,12 +8285,30 @@ OmniAdwNode *omni_adw_frame_new(const char *css_classes, int32_t spacing) {
 
 void omni_adw_node_apply_layout(OmniAdwNode *node, int32_t width, int32_t height, int32_t min_width, int32_t min_height, int32_t margin_top, int32_t margin_start, int32_t margin_bottom, int32_t margin_end, double opacity) {
   if (!node || !node->widget) return;
-  g_object_set_data(G_OBJECT(node->widget), "omni-explicit-width", width >= 0 ? GINT_TO_POINTER(1) : NULL);
-  g_object_set_data(G_OBJECT(node->widget), "omni-explicit-height", height >= 0 ? GINT_TO_POINTER(1) : NULL);
-  int request_width = width >= 0 ? width : min_width;
-  int request_height = height >= 0 ? height : min_height;
+  if (width >= 0) {
+    g_object_set_data(G_OBJECT(node->widget), "omni-explicit-width", GINT_TO_POINTER(1));
+  }
+  if (height >= 0) {
+    g_object_set_data(G_OBJECT(node->widget), "omni-explicit-height", GINT_TO_POINTER(1));
+  }
+
+  int current_width = -1;
+  int current_height = -1;
+  gtk_widget_get_size_request(node->widget, &current_width, &current_height);
+  int request_width = width >= 0 ? width : (min_width >= 0 ? min_width : current_width);
+  int request_height = height >= 0 ? height : (min_height >= 0 ? min_height : current_height);
   if (request_width >= 0 || request_height >= 0) {
     gtk_widget_set_size_request(node->widget, request_width >= 0 ? request_width : -1, request_height >= 0 ? request_height : -1);
+    if (GTK_IS_OVERLAY(node->widget)) {
+      GtkWidget *base_child = gtk_overlay_get_child(GTK_OVERLAY(node->widget));
+      if (base_child) {
+        int child_width = request_width >= 0 && !omni_widget_has_explicit_width(base_child) ? request_width : -1;
+        int child_height = request_height >= 0 && !omni_widget_has_explicit_height(base_child) ? request_height : -1;
+        if (child_width >= 0 || child_height >= 0) {
+          omni_widget_set_layout_size_recursive(base_child, child_width, child_height);
+        }
+      }
+    }
   }
   if (margin_top >= 0) gtk_widget_set_margin_top(node->widget, margin_top);
   if (margin_start >= 0) gtk_widget_set_margin_start(node->widget, margin_start);
@@ -7645,6 +8407,8 @@ void omni_adw_node_append_overlay(OmniAdwNode *parent, OmniAdwNode *child, const
     if (!gtk_overlay_get_child(GTK_OVERLAY(parent->widget))) {
       omni_widget_expand(child->widget, TRUE);
       gtk_overlay_set_child(GTK_OVERLAY(parent->widget), child->widget);
+      omni_overlay_install_size_sync(parent->widget);
+      omni_overlay_sync_base_child_size(parent->widget);
     } else {
       omni_overlay_prepare_child(child->widget, alignment);
       gtk_overlay_add_overlay(GTK_OVERLAY(parent->widget), child->widget);

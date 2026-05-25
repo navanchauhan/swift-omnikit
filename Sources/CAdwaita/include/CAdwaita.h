@@ -76,6 +76,7 @@ OmniAdwNode *omni_adw_split_new(void);
 OmniAdwNode *omni_adw_text_new(const char *text);
 void omni_adw_node_set_text_wrap(OmniAdwNode *node, int32_t wrap);
 OmniAdwNode *omni_adw_image_new(const uint8_t *data, int32_t length, const char *alternative_text);
+OmniAdwNode *omni_adw_symbol_image_new(const char *system_name, const char *fallback_text, const char *alternative_text);
 OmniAdwNode *omni_adw_web_view_new(const char *url, const char *fallback_text, void *native_view);
 OmniAdwNode *omni_adw_web_view_new_ex(
     const char *identity,
@@ -186,6 +187,7 @@ OmniAdwNode *omni_adw_date_new(const char *label, const char *value, double time
 OmniAdwNode *omni_adw_scroll_new(int32_t vertical, double offset);
 OmniAdwNode *omni_adw_separator_new(void);
 OmniAdwNode *omni_adw_drawing_new(const char *label, const char *fill_color);
+OmniAdwNode *omni_adw_gradient_new(const char *label, const char **colors, int32_t color_count, double start_x, double start_y, double end_x, double end_y);
 OmniAdwNode *omni_adw_frame_new(const char *css_classes, int32_t spacing);
 void omni_adw_node_apply_layout(OmniAdwNode *node, int32_t width, int32_t height, int32_t min_width, int32_t min_height, int32_t margin_top, int32_t margin_start, int32_t margin_bottom, int32_t margin_end, double opacity);
 void omni_adw_node_set_visible(OmniAdwNode *node, int32_t visible);

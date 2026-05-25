@@ -172,7 +172,8 @@ public final class AdwaitaApp<Root: View>: @unchecked Sendable {
                 modifiers: modifiers,
                 codepoint: codepoint
             )
-            if consumed || eventType != 5 {
+            let passiveHighFrequencyEvent = eventType == 5 || eventType == 8
+            if consumed || !passiveHighFrequencyEvent {
                 box.rerender()
             }
             return consumed ? 1 : 0
@@ -205,7 +206,7 @@ public final class AdwaitaApp<Root: View>: @unchecked Sendable {
         omni_adw_app_set_event_callback(cApp, eventCallback)
         omni_adw_app_set_lifecycle_callback(cApp, lifecycleCallback)
         let appHandle = cApp
-        #if canImport(AppKit)
+        #if os(Linux)
         let appHandleBits = UInt(bitPattern: appHandle)
         _omniSetApplicationActivationHandler {
             if let handle = OpaquePointer(bitPattern: appHandleBits) {
@@ -224,7 +225,7 @@ public final class AdwaitaApp<Root: View>: @unchecked Sendable {
         }
         #endif
         defer {
-            #if canImport(AppKit)
+            #if os(Linux)
             _omniSetApplicationActivationHandler(nil)
             _omniSetCursorHandler(nil)
             #endif
@@ -267,7 +268,7 @@ public final class AdwaitaApp<Root: View>: @unchecked Sendable {
                 omni_adw_app_set_commands(cApp, node)
             }
         }
-        #if os(Linux)
+        #if os(Linux) || os(macOS)
         if initialPreferredColorScheme != nil {
             syncPreferredColorScheme(initialPreferredColorScheme)
         }
@@ -298,7 +299,7 @@ public final class AdwaitaApp<Root: View>: @unchecked Sendable {
             if traceRenders {
                 print("OmniUI Adwaita rerender: semantic snapshot ready")
             }
-            #if os(Linux)
+            #if os(Linux) || os(macOS)
             syncPreferredColorScheme(activePreferredColorScheme)
             #endif
             let presentation = AdwaitaPresentationExtractor.extract(from: snapshot.root)
@@ -367,7 +368,7 @@ public final class AdwaitaApp<Root: View>: @unchecked Sendable {
         box.takeUnretainedValue().rerender = {
             scheduleAdwaitaRender(rerender)
         }
-        #if os(Linux)
+        #if os(Linux) || os(macOS)
         _omniSetAppearanceChangeHandler { [runtime, settingsRuntime, commandRuntime, popoverRuntime, box] scheme in
             let nativeScheme = nativeColorSchemeName(preferredScheme: scheme)
             nativeScheme.withCString { omni_adw_set_color_scheme($0) }
@@ -412,7 +413,7 @@ public final class AdwaitaApp<Root: View>: @unchecked Sendable {
         defer {
             NotificationCenter.default.removeObserver(userDefaultsObserver)
         }
-        #if canImport(AppKit)
+        #if os(Linux)
         let statusItemObserver = NotificationCenter.default.addObserver(
             forName: NSStatusBar.didChangeStatusItemsNotification,
             object: nil,
@@ -501,13 +502,20 @@ public final class AdwaitaApp<Root: View>: @unchecked Sendable {
 }
 
 private func syncPreferredColorScheme(_ scheme: ColorScheme?) {
+#if os(Linux) || os(macOS)
     _omniSetPreferredColorScheme(scheme)
+#endif
     let nativeScheme = nativeColorSchemeName(preferredScheme: scheme)
     nativeScheme.withCString { omni_adw_set_color_scheme($0) }
 }
 
 private func nativeColorSchemeName(preferredScheme scheme: ColorScheme?) -> String {
-    switch scheme ?? _omniCurrentApplicationAppearanceColorScheme() ?? environmentColorSchemeOverride() {
+    #if os(Linux) || os(macOS)
+    let currentAppearance = _omniCurrentAppearanceColorScheme()
+    #else
+    let currentAppearance: ColorScheme? = nil
+    #endif
+    switch scheme ?? currentAppearance ?? environmentColorSchemeOverride() {
     case .some(.light):
         return "light"
     case .some(.dark):
@@ -706,7 +714,7 @@ private final class CallbackBox: @unchecked Sendable {
 
 private func invokeAdwaitaRawAction(_ rawID: Int, box: CallbackBox) {
     if rawID >= adwaitaStatusItemActionOffset {
-        #if canImport(AppKit)
+        #if os(Linux)
         NSStatusBar.system.performStatusItem(at: rawID - adwaitaStatusItemActionOffset)
         #endif
     } else if rawID >= adwaitaSettingsActionOffset {
@@ -1465,7 +1473,7 @@ private func syncNativePresentation(_ modal: SemanticNode?, app: OpaquePointer?)
 
 @MainActor
 private func appKitTransientPresentation(runtime: _UIRuntime, size: _Size) -> SemanticNode? {
-    #if canImport(AppKit)
+    #if os(Linux)
     if let content = NSMenu.activeContentView {
         return runtime.semanticSnapshot(content, size: size).root
     }
@@ -1481,7 +1489,7 @@ private func appKitTransientPresentation(runtime: _UIRuntime, size: _Size) -> Se
 private func syncNativeHeaderActions(_ actions: [AdwaitaHeaderToolbar.Action], app: OpaquePointer?) {
     guard let app else { return }
     var allActions = actions
-    #if canImport(AppKit)
+    #if os(Linux)
     allActions.append(contentsOf: NSStatusBar.system.fallbackLabels.enumerated().map { index, label in
         AdwaitaHeaderToolbar.Action(label: label, actionID: adwaitaStatusItemActionOffset + index, placement: .end)
     })
@@ -1949,7 +1957,8 @@ enum AdwaitaNodeBuilder {
                     omni_adw_image_new(bytes.bindMemory(to: UInt8.self).baseAddress, Int32(data.count), "Story image")
                 }
             } else {
-                built = omni_adw_text_new(SFSymbolMap.unicode(for: text) ?? text)
+                let fallback = SFSymbolMap.unicode(for: text) ?? text
+                built = omni_adw_symbol_image_new(text, fallback, fallback)
                 applyInlineTextLayout(to: built, context: context)
             }
         case .webContent(let registryKey, _, _, _, _):
@@ -2012,7 +2021,8 @@ enum AdwaitaNodeBuilder {
                 }
             }
         case .disabledButton(let label):
-            built = omni_adw_button_new(label, 0)
+            let resolvedLabel = disabledButtonLabel(label, children: node.children)
+            built = omni_adw_button_new(resolvedLabel, 0)
             if let built {
                 omni_adw_node_set_sensitive(built, 0)
             }
@@ -2083,8 +2093,18 @@ enum AdwaitaNodeBuilder {
             switch kind {
             case .shape(let name, let fill, _):
                 built = omni_adw_drawing_new("OmniUI shape(\(name))", fill)
-            case .gradient(let colors):
-                built = omni_adw_drawing_new("OmniUI gradient", colors.first)
+            case .gradient(let colors, let startX, let startY, let endX, let endY):
+                built = colors.withCStringArray { colorPointers in
+                    omni_adw_gradient_new(
+                        "OmniUI gradient",
+                        colorPointers,
+                        Int32(colors.count),
+                        startX,
+                        startY,
+                        endX,
+                        endY
+                    )
+                }
             case .canvas:
                 built = omni_adw_drawing_new("OmniUI canvas", nil)
             }
@@ -2230,8 +2250,14 @@ enum AdwaitaNodeBuilder {
             return _OmniWebViewRegistry.payload(for: text) != nil
         case .webContent:
             return true
+        case .drawingIsland(.gradient):
+            return true
         case .button, .tapTarget:
             return node.children.contains(where: shouldExpandVertically)
+        case .modifier(.background("native/adwaita")):
+            return node.children
+                .filter { $0.id.hasSuffix(".content") }
+                .contains(where: shouldExpandVertically)
         case .modifier(.frame(_, let height, _, _, _, let maxHeight)):
             if height != nil || maxHeight == 0 { return false }
             if maxHeight != nil { return true }
@@ -2248,7 +2274,7 @@ enum AdwaitaNodeBuilder {
     private static func shouldUseHomogeneousHorizontalBox(_ children: [SemanticNode]) -> Bool {
         let visibleChildren = children.filter { !isZeroWidthFrame($0) }
         guard visibleChildren.count > 1 else { return false }
-        return visibleChildren.allSatisfy(hasFlexibleHorizontalFrame)
+        return visibleChildren.allSatisfy(hasRootFlexibleHorizontalFrame)
     }
 
     private static func webViewNode(for payload: _OmniWebViewPayload) -> OpaquePointer? {
@@ -2420,6 +2446,17 @@ enum AdwaitaNodeBuilder {
         }
     }
 
+    private static func hasRootFlexibleHorizontalFrame(_ node: SemanticNode) -> Bool {
+        switch node.kind {
+        case .modifier(.frame(_, _, _, let maxWidth, _, _)):
+            return maxWidth == Int.max
+        case .modifier(let modifier) where modifierAllowsLayoutDescent(modifier):
+            return node.children.contains(where: hasRootFlexibleHorizontalFrame)
+        default:
+            return false
+        }
+    }
+
     private static func isZeroWidthFrame(_ node: SemanticNode) -> Bool {
         switch node.kind {
         case .modifier(.frame(let width, _, _, let maxWidth, _, _)):
@@ -2522,7 +2559,20 @@ enum AdwaitaNodeBuilder {
                 return node
             }
             return nil
-        case .shadow, .glass, .crt, .clip, .accessibilityLabel, .noOp:
+        case .clip:
+            guard containsWebContent(children) else { return primaryContent() }
+            guard let content = primaryContent() else { return nil }
+            guard let wrapper = omni_adw_frame_new("omni-clip", 0) else { return content }
+            omni_adw_node_set_expand(wrapper, 1, 1)
+            omni_adw_node_append(wrapper, content)
+            return wrapper
+        case .glass:
+            if let child = children.last,
+               let stripped = stripAdwaitaGlassDecoration(from: child) {
+                return build(stripped, context: context)
+            }
+            return primaryContent()
+        case .shadow, .crt, .accessibilityLabel, .noOp:
             return primaryContent()
         case .badge:
             css = "accent"
@@ -2557,11 +2607,62 @@ enum AdwaitaNodeBuilder {
         return colorCSSClass(prefix: "omni-bg", color: color)
     }
 
+    private static func containsWebContent(_ nodes: [SemanticNode]) -> Bool {
+        nodes.contains(where: containsWebContent)
+    }
+
+    private static func containsWebContent(_ node: SemanticNode) -> Bool {
+        if case .webContent = node.kind { return true }
+        return node.children.contains(where: containsWebContent)
+    }
+
+    private static func stripAdwaitaGlassDecoration(from node: SemanticNode) -> SemanticNode? {
+        switch node.kind {
+        case .modifier(.background("native/adwaita")):
+            return node.children.first(where: { $0.id.hasSuffix(".content") })
+                .flatMap(stripAdwaitaGlassDecoration)
+        case .modifier(.shadow), .modifier(.opacity), .modifier(.clip), .modifier(.foreground),
+             .modifier(.font), .modifier(.padding), .modifier(.accessibilityLabel),
+             .modifier(.accessibilityIdentifier), .modifier(.accessibilityValue),
+             .modifier(.accessibilityHint), .modifier(.help), .modifier(.noOp):
+            return node.children.last.flatMap(stripAdwaitaGlassDecoration)
+        default:
+            return node
+        }
+    }
+
+    private static func stripAdwaitaGlassDecorationForLabel(from node: SemanticNode) -> SemanticNode? {
+        if case .disabledButton = node.kind {
+            return node.children.last.flatMap(stripAdwaitaGlassDecorationForLabel)
+        }
+        if let stripped = stripAdwaitaGlassDecoration(from: node), stripped.id != node.id || "\(stripped.kind)" != "\(node.kind)" {
+            return stripAdwaitaGlassDecorationForLabel(from: stripped)
+        }
+        return node
+    }
+
+    private static func disabledButtonLabel(_ label: String, children: [SemanticNode]) -> String {
+        let trimmed = label.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !trimmed.isEmpty && !trimmed.hasPrefix("glass(") {
+            return trimmed
+        }
+        for child in children {
+            if let stripped = stripAdwaitaGlassDecorationForLabel(from: child) {
+                let candidate = accessibleLabel(for: stripped)
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                if !candidate.isEmpty && candidate != "Action" && !candidate.hasPrefix("glass(") {
+                    return candidate
+                }
+            }
+        }
+        return trimmed.isEmpty ? "Disabled" : trimmed
+    }
+
     private static func firstBackgroundShapeColor(in node: SemanticNode) -> String? {
         switch node.kind {
         case .drawingIsland(.shape(_, let fill, let stroke)):
             return fill ?? stroke
-        case .drawingIsland(.gradient(let colors)):
+        case .drawingIsland(.gradient(let colors, _, _, _, _)):
             return colors.first
         case .modifier(.opacity(let alpha)):
             guard let color = node.children.lazy.compactMap(firstBackgroundShapeColor).first else { return nil }
@@ -3299,6 +3400,7 @@ private func dispatchNativeEventToLocalMonitors(
     modifiers: UInt32,
     codepoint: UInt32
 ) -> Bool {
+#if os(Linux)
     let event = NSEvent()
     switch eventType {
     case 1:
@@ -3348,4 +3450,13 @@ private func dispatchNativeEventToLocalMonitors(
         return _omniDispatchScrollWheel(for: event)
     }
     return false
+#else
+    _ = eventType
+    _ = x
+    _ = y
+    _ = clickCount
+    _ = modifiers
+    _ = codepoint
+    return false
+#endif
 }
