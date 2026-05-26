@@ -134,6 +134,7 @@ struct OmniAdwApp {
   int32_t active_tab;
   GtkWidget *settings_window;
   GtkWidget *settings_content;
+  gboolean present_settings_on_activate;
   GtkWidget *command_button;
   GtkWidget *command_popover;
   GtkWidget *command_content;
@@ -3036,7 +3037,7 @@ static void omni_install_css_once(void) {
     ".omni-body { padding: 0; }"
     ".card { border-radius: 10px; padding: 12px; margin: 0; background: @card_bg_color; }"
     ".adw-dialog { padding: 0; margin: 0; background: transparent; }"
-    ".omni-sheet-surface { padding: 12px 14px; margin: 0; border-radius: 12px; border: 0; background: @window_bg_color; background-color: @window_bg_color; color: @window_fg_color; }"
+    ".omni-sheet-surface { padding: 18px; margin: 18px; border-radius: 12px; border: 1px solid @borders; background: @popover_bg_color; background-color: @popover_bg_color; color: @window_fg_color; box-shadow: 0 12px 36px alpha(black,0.35); }"
     ".boxed-list { border-radius: 0; padding: 0; margin: 0; background: @view_bg_color; background-color: @view_bg_color; }"
     ".boxed-list row { min-height: 0; padding: 0; margin: 0; border-radius: 0; background: transparent; background-color: transparent; border-bottom: 1px solid @borders; }"
     ".boxed-list row:hover { background: alpha(@view_fg_color,0.035); background-color: alpha(@view_fg_color,0.035); }"
@@ -3523,6 +3524,10 @@ static void on_app_activate(GApplication *application, gpointer data) {
   }
   gtk_window_present(GTK_WINDOW(app->window));
   omni_macos_accessibility_schedule(app);
+  if (app->present_settings_on_activate) {
+    app->present_settings_on_activate = FALSE;
+    request_settings_refresh_and_present(app);
+  }
 }
 
 static void present_settings_window(OmniAdwApp *app) {
@@ -4712,6 +4717,9 @@ static void on_color_channel_value_changed(GtkRange *range, gpointer user_data) 
 static void on_color_swatch_clicked(GtkButton *button, gpointer data) {
   OmniColorControlData *control = (OmniColorControlData *)data;
   OmniAdwApp *app = (OmniAdwApp *)g_object_get_data(G_OBJECT(button), "omni-app");
+  if (!app && control && control->button) {
+    app = (OmniAdwApp *)g_object_get_data(G_OBJECT(control->button), "omni-app");
+  }
   const char *value = (const char *)g_object_get_data(G_OBJECT(button), "omni-color-value");
   GdkRGBA color;
   if (!control || !value || !value[0] || !omni_parse_semantic_color(value, &color)) return;
@@ -6704,6 +6712,11 @@ void omni_adw_app_present_settings(OmniAdwApp *app) {
   present_settings_window(app);
 }
 
+void omni_adw_app_present_settings_on_activate(OmniAdwApp *app, int32_t enabled) {
+  if (!app) return;
+  app->present_settings_on_activate = enabled ? TRUE : FALSE;
+}
+
 void omni_adw_app_set_commands(OmniAdwApp *app, OmniAdwNode *commands) {
   if (!app || !commands) return;
   app->command_content = commands->widget;
@@ -6920,13 +6933,24 @@ static void on_sheet_close_attempt(AdwDialog *dialog, gpointer data) {
   adw_dialog_close(dialog);
 }
 
-static GtkWidget *omni_sheet_surface_new(void) {
+static gboolean widget_contains_scrolled_window(GtkWidget *widget) {
+  if (!widget || !GTK_IS_WIDGET(widget)) return FALSE;
+  if (GTK_IS_SCROLLED_WINDOW(widget)) return TRUE;
+  GtkWidget *child = gtk_widget_get_first_child(widget);
+  while (child) {
+    if (widget_contains_scrolled_window(child)) return TRUE;
+    child = gtk_widget_get_next_sibling(child);
+  }
+  return FALSE;
+}
+
+static GtkWidget *omni_sheet_surface_new(gboolean fills_height) {
   GtkWidget *surface = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
   gtk_widget_add_css_class(surface, "omni-sheet-surface");
   gtk_widget_set_hexpand(surface, TRUE);
   gtk_widget_set_halign(surface, GTK_ALIGN_FILL);
-  gtk_widget_set_vexpand(surface, FALSE);
-  gtk_widget_set_valign(surface, GTK_ALIGN_CENTER);
+  gtk_widget_set_vexpand(surface, fills_height ? TRUE : FALSE);
+  gtk_widget_set_valign(surface, fills_height ? GTK_ALIGN_FILL : GTK_ALIGN_CENTER);
   omni_accessible_label(surface, "Sheet");
   omni_accessible_description(surface, "Modal sheet");
   return surface;
@@ -6949,7 +6973,11 @@ static void omni_schedule_focus_widget(GtkWidget *widget) {
 static gboolean update_presented_sheet_dialog(OmniAdwApp *app, OmniAdwNode *modal) {
   if (!app || !app->modal_dialog || !modal || !modal->widget) return FALSE;
   wire_actions(modal->widget, app);
-  GtkWidget *surface = omni_sheet_surface_new();
+  gboolean fills_height = widget_contains_scrolled_window(modal->widget);
+  if (fills_height && !ADW_IS_ALERT_DIALOG(app->modal_dialog)) {
+    adw_dialog_set_content_height(app->modal_dialog, 560);
+  }
+  GtkWidget *surface = omni_sheet_surface_new(fills_height);
   gtk_box_append(GTK_BOX(surface), modal->widget);
   modal->widget = NULL;
   if (ADW_IS_ALERT_DIALOG(app->modal_dialog)) {
@@ -6967,7 +6995,7 @@ static void present_sheet_dialog(OmniAdwApp *app, OmniAdwNode *modal, OmniModalS
   int effective_close_action_id = close_action_id > 0 ? close_action_id : modal_cancel_action_id(summary);
   AdwDialog *dialog = adw_dialog_new();
   adw_dialog_set_title(dialog, "Sheet");
-  adw_dialog_set_can_close(dialog, effective_close_action_id > 0);
+  adw_dialog_set_can_close(dialog, TRUE);
   adw_dialog_set_content_width(dialog, 520);
   adw_dialog_set_presentation_mode(dialog, ADW_DIALOG_FLOATING);
   omni_accessible_label(GTK_WIDGET(dialog), "Sheet");
@@ -6981,7 +7009,11 @@ static void present_sheet_dialog(OmniAdwApp *app, OmniAdwNode *modal, OmniModalS
 #endif
   wire_actions(modal->widget, app);
 
-  GtkWidget *surface = omni_sheet_surface_new();
+  gboolean fills_height = widget_contains_scrolled_window(modal->widget);
+  if (fills_height) {
+    adw_dialog_set_content_height(dialog, 560);
+  }
+  GtkWidget *surface = omni_sheet_surface_new(fills_height);
   gtk_box_append(GTK_BOX(surface), modal->widget);
   modal->widget = NULL;
   GtkWidget *sheet_entry = find_first_entry_widget(surface);
@@ -8600,6 +8632,7 @@ OmniAdwNode *omni_adw_color_button_new(const char *label, const char *value, int
   gtk_widget_add_css_class(button, "omni-color-menu-button");
   gtk_widget_set_valign(button, GTK_ALIGN_CENTER);
   gtk_widget_set_halign(button, GTK_ALIGN_END);
+  gtk_widget_set_tooltip_text(button, has_label ? label : "Color");
   gtk_menu_button_set_child(GTK_MENU_BUTTON(button), omni_color_swatch_widget_new(&color, 28, 18));
   omni_accessible_label(button, has_label ? label : "Color");
   omni_accessible_value_text(button, value);
@@ -8642,6 +8675,7 @@ OmniAdwNode *omni_adw_color_button_new(const char *label, const char *value, int
     gtk_scale_set_draw_value(GTK_SCALE(scale), TRUE);
     gtk_scale_set_digits(GTK_SCALE(scale), 2);
     gtk_range_set_value(GTK_RANGE(scale), omni_unit_clamp(channel_values[i]));
+    gtk_widget_set_size_request(scale, 180, -1);
     gtk_widget_set_hexpand(scale, TRUE);
     gtk_widget_set_halign(scale, GTK_ALIGN_FILL);
     omni_accessible_label(scale, channel_names[i]);
@@ -8673,6 +8707,7 @@ OmniAdwNode *omni_adw_color_button_new(const char *label, const char *value, int
     gtk_widget_add_css_class(swatch_button, "flat");
     gtk_widget_add_css_class(swatch_button, "omni-color-swatch-button");
     gtk_button_set_child(GTK_BUTTON(swatch_button), omni_color_swatch_widget_new(&swatch_color, 22, 16));
+    gtk_widget_set_tooltip_text(swatch_button, names[i]);
     omni_accessible_label(swatch_button, names[i]);
     omni_accessible_value_text(swatch_button, values[i]);
     g_object_set_data_full(G_OBJECT(swatch_button), "omni-color-value", g_strdup(values[i]), g_free);
@@ -8969,7 +9004,11 @@ static void omni_adw_gradient_draw(GtkDrawingArea *area, cairo_t *cr, int width,
     y1 = (double)height;
   }
 
-  cairo_pattern_t *pattern = cairo_pattern_create_linear(x0, y0, x1, y1);
+  gboolean radial = data->start_x == data->end_x && data->end_y > 1.0;
+  double radius = width > height ? (double)width * 0.8 : (double)height * 0.8;
+  cairo_pattern_t *pattern = radial
+    ? cairo_pattern_create_radial(x0, y0, 0.0, x0, y0, radius)
+    : cairo_pattern_create_linear(x0, y0, x1, y1);
   if (!pattern) return;
   for (int32_t i = 0; i < data->count; i++) {
     double offset = data->count <= 1 ? 0.0 : (double)i / (double)(data->count - 1);
@@ -8986,6 +9025,8 @@ OmniAdwNode *omni_adw_drawing_new(const char *label, const char *fill_color) {
   OmniAdwNode *node = calloc(1, sizeof(OmniAdwNode));
   node->widget = gtk_drawing_area_new();
   gtk_widget_set_size_request(node->widget, 1, 1);
+  gtk_widget_set_can_target(node->widget, FALSE);
+  gtk_widget_set_focusable(node->widget, FALSE);
   gtk_widget_add_css_class(node->widget, "omni-drawing-island");
   GdkRGBA parsed = {0};
   if (fill_color && fill_color[0] && omni_parse_semantic_color(fill_color, &parsed) && parsed.alpha > 0.0) {
@@ -9038,6 +9079,8 @@ OmniAdwNode *omni_adw_gradient_new(const char *label, const char **colors, int32
   OmniAdwNode *node = calloc(1, sizeof(OmniAdwNode));
   node->widget = gtk_drawing_area_new();
   gtk_widget_set_size_request(node->widget, 1, 1);
+  gtk_widget_set_can_target(node->widget, FALSE);
+  gtk_widget_set_focusable(node->widget, FALSE);
   gtk_widget_add_css_class(node->widget, "omni-drawing-island");
   omni_widget_expand(node->widget, TRUE);
 
@@ -9057,15 +9100,22 @@ OmniAdwNode *omni_adw_frame_new(const char *css_classes, int32_t spacing) {
   OmniAdwNode *node = calloc(1, sizeof(OmniAdwNode));
   node->widget = gtk_box_new(GTK_ORIENTATION_VERTICAL, spacing);
   gboolean clips_native_children = FALSE;
+  gboolean pass_through_overlay = FALSE;
   if (css_classes && css_classes[0]) {
     char *copy = omni_strdup(css_classes);
     char *token = strtok(copy, " ");
     while (token) {
       gtk_widget_add_css_class(node->widget, token);
       if (strcmp(token, "omni-clip") == 0) clips_native_children = TRUE;
+      if (strcmp(token, "omni-crt-overlay") == 0) pass_through_overlay = TRUE;
       token = strtok(NULL, " ");
     }
     free(copy);
+  }
+  if (pass_through_overlay) {
+    gtk_widget_set_can_target(node->widget, FALSE);
+    gtk_widget_set_focusable(node->widget, FALSE);
+    omni_widget_expand(node->widget, TRUE);
   }
   if (clips_native_children) {
     gtk_widget_set_overflow(node->widget, GTK_OVERFLOW_HIDDEN);

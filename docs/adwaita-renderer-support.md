@@ -58,7 +58,7 @@ The renderer uses drawing islands where there is no appropriate native GTK contr
 
 ## Style And Modifier Approximations
 
-- Liquid Glass and CRT effect modifiers are semantic metadata in the Adwaita backend. They preserve the real content subtree and drop decorative Canvas, Path, shape, and gradient overlays when those layers would otherwise become visible fake GTK widgets.
+- Liquid Glass and CRT effect modifiers are semantic metadata in the Adwaita backend. They preserve the real content subtree; CRT scanlines, vignette gradients, and glow shadows lower to pass-through drawing/CSS overlays so the content remains clickable and scrollable.
 - Common layout modifiers such as frame, padding, opacity, and positive offset map to native GTK size requests, margins, and opacity on wrapper widgets. Style modifiers such as badge become Adwaita CSS classes, while background, shadow, glass, and CRT wrappers preserve primary content unless they are a real Adwaita dialog background. Clip, safe-area insets, toolbar backgrounds, sheets, and alerts are represented in OmniUICore and either become native containers, transient modal Adwaita windows, or documented no-op/metadata approximations where GTK has no direct equivalent.
 - Accessibility labels, identifiers, values, and hints are preserved in the semantic tree. The Adwaita backend uses labels for native action metadata, GTK accessible labels, GTK accessible value text, descriptions, and GTK widget names where the modifier wraps a native child. macOS Computer Use still exposes the GTK child tree opaquely in this environment, so UI verification relies on screenshot deltas for child widgets.
 

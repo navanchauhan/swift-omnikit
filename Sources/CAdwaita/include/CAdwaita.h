@@ -55,6 +55,7 @@ void omni_adw_app_set_header_entry(OmniAdwApp *app, const char *placeholder, con
 void omni_adw_app_set_header_actions(OmniAdwApp *app, const char **labels, const int32_t *action_ids, const int32_t *placements, const int32_t *styles, int32_t count);
 void omni_adw_app_set_settings(OmniAdwApp *app, OmniAdwNode *settings);
 void omni_adw_app_present_settings(OmniAdwApp *app);
+void omni_adw_app_present_settings_on_activate(OmniAdwApp *app, int32_t enabled);
 void omni_adw_app_set_commands(OmniAdwApp *app, OmniAdwNode *commands);
 void omni_adw_app_set_root(OmniAdwApp *app, OmniAdwNode *root);
 void omni_adw_app_set_root_focused(OmniAdwApp *app, OmniAdwNode *root, int32_t focused_action_id);

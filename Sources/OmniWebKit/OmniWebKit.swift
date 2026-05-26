@@ -314,7 +314,6 @@ public extension WKUIDelegate {
     }
 }
 
-@MainActor
 public final class WKPreferences: NSObject, @unchecked Sendable {
     private struct WebViewBox {
         weak var webView: WKWebView?
@@ -350,13 +349,16 @@ public final class WKPreferences: NSObject, @unchecked Sendable {
         webViews.removeValue(forKey: ObjectIdentifier(webView))
     }
 
-    private func forAttachedWebViews(_ body: (WKWebView) -> Void) {
+    private func forAttachedWebViews(_ body: @Sendable @escaping @MainActor (WKWebView) -> Void) {
         for (id, box) in webViews {
             guard let webView = box.webView else {
                 webViews.removeValue(forKey: id)
                 continue
             }
-            body(webView)
+            Task { @MainActor [weak webView] in
+                guard let webView else { return }
+                body(webView)
+            }
         }
     }
 }
@@ -422,7 +424,6 @@ public final class WKContentRuleListStore: NSObject, @unchecked Sendable {
     }
 }
 
-@MainActor
 public final class WKUserContentController: NSObject, @unchecked Sendable {
     private struct HandlerBox {
         var handler: WKScriptMessageHandler
@@ -493,13 +494,16 @@ public final class WKUserContentController: NSObject, @unchecked Sendable {
         webViews.removeValue(forKey: ObjectIdentifier(webView))
     }
 
-    private func forAttachedWebViews(_ body: (WKWebView) -> Void) {
+    private func forAttachedWebViews(_ body: @Sendable @escaping @MainActor (WKWebView) -> Void) {
         for (id, box) in webViews {
             guard let webView = box.webView else {
                 webViews.removeValue(forKey: id)
                 continue
             }
-            body(webView)
+            Task { @MainActor [weak webView] in
+                guard let webView else { return }
+                body(webView)
+            }
         }
     }
 }
@@ -646,7 +650,6 @@ public final class WKWebsiteDataStore: NSObject, @unchecked Sendable {
     }
 }
 
-@MainActor
 public final class WKWebViewConfiguration: NSObject, @unchecked Sendable {
     public var processPool = WKProcessPool()
     public var preferences = WKPreferences()

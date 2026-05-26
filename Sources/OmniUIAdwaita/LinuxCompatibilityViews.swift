@@ -65,13 +65,14 @@ public struct macOSToolbarView<BackwardStack: Collection, ForwardStack: Collecti
                 Label("Home", systemImage: "house")
                     .labelStyle(.iconOnly)
             }
-            .disabled(url == homeURL.absoluteString)
+            .keyboardShortcut("r", modifiers: [.command])
             .accessibilityIdentifier("home-button")
 
             Button(action: onBack) {
                 Label("Back", systemImage: "chevron.left")
                     .labelStyle(.iconOnly)
             }
+            .keyboardShortcut("[", modifiers: [.command])
             .disabled(backwardStack.count < 2)
             .accessibilityIdentifier("back-button")
 
@@ -79,6 +80,7 @@ public struct macOSToolbarView<BackwardStack: Collection, ForwardStack: Collecti
                 Label("Forward", systemImage: "chevron.right")
                     .labelStyle(.iconOnly)
             }
+            .keyboardShortcut("]", modifiers: [.command])
             .disabled(forwardStack.isEmpty)
             .accessibilityIdentifier("forward-button")
 
@@ -112,6 +114,13 @@ public struct macOSToolbarView<BackwardStack: Collection, ForwardStack: Collecti
                     .labelStyle(.iconOnly)
             }
             .accessibilityIdentifier("share-button")
+
+            Button(action: { showPreferences = true }) {
+                Label("Settings", systemImage: "gear")
+                    .labelStyle(.iconOnly)
+            }
+            .keyboardShortcut(",", modifiers: [.command])
+            .accessibilityIdentifier("settings-button")
 
             Button("Go", action: onGo)
                 .keyboardShortcut(.defaultAction)

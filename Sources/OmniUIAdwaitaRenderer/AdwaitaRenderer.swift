@@ -53,6 +53,12 @@ public final class AdwaitaApp<Root: View>: @unchecked Sendable {
             let box = Unmanaged<CallbackBox>.fromOpaque(context).takeUnretainedValue()
             let rawID = Int(actionID)
             if rawID == adwaitaInternalPresentSettingsActionID {
+                if box.previousSettingsRoot == nil,
+                   invokeAdwaitaSettingsFallback(box: box) {
+                    box.runtime._markDirtyFromExternalResource()
+                    box.rerender()
+                    return
+                }
                 box.settingsRuntime._markDirtyFromExternalResource()
                 box.runtime._markDirtyFromExternalResource()
                 box.rerender()
@@ -330,6 +336,7 @@ public final class AdwaitaApp<Root: View>: @unchecked Sendable {
             #if os(Linux) || os(macOS)
             syncPreferredColorScheme(activePreferredColorScheme)
             #endif
+            AdwaitaSemanticDumper.dumpIfRequested(snapshot.root, section: "RAW")
             let presentation = AdwaitaPresentationExtractor.extract(from: snapshot.root)
             AdwaitaSemanticDumper.dumpToolbarIfRequested(presentation.toolbar)
             let displaySnapshot = SemanticSnapshot(
@@ -344,6 +351,7 @@ public final class AdwaitaApp<Root: View>: @unchecked Sendable {
             if let title = presentation.toolbar.title {
                 title.withCString { omni_adw_app_set_header_title(cApp, $0) }
             }
+            syncNativeHeaderEntry(presentation.toolbar.entry, app: cApp)
             syncNativeHeaderActions(presentation.toolbar.actions, app: cApp)
             let callbackBox = box.takeUnretainedValue()
             callbackBox.previousToolbar = presentation.toolbar
@@ -360,6 +368,9 @@ public final class AdwaitaApp<Root: View>: @unchecked Sendable {
             }
             callbackBox.lastChanges = changes
             callbackBox.textValuesByActionID = adwaitaTextValues(box: callbackBox, displayRoot: displaySnapshot.root, modalRoot: transientPresentation)
+            if let entry = presentation.toolbar.entry {
+                callbackBox.textValuesByActionID[entry.actionID] = entry.text
+            }
             if changes.isEmpty, callbackBox.previousSnapshot != nil {
                 syncNativePresentation(transientPresentation, previous: previousModalRoot, focusedActionID: displaySnapshot.focusedActionID, app: cApp)
                 callbackBox.previousModalRoot = transientPresentation
@@ -488,6 +499,7 @@ public final class AdwaitaApp<Root: View>: @unchecked Sendable {
         #endif
         _omniAdwaitaRendererEntryTrace("run initial rerender")
         rerender()
+        configureAdwaitaSettingsOnLaunchIfRequested(appHandle)
         runAdwaitaAutomationIfRequested(box: box.takeUnretainedValue(), rerender: rerender)
         _omniAdwaitaRendererEntryTrace("run before gtk")
         let observationRenderLoop = Task { @MainActor [runtime, renderSize] in
@@ -614,6 +626,11 @@ private enum AdwaitaSemanticDumper {
         write("OMNIUI_ADWAITA_SEMANTIC_BEGIN \(section)")
         if let title = toolbar.title {
             write("  title \(String(reflecting: title))")
+        }
+        if let entry = toolbar.entry {
+            write(
+                "  entry(actionID: \(entry.actionID), placeholder: \(String(reflecting: entry.placeholder)), text: \(String(reflecting: entry.text)))"
+            )
         }
         for action in toolbar.actions {
             write(
@@ -759,6 +776,16 @@ private func invokeAdwaitaRawAction(_ rawID: Int, box: CallbackBox) {
     } else {
         box.runtime.invokeActionByRawID(rawID)
     }
+}
+
+@discardableResult
+private func invokeAdwaitaSettingsFallback(box: CallbackBox) -> Bool {
+    for label in ["Settings", "Preferences"] {
+        if invokeAdwaitaLabel(label, box: box) {
+            return true
+        }
+    }
+    return false
 }
 
 private func adwaitaActionID(matchingVisibleText label: String, in node: SemanticNode) -> Int? {
@@ -914,8 +941,25 @@ private func adwaitaPickerOptionActionID(title: String, option: String, in node:
        menuTitle == title {
         return adwaitaActionID(matchingVisibleText: option, in: node)
     }
+    if !title.isEmpty,
+       adwaitaVisibleText(in: node).contains(title),
+       let actionID = adwaitaMenuOptionActionID(option: option, in: node) {
+        return actionID
+    }
     for child in node.children {
         if let actionID = adwaitaPickerOptionActionID(title: title, option: option, in: child) {
+            return actionID
+        }
+    }
+    return nil
+}
+
+private func adwaitaMenuOptionActionID(option: String, in node: SemanticNode) -> Int? {
+    if case .menu = node.kind {
+        return adwaitaActionID(matchingVisibleText: option, in: node)
+    }
+    for child in node.children {
+        if let actionID = adwaitaMenuOptionActionID(option: option, in: child) {
             return actionID
         }
     }
@@ -1001,6 +1045,13 @@ private func runAdwaitaAutomationIfRequested(box: CallbackBox, rerender: @MainAc
     runAdwaitaContextMenuAutomationIfRequested(box: box, rerender: rerender)
     runAdwaitaTextAutomationIfRequested(box: box, rerender: rerender)
     dumpAdwaitaAutomationPasteboardIfRequested()
+}
+
+private func configureAdwaitaSettingsOnLaunchIfRequested(_ appHandle: OpaquePointer) {
+    guard ProcessInfo.processInfo.environment["OMNIUI_ADWAITA_PRESENT_SETTINGS"] == "1" else {
+        return
+    }
+    omni_adw_app_present_settings_on_activate(appHandle, 1)
 }
 
 @discardableResult
@@ -1230,6 +1281,10 @@ private struct AdwaitaHeaderToolbar {
     private static let segmentedStyleFlag: Int32 = 1 << 0
     private static let selectedStyleFlag: Int32 = 1 << 1
 
+    var entry: AdwaitaHeaderEntry?
+    var title: String?
+    var actions: [Action] = []
+
     struct Action {
         enum Placement: Int32 {
             case start = 0
@@ -1248,10 +1303,10 @@ private struct AdwaitaHeaderToolbar {
         }
     }
 
-    var title: String?
-    var actions: [Action] = []
-
     mutating func merge(_ other: AdwaitaHeaderToolbar) {
+        if entry == nil {
+            entry = other.entry
+        }
         if title == nil {
             title = other.title
         }
@@ -1263,6 +1318,17 @@ private struct AdwaitaHeaderToolbar {
         guard node.children.count == 2, isDivider(node.children[1]) else { return nil }
         let row = node.children[0]
         guard case .stack(let rowAxis, _) = row.kind, rowAxis == .horizontal else { return nil }
+
+        if let split = AdwaitaHeaderEntry.extract(from: row.children),
+           looksLikeNavigationToolbar(entry: split.entry, nodes: row.children) {
+            var toolbar = AdwaitaHeaderToolbar()
+            toolbar.entry = split.entry
+            let startActions = headerActions(in: Array(row.children[..<split.index]), placement: .start)
+            let endActions = headerActions(in: Array(row.children[(split.index + 1)...]), placement: .end)
+            toolbar.actions.append(contentsOf: startActions)
+            toolbar.actions.append(contentsOf: endActions)
+            return toolbar
+        }
 
         let segments = toolbarSegments(in: row.children)
         guard !segments.isEmpty else { return nil }
@@ -1282,6 +1348,28 @@ private struct AdwaitaHeaderToolbar {
         return toolbar.title != nil || !toolbar.actions.isEmpty ? toolbar : nil
     }
 
+    static func extractInlineToolbar(from node: SemanticNode) -> AdwaitaHeaderToolbar? {
+        if let child = singleLayoutWrappedChild(in: node) {
+            return extractInlineToolbar(from: child)
+        }
+        guard case .stack(let axis, _) = node.kind, axis == .horizontal else { return nil }
+        guard let split = AdwaitaHeaderEntry.extract(from: node.children),
+              looksLikeNavigationToolbar(entry: split.entry, nodes: node.children) else { return nil }
+
+        var toolbar = AdwaitaHeaderToolbar()
+        toolbar.entry = split.entry
+        let startActions = headerActions(in: Array(node.children[..<split.index]), placement: .start)
+        let endActions = headerActions(in: Array(node.children[(split.index + 1)...]), placement: .end)
+        if startActions.isEmpty,
+           endActions.isEmpty,
+           !headerActions(in: [node.children[split.index]], placement: .end).isEmpty {
+            return nil
+        }
+        toolbar.actions.append(contentsOf: startActions)
+        toolbar.actions.append(contentsOf: endActions)
+        return toolbar.entry != nil || !toolbar.actions.isEmpty ? toolbar : nil
+    }
+
     private static func toolbarSegments(in children: [SemanticNode]) -> [[SemanticNode]] {
         var segments: [[SemanticNode]] = [[]]
         for child in children {
@@ -1294,6 +1382,34 @@ private struct AdwaitaHeaderToolbar {
             }
         }
         return segments.filter { !$0.isEmpty }
+    }
+
+    private static func singleLayoutWrappedChild(in node: SemanticNode) -> SemanticNode? {
+        guard node.children.count == 1,
+              case .modifier(let modifier) = node.kind else { return nil }
+        switch modifier {
+        case .padding, .frame, .background, .opacity, .offset, .accessibilityIdentifier,
+             .accessibilityLabel, .accessibilityValue, .accessibilityHint, .help, .font,
+             .foreground, .shadow, .glass, .crt, .noOp:
+            return node.children[0]
+        case .clip, .badge, .contextMenu, .dragSource:
+            return nil
+        }
+    }
+
+    private static func looksLikeNavigationToolbar(entry: AdwaitaHeaderEntry, nodes: [SemanticNode]) -> Bool {
+        let entryText = "\(entry.placeholder) \(entry.text) \(entry.semanticHints.joined(separator: " "))".lowercased()
+        let looksLikeURLField = entryText.contains("url") ||
+            entryText.contains("gopher") ||
+            entryText.contains("http") ||
+            entryText.contains("address")
+        guard looksLikeURLField else { return false }
+
+        let labels = headerActions(in: nodes, placement: .end).map { $0.label.lowercased() }
+        let navigationTerms = ["home", "back", "forward", "go", "share", "bookmark", "settings"]
+        return labels.contains { label in
+            navigationTerms.contains { label.contains($0) }
+        }
     }
 
     private static func headerActions(in nodes: [SemanticNode], placement: Action.Placement) -> [Action] {
@@ -1320,6 +1436,11 @@ private struct AdwaitaHeaderToolbar {
                 actions.append(Action(label: label, actionID: actionID, placement: placement))
             case .disabledToggle, .disabledMenu, .disabledTextField:
                 return
+            case .modifier(.accessibilityIdentifier(let identifier)):
+                let override = headerLabel(forAccessibilityIdentifier: identifier) ?? labelOverride
+                for child in node.children {
+                    visit(child, labelOverride: override)
+                }
             case .modifier(.help(let help)):
                 let override = help.trimmingCharacters(in: .whitespacesAndNewlines)
                 for child in node.children {
@@ -1337,6 +1458,29 @@ private struct AdwaitaHeaderToolbar {
             visit(node)
         }
         return actions
+    }
+
+    private static func headerLabel(forAccessibilityIdentifier identifier: String) -> String? {
+        switch identifier {
+        case "home-button":
+            return "Home"
+        case "back-button":
+            return "Back"
+        case "forward-button":
+            return "Forward"
+        case "add-bookmark-button":
+            return "Add Bookmark"
+        case "bookmarks-history-button":
+            return "Bookmarks"
+        case "share-button":
+            return "Share"
+        case "settings-button":
+            return "Settings"
+        case "go-button":
+            return "Go"
+        default:
+            return nil
+        }
     }
 
     private static func isSuppressedSystemHeaderAction(label: String, visualLabel: String) -> Bool {
@@ -1406,6 +1550,72 @@ private struct AdwaitaHeaderToolbar {
     }
 }
 
+private struct AdwaitaHeaderEntry: Equatable {
+    var placeholder: String
+    var text: String
+    var actionID: Int
+    var semanticHints: [String]
+
+    static func extract(from nodes: [SemanticNode]) -> (entry: AdwaitaHeaderEntry, index: Int)? {
+        for (index, node) in nodes.enumerated() {
+            if let entry = extract(from: node) {
+                return (entry, index)
+            }
+        }
+        return nil
+    }
+
+    static func extract(from node: SemanticNode) -> AdwaitaHeaderEntry? {
+        switch node.kind {
+        case .textField(let actionID, let placeholder, let text, _, _, let isSecure):
+            guard !isSecure, actionID > 0 else { return nil }
+            return AdwaitaHeaderEntry(
+                placeholder: placeholder,
+                text: text,
+                actionID: actionID,
+                semanticHints: semanticHints(in: node)
+            )
+        case .modifier:
+            for child in node.children {
+                if var entry = extract(from: child) {
+                    entry.semanticHints.append(contentsOf: semanticHints(in: node))
+                    return entry
+                }
+            }
+            return nil
+        case .stack, .group, .zstack, .container:
+            for child in node.children {
+                if let entry = extract(from: child) {
+                    return entry
+                }
+            }
+            return nil
+        default:
+            return nil
+        }
+    }
+
+    private static func semanticHints(in node: SemanticNode) -> [String] {
+        var hints: [String] = [node.id]
+        if case .modifier(let modifier) = node.kind {
+            switch modifier {
+            case .accessibilityIdentifier(let value),
+                 .accessibilityLabel(let value),
+                 .help(let value),
+                 .accessibilityHint(let value),
+                 .accessibilityValue(let value):
+                hints.append(value)
+            default:
+                break
+            }
+        }
+        for child in node.children {
+            hints.append(contentsOf: semanticHints(in: child))
+        }
+        return hints.filter { !$0.isEmpty }
+    }
+}
+
 private enum AdwaitaPresentationExtractor {
     static func extract(from root: SemanticNode) -> AdwaitaPresentation {
         var modal: SemanticNode?
@@ -1421,6 +1631,10 @@ private enum AdwaitaPresentationExtractor {
         }
         if let toolbarBar = AdwaitaHeaderToolbar.extractToolbarBar(from: node) {
             toolbar.merge(toolbarBar)
+            return nil
+        }
+        if let inlineToolbar = AdwaitaHeaderToolbar.extractInlineToolbar(from: node) {
+            toolbar.merge(inlineToolbar)
             return nil
         }
 
@@ -1515,11 +1729,41 @@ private func syncNativePresentation(_ modal: SemanticNode?, previous: SemanticNo
             return
         }
     }
+    if shouldPresentModalInSettingsWindow(modal),
+       let node = AdwaitaNodeBuilder.build(modal) {
+        omni_adw_app_set_settings(app, node)
+        omni_adw_app_present_settings(app)
+        return
+    }
     guard let node = AdwaitaNodeBuilder.build(modal) else {
         omni_adw_app_dismiss_modal(app)
         return
     }
     omni_adw_app_present_modal(app, node, "Presentation")
+}
+
+private func shouldPresentModalInSettingsWindow(_ node: SemanticNode) -> Bool {
+    containsFormContainer(node) && !containsDismissButton(node)
+}
+
+private func containsFormContainer(_ node: SemanticNode) -> Bool {
+    if case .container(.form) = node.kind {
+        return true
+    }
+    return node.children.contains(where: containsFormContainer)
+}
+
+private func containsDismissButton(_ node: SemanticNode) -> Bool {
+    switch node.kind {
+    case .button, .tapTarget:
+        let label = adwaitaVisibleText(in: node).joined(separator: " ")
+        if ["Cancel", "Close", "Done", "OK"].contains(where: { label.localizedCaseInsensitiveContains($0) }) {
+            return true
+        }
+    default:
+        break
+    }
+    return node.children.contains(where: containsDismissButton)
 }
 
 @MainActor
@@ -1567,6 +1811,18 @@ private func syncNativeHeaderActions(_ actions: [AdwaitaHeaderToolbar.Action], a
     }
 }
 
+private func syncNativeHeaderEntry(_ entry: AdwaitaHeaderEntry?, app: OpaquePointer?) {
+    guard let app else { return }
+    let placeholder = entry?.placeholder ?? ""
+    let text = entry?.text ?? ""
+    let actionID = Int32(entry?.actionID ?? 0)
+    placeholder.withCString { placeholderPointer in
+        text.withCString { textPointer in
+            omni_adw_app_set_header_entry(app, placeholderPointer, textPointer, actionID)
+        }
+    }
+}
+
 public enum AdwaitaSemanticCoverage {
     public static let supported: [String] = [
         "App", "Scene", "WindowGroup", "Settings", "commands",
@@ -1582,7 +1838,7 @@ public enum AdwaitaSemanticCoverage {
 
     public static let approximations: [String] = [
         "Canvas/Path/shapes/gradients lower to GTK drawing islands when no native widget exists.",
-        "Liquid Glass maps to libadwaita card/header styling; CRT effects are documented no-op CSS classes.",
+        "Liquid Glass maps to libadwaita card/header styling; CRT scanlines, vignette gradients, and glow shadows lower to pass-through drawing/CSS overlays.",
         "Arbitrary SwiftUI animation curves are reconciled by rebuilding native widgets after state actions.",
     ]
 }
@@ -2004,7 +2260,14 @@ enum AdwaitaNodeBuilder {
         case .empty:
             built = omni_adw_box_new(1, 0)
         case .group:
-            built = container(vertical: true, spacing: 6, children: node.children, context: context)
+            if let css = crtScanlineOverlayCSSClass(from: node.children) {
+                built = omni_adw_frame_new(css, 0)
+                if let built {
+                    omni_adw_node_set_expand(built, 1, 1)
+                }
+            } else {
+                built = container(vertical: true, spacing: 6, children: node.children, context: context)
+            }
         case .zstack(let alignment):
             built = overlay(children: node.children, alignment: alignment, context: context)
         case .spacer:
@@ -2338,10 +2601,20 @@ enum AdwaitaNodeBuilder {
             return build(child, context: context)
         }
         guard let parent = omni_adw_overlay_new() else { return nil }
-        for child in renderChildren {
+        var index = 0
+        while index < renderChildren.count {
+            if let run = crtScanlineOverlayRun(in: renderChildren, startingAt: index),
+               let scanlines = omni_adw_frame_new(run.css, 0) {
+                omni_adw_node_set_expand(scanlines, 1, 1)
+                omni_adw_node_append_overlay(parent, scanlines, alignment)
+                index += run.count
+                continue
+            }
+            let child = renderChildren[index]
             if let built = build(child, context: context) {
                 omni_adw_node_append_overlay(parent, built, alignment)
             }
+            index += 1
         }
         if renderChildren.contains(where: shouldExpandVertically) {
             omni_adw_node_set_expand(parent, -1, 1)
@@ -2350,19 +2623,17 @@ enum AdwaitaNodeBuilder {
     }
 
     private static func overlayRenderableChildren(_ children: [SemanticNode]) -> [SemanticNode] {
-        guard children.contains(where: { !isDecorativeDrawing($0) }) else {
-            return children
+        let hasTrailingDecorativeOverlay: (Int) -> Bool = { index in
+            let trailingStart = index + 1
+            guard trailingStart < children.count else { return false }
+            return children[trailingStart...].contains(where: isDecorativeDrawing)
         }
-        var sawContent = false
-        return children.filter { child in
-            let decorative = isDecorativeDrawing(child)
-            defer {
-                if !decorative {
-                    sawContent = true
-                }
-            }
-            return !decorative || !sawContent
+        if let firstContent = children.firstIndex(where: { !isDecorativeDrawing($0) }),
+           firstContent > 0,
+           hasTrailingDecorativeOverlay(firstContent) {
+            return Array(children[firstContent...])
         }
+        return children
     }
 
     private static func shouldExpandVertically(_ node: SemanticNode) -> Bool {
@@ -2695,7 +2966,13 @@ enum AdwaitaNodeBuilder {
                 return build(stripped, context: context)
             }
             return primaryContent()
-        case .shadow, .crt, .accessibilityLabel, .noOp:
+        case .shadow(let color, let radius, let x, let y):
+            guard let node = primaryContent() else { return nil }
+            if let css = shadowCSSClass(color: color, radius: radius, x: x, y: y) {
+                omni_adw_node_add_css_class(node, css)
+            }
+            return node
+        case .crt, .accessibilityLabel, .noOp:
             return primaryContent()
         case .badge:
             css = "accent"
@@ -2723,11 +3000,22 @@ enum AdwaitaNodeBuilder {
 
     private static func backgroundShapeCSSClass(from children: [SemanticNode]) -> String? {
         guard let background = children.first(where: { $0.id.hasSuffix(".background") }),
-              let color = firstBackgroundShapeColor(in: background)
+              let style = firstBackgroundShapeStyle(in: background)
         else {
             return nil
         }
-        return colorCSSClass(prefix: "omni-bg", color: color)
+        switch style {
+        case .color(let color):
+            return colorCSSClass(prefix: "omni-bg", color: color)
+        case .gradient(let colors, let startX, let startY, let endX, let endY):
+            return gradientCSSClass(
+                colors: colors,
+                startX: startX,
+                startY: startY,
+                endX: endX,
+                endY: endY
+            )
+        }
     }
 
     private static func containsWebContent(_ nodes: [SemanticNode]) -> Bool {
@@ -2781,17 +3069,35 @@ enum AdwaitaNodeBuilder {
         return trimmed.isEmpty ? "Disabled" : trimmed
     }
 
-    private static func firstBackgroundShapeColor(in node: SemanticNode) -> String? {
+    private enum BackgroundShapeStyle {
+        case color(String)
+        case gradient(colors: [String], startX: Double, startY: Double, endX: Double, endY: Double)
+    }
+
+    private static func firstBackgroundShapeStyle(in node: SemanticNode) -> BackgroundShapeStyle? {
         switch node.kind {
         case .drawingIsland(.shape(_, let fill, let stroke)):
-            return fill ?? stroke
-        case .drawingIsland(.gradient(let colors, _, _, _, _)):
-            return colors.first
+            return (fill ?? stroke).map(BackgroundShapeStyle.color)
+        case .drawingIsland(.gradient(let colors, let startX, let startY, let endX, let endY)):
+            return .gradient(colors: colors, startX: startX, startY: startY, endX: endX, endY: endY)
         case .modifier(.opacity(let alpha)):
-            guard let color = node.children.lazy.compactMap(firstBackgroundShapeColor).first else { return nil }
-            return colorString(color, multiplyingAlphaBy: alpha)
+            guard let style = node.children.lazy.compactMap(firstBackgroundShapeStyle).first else { return nil }
+            switch style {
+            case .color(let color):
+                return .color(colorString(color, multiplyingAlphaBy: alpha))
+            case .gradient(let colors, let startX, let startY, let endX, let endY):
+                return .gradient(
+                    colors: colors.map { colorString($0, multiplyingAlphaBy: alpha) },
+                    startX: startX,
+                    startY: startY,
+                    endX: endX,
+                    endY: endY
+                )
+            }
+        case .modifier(.background("native/adwaita")):
+            return node.children.lazy.compactMap(firstBackgroundShapeStyle).first
         default:
-            return node.children.lazy.compactMap(firstBackgroundShapeColor).first
+            return node.children.lazy.compactMap(firstBackgroundShapeStyle).first
         }
     }
 
@@ -2849,6 +3155,138 @@ enum AdwaitaNodeBuilder {
         }
         rule.withCString { omni_adw_register_dynamic_css($0) }
         return className
+    }
+
+    private static func gradientCSSClass(colors: [String], startX: Double, startY: Double, endX: Double, endY: Double) -> String? {
+        let cssStops = colors.compactMap(cssColorLiteral)
+        guard cssStops.count >= 2 else {
+            return colors.first.map { colorCSSClass(prefix: "omni-bg", color: $0) }
+        }
+        let className = "omni-bg-gradient-\(fnv1aHex("\(colors.joined(separator: ","))|\(startX)|\(startY)|\(endX)|\(endY)"))"
+        let direction = gradientDirection(startX: startX, startY: startY, endX: endX, endY: endY)
+        let gradient = "linear-gradient(\(direction), \(cssStops.joined(separator: ", ")))"
+        let rule = ".\(className) { background: \(gradient); background-image: \(gradient); background-color: \(cssStops.first ?? "transparent"); }"
+        rule.withCString { omni_adw_register_dynamic_css($0) }
+        return className
+    }
+
+    private static func shadowCSSClass(color: String, radius: Int, x: Int, y: Int) -> String? {
+        guard radius > 0 || x != 0 || y != 0,
+              let cssColor = cssColorLiteral(color),
+              cssColor != "transparent"
+        else {
+            return nil
+        }
+        let className = "omni-shadow-\(fnv1aHex("\(color)|\(radius)|\(x)|\(y)"))"
+        let blur = max(1, radius)
+        let rule = ".\(className), .\(className) label { text-shadow: \(x)px \(y)px \(blur)px \(cssColor); } .\(className) { box-shadow: \(x)px \(y)px \(blur)px \(cssColor); }"
+        rule.withCString { omni_adw_register_dynamic_css($0) }
+        return className
+    }
+
+    private static func crtScanlineOverlayCSSClass(from children: [SemanticNode]) -> String? {
+        let fillColors = children.compactMap(scanlineFillColor)
+        guard fillColors.count == children.count, fillColors.count >= 3 else { return nil }
+        let color = fillColors[0]
+        guard fillColors.allSatisfy({ $0 == color }),
+              let cssColor = cssColorLiteral(color),
+              cssColor != "transparent"
+        else {
+            return nil
+        }
+        let className = "omni-crt-scanlines-\(fnv1aHex(color))"
+        let rule = ".\(className) { background-image: repeating-linear-gradient(to bottom, \(cssColor) 0px, \(cssColor) 1px, transparent 1px, transparent 3px); background-color: transparent; }"
+        rule.withCString { omni_adw_register_dynamic_css($0) }
+        return "omni-crt-overlay \(className)"
+    }
+
+    private static func crtScanlineOverlayRun(in children: [SemanticNode], startingAt start: Int) -> (css: String, count: Int)? {
+        guard children.indices.contains(start) else { return nil }
+        var index = start
+        var run: [SemanticNode] = []
+        while children.indices.contains(index), scanlineFillColor(in: children[index]) != nil {
+            run.append(children[index])
+            index += 1
+        }
+        guard let css = crtScanlineOverlayCSSClass(from: run) else { return nil }
+        return (css, run.count)
+    }
+
+    private static func scanlineFillColor(in node: SemanticNode) -> String? {
+        switch node.kind {
+        case .drawingIsland(.shape(let name, let fill, _)):
+            guard name == "path" || name == "rectangle" else { return nil }
+            return fill
+        case .modifier(.opacity(let alpha)):
+            guard let color = node.children.lazy.compactMap(scanlineFillColor).first else { return nil }
+            return colorString(color, multiplyingAlphaBy: alpha)
+        case .modifier(let modifier) where modifierAllowsLayoutDescent(modifier):
+            return node.children.lazy.compactMap(scanlineFillColor).first
+        case .group, .stack, .zstack, .container:
+            return node.children.count == 1 ? node.children.lazy.compactMap(scanlineFillColor).first : nil
+        default:
+            return nil
+        }
+    }
+
+    private static func gradientDirection(startX: Double, startY: Double, endX: Double, endY: Double) -> String {
+        let dx = endX - startX
+        let dy = endY - startY
+        if abs(dx) < 0.001 {
+            return dy >= 0 ? "to bottom" : "to top"
+        }
+        if abs(dy) < 0.001 {
+            return dx >= 0 ? "to right" : "to left"
+        }
+        if dx >= 0, dy >= 0 { return "to bottom right" }
+        if dx < 0, dy >= 0 { return "to bottom left" }
+        if dx >= 0, dy < 0 { return "to top right" }
+        return "to top left"
+    }
+
+    private static func cssColorLiteral(_ color: String) -> String? {
+        let normalized = color.lowercased()
+        let parts = normalized.split(separator: "|", maxSplits: 1, omittingEmptySubsequences: false)
+        let base = parts.first.map(String.init) ?? normalized
+        let alpha = parts.dropFirst().first.flatMap { Double($0) } ?? 1.0
+        if alpha <= 0.01 || base == "clear" { return "transparent" }
+        if let cssColor = concreteCSSColor(base: base, alpha: alpha) {
+            return cssColor
+        }
+        switch base {
+        case "black":
+            return rgbaCSS(red: 0, green: 0, blue: 0, alpha: alpha)
+        case "white":
+            return rgbaCSS(red: 1, green: 1, blue: 1, alpha: alpha)
+        case "gray", "grey":
+            return rgbaCSS(red: 142.0 / 255.0, green: 142.0 / 255.0, blue: 147.0 / 255.0, alpha: alpha)
+        case "red":
+            return rgbaCSS(red: 1, green: 69.0 / 255.0, blue: 58.0 / 255.0, alpha: alpha)
+        case "orange":
+            return rgbaCSS(red: 1, green: 149.0 / 255.0, blue: 0, alpha: alpha)
+        case "yellow":
+            return rgbaCSS(red: 191.0 / 255.0, green: 127.0 / 255.0, blue: 0, alpha: alpha)
+        case "green":
+            return rgbaCSS(red: 36.0 / 255.0, green: 138.0 / 255.0, blue: 61.0 / 255.0, alpha: alpha)
+        case "mint":
+            return rgbaCSS(red: 0, green: 166.0 / 255.0, blue: 153.0 / 255.0, alpha: alpha)
+        case "teal":
+            return rgbaCSS(red: 10.0 / 255.0, green: 127.0 / 255.0, blue: 143.0 / 255.0, alpha: alpha)
+        case "cyan":
+            return rgbaCSS(red: 0, green: 122.0 / 255.0, blue: 153.0 / 255.0, alpha: alpha)
+        case "blue", "accentcolor", "tint":
+            return rgbaCSS(red: 10.0 / 255.0, green: 132.0 / 255.0, blue: 1, alpha: alpha)
+        case "indigo":
+            return rgbaCSS(red: 94.0 / 255.0, green: 92.0 / 255.0, blue: 230.0 / 255.0, alpha: alpha)
+        case "purple":
+            return rgbaCSS(red: 175.0 / 255.0, green: 82.0 / 255.0, blue: 222.0 / 255.0, alpha: alpha)
+        case "pink":
+            return rgbaCSS(red: 1, green: 45.0 / 255.0, blue: 85.0 / 255.0, alpha: alpha)
+        case "brown":
+            return rgbaCSS(red: 142.0 / 255.0, green: 110.0 / 255.0, blue: 83.0 / 255.0, alpha: alpha)
+        default:
+            return nil
+        }
     }
 
     private static func concreteCSSColor(base: String, alpha: Double) -> String? {

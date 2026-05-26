@@ -95,9 +95,9 @@ private final class _OmniAppearanceState: @unchecked Sendable {
         let effective: ColorScheme?
         let previous: ColorScheme?
         lock.lock()
-        previous = preferredColorScheme ?? Self.colorScheme(for: appearanceName)
+        previous = preferredColorScheme ?? Self.colorScheme(for: appearanceName) ?? Self.environmentColorSchemeOverride()
         appearanceName = name
-        effective = preferredColorScheme ?? scheme
+        effective = preferredColorScheme ?? scheme ?? Self.environmentColorSchemeOverride()
         callbacks = effective != previous ? [handler].compactMap { $0 } + Array(observers.values) : []
         lock.unlock()
         callbacks.forEach { $0(effective) }
@@ -108,7 +108,7 @@ private final class _OmniAppearanceState: @unchecked Sendable {
         let preferred = preferredColorScheme
         let name = appearanceName
         lock.unlock()
-        return preferred ?? Self.colorScheme(for: name)
+        return preferred ?? Self.colorScheme(for: name) ?? Self.environmentColorSchemeOverride()
     }
 
     func currentApplicationColorScheme() -> ColorScheme? {
@@ -123,9 +123,9 @@ private final class _OmniAppearanceState: @unchecked Sendable {
         let effective: ColorScheme?
         let previous: ColorScheme?
         lock.lock()
-        previous = preferredColorScheme ?? Self.colorScheme(for: appearanceName)
+        previous = preferredColorScheme ?? Self.colorScheme(for: appearanceName) ?? Self.environmentColorSchemeOverride()
         preferredColorScheme = scheme
-        effective = scheme ?? Self.colorScheme(for: appearanceName)
+        effective = scheme ?? Self.colorScheme(for: appearanceName) ?? Self.environmentColorSchemeOverride()
         callbacks = effective != previous ? [handler].compactMap { $0 } + Array(observers.values) : []
         lock.unlock()
         callbacks.forEach { $0(effective) }
@@ -135,7 +135,7 @@ private final class _OmniAppearanceState: @unchecked Sendable {
         let scheme: ColorScheme?
         lock.lock()
         handler = next
-        scheme = preferredColorScheme ?? Self.colorScheme(for: appearanceName)
+        scheme = preferredColorScheme ?? Self.colorScheme(for: appearanceName) ?? Self.environmentColorSchemeOverride()
         lock.unlock()
         next?(scheme)
     }
@@ -145,7 +145,7 @@ private final class _OmniAppearanceState: @unchecked Sendable {
         let scheme: ColorScheme?
         lock.lock()
         observers[id] = next
-        scheme = preferredColorScheme ?? Self.colorScheme(for: appearanceName)
+        scheme = preferredColorScheme ?? Self.colorScheme(for: appearanceName) ?? Self.environmentColorSchemeOverride()
         lock.unlock()
         next(scheme)
         return _OmniAppearanceChangeObservation { [weak self] in
@@ -163,6 +163,20 @@ private final class _OmniAppearanceState: @unchecked Sendable {
         guard let name else { return nil }
         if name == .darkAqua { return .dark }
         if name == .aqua { return .light }
+        return nil
+    }
+
+    private static func environmentColorSchemeOverride() -> ColorScheme? {
+        let environment = ProcessInfo.processInfo.environment
+        for key in ["OMNIUI_ADWAITA_COLOR_SCHEME", "OMNIUI_COLOR_SCHEME"] {
+            guard let raw = environment[key]?.lowercased(), !raw.isEmpty else { continue }
+            if raw == "dark" || raw == "force-dark" { return .dark }
+            if raw == "light" || raw == "force-light" { return .light }
+            if raw == "system" || raw == "default" { return nil }
+        }
+        if let gtkTheme = environment["GTK_THEME"]?.lowercased(), gtkTheme.contains(":dark") {
+            return .dark
+        }
         return nil
     }
 }
@@ -208,7 +222,7 @@ public func _omniCurrentApplicationAppearanceColorScheme() -> ColorScheme? {
 }
 
 public func _omniEffectiveAppearanceColorScheme() -> ColorScheme {
-    _omniCurrentAppearanceColorScheme() ?? .dark
+    _omniCurrentAppearanceColorScheme() ?? .light
 }
 
 public func _omniSetPreferredColorScheme(_ scheme: ColorScheme?) {
