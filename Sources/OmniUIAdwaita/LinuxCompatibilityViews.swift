@@ -91,7 +91,7 @@ public struct macOSToolbarView<BackwardStack: Collection, ForwardStack: Collecti
                 .textInputAutocapitalization(.never)
                 .autocorrectionDisabled(true)
                 .padding(10)
-                .frame(minWidth: 180, maxWidth: .infinity)
+                .frame(minWidth: 180)
                 .accessibilityIdentifier("url-field")
 
             Button(action: { showAddBookmark = true }) {

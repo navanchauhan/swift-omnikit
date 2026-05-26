@@ -1262,7 +1262,7 @@ import Testing
         #expect(toolbar.contains(".submitLabel(.go)"))
         #expect(toolbar.contains(".keyboardType(.URL)"))
         #expect(toolbar.contains(".textContentType(.URL)"))
-        #expect(toolbar.contains(".frame(minWidth: 180, maxWidth: .infinity)"))
+        #expect(toolbar.contains(".frame(minWidth: 180)"))
         #expect(toolbar.contains("ShareLink(item: shareURL)"))
         #expect(toolbar.contains(".keyboardShortcut(.defaultAction)"))
     }
