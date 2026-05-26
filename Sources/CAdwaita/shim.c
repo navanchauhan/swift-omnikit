@@ -137,6 +137,7 @@ struct OmniAdwApp {
   GtkWidget *command_button;
   GtkWidget *command_popover;
   GtkWidget *command_content;
+  GtkWidget *app_menu_button;
   AdwDialog *modal_dialog;
   GtkWidget *modal_accessibility_root;
   int32_t modal_close_action_id;
@@ -3465,20 +3466,22 @@ static void on_app_activate(GApplication *application, gpointer data) {
     }
     adw_header_bar_pack_end(ADW_HEADER_BAR(app->header), app->command_button);
 
-    GtkWidget *app_menu_button = gtk_menu_button_new();
-    gtk_widget_set_visible(app_menu_button, TRUE);
-    gtk_menu_button_set_icon_name(GTK_MENU_BUTTON(app_menu_button), "open-menu-symbolic");
-    gtk_widget_add_css_class(app_menu_button, "flat");
-    gtk_widget_add_css_class(app_menu_button, "omni-icon-button");
-    gtk_widget_set_size_request(app_menu_button, 38, 34);
-    gtk_widget_set_tooltip_text(app_menu_button, "Application Menu");
-    omni_accessible_label(app_menu_button, "Application Menu");
-    omni_accessible_description(app_menu_button, "Shows app settings and app information");
-    gtk_accessible_update_property(GTK_ACCESSIBLE(app_menu_button), GTK_ACCESSIBLE_PROPERTY_HAS_POPUP, TRUE, -1);
+    app->app_menu_button = gtk_menu_button_new();
+    g_object_ref(app->app_menu_button);
+    gtk_widget_set_visible(app->app_menu_button, TRUE);
+    gtk_menu_button_set_icon_name(GTK_MENU_BUTTON(app->app_menu_button), "open-menu-symbolic");
+    gtk_widget_add_css_class(app->app_menu_button, "flat");
+    gtk_widget_add_css_class(app->app_menu_button, "omni-icon-button");
+    gtk_widget_set_size_request(app->app_menu_button, 38, 34);
+    gtk_widget_set_tooltip_text(app->app_menu_button, "Application Menu");
+    omni_accessible_label(app->app_menu_button, "Application Menu");
+    omni_accessible_description(app->app_menu_button, "Shows app settings and app information");
+    gtk_accessible_update_property(GTK_ACCESSIBLE(app->app_menu_button), GTK_ACCESSIBLE_PROPERTY_HAS_POPUP, TRUE, -1);
     GMenu *app_menu = create_app_menu_model(app);
-    gtk_menu_button_set_menu_model(GTK_MENU_BUTTON(app_menu_button), G_MENU_MODEL(app_menu));
+    gtk_menu_button_set_menu_model(GTK_MENU_BUTTON(app->app_menu_button), G_MENU_MODEL(app_menu));
     g_object_unref(app_menu);
-    adw_header_bar_pack_end(ADW_HEADER_BAR(app->header), app_menu_button);
+    gtk_box_append(GTK_BOX(app->header_end_actions), app->app_menu_button);
+    gtk_widget_set_visible(app->header_end_actions, TRUE);
 
     app->body_slot = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
     gtk_widget_add_css_class(app->body_slot, "omni-body");
@@ -6494,6 +6497,7 @@ void omni_adw_app_free(OmniAdwApp *app) {
   if (app->modal_dismiss_source != 0) g_source_remove(app->modal_dismiss_source);
   if (app->modal_dialog) adw_dialog_force_close(app->modal_dialog);
   if (app->settings_window) gtk_window_destroy(GTK_WINDOW(app->settings_window));
+  if (app->app_menu_button) g_object_unref(app->app_menu_button);
   if (app->application) g_object_unref(app->application);
   if (app->sidebar_collapsed_items) g_hash_table_destroy(app->sidebar_collapsed_items);
   free(app->title);
@@ -6667,6 +6671,10 @@ void omni_adw_app_set_header_actions(OmniAdwApp *app, const char **labels, const
       end_count++;
     }
     i++;
+  }
+  if (app->app_menu_button && app->header_end_actions) {
+    gtk_box_append(GTK_BOX(app->header_end_actions), app->app_menu_button);
+    end_count++;
   }
   if (app->header_start_actions) gtk_widget_set_visible(app->header_start_actions, start_count > 0);
   if (app->header_end_actions) gtk_widget_set_visible(app->header_end_actions, end_count > 0);
