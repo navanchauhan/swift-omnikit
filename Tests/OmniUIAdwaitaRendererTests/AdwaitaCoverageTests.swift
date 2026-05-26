@@ -297,6 +297,7 @@ import Testing
     #expect(header.contains("omni_adw_app_set_settings"))
     #expect(header.contains("omni_adw_app_set_commands"))
     #expect(shim.contains("static GMenu *create_app_menu_model"))
+    #expect(shim.contains("gtk_widget_set_visible(app_menu_button, TRUE)"))
     #expect(shim.contains("gtk_menu_button_set_menu_model(GTK_MENU_BUTTON(app_menu_button), G_MENU_MODEL(app_menu))"))
     #expect(shim.contains("omni_accessible_label(app_menu_button, \"Application Menu\")"))
     #expect(shim.contains("gtk_menu_button_set_icon_name(GTK_MENU_BUTTON(app->command_button), \"open-menu-symbolic\")"))

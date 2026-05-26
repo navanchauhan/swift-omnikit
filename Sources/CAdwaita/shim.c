@@ -3466,6 +3466,7 @@ static void on_app_activate(GApplication *application, gpointer data) {
     adw_header_bar_pack_end(ADW_HEADER_BAR(app->header), app->command_button);
 
     GtkWidget *app_menu_button = gtk_menu_button_new();
+    gtk_widget_set_visible(app_menu_button, TRUE);
     gtk_menu_button_set_icon_name(GTK_MENU_BUTTON(app_menu_button), "open-menu-symbolic");
     gtk_widget_add_css_class(app_menu_button, "flat");
     gtk_widget_add_css_class(app_menu_button, "omni-icon-button");
