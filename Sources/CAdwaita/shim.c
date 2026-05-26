@@ -6905,8 +6905,8 @@ static GtkWidget *omni_sheet_surface_new(void) {
   gtk_widget_add_css_class(surface, "omni-sheet-surface");
   gtk_widget_set_hexpand(surface, TRUE);
   gtk_widget_set_halign(surface, GTK_ALIGN_FILL);
-  gtk_widget_set_vexpand(surface, TRUE);
-  gtk_widget_set_valign(surface, GTK_ALIGN_FILL);
+  gtk_widget_set_vexpand(surface, FALSE);
+  gtk_widget_set_valign(surface, GTK_ALIGN_CENTER);
   omni_accessible_label(surface, "Sheet");
   omni_accessible_description(surface, "Modal sheet");
   return surface;
@@ -6948,8 +6948,7 @@ static void present_sheet_dialog(OmniAdwApp *app, OmniAdwNode *modal, OmniModalS
   AdwDialog *dialog = adw_dialog_new();
   adw_dialog_set_title(dialog, "Sheet");
   adw_dialog_set_can_close(dialog, effective_close_action_id > 0);
-  adw_dialog_set_content_width(dialog, 560);
-  adw_dialog_set_content_height(dialog, 560);
+  adw_dialog_set_content_width(dialog, 520);
   adw_dialog_set_presentation_mode(dialog, ADW_DIALOG_FLOATING);
   omni_accessible_label(GTK_WIDGET(dialog), "Sheet");
   omni_accessible_description(GTK_WIDGET(dialog), "Modal sheet");

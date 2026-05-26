@@ -671,6 +671,9 @@ import Testing
     #expect(shim.contains("background-color: #303036"))
     #expect(!shim.contains("gtk_frame_set_child(GTK_FRAME(surface), modal->widget)"))
     #expect(shim.contains("adw_dialog_set_presentation_mode(dialog, ADW_DIALOG_FLOATING)"))
+    #expect(shim.contains("gtk_widget_set_vexpand(surface, FALSE)"))
+    #expect(shim.contains("gtk_widget_set_valign(surface, GTK_ALIGN_CENTER)"))
+    #expect(!shim.contains("adw_dialog_set_content_height(dialog"))
     #expect(shim.contains("gtk_gesture_set_state(GTK_GESTURE(gesture), GTK_EVENT_SEQUENCE_CLAIMED)"))
 }
 
