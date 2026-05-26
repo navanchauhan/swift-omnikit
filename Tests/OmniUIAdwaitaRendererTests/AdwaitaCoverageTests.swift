@@ -300,7 +300,7 @@ import Testing
     #expect(shim.contains("g_object_ref(app->app_menu_button)"))
     #expect(shim.contains("gtk_widget_set_visible(app->app_menu_button, TRUE)"))
     #expect(shim.contains("gtk_menu_button_set_menu_model(GTK_MENU_BUTTON(app->app_menu_button), G_MENU_MODEL(app_menu))"))
-    #expect(shim.contains("gtk_box_append(GTK_BOX(app->header_end_actions), app->app_menu_button)"))
+    #expect(shim.contains("adw_header_bar_pack_start(ADW_HEADER_BAR(app->header), app->app_menu_button)"))
     #expect(shim.contains("omni_accessible_label(app->app_menu_button, \"Application Menu\")"))
     #expect(shim.contains("gtk_menu_button_set_icon_name(GTK_MENU_BUTTON(app->command_button), \"open-menu-symbolic\")"))
     #expect(shim.contains("gtk_widget_set_visible(app->command_button, FALSE)"))

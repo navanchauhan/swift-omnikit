@@ -3480,8 +3480,7 @@ static void on_app_activate(GApplication *application, gpointer data) {
     GMenu *app_menu = create_app_menu_model(app);
     gtk_menu_button_set_menu_model(GTK_MENU_BUTTON(app->app_menu_button), G_MENU_MODEL(app_menu));
     g_object_unref(app_menu);
-    gtk_box_append(GTK_BOX(app->header_end_actions), app->app_menu_button);
-    gtk_widget_set_visible(app->header_end_actions, TRUE);
+    adw_header_bar_pack_start(ADW_HEADER_BAR(app->header), app->app_menu_button);
 
     app->body_slot = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
     gtk_widget_add_css_class(app->body_slot, "omni-body");
@@ -6671,10 +6670,6 @@ void omni_adw_app_set_header_actions(OmniAdwApp *app, const char **labels, const
       end_count++;
     }
     i++;
-  }
-  if (app->app_menu_button && app->header_end_actions) {
-    gtk_box_append(GTK_BOX(app->header_end_actions), app->app_menu_button);
-    end_count++;
   }
   if (app->header_start_actions) gtk_widget_set_visible(app->header_start_actions, start_count > 0);
   if (app->header_end_actions) gtk_widget_set_visible(app->header_end_actions, end_count > 0);
