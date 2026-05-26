@@ -5096,7 +5096,7 @@ static gboolean on_key_pressed(GtkEventControllerKey *controller, guint keyval, 
   }
 
   if ((state & (GDK_META_MASK | GDK_CONTROL_MASK)) != 0 && keyval == GDK_KEY_comma) {
-    present_settings_window(app);
+    request_settings_refresh_and_present(app);
     return TRUE;
   }
 
@@ -6658,9 +6658,6 @@ void omni_adw_app_set_settings(OmniAdwApp *app, OmniAdwNode *settings) {
   gboolean settings_was_visible = FALSE;
   if (app->settings_window) {
     settings_was_visible = gtk_widget_get_visible(app->settings_window);
-    if (settings_was_visible) {
-      gtk_widget_set_visible(app->settings_window, FALSE);
-    }
     gtk_window_set_child(GTK_WINDOW(app->settings_window), NULL);
   }
   app->settings_content = settings->widget;
@@ -8567,8 +8564,9 @@ OmniAdwNode *omni_adw_switch_row_new(const char *title, int32_t active, int32_t 
 }
 
 OmniAdwNode *omni_adw_color_button_new(const char *label, const char *value, int32_t supports_opacity, int32_t set_action_id) {
-  OmniAdwNode *node = omni_adw_action_row_new(label && label[0] ? label : "Color", "");
-  if (!node || !node->widget) return node;
+  gboolean has_label = label && label[0];
+  OmniAdwNode *node = has_label ? omni_adw_action_row_new(label, "") : calloc(1, sizeof(OmniAdwNode));
+  if (!node) return NULL;
 
   GdkRGBA color;
   if (!omni_parse_semantic_color(value, &color)) {
@@ -8580,7 +8578,7 @@ OmniAdwNode *omni_adw_color_button_new(const char *label, const char *value, int
   gtk_widget_set_valign(button, GTK_ALIGN_CENTER);
   gtk_widget_set_halign(button, GTK_ALIGN_END);
   gtk_menu_button_set_child(GTK_MENU_BUTTON(button), omni_color_swatch_widget_new(&color, 28, 18));
-  omni_accessible_label(button, label && label[0] ? label : "Color");
+  omni_accessible_label(button, has_label ? label : "Color");
   omni_accessible_value_text(button, value);
 
   GtkWidget *popover = gtk_popover_new();
@@ -8591,7 +8589,9 @@ OmniAdwNode *omni_adw_color_button_new(const char *label, const char *value, int
     control->set_action_id = set_action_id;
     control->supports_opacity = supports_opacity != 0;
     g_object_set_data_full(G_OBJECT(button), "omni-color-control-data", control, g_free);
-    g_object_set_data(G_OBJECT(node->widget), "omni-color-control-data", control);
+    if (node->widget && node->widget != button) {
+      g_object_set_data(G_OBJECT(node->widget), "omni-color-control-data", control);
+    }
   }
 
   GtkWidget *content = gtk_box_new(GTK_ORIENTATION_VERTICAL, 10);
@@ -8660,8 +8660,14 @@ OmniAdwNode *omni_adw_color_button_new(const char *label, const char *value, int
   gtk_box_append(GTK_BOX(content), grid);
   gtk_popover_set_child(GTK_POPOVER(popover), content);
   gtk_menu_button_set_popover(GTK_MENU_BUTTON(button), popover);
-  adw_action_row_add_suffix(ADW_ACTION_ROW(node->widget), button);
-  adw_action_row_set_activatable_widget(ADW_ACTION_ROW(node->widget), button);
+  if (has_label) {
+    adw_action_row_add_suffix(ADW_ACTION_ROW(node->widget), button);
+    adw_action_row_set_activatable_widget(ADW_ACTION_ROW(node->widget), button);
+  } else {
+    node->widget = button;
+    gtk_widget_set_hexpand(node->widget, FALSE);
+    gtk_widget_set_halign(node->widget, GTK_ALIGN_START);
+  }
   return node;
 }
 

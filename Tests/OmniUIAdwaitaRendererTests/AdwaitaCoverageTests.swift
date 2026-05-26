@@ -306,6 +306,8 @@ import Testing
     #expect(shim.contains("static gboolean on_settings_close_request"))
     #expect(shim.contains("gtk_widget_set_visible(GTK_WIDGET(window), FALSE)"))
     #expect(shim.contains("keyval == GDK_KEY_comma"))
+    #expect(shim.contains("request_settings_refresh_and_present(app);"))
+    #expect(!shim.contains("settings_was_visible) {\n      gtk_widget_set_visible(app->settings_window, FALSE);"))
     #expect(shim.contains("install_application_actions(app)"))
     #expect(shim.contains("\"app.preferences\""))
     #expect(shim.contains("\"app.about\""))
@@ -1255,8 +1257,15 @@ import Testing
     #expect(shim.contains("g_signal_emit_by_name(widget, \"clicked\")"))
     #expect(shim.contains("gtk_menu_button_popup(GTK_MENU_BUTTON(widget))"))
     #expect(!shim.contains("on_sheet_click_released"))
-    #expect(omniToolbar.contains(".frame(minWidth: 560)"))
-    #expect(adwaitaToolbar.contains(".frame(minWidth: 560)"))
+    for toolbar in [omniToolbar, adwaitaToolbar] {
+        #expect(toolbar.contains(".onSubmit(onGo)"))
+        #expect(toolbar.contains(".submitLabel(.go)"))
+        #expect(toolbar.contains(".keyboardType(.URL)"))
+        #expect(toolbar.contains(".textContentType(.URL)"))
+        #expect(toolbar.contains(".frame(minWidth: 180, maxWidth: .infinity)"))
+        #expect(toolbar.contains("ShareLink(item: shareURL)"))
+        #expect(toolbar.contains(".keyboardShortcut(.defaultAction)"))
+    }
 }
 
 @Test func adwaitaReconciliationPlansSupportedLeafUpdates() {
@@ -1515,6 +1524,8 @@ import Testing
 
     #expect(shim.contains("gtk_menu_button_new"))
     #expect(shim.contains("on_color_swatch_clicked"))
+    #expect(shim.contains("gboolean has_label = label && label[0]"))
+    #expect(shim.contains("node->widget = button"))
     #expect(shim.contains("adw_action_row_new"))
     #expect(shim.contains("adw_switch_row_new"))
     #expect(shim.contains("adw_expander_row_new"))

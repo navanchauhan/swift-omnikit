@@ -84,8 +84,14 @@ public struct macOSToolbarView<BackwardStack: Collection, ForwardStack: Collecti
 
             TextField("Enter a URL", text: $url)
                 .focused(isURLFocused)
+                .onSubmit(onGo)
+                .submitLabel(.go)
+                .keyboardType(.URL)
+                .textContentType(.URL)
+                .textInputAutocapitalization(.never)
+                .autocorrectionDisabled(true)
                 .padding(10)
-                .frame(minWidth: 560)
+                .frame(minWidth: 180, maxWidth: .infinity)
                 .accessibilityIdentifier("url-field")
 
             Button(action: { showAddBookmark = true }) {
@@ -101,17 +107,26 @@ public struct macOSToolbarView<BackwardStack: Collection, ForwardStack: Collecti
             }
             .accessibilityIdentifier("bookmarks-history-button")
 
-            Button(action: {}) {
+            ShareLink(item: shareURL) {
                 Label("Share", systemImage: "square.and.arrow.up")
                     .labelStyle(.iconOnly)
             }
             .accessibilityIdentifier("share-button")
 
             Button("Go", action: onGo)
+                .keyboardShortcut(.defaultAction)
                 .accessibilityIdentifier("go-button")
         }
         .padding(.horizontal, 8)
         .padding(.vertical, 4)
+    }
+
+    private var shareURL: URL {
+        let raw = url.trimmingCharacters(in: .whitespacesAndNewlines)
+        if shareThroughProxy {
+            return URL(string: "https://gopher.navan.dev/\(raw)") ?? homeURL
+        }
+        return URL(string: "gopher://\(raw)") ?? homeURL
     }
 }
 #endif
