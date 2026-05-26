@@ -2341,6 +2341,7 @@ private struct _ModelContainerProvider: View, _PrimitiveView {
     func _makeNode(_ ctx: inout _BuildContext) -> _VNode {
         let current = _UIRuntime._currentEnvironment ?? ctx.runtime._baseEnvironment
         var next = current
+        container.mainContext._bindRuntime(ctx.runtime)
         next.modelContext = container.mainContext
         return _UIRuntime.$_currentEnvironment.withValue(next) {
             ctx.buildChild(content)
@@ -2367,6 +2368,7 @@ private struct _ModelContainerBuilder: View, _PrimitiveView {
 
         let current = _UIRuntime._currentEnvironment ?? ctx.runtime._baseEnvironment
         var next = current
+        container.mainContext._bindRuntime(ctx.runtime)
         next.modelContext = container.mainContext
         return _UIRuntime.$_currentEnvironment.withValue(next) {
             ctx.buildChild(content)

@@ -4376,6 +4376,51 @@ private struct _StableForEachListProbe: View {
     #expect(deleted.text.contains("first: 2"))
 }
 
+final class _SheetModelContextRecord {
+    var id: Int
+    init(id: Int) { self.id = id }
+}
+
+struct _SheetModelContextChild: View {
+    @Query(sort: \_SheetModelContextRecord.id, order: .forward) private var records: [_SheetModelContextRecord]
+
+    var body: some View {
+        Text("sheet count: \(records.count)")
+    }
+}
+
+struct _SheetModelContextProbe: View {
+    @Environment(\.modelContext) private var modelContext
+    @State private var isPresented = false
+
+    var body: some View {
+        Button("Seed and Show") {
+            modelContext.insert(_SheetModelContextRecord(id: 1))
+            isPresented = true
+        }
+        .sheet(isPresented: $isPresented) {
+            _SheetModelContextChild()
+        }
+    }
+}
+
+@Test func sheetContentInheritsModelContextEnvironment() async throws {
+    let runtime = _UIRuntime()
+    let root = _SheetModelContextProbe()
+        .modelContainer(for: [_SheetModelContextRecord.self], inMemory: true)
+    let size = _Size(width: 40, height: 10)
+
+    let initial = runtime.debugRender(root, size: size)
+    guard let seed = _findButton(initial, title: "Seed and Show") else {
+        #expect(Bool(false), "Could not find sheet seed button")
+        return
+    }
+    initial.click(x: seed.x, y: seed.y)
+
+    let sheet = runtime.debugRender(root, size: size)
+    #expect(sheet.text.contains("sheet count: 1"))
+}
+
 struct TapGestureView: View {
     @State private var tapped: Int = 0
 

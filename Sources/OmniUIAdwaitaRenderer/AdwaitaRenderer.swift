@@ -88,10 +88,15 @@ public final class AdwaitaApp<Root: View>: @unchecked Sendable {
                 return
             }
             let previous = box.textValuesByActionID[rawID] ?? ""
+            let belongsToPresentedModal = box.previousModalRoot.map {
+                AdwaitaNodeBuilder.textValues(in: $0).keys.contains(rawID)
+            } ?? false
             _ = box.runtime.focusByRawActionID(rawID)
             box.runtime.replaceTextForRawActionID(rawID, previous: previous, next: next)
             box.textValuesByActionID[rawID] = next
-            box.rerender()
+            if !belongsToPresentedModal {
+                box.rerender()
+            }
         }
         let keyCallback: omni_adw_key_callback = { actionID, keyKind, codepoint, context in
             guard let context else { return }
@@ -319,8 +324,8 @@ public final class AdwaitaApp<Root: View>: @unchecked Sendable {
             syncNativeHeaderActions(presentation.toolbar.actions, app: cApp)
             let callbackBox = box.takeUnretainedValue()
             callbackBox.previousToolbar = presentation.toolbar
+            let previousModalRoot = callbackBox.previousModalRoot
             let transientPresentation = presentation.modal ?? appKitTransientPresentation(runtime: popoverRuntime, size: renderSize)
-            callbackBox.previousModalRoot = transientPresentation
             if let transientPresentation {
                 AdwaitaSemanticDumper.dumpIfRequested(transientPresentation, section: "MODAL")
             }
@@ -331,14 +336,16 @@ public final class AdwaitaApp<Root: View>: @unchecked Sendable {
                 print("OmniUI Adwaita rerender: changes=\(changes.count)")
             }
             callbackBox.lastChanges = changes
-            callbackBox.textValuesByActionID = adwaitaTextValues(box: callbackBox, displayRoot: displaySnapshot.root)
+            callbackBox.textValuesByActionID = adwaitaTextValues(box: callbackBox, displayRoot: displaySnapshot.root, modalRoot: transientPresentation)
             if changes.isEmpty, callbackBox.previousSnapshot != nil {
-                syncNativePresentation(transientPresentation, app: cApp)
+                syncNativePresentation(transientPresentation, previous: previousModalRoot, focusedActionID: displaySnapshot.focusedActionID, app: cApp)
+                callbackBox.previousModalRoot = transientPresentation
                 callbackBox.previousSnapshot = displaySnapshot
                 return
             }
             if !changes.isEmpty, AdwaitaNodeBuilder.applyLeafUpdates(changes: changes, snapshot: displaySnapshot, app: cApp) {
-                syncNativePresentation(transientPresentation, app: cApp)
+                syncNativePresentation(transientPresentation, previous: previousModalRoot, focusedActionID: displaySnapshot.focusedActionID, app: cApp)
+                callbackBox.previousModalRoot = transientPresentation
                 callbackBox.previousSnapshot = displaySnapshot
                 return
             }
@@ -353,13 +360,15 @@ public final class AdwaitaApp<Root: View>: @unchecked Sendable {
                     app: cApp
                 )
             {
-                syncNativePresentation(transientPresentation, app: cApp)
+                syncNativePresentation(transientPresentation, previous: previousModalRoot, focusedActionID: displaySnapshot.focusedActionID, app: cApp)
+                callbackBox.previousModalRoot = transientPresentation
                 callbackBox.previousSnapshot = displaySnapshot
                 return
             }
             guard let node = AdwaitaNodeBuilder.build(displaySnapshot.root) else { return }
             omni_adw_app_set_root_focused(cApp, node, Int32(displaySnapshot.focusedActionID ?? 0))
-            syncNativePresentation(transientPresentation, app: cApp)
+            syncNativePresentation(transientPresentation, previous: previousModalRoot, focusedActionID: displaySnapshot.focusedActionID, app: cApp)
+            callbackBox.previousModalRoot = transientPresentation
             callbackBox.previousSnapshot = displaySnapshot
             if traceRenders {
                 print("OmniUI Adwaita rerender: full root set")
@@ -804,7 +813,7 @@ private func adwaitaVisibleText(in node: SemanticNode) -> [String] {
     return values.filter { !$0.isEmpty }
 }
 
-private func adwaitaTextValues(box: CallbackBox, displayRoot: SemanticNode) -> [Int: String] {
+private func adwaitaTextValues(box: CallbackBox, displayRoot: SemanticNode, modalRoot: SemanticNode?) -> [Int: String] {
     var values: [Int: String] = [:]
     if let settingsRoot = box.previousSettingsRoot {
         values.merge(AdwaitaNodeBuilder.textValues(in: settingsRoot), uniquingKeysWith: { _, next in next })
@@ -812,7 +821,7 @@ private func adwaitaTextValues(box: CallbackBox, displayRoot: SemanticNode) -> [
     if let commandRoot = box.previousCommandRoot {
         values.merge(AdwaitaNodeBuilder.textValues(in: commandRoot), uniquingKeysWith: { _, next in next })
     }
-    if let modalRoot = box.previousModalRoot {
+    if let modalRoot {
         values.merge(AdwaitaNodeBuilder.textValues(in: modalRoot), uniquingKeysWith: { _, next in next })
     }
     values.merge(AdwaitaNodeBuilder.textValues(in: displayRoot), uniquingKeysWith: { _, next in next })
@@ -1458,11 +1467,29 @@ private enum AdwaitaPresentationExtractor {
     }
 }
 
-private func syncNativePresentation(_ modal: SemanticNode?, app: OpaquePointer?) {
+private func syncNativePresentation(_ modal: SemanticNode?, previous: SemanticNode?, focusedActionID: Int?, app: OpaquePointer?) {
     guard let app else { return }
     guard let modal else {
         omni_adw_app_dismiss_modal(app)
         return
+    }
+    if let previous {
+        let changes = SemanticDiff.changes(from: previous, to: modal)
+        if changes.isEmpty {
+            return
+        }
+        if AdwaitaNodeBuilder.applyLeafUpdates(changes: changes, root: modal, app: app) {
+            return
+        }
+        if AdwaitaNodeBuilder.applyStructuralReplacement(
+            changes: changes,
+            previous: previous,
+            next: modal,
+            focusedActionID: focusedActionID,
+            app: app
+        ) {
+            return
+        }
     }
     guard let node = AdwaitaNodeBuilder.build(modal) else {
         omni_adw_app_dismiss_modal(app)
@@ -2123,8 +2150,12 @@ enum AdwaitaNodeBuilder {
     }
 
     static func applyLeafUpdates(changes: [SemanticChange], snapshot: SemanticSnapshot, app: OpaquePointer?) -> Bool {
+        applyLeafUpdates(changes: changes, root: snapshot.root, app: app)
+    }
+
+    static func applyLeafUpdates(changes: [SemanticChange], root: SemanticNode, app: OpaquePointer?) -> Bool {
         guard let app else { return false }
-        guard let updates = AdwaitaReconciliation.leafUpdates(changes: changes, snapshot: snapshot) else { return false }
+        guard let updates = AdwaitaReconciliation.leafUpdates(changes: changes, root: root) else { return false }
         let traceDiff = ProcessInfo.processInfo.environment["OMNIUI_ADWAITA_DIFF_TRACE"] == "1"
         for update in updates {
             let applied = omni_adw_app_update_node(app, update.id, update.kind.rawValue, update.text, update.active ? 1 : 0)

@@ -57,6 +57,16 @@ public final class ModelContext: @unchecked Sendable {
     private let store: _ModelStore
     private let observerID: UUID
     private let lock = NSLock()
+    private let runtimeLock = NSLock()
+    private var runtimes: [ObjectIdentifier: WeakRuntime] = [:]
+
+    private final class WeakRuntime: @unchecked Sendable {
+        weak var value: _UIRuntime?
+
+        init(_ value: _UIRuntime) {
+            self.value = value
+        }
+    }
 
     public init(schema: Schema? = nil) {
         self.schema = schema
@@ -65,9 +75,8 @@ public final class ModelContext: @unchecked Sendable {
         self.observerID = UUID()
         // Capture the runtime at registration time so notifications work even when
         // called outside a build/action context.  Fall back to _current for lazy resolution.
-        store.registerObserver(id: observerID) { [weak capturedRuntime = _UIRuntime._current] in
-            let runtime = capturedRuntime ?? _UIRuntime._current
-            runtime?._markDirtyFromModelContext()
+        store.registerObserver(id: observerID) { [weak self, weak capturedRuntime = _UIRuntime._current] in
+            self?._notifyRuntimes(capturedRuntime: capturedRuntime)
         }
     }
 
@@ -76,9 +85,8 @@ public final class ModelContext: @unchecked Sendable {
         self.allowedTypeIDs = schema.map { Set($0.modelTypes.map(ObjectIdentifier.init)) }
         self.store = store
         self.observerID = UUID()
-        store.registerObserver(id: observerID) { [weak capturedRuntime = _UIRuntime._current] in
-            let runtime = capturedRuntime ?? _UIRuntime._current
-            runtime?._markDirtyFromModelContext()
+        store.registerObserver(id: observerID) { [weak self, weak capturedRuntime = _UIRuntime._current] in
+            self?._notifyRuntimes(capturedRuntime: capturedRuntime)
         }
     }
 
@@ -119,6 +127,42 @@ public final class ModelContext: @unchecked Sendable {
         lock.lock()
         defer { lock.unlock() }
         store.reset()
+    }
+
+    func _bindRuntime(_ runtime: _UIRuntime) {
+        runtimeLock.lock()
+        runtimes[ObjectIdentifier(runtime)] = WeakRuntime(runtime)
+        runtimeLock.unlock()
+    }
+
+    private func _notifyRuntimes(capturedRuntime: _UIRuntime?) {
+        var live: [_UIRuntime] = []
+        var stale: [ObjectIdentifier] = []
+        runtimeLock.lock()
+        for (id, weakRuntime) in runtimes {
+            if let runtime = weakRuntime.value {
+                live.append(runtime)
+            } else {
+                stale.append(id)
+            }
+        }
+        for id in stale {
+            runtimes.removeValue(forKey: id)
+        }
+        runtimeLock.unlock()
+
+        var didNotify = false
+        if let capturedRuntime {
+            capturedRuntime._markDirtyFromModelContext()
+            didNotify = true
+        }
+        for runtime in live where runtime !== capturedRuntime {
+            runtime._markDirtyFromModelContext()
+            didNotify = true
+        }
+        if !didNotify {
+            _UIRuntime._current?._markDirtyFromModelContext()
+        }
     }
 }
 

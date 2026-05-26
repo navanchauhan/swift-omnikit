@@ -314,6 +314,7 @@ public final class _UIRuntime: @unchecked Sendable {
     private struct _OverlayEntry {
         var view: AnyView
         var dismiss: () -> Void
+        var environment: EnvironmentValues
     }
     private var overlays: [_OverlayEntry] = []
 
@@ -413,7 +414,9 @@ public final class _UIRuntime: @unchecked Sendable {
     public init() {
         // Provide a per-runtime model context so `@Environment(\\.modelContext)` and `@Query` have
         // a stable default even if the app doesn't call `.modelContainer(...)`.
-        _baseEnvironment.modelContext = ModelContext()
+        let defaultModelContext = ModelContext()
+        defaultModelContext._bindRuntime(self)
+        _baseEnvironment.modelContext = defaultModelContext
         _baseEnvironment.editMode = Binding(
             get: { [weak self] in self?.globalEditMode ?? .inactive },
             set: { [weak self] in self?._setGlobalEditMode($0) }
@@ -807,8 +810,7 @@ public final class _UIRuntime: @unchecked Sendable {
         var merged = node
         var local = _BuildContext(runtime: self, path: [Int.min], nextChildIndex: 0)
         for entry in overlays {
-            let current = _UIRuntime._currentEnvironment ?? _baseEnvironment
-            var next = current
+            var next = entry.environment
             next.dismiss = DismissAction(entry.dismiss)
             let mode = PresentationMode(dismiss: entry.dismiss)
             next.presentationMode = Binding(get: { mode }, set: { _ in })
@@ -2218,7 +2220,8 @@ extension _UIRuntime {
 
     func _registerOverlay(view: AnyView, dismiss: @escaping () -> Void) {
         _noteBuildSideEffect()
-        overlays.append(_OverlayEntry(view: view, dismiss: dismiss))
+        let environment = _UIRuntime._currentEnvironment ?? _baseEnvironment
+        overlays.append(_OverlayEntry(view: view, dismiss: dismiss, environment: environment))
     }
 
     func _registerFocusBoolBinding(path: [Int], set: @escaping (Bool) -> Void) {

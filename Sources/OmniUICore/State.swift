@@ -78,24 +78,6 @@ public struct State<Value> {
     private let initial: () -> Value
     private let location: _StateLocation
 
-    private final class DeferredMutation: @unchecked Sendable {
-        let runtime: _UIRuntime
-        let seed: _StateSeed
-        let path: [Int]
-        let value: Value
-
-        init(runtime: _UIRuntime, seed: _StateSeed, path: [Int], value: Value) {
-            self.runtime = runtime
-            self.seed = seed
-            self.path = path
-            self.value = value
-        }
-
-        func apply() {
-            runtime._setState(seed: seed, path: path, value: value)
-        }
-    }
-
     public init(wrappedValue: Value, fileID: StaticString = #fileID, line: UInt = #line) {
         self.seed = _StateSeed(fileID: fileID, line: line)
         self.initial = { wrappedValue }
@@ -161,15 +143,6 @@ public struct State<Value> {
     }
 
     private func setStateValue(runtime: _UIRuntime, path: [Int], value: Value) {
-        #if os(Linux)
-        guard Thread.isMainThread else {
-            let mutation = DeferredMutation(runtime: runtime, seed: seed, path: path, value: value)
-            DispatchQueue.main.async {
-                mutation.apply()
-            }
-            return
-        }
-        #endif
         runtime._setState(seed: seed, path: path, value: value)
     }
 }

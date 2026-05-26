@@ -100,6 +100,7 @@ void omni_macos_text_input_install(void *app);
 #define OMNI_HEADER_ACTION_SEGMENTED 1
 #define OMNI_HEADER_ACTION_SELECTED 2
 #define OMNI_ENTRY_TEXT_COMMIT_DELAY_MS 1500
+#define OMNI_MODAL_DISMISS_DELAY_MS 150
 #define OMNI_ADW_LIFECYCLE_MAIN_WINDOW_CLOSE_REQUEST 1
 #define OMNI_ADW_LIFECYCLE_APP_QUIT_REQUEST 2
 
@@ -149,7 +150,9 @@ struct OmniAdwApp {
   int32_t default_width;
   int32_t default_height;
   GtkEventController *key_controller;
+  guint pending_ui_flush_source;
   guint macos_accessibility_sync_source;
+  guint modal_dismiss_source;
   gboolean application_actions_installed;
 };
 
@@ -1013,6 +1016,7 @@ static void omni_queue_widget_redraw(GtkWidget *widget) {
   GtkNative *native = gtk_widget_get_native(widget);
   GdkSurface *surface = native ? gtk_native_get_surface(native) : NULL;
   if (surface) gdk_surface_queue_render(surface);
+  if (GTK_IS_ENTRY(widget) || GTK_IS_TEXT_VIEW(widget)) return;
   g_object_ref(widget);
   g_idle_add(omni_queue_widget_redraw_idle, widget);
 }
@@ -1713,6 +1717,7 @@ static void omni_queue_widget_redraw(GtkWidget *widget) {
   GtkNative *native = gtk_widget_get_native(widget);
   GdkSurface *surface = native ? gtk_native_get_surface(native) : NULL;
   if (surface) gdk_surface_queue_render(surface);
+  if (GTK_IS_ENTRY(widget) || GTK_IS_TEXT_VIEW(widget)) return;
   g_object_ref(widget);
   g_idle_add(omni_queue_widget_redraw_idle, widget);
 }
@@ -2721,11 +2726,45 @@ static void omni_macos_accessibility_sync(OmniAdwApp *app);
 static void omni_macos_accessibility_cancel_pending(OmniAdwApp *app);
 static void omni_macos_accessibility_schedule(OmniAdwApp *app);
 static void omni_macos_accessibility_schedule_after_scroll(OmniAdwApp *app);
+static void omni_flush_pending_ui(OmniAdwApp *app);
+
+static int omni_native_dispatch_depth = 0;
+
+static gboolean omni_flush_pending_ui_idle(gpointer data) {
+  OmniAdwApp *app = (OmniAdwApp *)data;
+  if (!app) return G_SOURCE_REMOVE;
+  app->pending_ui_flush_source = 0;
+  omni_flush_pending_ui(app);
+  return G_SOURCE_REMOVE;
+}
+
+static void omni_schedule_pending_ui_flush(OmniAdwApp *app) {
+  if (!app || app->pending_ui_flush_source != 0) return;
+  app->pending_ui_flush_source = g_idle_add(omni_flush_pending_ui_idle, app);
+}
+
+static void omni_dispatch_action_callback(OmniAdwApp *app, int32_t action_id) {
+  if (!app || !app->callback || action_id <= 0) return;
+  omni_native_dispatch_depth += 1;
+  app->callback(action_id, app->context);
+  omni_native_dispatch_depth -= 1;
+}
+
+static void omni_dispatch_key_callback(OmniAdwApp *app, int32_t action_id, int32_t kind, uint32_t codepoint) {
+  if (!app || !app->key_callback) return;
+  omni_native_dispatch_depth += 1;
+  app->key_callback(action_id, kind, codepoint, app->context);
+  omni_native_dispatch_depth -= 1;
+}
 
 static void omni_flush_pending_ui(OmniAdwApp *app) {
   if (app && app->content) omni_queue_widget_and_ancestors_redraw(app->content);
   if (app && app->body_slot) omni_queue_widget_redraw(app->body_slot);
   if (app && app->window) omni_queue_widget_redraw(app->window);
+  if (omni_native_dispatch_depth > 0 || (app && app->modal_dismiss_source != 0)) {
+    omni_schedule_pending_ui_flush(app);
+    return;
+  }
   while (g_main_context_pending(NULL)) {
     g_main_context_iteration(NULL, FALSE);
   }
@@ -2753,6 +2792,9 @@ static void on_split_show_sidebar_notify(GObject *object, GParamSpec *pspec, gpo
 static void on_header_tab_clicked(GtkButton *button, gpointer data);
 static void on_entry_changed(GtkEditable *editable, gpointer data);
 static void on_entry_activate(GtkEntry *entry, gpointer data);
+static void omni_app_commit_active_text(OmniAdwApp *app);
+static GtkWidget *find_first_entry_widget(GtkWidget *widget);
+static GtkWidget *find_focused_entry_widget(GtkWidget *widget);
 static const char *omni_symbolic_icon_name_for_label(const char *label);
 static const char *omni_accessible_label_for_symbolic_label(const char *label);
 static void wire_actions(GtkWidget *widget, OmniAdwApp *app);
@@ -3456,7 +3498,8 @@ static void on_clicked(GtkButton *button, gpointer data) {
   int required_click_count = GPOINTER_TO_INT(g_object_get_data(G_OBJECT(button), "omni-required-click-count"));
   if (required_click_count > 1) return;
   if (app && app->callback) {
-    app->callback(action_id, app->context);
+    omni_app_commit_active_text(app);
+    omni_dispatch_action_callback(app, action_id);
     omni_flush_pending_ui(app);
   }
 }
@@ -3471,7 +3514,7 @@ static void on_required_click_released(GtkGestureClick *gesture, int n_press, do
   int action_id = GPOINTER_TO_INT(g_object_get_data(G_OBJECT(widget), "omni-action-id"));
   OmniAdwApp *app = (OmniAdwApp *)g_object_get_data(G_OBJECT(widget), "omni-app");
   if (app && app->callback && action_id > 0) {
-    app->callback(action_id, app->context);
+    omni_dispatch_action_callback(app, action_id);
     omni_flush_pending_ui(app);
     gtk_gesture_set_state(GTK_GESTURE(gesture), GTK_EVENT_SEQUENCE_CLAIMED);
   }
@@ -3487,7 +3530,7 @@ static void on_toggled(GtkCheckButton *button, gpointer data) {
     -1
   );
   if (app && app->callback) {
-    app->callback(action_id, app->context);
+    omni_dispatch_action_callback(app, action_id);
     omni_flush_pending_ui(app);
   }
 }
@@ -3662,7 +3705,7 @@ static void on_string_list_activate(GtkListView *view, guint position, gpointer 
   if (!app || !app->callback || !list || original < 0 || original >= list->count) return;
   int32_t action_id = list->action_ids ? list->action_ids[original] : 0;
   if (action_id > 0) {
-    app->callback(action_id, app->context);
+    omni_dispatch_action_callback(app, action_id);
     omni_flush_pending_ui(app);
   }
 }
@@ -3682,7 +3725,7 @@ static void on_virtual_list_button_clicked(GtkButton *button, gpointer data) {
   int required_click_count = GPOINTER_TO_INT(g_object_get_data(G_OBJECT(button), "omni-required-click-count"));
   if (required_click_count > 1) return;
   if (app && app->callback && action_id > 0) {
-    app->callback(action_id, app->context);
+    omni_dispatch_action_callback(app, action_id);
     omni_flush_pending_ui(app);
   }
 }
@@ -3827,7 +3870,7 @@ static void on_plain_list_row_activated(GtkListBox *box, GtkListBoxRow *row, gpo
   OmniAdwApp *app = (OmniAdwApp *)g_object_get_data(G_OBJECT(box), "omni-app");
   int action_id = GPOINTER_TO_INT(g_object_get_data(G_OBJECT(row), "omni-action-id"));
   if (app && app->callback && action_id > 0) {
-    app->callback(action_id, app->context);
+    omni_dispatch_action_callback(app, action_id);
     omni_flush_pending_ui(app);
   }
 }
@@ -3929,7 +3972,7 @@ static void on_plain_list_row_released(GtkGestureClick *gesture, int n_press, do
     return;
   }
   if (app && app->callback && action_id > 0) {
-    app->callback(action_id, app->context);
+    omni_dispatch_action_callback(app, action_id);
     omni_flush_pending_ui(app);
     gtk_gesture_set_state(GTK_GESTURE(gesture), GTK_EVENT_SEQUENCE_CLAIMED);
   }
@@ -3954,7 +3997,7 @@ static void on_click_container_released(GtkGestureClick *gesture, int n_press, d
   }
   OmniAdwApp *app = (OmniAdwApp *)g_object_get_data(G_OBJECT(widget), "omni-app");
   if (app && app->callback && action_id > 0) {
-    app->callback(action_id, app->context);
+    omni_dispatch_action_callback(app, action_id);
     omni_flush_pending_ui(app);
     gtk_gesture_set_state(GTK_GESTURE(gesture), GTK_EVENT_SEQUENCE_CLAIMED);
   }
@@ -4260,7 +4303,7 @@ static void on_scale_value_changed(GtkRange *range, gpointer data) {
 
   if (previous_ptr) *previous_ptr = next;
   if (action_id > 0) {
-    app->callback(action_id, app->context);
+    omni_dispatch_action_callback(app, action_id);
     omni_flush_pending_ui(app);
   }
 }
@@ -4285,7 +4328,7 @@ static void on_spin_value_changed(GtkSpinButton *spin, gpointer data) {
 
   if (previous_ptr) *previous_ptr = next;
   if (action_id > 0) {
-    app->callback(action_id, app->context);
+    omni_dispatch_action_callback(app, action_id);
     omni_flush_pending_ui(app);
   }
 }
@@ -4333,7 +4376,7 @@ static void handle_calendar_date_changed(GtkCalendar *calendar) {
     action_id = GPOINTER_TO_INT(g_object_get_data(G_OBJECT(calendar), "omni-decrement-action-id"));
   }
   if (app->callback && action_id > 0) {
-    app->callback(action_id, app->context);
+    omni_dispatch_action_callback(app, action_id);
     omni_flush_pending_ui(app);
   }
 }
@@ -4366,7 +4409,7 @@ static void on_dropdown_selected(GObject *object, GParamSpec *pspec, gpointer da
   }
   int32_t action_id = action_ids[selected];
   if (action_id > 0) {
-    app->callback(action_id, app->context);
+    omni_dispatch_action_callback(app, action_id);
     omni_flush_pending_ui(app);
   }
 }
@@ -4393,6 +4436,17 @@ static void omni_entry_commit_text_now(GtkWidget *widget) {
   g_object_set_data(G_OBJECT(widget), "omni-pending-text-value", NULL);
 }
 
+static GtkWidget *omni_entry_widget_for_editable(GtkEditable *editable) {
+  if (!editable) return NULL;
+  GtkWidget *widget = GTK_WIDGET(editable);
+  GtkWidget *current = widget;
+  while (current) {
+    if (GTK_IS_ENTRY(current)) return current;
+    current = gtk_widget_get_parent(current);
+  }
+  return widget;
+}
+
 static gboolean on_entry_text_commit_timeout(gpointer data) {
   GtkWidget *widget = GTK_WIDGET(data);
   if (widget) {
@@ -4403,7 +4457,7 @@ static gboolean on_entry_text_commit_timeout(gpointer data) {
 }
 
 static void omni_entry_schedule_text_commit(GtkWidget *widget) {
-  if (!widget || !GTK_IS_EDITABLE(widget)) return;
+  if (!widget || !GTK_IS_ENTRY(widget)) return;
   omni_entry_cancel_pending_text_commit(widget);
   const char *text = gtk_editable_get_text(GTK_EDITABLE(widget));
   g_object_set_data_full(G_OBJECT(widget), "omni-pending-text-value", g_strdup(text ? text : ""), g_free);
@@ -4428,7 +4482,8 @@ static void on_menu_option_clicked(GtkButton *button, gpointer data) {
   omni_accessible_value_text(GTK_WIDGET(button), gtk_button_get_label(button));
   if (popover) gtk_popover_popdown(popover);
   if (app && app->callback && action_id > 0) {
-    app->callback(action_id, app->context);
+    omni_app_commit_active_text(app);
+    omni_dispatch_action_callback(app, action_id);
     omni_flush_pending_ui(app);
   }
 }
@@ -4455,15 +4510,33 @@ static void on_context_menu_pressed(GtkGestureClick *gesture, int n_press, doubl
   gtk_gesture_set_state(GTK_GESTURE(gesture), GTK_EVENT_SEQUENCE_CLAIMED);
 }
 
+static gboolean widget_is_descendant_of(GtkWidget *widget, GtkWidget *ancestor) {
+  GtkWidget *current = widget;
+  while (current) {
+    if (current == ancestor) return TRUE;
+    current = gtk_widget_get_parent(current);
+  }
+  return FALSE;
+}
+
 static void on_entry_changed(GtkEditable *editable, gpointer data) {
-  if (g_object_get_data(G_OBJECT(editable), "omni-updating") != NULL) return;
-  OmniAdwApp *app = (OmniAdwApp *)g_object_get_data(G_OBJECT(editable), "omni-app");
-  int action_id = GPOINTER_TO_INT(g_object_get_data(G_OBJECT(editable), "omni-action-id"));
+  GtkWidget *widget = omni_entry_widget_for_editable(editable);
+  if (!widget) return;
+  if (g_object_get_data(G_OBJECT(widget), "omni-updating") != NULL) return;
+  OmniAdwApp *app = (OmniAdwApp *)g_object_get_data(G_OBJECT(widget), "omni-app");
+  int action_id = GPOINTER_TO_INT(g_object_get_data(G_OBJECT(widget), "omni-action-id"));
   if (app && action_id > 0) app->focused_action_id = action_id;
-  omni_accessible_value_text(GTK_WIDGET(editable), gtk_editable_get_text(editable));
+  omni_accessible_value_text(widget, gtk_editable_get_text(GTK_EDITABLE(widget)));
   omni_macos_accessibility_schedule(app);
-  if (g_object_get_data(G_OBJECT(editable), "omni-modal-native-entry") != NULL) return;
-  if (app && app->text_callback && action_id > 0) omni_entry_schedule_text_commit(GTK_WIDGET(editable));
+  if (g_object_get_data(G_OBJECT(widget), "omni-modal-native-entry") != NULL) return;
+  if (app && app->text_callback && action_id > 0) {
+    if (app->modal_accessibility_root && widget_is_descendant_of(widget, app->modal_accessibility_root)) {
+      omni_entry_cancel_pending_text_commit(widget);
+      app->text_callback(action_id, gtk_editable_get_text(GTK_EDITABLE(widget)), app->context);
+    } else {
+      omni_entry_schedule_text_commit(widget);
+    }
+  }
 }
 
 static void on_entry_activate(GtkEntry *entry, gpointer data) {
@@ -4474,7 +4547,7 @@ static void on_entry_activate(GtkEntry *entry, gpointer data) {
   if (action_id <= 0) action_id = app->focused_action_id;
   if (action_id > 0) app->focused_action_id = action_id;
   omni_entry_commit_text_now(widget);
-  app->key_callback(action_id, 7, 0, app->context);
+  omni_dispatch_key_callback(app, action_id, 7, 0);
   omni_flush_pending_ui(app);
 }
 
@@ -4552,7 +4625,22 @@ static GtkWidget *app_modal_native_text_widget(OmniAdwApp *app) {
   if (!app || !app->modal_dialog) return NULL;
   GtkWidget *entry = (GtkWidget *)g_object_get_data(G_OBJECT(app->modal_dialog), "omni-modal-entry");
   if (entry && (GTK_IS_ENTRY(entry) || GTK_IS_TEXT_VIEW(entry))) return entry;
+  if (app->modal_accessibility_root) {
+    GtkWidget *focused = find_focused_entry_widget(app->modal_accessibility_root);
+    if (focused) return focused;
+    GtkWidget *first = find_first_entry_widget(app->modal_accessibility_root);
+    if (first) return first;
+  }
   return NULL;
+}
+
+static void omni_app_commit_active_text(OmniAdwApp *app) {
+  if (!app) return;
+  GtkWidget *native_text = app_focused_native_text_widget(app);
+  if (!native_text) native_text = app_modal_native_text_widget(app);
+  if (native_text && GTK_IS_ENTRY(native_text)) {
+    omni_entry_commit_text_now(native_text);
+  }
 }
 
 static GtkWidget *controller_native_text_widget(GtkEventControllerKey *controller) {
@@ -4605,6 +4693,26 @@ static gboolean handle_entry_readline_key(OmniAdwApp *app, GtkWidget *widget, gu
   }
 }
 
+static gboolean omni_entry_insert_printable_key(GtkWidget *widget, guint keyval, GdkModifierType state) {
+  if (!GTK_IS_ENTRY(widget)) return FALSE;
+  if ((state & (GDK_CONTROL_MASK | GDK_ALT_MASK | GDK_META_MASK | GDK_SUPER_MASK)) != 0) return FALSE;
+  guint unicode = gdk_keyval_to_unicode(keyval);
+  if (unicode < 32 || unicode == 127) return FALSE;
+
+  char text[8] = {0};
+  int length = g_unichar_to_utf8(unicode, text);
+  if (length <= 0) return FALSE;
+  text[length] = '\0';
+
+  GtkEditable *editable = GTK_EDITABLE(widget);
+  int position = gtk_editable_get_position(editable);
+  if (position < 0) position = (int)g_utf8_strlen(gtk_editable_get_text(editable), -1);
+  gtk_editable_insert_text(editable, text, length, &position);
+  gtk_editable_set_position(editable, position);
+  gtk_widget_grab_focus(widget);
+  return TRUE;
+}
+
 static gboolean omni_adw_is_modifier_key(guint keyval) {
   switch (keyval) {
     case GDK_KEY_Shift_L:
@@ -4628,6 +4736,47 @@ static gboolean on_key_pressed(GtkEventControllerKey *controller, guint keyval, 
   if (!app || !app->key_callback) return FALSE;
   (void)keycode;
 
+  if (!omni_adw_is_modifier_key(keyval) &&
+      (state & (GDK_META_MASK | GDK_CONTROL_MASK | GDK_ALT_MASK | GDK_SUPER_MASK)) == 0) {
+    GtkWidget *early_controller_text = controller_native_text_widget(controller);
+    GtkWidget *early_focused_text = app_focused_native_text_widget(app);
+    GtkWidget *early_modal_text = (!early_controller_text && !early_focused_text) ? app_modal_native_text_widget(app) : NULL;
+    GtkWidget *early_native_text = early_controller_text ? early_controller_text : (early_focused_text ? early_focused_text : early_modal_text);
+    if (early_native_text) {
+      int action_id = GPOINTER_TO_INT(g_object_get_data(G_OBJECT(early_native_text), "omni-action-id"));
+      if (action_id <= 0) action_id = app->focused_action_id;
+      int32_t native_kind = -1;
+      switch (keyval) {
+        case GDK_KEY_Return:
+        case GDK_KEY_KP_Enter:
+          native_kind = 7;
+          break;
+        case GDK_KEY_Escape:
+          native_kind = 8;
+          break;
+        case GDK_KEY_Up:
+          native_kind = 9;
+          break;
+        case GDK_KEY_Down:
+          native_kind = 10;
+          break;
+        default:
+          break;
+      }
+      if (native_kind >= 0) {
+        if (native_kind == 7) omni_entry_commit_text_now(early_native_text);
+        omni_dispatch_key_callback(app, action_id, native_kind, 0);
+        omni_flush_pending_ui(app);
+        return TRUE;
+      }
+      if (early_modal_text && omni_entry_insert_printable_key(early_native_text, keyval, state)) {
+        if (action_id > 0) app->focused_action_id = action_id;
+        return TRUE;
+      }
+      return FALSE;
+    }
+  }
+
   if (omni_adw_is_modifier_key(keyval)) {
     if (omni_adw_dispatch_native_event(app, OMNI_ADW_EVENT_FLAGS_CHANGED, 0, 0, 0, state, keyval)) return TRUE;
   } else if (omni_adw_dispatch_native_event(app, OMNI_ADW_EVENT_KEY_DOWN, 0, 0, 0, state, keyval)) {
@@ -4639,9 +4788,10 @@ static gboolean on_key_pressed(GtkEventControllerKey *controller, guint keyval, 
     return TRUE;
   }
 
-  GtkWidget *native_text = controller_native_text_widget(controller);
-  if (!native_text) native_text = app_focused_native_text_widget(app);
-  if (!native_text) native_text = app_modal_native_text_widget(app);
+  GtkWidget *controller_text = controller_native_text_widget(controller);
+  GtkWidget *focused_text = app_focused_native_text_widget(app);
+  GtkWidget *modal_text = (!controller_text && !focused_text) ? app_modal_native_text_widget(app) : NULL;
+  GtkWidget *native_text = controller_text ? controller_text : (focused_text ? focused_text : modal_text);
   if (native_text) {
     if (handle_entry_readline_key(app, native_text, keyval, state)) return TRUE;
     int action_id = GPOINTER_TO_INT(g_object_get_data(G_OBJECT(native_text), "omni-action-id"));
@@ -4666,19 +4816,25 @@ static gboolean on_key_pressed(GtkEventControllerKey *controller, guint keyval, 
     }
     if (native_kind >= 0) {
       if (native_kind == 7) omni_entry_commit_text_now(native_text);
-      app->key_callback(action_id, native_kind, 0, app->context);
+      omni_dispatch_key_callback(app, action_id, native_kind, 0);
       omni_flush_pending_ui(app);
+      return TRUE;
+    }
+    if (modal_text && omni_entry_insert_printable_key(native_text, keyval, state)) {
+      if (action_id > 0) app->focused_action_id = action_id;
       return TRUE;
     }
     return FALSE;
   }
 
   if (keyval == GDK_KEY_Return || keyval == GDK_KEY_KP_Enter) {
-    app->key_callback(app->focused_action_id > 0 ? app->focused_action_id : 0, 7, 0, app->context);
+    omni_dispatch_key_callback(app, app->focused_action_id > 0 ? app->focused_action_id : 0, 7, 0);
+    omni_flush_pending_ui(app);
     return TRUE;
   }
   if (keyval == GDK_KEY_Escape) {
-    app->key_callback(app->focused_action_id > 0 ? app->focused_action_id : 0, 8, 0, app->context);
+    omni_dispatch_key_callback(app, app->focused_action_id > 0 ? app->focused_action_id : 0, 8, 0);
+    omni_flush_pending_ui(app);
     return TRUE;
   }
 
@@ -4732,7 +4888,7 @@ static gboolean on_key_pressed(GtkEventControllerKey *controller, guint keyval, 
   }
 
   if (kind < 0) return FALSE;
-  app->key_callback(app->focused_action_id, kind, codepoint, app->context);
+  omni_dispatch_key_callback(app, app->focused_action_id, kind, codepoint);
   return TRUE;
 }
 
@@ -4810,7 +4966,7 @@ static void on_window_click_released(GtkGestureClick *gesture, int n_press, doub
       if (required_click_count <= 0) required_click_count = 1;
       if (required_click_count != n_press) return;
       if (app && app->callback) {
-        app->callback(action_id, app->context);
+        omni_dispatch_action_callback(app, action_id);
         omni_flush_pending_ui(app);
         gtk_gesture_set_state(GTK_GESTURE(gesture), GTK_EVENT_SEQUENCE_CLAIMED);
         return;
@@ -5205,7 +5361,7 @@ static BOOL omni_macos_accessibility_perform_press(id self, SEL _cmd) {
   if (!widget) {
     int actionID = omni_macos_accessibility_action_id(self);
     if (!app || !app->callback || actionID <= 0) return NO;
-    app->callback(actionID, app->context);
+    omni_dispatch_action_callback(app, actionID);
     omni_flush_pending_ui(app);
     return YES;
   }
@@ -5237,7 +5393,7 @@ static BOOL omni_macos_accessibility_perform_press(id self, SEL _cmd) {
   }
   int actionID = GPOINTER_TO_INT(g_object_get_data(G_OBJECT(widget), "omni-action-id"));
   if (!app || !app->callback || actionID <= 0) return NO;
-  app->callback(actionID, app->context);
+  omni_dispatch_action_callback(app, actionID);
   omni_flush_pending_ui(app);
   return YES;
 }
@@ -5294,7 +5450,7 @@ static void omni_macos_accessibility_set_value(id self, SEL _cmd, id value) {
         }
         omni_accessible_value_text(widget, item);
         if (app && app->callback && action_id > 0) {
-          app->callback(action_id, app->context);
+          omni_dispatch_action_callback(app, action_id);
           omni_flush_pending_ui(app);
         } else if (app) {
           omni_macos_accessibility_schedule(app);
@@ -5977,7 +6133,9 @@ void omni_adw_app_remove_tick_callback(uint32_t source_id) {
 
 void omni_adw_app_free(OmniAdwApp *app) {
   if (!app) return;
+  if (app->pending_ui_flush_source != 0) g_source_remove(app->pending_ui_flush_source);
   if (app->macos_accessibility_sync_source != 0) g_source_remove(app->macos_accessibility_sync_source);
+  if (app->modal_dismiss_source != 0) g_source_remove(app->modal_dismiss_source);
   if (app->modal_dialog) adw_dialog_force_close(app->modal_dialog);
   if (app->settings_window) gtk_window_destroy(GTK_WINDOW(app->settings_window));
   if (app->application) g_object_unref(app->application);
@@ -6299,15 +6457,10 @@ static void on_alert_response(AdwAlertDialog *dialog, const char *response, gpoi
   OmniAdwApp *app = (OmniAdwApp *)data;
   OmniModalSummary *summary = (OmniModalSummary *)g_object_get_data(G_OBJECT(dialog), "omni-modal-summary");
   if (app && app->callback && summary && response && response[0] == 'r') {
-    GtkWidget *entry = (GtkWidget *)g_object_get_data(G_OBJECT(dialog), "omni-modal-entry");
-    int entry_action_id = GPOINTER_TO_INT(g_object_get_data(G_OBJECT(dialog), "omni-modal-entry-action-id"));
-    if (entry_action_id > 0 && GTK_IS_ENTRY(entry) && app->text_callback) {
-      app->text_callback(entry_action_id, gtk_editable_get_text(GTK_EDITABLE(entry)), app->context);
-    }
     int index = atoi(response + 1);
     if (index >= 0 && index < (int)summary->action_ids->len) {
       int action_id = g_array_index(summary->action_ids, int, index);
-      app->callback(action_id, app->context);
+      omni_dispatch_action_callback(app, action_id);
     }
   }
   if (app && app->modal_dialog == ADW_DIALOG(dialog)) {
@@ -6358,15 +6511,16 @@ static GtkWidget *find_first_entry_widget(GtkWidget *widget) {
   return NULL;
 }
 
-static int count_entry_widgets(GtkWidget *widget) {
-  if (!widget) return 0;
-  int count = GTK_IS_ENTRY(widget) ? 1 : 0;
+static GtkWidget *find_focused_entry_widget(GtkWidget *widget) {
+  if (!widget) return NULL;
+  if (GTK_IS_ENTRY(widget) && gtk_widget_has_focus(widget)) return widget;
   GtkWidget *child = gtk_widget_get_first_child(widget);
   while (child) {
-    count += count_entry_widgets(child);
+    GtkWidget *found = find_focused_entry_widget(child);
+    if (found) return found;
     child = gtk_widget_get_next_sibling(child);
   }
-  return count;
+  return NULL;
 }
 
 static gboolean modal_button_label_is_close(const char *label) {
@@ -6375,23 +6529,6 @@ static gboolean modal_button_label_is_close(const char *label) {
 
 static gboolean modal_button_label_is_cancel(const char *label) {
   return label && g_ascii_strcasecmp(label, "Cancel") == 0;
-}
-
-static gboolean modal_button_label_is_search(const char *label) {
-  return label && g_ascii_strcasecmp(label, "Search") == 0;
-}
-
-static gboolean modal_summary_contains_search_action(OmniModalSummary *summary) {
-  if (!summary) return FALSE;
-  for (guint i = 0; i < summary->button_labels->len; i++) {
-    const char *label = (const char *)g_ptr_array_index(summary->button_labels, i);
-    if (modal_button_label_is_search(label)) return TRUE;
-  }
-  return FALSE;
-}
-
-static gboolean modal_should_collapse_to_entry_prompt(OmniModalSummary *summary, int entry_count) {
-  return entry_count == 1 && modal_summary_contains_search_action(summary);
 }
 
 static void on_sheet_closed(AdwDialog *dialog, gpointer data) {
@@ -6408,7 +6545,8 @@ static void on_sheet_closed(AdwDialog *dialog, gpointer data) {
   omni_macos_web_view_set_modal_occlusion(FALSE);
 #endif
   if (!force_closing && action_id > 0 && app->callback) {
-    app->callback(action_id, app->context);
+    omni_dispatch_action_callback(app, action_id);
+    omni_flush_pending_ui(app);
   }
 }
 
@@ -6430,18 +6568,31 @@ static GtkWidget *omni_sheet_surface_new(void) {
   return surface;
 }
 
+static gboolean omni_focus_widget_idle(gpointer data) {
+  GtkWidget *widget = GTK_WIDGET(data);
+  if (widget && GTK_IS_WIDGET(widget)) {
+    gtk_widget_grab_focus(widget);
+  }
+  g_object_unref(widget);
+  return G_SOURCE_REMOVE;
+}
+
+static void omni_schedule_focus_widget(GtkWidget *widget) {
+  if (!widget || !GTK_IS_WIDGET(widget)) return;
+  g_idle_add(omni_focus_widget_idle, g_object_ref(widget));
+}
+
 static gboolean update_presented_sheet_dialog(OmniAdwApp *app, OmniAdwNode *modal) {
   if (!app || !app->modal_dialog || !modal || !modal->widget) return FALSE;
-  if (!ADW_IS_ALERT_DIALOG(app->modal_dialog)) return FALSE;
-  if (g_object_get_data(G_OBJECT(app->modal_dialog), "omni-modal-simple-entry-prompt") != NULL) {
-    return TRUE;
-  }
-
   wire_actions(modal->widget, app);
   GtkWidget *surface = omni_sheet_surface_new();
   gtk_box_append(GTK_BOX(surface), modal->widget);
   modal->widget = NULL;
-  adw_alert_dialog_set_extra_child(ADW_ALERT_DIALOG(app->modal_dialog), surface);
+  if (ADW_IS_ALERT_DIALOG(app->modal_dialog)) {
+    adw_alert_dialog_set_extra_child(ADW_ALERT_DIALOG(app->modal_dialog), surface);
+  } else {
+    adw_dialog_set_child(app->modal_dialog, surface);
+  }
   g_object_set_data(G_OBJECT(app->modal_dialog), "omni-sheet-content-widget", surface);
   app->modal_accessibility_root = surface;
   omni_macos_accessibility_schedule_after_map(app);
@@ -6450,21 +6601,12 @@ static gboolean update_presented_sheet_dialog(OmniAdwApp *app, OmniAdwNode *moda
 
 static void present_sheet_dialog(OmniAdwApp *app, OmniAdwNode *modal, OmniModalSummary *summary, int close_action_id) {
   int effective_close_action_id = close_action_id > 0 ? close_action_id : modal_cancel_action_id(summary);
-  int entry_count = count_entry_widgets(modal->widget);
-  gboolean simple_entry_prompt = modal_should_collapse_to_entry_prompt(summary, entry_count);
-  const char *heading = simple_entry_prompt && summary && summary->labels->len > 0
-    ? (const char *)g_ptr_array_index(summary->labels, 0)
-    : NULL;
-  AdwDialog *dialog = adw_alert_dialog_new(heading, NULL);
-  AdwAlertDialog *alert = ADW_ALERT_DIALOG(dialog);
+  AdwDialog *dialog = adw_dialog_new();
   adw_dialog_set_title(dialog, "Sheet");
   adw_dialog_set_can_close(dialog, effective_close_action_id > 0);
   adw_dialog_set_content_width(dialog, 560);
-  adw_dialog_set_content_height(dialog, simple_entry_prompt ? 360 : 560);
+  adw_dialog_set_content_height(dialog, 560);
   adw_dialog_set_presentation_mode(dialog, ADW_DIALOG_FLOATING);
-#if ADW_CHECK_VERSION(1, 6, 0)
-  adw_alert_dialog_set_prefer_wide_layout(alert, TRUE);
-#endif
   omni_accessible_label(GTK_WIDGET(dialog), "Sheet");
   omni_accessible_description(GTK_WIDGET(dialog), "Modal sheet");
   gtk_accessible_update_property(GTK_ACCESSIBLE(dialog), GTK_ACCESSIBLE_PROPERTY_MODAL, TRUE, -1);
@@ -6476,76 +6618,18 @@ static void present_sheet_dialog(OmniAdwApp *app, OmniAdwNode *modal, OmniModalS
 #endif
   wire_actions(modal->widget, app);
 
-  GtkWidget *source_entry = simple_entry_prompt ? find_first_entry_widget(modal->widget) : NULL;
-  GtkWidget *sheet_entry = NULL;
   GtkWidget *surface = omni_sheet_surface_new();
-  if (source_entry) {
-    GtkWidget *entry = gtk_entry_new();
-    const char *placeholder = gtk_entry_get_placeholder_text(GTK_ENTRY(source_entry));
-    const char *text = gtk_editable_get_text(GTK_EDITABLE(source_entry));
-    int action_id = GPOINTER_TO_INT(g_object_get_data(G_OBJECT(source_entry), "omni-action-id"));
-    gtk_widget_set_hexpand(entry, TRUE);
-    gtk_widget_set_halign(entry, GTK_ALIGN_FILL);
-    gtk_widget_set_focusable(entry, TRUE);
-    gtk_widget_set_size_request(entry, 440, -1);
-    gtk_entry_set_placeholder_text(GTK_ENTRY(entry), placeholder ? placeholder : "");
-    gtk_editable_set_text(GTK_EDITABLE(entry), text ? text : "");
-    omni_accessible_label(entry, placeholder && placeholder[0] ? placeholder : "Search");
-    omni_accessible_placeholder(entry, placeholder);
-    omni_accessible_value_text(entry, text);
-    g_object_set_data(G_OBJECT(entry), "omni-action-id", GINT_TO_POINTER(action_id));
-    g_object_set_data(G_OBJECT(entry), "omni-app", app);
-    g_object_set_data(G_OBJECT(entry), "omni-modal-native-entry", GINT_TO_POINTER(1));
-    g_signal_connect(entry, "changed", G_CALLBACK(on_entry_changed), NULL);
-    g_signal_connect(entry, "activate", G_CALLBACK(on_entry_activate), NULL);
-    wire_actions(entry, app);
-    gtk_box_append(GTK_BOX(surface), entry);
-    sheet_entry = entry;
-    g_object_set_data(G_OBJECT(alert), "omni-modal-entry", entry);
-    g_object_set_data(G_OBJECT(alert), "omni-modal-entry-action-id", GINT_TO_POINTER(action_id));
+  gtk_box_append(GTK_BOX(surface), modal->widget);
+  modal->widget = NULL;
+  GtkWidget *sheet_entry = find_first_entry_widget(surface);
+  if (sheet_entry && GTK_IS_WIDGET(sheet_entry)) {
+    g_object_ref(sheet_entry);
   } else {
-    gtk_box_append(GTK_BOX(surface), modal->widget);
-    modal->widget = NULL;
+    sheet_entry = NULL;
   }
-  adw_alert_dialog_set_extra_child(alert, surface);
+  adw_dialog_set_child(dialog, surface);
   g_object_set_data(G_OBJECT(dialog), "omni-sheet-content-widget", surface);
   app->modal_accessibility_root = surface;
-  if (simple_entry_prompt) {
-    g_object_set_data(G_OBJECT(dialog), "omni-modal-simple-entry-prompt", GINT_TO_POINTER(1));
-  }
-
-  char default_response[16] = "";
-  char close_response[16] = "";
-  if (summary && simple_entry_prompt) {
-    for (guint i = 0; i < summary->button_labels->len; i++) {
-      const char *label = (const char *)g_ptr_array_index(summary->button_labels, i);
-      if (!label || !label[0] || modal_button_label_is_close(label)) continue;
-      char response_id[16];
-      snprintf(response_id, sizeof(response_id), "r%u", i);
-      adw_alert_dialog_add_response(alert, response_id, label);
-      if (modal_button_label_is_search(label)) {
-        snprintf(default_response, sizeof(default_response), "%s", response_id);
-      }
-      if (modal_button_label_is_cancel(label)) {
-        snprintf(close_response, sizeof(close_response), "%s", response_id);
-      }
-      if (!default_response[0]) {
-        snprintf(default_response, sizeof(default_response), "%s", response_id);
-      }
-      if (!close_response[0]) {
-        snprintf(close_response, sizeof(close_response), "%s", response_id);
-      }
-    }
-    if (default_response[0]) {
-      adw_alert_dialog_set_default_response(alert, default_response);
-    }
-    if (close_response[0]) {
-      adw_alert_dialog_set_close_response(alert, close_response);
-    }
-    g_object_set_data_full(G_OBJECT(alert), "omni-modal-summary", summary, (GDestroyNotify)free_modal_summary);
-    summary = NULL;
-  }
-  g_signal_connect(alert, "response", G_CALLBACK(on_alert_response), app);
 
   g_signal_connect(dialog, "close-attempt", G_CALLBACK(on_sheet_close_attempt), app);
   g_signal_connect(dialog, "closed", G_CALLBACK(on_sheet_closed), app);
@@ -6557,7 +6641,9 @@ static void present_sheet_dialog(OmniAdwApp *app, OmniAdwNode *modal, OmniModalS
         app->focused_action_id = action_id;
         if (app->focus_callback) app->focus_callback(action_id, app->context);
       }
-      gtk_widget_grab_focus(sheet_entry);
+      adw_dialog_set_focus(dialog, sheet_entry);
+      omni_schedule_focus_widget(sheet_entry);
+      g_object_unref(sheet_entry);
     }
     omni_macos_accessibility_schedule_after_map(app);
   }
@@ -6614,17 +6700,39 @@ void omni_adw_app_present_modal(OmniAdwApp *app, OmniAdwNode *modal, const char 
   omni_adw_node_free(modal);
 }
 
-void omni_adw_app_dismiss_modal(OmniAdwApp *app) {
+static void omni_adw_app_dismiss_modal_now(OmniAdwApp *app) {
   if (!app || !app->modal_dialog) return;
-  app->modal_force_closing = TRUE;
-  adw_dialog_force_close(app->modal_dialog);
-  app->modal_dialog = NULL;
+  GtkWidget *modal_text = app_modal_native_text_widget(app);
+  if (modal_text && GTK_IS_EDITABLE(modal_text)) {
+    omni_entry_cancel_pending_text_commit(modal_text);
+  }
+  omni_macos_accessibility_cancel_pending(app);
   app->modal_accessibility_root = NULL;
-  app->modal_close_action_id = 0;
-  app->modal_force_closing = FALSE;
+  app->modal_force_closing = TRUE;
+  adw_dialog_close(app->modal_dialog);
 #if defined(__APPLE__)
   omni_macos_web_view_set_modal_occlusion(FALSE);
 #endif
+}
+
+static gboolean omni_adw_app_dismiss_modal_idle(gpointer data) {
+  OmniAdwApp *app = (OmniAdwApp *)data;
+  if (!app) return G_SOURCE_REMOVE;
+  app->modal_dismiss_source = 0;
+  omni_adw_app_dismiss_modal_now(app);
+  return G_SOURCE_REMOVE;
+}
+
+void omni_adw_app_dismiss_modal(OmniAdwApp *app) {
+  if (!app || !app->modal_dialog) return;
+  if (omni_native_dispatch_depth > 0) {
+    app->modal_force_closing = TRUE;
+    if (app->modal_dismiss_source == 0) {
+      app->modal_dismiss_source = g_timeout_add(OMNI_MODAL_DISMISS_DELAY_MS, omni_adw_app_dismiss_modal_idle, app);
+    }
+    return;
+  }
+  omni_adw_app_dismiss_modal_now(app);
 }
 
 static gboolean omni_text_needs_scrollable_static_view(const char *value) {
@@ -6697,10 +6805,22 @@ static OmniAdwNode *omni_adw_scrollable_text_node_new(const char *text) {
   return node;
 }
 
+static GtkWidget *omni_adw_app_find_widget_by_name(OmniAdwApp *app, const char *name) {
+  if (!app || !name || !name[0]) return NULL;
+  GtkWidget *widget = app->content ? find_widget_for_name(app->content, name) : NULL;
+  if (!widget && app->modal_accessibility_root) {
+    widget = find_widget_for_name(app->modal_accessibility_root, name);
+  }
+  if (!widget && app->modal_dialog && GTK_IS_WIDGET(app->modal_dialog)) {
+    widget = find_widget_for_name(GTK_WIDGET(app->modal_dialog), name);
+  }
+  return widget;
+}
+
 int32_t omni_adw_app_update_node(OmniAdwApp *app, const char *semantic_id, int32_t kind, const char *text, int32_t active) {
-  if (!app || !app->content || !semantic_id) return 0;
+  if (!app || !semantic_id) return 0;
   char *name = omni_sanitized_widget_name(semantic_id);
-  GtkWidget *widget = find_widget_for_name(app->content, name);
+  GtkWidget *widget = omni_adw_app_find_widget_by_name(app, name);
   free(name);
   if (!widget) return 0;
 
@@ -6933,9 +7053,9 @@ int32_t omni_adw_app_update_node(OmniAdwApp *app, const char *semantic_id, int32
 }
 
 int32_t omni_adw_app_replace_node(OmniAdwApp *app, const char *semantic_id, OmniAdwNode *replacement, int32_t focused_action_id) {
-  if (!app || !app->content || !semantic_id || !replacement || !replacement->widget) return 0;
+  if (!app || !semantic_id || !replacement || !replacement->widget) return 0;
   char *name = omni_sanitized_widget_name(semantic_id);
-  GtkWidget *target = find_widget_for_name(app->content, name);
+  GtkWidget *target = omni_adw_app_find_widget_by_name(app, name);
   free(name);
   if (!target) return 0;
 
@@ -6971,14 +7091,12 @@ int32_t omni_adw_app_replace_node(OmniAdwApp *app, const char *semantic_id, Omni
 
     if (GTK_IS_BOX(parent)) {
       GtkWidget *previous = gtk_widget_get_prev_sibling(target);
-      g_object_ref(target);
-      gtk_box_remove(GTK_BOX(parent), target);
       if (previous) {
         gtk_box_insert_child_after(GTK_BOX(parent), replacement_widget, previous);
       } else {
         gtk_box_prepend(GTK_BOX(parent), replacement_widget);
       }
-      g_object_unref(target);
+      gtk_box_remove(GTK_BOX(parent), target);
     } else if (GTK_IS_LIST_BOX_ROW(parent)) {
       gtk_list_box_row_set_child(GTK_LIST_BOX_ROW(parent), replacement_widget);
     } else if (GTK_IS_PANED(parent)) {

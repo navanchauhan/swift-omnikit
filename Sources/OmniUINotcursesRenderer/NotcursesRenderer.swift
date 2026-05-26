@@ -58,15 +58,16 @@ private func _writeToStderr(_ message: String) {
 /// This renders OmniUICore's typed `RenderOp`s and uses notcurses for drawing + input
 /// (mouse clicks + scroll wheel + basic keyboard).
 public struct NotcursesApp<V: View>: @unchecked Sendable {
-    let root: () -> V
+    let root: @MainActor () -> V
 
-    public init(root: @escaping () -> V) {
+    public init(root: @escaping @MainActor () -> V) {
         self.root = root
     }
 
 }
 
 public extension NotcursesApp where V == AnyView {
+    @MainActor
     init<S: Scene>(scene: S) {
         self.init(root: {
             let root = _sceneRootView(scene) ?? AnyView(Text("Empty Scene"))
@@ -77,6 +78,7 @@ public extension NotcursesApp where V == AnyView {
         })
     }
 
+    @MainActor
     init<A: App>(_ appType: A.Type) {
         let app = A.init()
         self.init(scene: app.body)
