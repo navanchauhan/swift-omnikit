@@ -8,6 +8,7 @@ import AppKit
 private let adwaitaCommandActionOffset = 1_000_000
 private let adwaitaSettingsActionOffset = 2_000_000
 private let adwaitaStatusItemActionOffset = 3_000_000
+private let adwaitaInternalPresentSettingsActionID = -1001
 
 public enum OmniUIAdwaitaRendererError: Error {
     case unableToCreateApplication
@@ -51,7 +52,15 @@ public final class AdwaitaApp<Root: View>: @unchecked Sendable {
             guard let context else { return }
             let box = Unmanaged<CallbackBox>.fromOpaque(context).takeUnretainedValue()
             let rawID = Int(actionID)
+            if rawID == adwaitaInternalPresentSettingsActionID {
+                box.settingsRuntime._markDirtyFromExternalResource()
+                box.runtime._markDirtyFromExternalResource()
+                box.rerender()
+                return
+            }
             invokeAdwaitaRawAction(rawID, box: box)
+            box.settingsRuntime._markDirtyFromExternalResource()
+            box.runtime._markDirtyFromExternalResource()
             box.rerender()
         }
         let textCallback: omni_adw_text_callback = { actionID, text, context in
@@ -62,11 +71,19 @@ public final class AdwaitaApp<Root: View>: @unchecked Sendable {
             if rawID >= adwaitaSettingsActionOffset {
                 let settingsRawID = rawID - adwaitaSettingsActionOffset
                 if let timestamp = TimeInterval(next), box.settingsRuntime.setDateForRawActionID(settingsRawID, timestamp: timestamp) {
+                    box.settingsRuntime._markDirtyFromExternalResource()
                     box.runtime._markDirtyFromExternalResource()
                     box.rerender()
                     return
                 }
                 if let value = Double(next), box.settingsRuntime.setDoubleForRawActionID(settingsRawID, value: value) {
+                    box.settingsRuntime._markDirtyFromExternalResource()
+                    box.runtime._markDirtyFromExternalResource()
+                    box.rerender()
+                    return
+                }
+                if box.settingsRuntime.setStringForRawActionID(settingsRawID, value: next) {
+                    box.settingsRuntime._markDirtyFromExternalResource()
                     box.runtime._markDirtyFromExternalResource()
                     box.rerender()
                     return
@@ -75,6 +92,7 @@ public final class AdwaitaApp<Root: View>: @unchecked Sendable {
                 _ = box.settingsRuntime.focusByRawActionID(settingsRawID)
                 box.settingsRuntime.replaceTextForRawActionID(settingsRawID, previous: previous, next: next)
                 box.textValuesByActionID[rawID] = next
+                box.settingsRuntime._markDirtyFromExternalResource()
                 box.runtime._markDirtyFromExternalResource()
                 box.rerender()
                 return
@@ -84,6 +102,10 @@ public final class AdwaitaApp<Root: View>: @unchecked Sendable {
                 return
             }
             if let value = Double(next), box.runtime.setDoubleForRawActionID(rawID, value: value) {
+                box.rerender()
+                return
+            }
+            if box.runtime.setStringForRawActionID(rawID, value: next) {
                 box.rerender()
                 return
             }
@@ -104,6 +126,7 @@ public final class AdwaitaApp<Root: View>: @unchecked Sendable {
             let rawID = Int(actionID)
             if rawID >= adwaitaSettingsActionOffset {
                 box.settingsRuntime.handleNativeKeyForRawActionID(rawID - adwaitaSettingsActionOffset, keyKind: Int(keyKind), codepoint: codepoint)
+                box.settingsRuntime._markDirtyFromExternalResource()
                 box.runtime._markDirtyFromExternalResource()
             } else {
                 box.runtime.handleNativeKeyForRawActionID(rawID, keyKind: Int(keyKind), codepoint: codepoint)
@@ -728,6 +751,7 @@ private func invokeAdwaitaRawAction(_ rawID: Int, box: CallbackBox) {
         #endif
     } else if rawID >= adwaitaSettingsActionOffset {
         box.settingsRuntime.invokeActionByRawID(rawID - adwaitaSettingsActionOffset)
+        box.settingsRuntime._markDirtyFromExternalResource()
         box.runtime._markDirtyFromExternalResource()
     } else if rawID >= adwaitaCommandActionOffset {
         box.commandRuntime.invokeActionByRawID(rawID - adwaitaCommandActionOffset)
@@ -1576,6 +1600,7 @@ public struct AdwaitaNativeLeafUpdate: Sendable, Equatable {
         case stepper = 8
         case datePicker = 9
         case scroll = 10
+        case colorPicker = 11
     }
 
     public let id: String
@@ -1719,6 +1744,8 @@ public enum AdwaitaReconciliation {
             return AdwaitaNativeLeafUpdate(id: node.id, kind: .stepper, text: "\(value ?? 0)\n\(label)")
         case .datePicker(let label, let value, let timestamp, _, _, _):
             return AdwaitaNativeLeafUpdate(id: node.id, kind: .datePicker, text: "\(timestamp)\n\(value)\n\(label)")
+        case .colorPicker(let label, let value, _, _):
+            return AdwaitaNativeLeafUpdate(id: node.id, kind: .colorPicker, text: "\(value)\n\(label)")
         case .segmentedControl:
             return nil
         case .scroll(_, _, let offset):
@@ -1933,6 +1960,19 @@ enum AdwaitaNodeBuilder {
             )
         case .segmentedControl:
             kind = node.kind
+        case .colorPicker(let label, let value, let supportsOpacity, let setActionID):
+            kind = .colorPicker(
+                label: label,
+                value: value,
+                supportsOpacity: supportsOpacity,
+                setActionID: setActionID.map { $0 + offset }
+            )
+        case .disclosureGroup(let label, let isExpanded, let toggleActionID):
+            kind = .disclosureGroup(
+                label: label,
+                isExpanded: isExpanded,
+                toggleActionID: toggleActionID.map { $0 + offset }
+            )
         case .modifier(.contextMenu(let items)):
             kind = .modifier(.contextMenu(items: items.map {
                 SemanticContextMenuItem(label: $0.label, actionID: $0.actionID + offset)
@@ -2108,6 +2148,41 @@ enum AdwaitaNodeBuilder {
                     }
                 }
             }
+        case .colorPicker(let label, let value, let supportsOpacity, let setActionID):
+            built = omni_adw_color_button_new(label.isEmpty ? "Color" : label, value, supportsOpacity ? 1 : 0, Int32(setActionID ?? 0))
+        case .labeledContent(let label, let value):
+            built = omni_adw_action_row_new(label, value)
+        case .disclosureGroup(let label, let isExpanded, let toggleActionID):
+            guard let expander = omni_adw_expander_new(label.isEmpty ? "Details" : label, isExpanded ? 1 : 0, Int32(toggleActionID ?? 0)) else { return nil }
+            for child in node.children {
+                if let builtChild = build(child, context: context) {
+                    omni_adw_node_append(expander, builtChild)
+                }
+            }
+            built = expander
+        case .groupBox(let label):
+            guard let group = omni_adw_preferences_group_new(label, "") else { return nil }
+            for child in node.children {
+                if let builtChild = build(child, context: context) {
+                    omni_adw_node_append(group, builtChild)
+                }
+            }
+            built = group
+        case .contentUnavailable(let title, let description):
+            guard let status = omni_adw_status_page_new(title, description ?? "") else { return nil }
+            if !node.children.isEmpty,
+               let actions = container(vertical: false, spacing: 8, children: node.children, context: context) {
+                omni_adw_node_append(status, actions)
+            }
+            built = status
+        case .section(let header, let footer):
+            guard let group = omni_adw_preferences_group_new(header, footer) else { return nil }
+            for child in node.children {
+                if let builtChild = buildSettingsRow(child, context: context) {
+                    omni_adw_node_append(group, builtChild)
+                }
+            }
+            built = group
         case .scroll(let axis, _, let offset):
             guard let scroll = omni_adw_scroll_new(axis == .vertical ? 1 : 0, Double(offset)) else { return nil }
             if let child = container(vertical: true, spacing: 6, children: node.children, context: context) {
@@ -2258,19 +2333,36 @@ enum AdwaitaNodeBuilder {
     }
 
     private static func overlay(children: [SemanticNode], alignment: String, context: BuildContext) -> OpaquePointer? {
-        if children.count == 1, let child = children.first {
+        let renderChildren = overlayRenderableChildren(children)
+        if renderChildren.count == 1, let child = renderChildren.first {
             return build(child, context: context)
         }
         guard let parent = omni_adw_overlay_new() else { return nil }
-        for child in children {
+        for child in renderChildren {
             if let built = build(child, context: context) {
                 omni_adw_node_append_overlay(parent, built, alignment)
             }
         }
-        if children.contains(where: shouldExpandVertically) {
+        if renderChildren.contains(where: shouldExpandVertically) {
             omni_adw_node_set_expand(parent, -1, 1)
         }
         return parent
+    }
+
+    private static func overlayRenderableChildren(_ children: [SemanticNode]) -> [SemanticNode] {
+        guard children.contains(where: { !isDecorativeDrawing($0) }) else {
+            return children
+        }
+        var sawContent = false
+        return children.filter { child in
+            let decorative = isDecorativeDrawing(child)
+            defer {
+                if !decorative {
+                    sawContent = true
+                }
+            }
+            return !decorative || !sawContent
+        }
     }
 
     private static func shouldExpandVertically(_ node: SemanticNode) -> Bool {
@@ -2718,14 +2810,8 @@ enum AdwaitaNodeBuilder {
         if alpha <= 0.01 || base == "clear" {
             return "\(prefix)-clear"
         }
-        if base.contains("rgb(1.0,0.4,0.0)") || base.contains("rgb(1,0.4,0)") {
-            return alpha < 0.5 ? "\(prefix)-orange-muted" : "\(prefix)-orange"
-        }
-        if base.contains("rgb(0.2,0.2,0.2)") || base.contains("rgb(0.917647058823529") {
-            return "\(prefix)-card"
-        }
-        if base.contains("rgb(1.0,0.62,0.04)") || base.contains("rgb(1,0.62,0.04)") {
-            return alpha < 0.5 ? "\(prefix)-orange-muted" : "\(prefix)-orange"
+        if let cssColor = concreteCSSColor(base: base, alpha: alpha) {
+            return dynamicColorCSSClass(prefix: prefix, base: base, alpha: alpha, cssColor: cssColor)
         }
         switch base {
         case "primary":
@@ -2751,6 +2837,162 @@ enum AdwaitaNodeBuilder {
         default:
             return "\(prefix)-native"
         }
+    }
+
+    private static func dynamicColorCSSClass(prefix: String, base: String, alpha: Double, cssColor: String) -> String {
+        let className = "\(prefix)-dynamic-\(fnv1aHex("\(prefix)|\(base)|\(alpha)"))"
+        let rule: String
+        if prefix == "omni-fg" {
+            rule = ".\(className), .\(className) label, .\(className) image { color: \(cssColor); }"
+        } else {
+            rule = ".\(className) { background: \(cssColor); background-color: \(cssColor); }"
+        }
+        rule.withCString { omni_adw_register_dynamic_css($0) }
+        return className
+    }
+
+    private static func concreteCSSColor(base: String, alpha: Double) -> String? {
+        if let components = rgbComponents(from: base) {
+            return rgbaCSS(
+                red: components.red,
+                green: components.green,
+                blue: components.blue,
+                alpha: components.alpha * alpha
+            )
+        }
+        if let components = hsbComponents(from: base) {
+            let rgb = rgbFromHSB(hue: components.hue, saturation: components.saturation, brightness: components.brightness)
+            return rgbaCSS(red: rgb.red, green: rgb.green, blue: rgb.blue, alpha: alpha)
+        }
+        if let components = hexComponents(from: base) {
+            return rgbaCSS(
+                red: components.red,
+                green: components.green,
+                blue: components.blue,
+                alpha: components.alpha * alpha
+            )
+        }
+        return nil
+    }
+
+    private static func rgbComponents(from raw: String) -> (red: Double, green: Double, blue: Double, alpha: Double)? {
+        guard let marker = raw.range(of: "rgba(") ?? raw.range(of: "rgb("),
+              let end = raw[marker.upperBound...].firstIndex(of: ")")
+        else { return nil }
+        let body = raw[marker.upperBound..<end]
+        let parts = body.split(separator: ",", omittingEmptySubsequences: false)
+        guard parts.count >= 3,
+              let red = Double(parts[0].trimmingCharacters(in: .whitespacesAndNewlines)),
+              let green = Double(parts[1].trimmingCharacters(in: .whitespacesAndNewlines)),
+              let blue = Double(parts[2].trimmingCharacters(in: .whitespacesAndNewlines))
+        else { return nil }
+        let componentAlpha = parts.count >= 4
+            ? Double(parts[3].trimmingCharacters(in: .whitespacesAndNewlines)).map { normalizedAlphaComponent($0) } ?? 1.0
+            : 1.0
+        return (
+            normalizedColorComponent(red),
+            normalizedColorComponent(green),
+            normalizedColorComponent(blue),
+            componentAlpha
+        )
+    }
+
+    private static func hsbComponents(from raw: String) -> (hue: Double, saturation: Double, brightness: Double)? {
+        guard let marker = raw.range(of: "hsb("),
+              let end = raw[marker.upperBound...].firstIndex(of: ")")
+        else { return nil }
+        let body = raw[marker.upperBound..<end]
+        let values = body
+            .split(separator: ",", omittingEmptySubsequences: false)
+            .compactMap { Double($0.trimmingCharacters(in: .whitespacesAndNewlines)) }
+        guard values.count >= 3 else { return nil }
+        return (values[0], values[1], values[2])
+    }
+
+    private static func hexComponents(from raw: String) -> (red: Double, green: Double, blue: Double, alpha: Double)? {
+        guard raw.hasPrefix("#") else { return nil }
+        let hex = String(raw.dropFirst())
+        let expanded: String
+        switch hex.count {
+        case 3, 4:
+            expanded = hex.map { "\($0)\($0)" }.joined()
+        case 6, 8:
+            expanded = hex
+        default:
+            return nil
+        }
+        guard let value = UInt64(expanded, radix: 16) else { return nil }
+        if expanded.count == 8 {
+            return (
+                Double((value >> 24) & 0xff) / 255.0,
+                Double((value >> 16) & 0xff) / 255.0,
+                Double((value >> 8) & 0xff) / 255.0,
+                Double(value & 0xff) / 255.0
+            )
+        }
+        return (
+            Double((value >> 16) & 0xff) / 255.0,
+            Double((value >> 8) & 0xff) / 255.0,
+            Double(value & 0xff) / 255.0,
+            1.0
+        )
+    }
+
+    private static func normalizedColorComponent(_ value: Double) -> Double {
+        if value > 1.0 {
+            return max(0, min(1, value / 255.0))
+        }
+        return max(0, min(1, value))
+    }
+
+    private static func normalizedAlphaComponent(_ value: Double) -> Double {
+        if value > 1.0 {
+            return max(0, min(1, value / 255.0))
+        }
+        return max(0, min(1, value))
+    }
+
+    private static func rgbFromHSB(hue: Double, saturation: Double, brightness: Double) -> (red: Double, green: Double, blue: Double) {
+        let h = hue - floor(hue)
+        let s = max(0, min(1, saturation))
+        let v = max(0, min(1, brightness))
+        if s <= 0 {
+            return (v, v, v)
+        }
+        let sector = h * 6.0
+        let i = floor(sector)
+        let f = sector - i
+        let p = v * (1.0 - s)
+        let q = v * (1.0 - s * f)
+        let t = v * (1.0 - s * (1.0 - f))
+        switch Int(i) % 6 {
+        case 0: return (v, t, p)
+        case 1: return (q, v, p)
+        case 2: return (p, v, t)
+        case 3: return (p, q, v)
+        case 4: return (t, p, v)
+        default: return (v, p, q)
+        }
+    }
+
+    private static func rgbaCSS(red: Double, green: Double, blue: Double, alpha: Double) -> String {
+        let redByte = Int(round(max(0, min(1, red)) * 255.0))
+        let greenByte = Int(round(max(0, min(1, green)) * 255.0))
+        let blueByte = Int(round(max(0, min(1, blue)) * 255.0))
+        let clampedAlpha = max(0, min(1, alpha))
+        if clampedAlpha >= 0.9995 {
+            return String(format: "#%02x%02x%02x", redByte, greenByte, blueByte)
+        }
+        return "rgba(\(redByte), \(greenByte), \(blueByte), \(String(format: "%.3f", clampedAlpha)))"
+    }
+
+    private static func fnv1aHex(_ string: String) -> String {
+        var hash: UInt64 = 0xcbf29ce484222325
+        for byte in string.utf8 {
+            hash ^= UInt64(byte)
+            hash &*= 0x100000001b3
+        }
+        return String(hash, radix: 16)
     }
 
     private static func visibleChildren(forOverlayChildren children: [SemanticNode]) -> [SemanticNode] {
@@ -2881,7 +3123,7 @@ enum AdwaitaNodeBuilder {
         if role == .form {
             guard let parent = omni_adw_form_new() else { return nil }
             for child in formRows(from: children) {
-                if let built = build(child, context: context) {
+                if let built = buildSettingsRow(child, context: context) {
                     omni_adw_node_append(parent, built)
                 }
             }
@@ -2900,18 +3142,21 @@ enum AdwaitaNodeBuilder {
                 var fontSizes = simpleList.rows.map { $0.fontSize ?? 0 }
                 let fontWeights = simpleList.rows.map { $0.fontWeight ?? "" }
                 var fontItalics = simpleList.rows.map { $0.fontItalic ? Int32(1) : Int32(0) }
+                let cssClasses = simpleList.rows.map { $0.foregroundCSSClass ?? "" }
                 let list = labels.withCStringArray { labelPointers in
                     fontWeights.withCStringArray { weightPointers in
-                        ids.withUnsafeMutableBufferPointer { idBuffer in
-                            depths.withUnsafeMutableBufferPointer { depthBuffer in
-                                fontSizes.withUnsafeMutableBufferPointer { fontSizeBuffer in
-                                    fontItalics.withUnsafeMutableBufferPointer { fontItalicBuffer in
-                                        if context == .sidebar {
-                                            omni_adw_sidebar_list_new(labelPointers, idBuffer.baseAddress, depthBuffer.baseAddress, fontSizeBuffer.baseAddress, weightPointers, fontItalicBuffer.baseAddress, Int32(simpleList.rows.count))
-                                        } else if simpleList.rows.count >= 128 {
-                                            omni_adw_string_list_new(labelPointers, idBuffer.baseAddress, fontSizeBuffer.baseAddress, weightPointers, fontItalicBuffer.baseAddress, Int32(simpleList.rows.count))
-                                        } else {
-                                            omni_adw_plain_list_new(labelPointers, idBuffer.baseAddress, fontSizeBuffer.baseAddress, weightPointers, fontItalicBuffer.baseAddress, Int32(simpleList.rows.count))
+                        cssClasses.withCStringArray { cssPointers in
+                            ids.withUnsafeMutableBufferPointer { idBuffer in
+                                depths.withUnsafeMutableBufferPointer { depthBuffer in
+                                    fontSizes.withUnsafeMutableBufferPointer { fontSizeBuffer in
+                                        fontItalics.withUnsafeMutableBufferPointer { fontItalicBuffer in
+                                            if context == .sidebar {
+                                                omni_adw_sidebar_list_new(labelPointers, idBuffer.baseAddress, depthBuffer.baseAddress, fontSizeBuffer.baseAddress, weightPointers, fontItalicBuffer.baseAddress, cssPointers, Int32(simpleList.rows.count))
+                                            } else if simpleList.rows.count >= 128 {
+                                                omni_adw_string_list_new(labelPointers, idBuffer.baseAddress, fontSizeBuffer.baseAddress, weightPointers, fontItalicBuffer.baseAddress, cssPointers, Int32(simpleList.rows.count))
+                                            } else {
+                                                omni_adw_plain_list_new(labelPointers, idBuffer.baseAddress, fontSizeBuffer.baseAddress, weightPointers, fontItalicBuffer.baseAddress, cssPointers, Int32(simpleList.rows.count))
+                                            }
                                         }
                                     }
                                 }
@@ -2966,6 +3211,56 @@ enum AdwaitaNodeBuilder {
         return parent
     }
 
+    private static func buildSettingsRow(_ node: SemanticNode, context: BuildContext) -> OpaquePointer? {
+        switch node.kind {
+        case .toggle(let actionID, _, let isOn):
+            return omni_adw_switch_row_new(accessibleLabel(for: node), isOn ? 1 : 0, Int32(actionID))
+        case .disabledToggle(let label, let isOn):
+            guard let row = omni_adw_switch_row_new(label, isOn ? 1 : 0, 0) else { return nil }
+            omni_adw_node_set_sensitive(row, 0)
+            return row
+        case .textField(let actionID, let placeholder, let text, _, _, let isSecure):
+            let title = placeholder.isEmpty ? "Text" : placeholder
+            let input = isSecure
+                ? omni_adw_secure_entry_new(placeholder, text, Int32(actionID))
+                : omni_adw_entry_new(placeholder, text, Int32(actionID))
+            return settingsRow(title: title, value: "", suffix: input, enabled: true)
+        case .disabledTextField(let placeholder, let text, let isSecure):
+            let title = placeholder.isEmpty ? "Text" : placeholder
+            let input = isSecure
+                ? omni_adw_secure_entry_new(placeholder, text, 0)
+                : omni_adw_entry_new(placeholder, text, 0)
+            return settingsRow(title: title, value: "", suffix: input, enabled: false)
+        case .menu:
+            return settingsRow(title: settingsTitle(for: node), value: "", suffix: build(node, context: context), enabled: true)
+        case .disabledMenu(let title, let value):
+            let suffix = omni_adw_button_new(value.isEmpty ? title : value, 0)
+            return settingsRow(title: title.isEmpty ? "Menu" : title, value: "", suffix: suffix, enabled: false)
+        default:
+            return build(node, context: context)
+        }
+    }
+
+    private static func settingsRow(title: String, value: String, suffix: OpaquePointer?, enabled: Bool) -> OpaquePointer? {
+        guard let row = omni_adw_action_row_new(title, value) else { return nil }
+        if let suffix {
+            omni_adw_node_append(row, suffix)
+        }
+        if !enabled {
+            omni_adw_node_set_sensitive(row, 0)
+        }
+        return row
+    }
+
+    private static func settingsTitle(for node: SemanticNode) -> String {
+        switch node.kind {
+        case .menu(_, let title, _, _):
+            return title.isEmpty ? accessibleLabel(for: node) : title
+        default:
+            return accessibleLabel(for: node)
+        }
+    }
+
     private static func wrapInScroll(_ child: OpaquePointer, axis: SemanticAxis, offset: Int) -> OpaquePointer? {
         guard let scrollNode = omni_adw_scroll_new(axis == .vertical ? 1 : 0, Double(offset)) else {
             return child
@@ -2981,6 +3276,7 @@ enum AdwaitaNodeBuilder {
         let fontSize: Double?
         let fontWeight: String?
         let fontItalic: Bool
+        let foregroundCSSClass: String?
         let isPlainText: Bool
         let hasSymbolPrefix: Bool
     }
@@ -3161,7 +3457,7 @@ enum AdwaitaNodeBuilder {
             }
         }
 
-        func appendRow(label: String, actionID: Int?, depth: Int, node: SemanticNode) {
+        func appendRow(label: String, actionID: Int?, depth: Int, node: SemanticNode, inheritedForeground: String?) {
             let font = rowFont(in: node)
             let symbol = actionID != nil ? firstImageSymbol(in: node) : nil
             let displayLabel: String
@@ -3177,6 +3473,7 @@ enum AdwaitaNodeBuilder {
                 fontSize: font.size,
                 fontWeight: font.weight,
                 fontItalic: font.italic,
+                foregroundCSSClass: foregroundCSSClass(in: node) ?? inheritedForeground,
                 isPlainText: actionID == nil && isPlainTextRow(node),
                 hasSymbolPrefix: symbol != nil
             ))
@@ -3189,23 +3486,29 @@ enum AdwaitaNodeBuilder {
             return node.children.contains(where: containsMultiTapTarget)
         }
 
-        func appendRows(from node: SemanticNode) -> Bool {
+        func appendRows(from node: SemanticNode, inheritedForeground: String? = nil) -> Bool {
             switch node.kind {
             case .scroll:
                 for child in contentChildren(of: node) {
-                    if !appendRows(from: child) { return false }
+                    if !appendRows(from: child, inheritedForeground: inheritedForeground) { return false }
                 }
                 return true
             case .container(.list):
                 return false
             case .stack(axis: .vertical, _), .group, .container(.lazyVStack):
                 for child in node.children {
-                    if !appendRows(from: child) { return false }
+                    if !appendRows(from: child, inheritedForeground: inheritedForeground) { return false }
                 }
                 return true
             case .modifier:
                 if case .modifier(.contextMenu) = node.kind {
                     return false
+                }
+                let nextForeground: String?
+                if case .modifier(.foreground(let color)) = node.kind {
+                    nextForeground = colorCSSClass(prefix: "omni-fg", color: color)
+                } else {
+                    nextForeground = foregroundCSSClass(in: node) ?? inheritedForeground
                 }
                 let children = contentChildren(of: node)
                 guard !children.isEmpty else { return true }
@@ -3214,40 +3517,40 @@ enum AdwaitaNodeBuilder {
                     case .text, .button, .tapTarget, .stack(axis: .horizontal, _), .zstack:
                         let label = rowLabel(from: node)
                         if label.isEmpty { return false }
-                        appendRow(label: label, actionID: firstButtonActionID(in: node), depth: leadingWhitespaceDepth(in: node), node: node)
+                        appendRow(label: label, actionID: firstButtonActionID(in: node), depth: leadingWhitespaceDepth(in: node), node: node, inheritedForeground: nextForeground)
                         return true
                     default:
                         break
                     }
                 }
                 if children.count == 1, let child = children.first {
-                    return appendRows(from: child)
+                    return appendRows(from: child, inheritedForeground: nextForeground)
                 }
                 for child in children {
-                    if !appendRows(from: child) { return false }
+                    if !appendRows(from: child, inheritedForeground: nextForeground) { return false }
                 }
                 return true
             case .divider, .empty, .spacer, .drawingIsland:
                 return true
             case .text(let text):
-                appendRow(label: text, actionID: nil, depth: 0, node: node)
+                appendRow(label: text, actionID: nil, depth: 0, node: node, inheritedForeground: inheritedForeground)
                 return true
             case .button(let actionID, _):
                 let label = rowLabel(from: node)
                 if label.isEmpty { return false }
-                appendRow(label: label, actionID: actionID, depth: leadingWhitespaceDepth(in: node), node: node)
+                appendRow(label: label, actionID: actionID, depth: leadingWhitespaceDepth(in: node), node: node, inheritedForeground: inheritedForeground)
                 return true
             case .tapTarget(let actionID, let tapCount):
                 if tapCount > 1 { return false }
                 let label = rowLabel(from: node)
                 if label.isEmpty { return false }
-                appendRow(label: label, actionID: actionID, depth: leadingWhitespaceDepth(in: node), node: node)
+                appendRow(label: label, actionID: actionID, depth: leadingWhitespaceDepth(in: node), node: node, inheritedForeground: inheritedForeground)
                 return true
             case .stack(axis: .horizontal, _), .zstack:
                 if containsMultiTapTarget(node) { return false }
                 let label = rowLabel(from: node)
                 if label.isEmpty { return false }
-                appendRow(label: label, actionID: firstButtonActionID(in: node), depth: leadingWhitespaceDepth(in: node), node: node)
+                appendRow(label: label, actionID: firstButtonActionID(in: node), depth: leadingWhitespaceDepth(in: node), node: node, inheritedForeground: inheritedForeground)
                 return true
             default:
                 return false
@@ -3362,6 +3665,21 @@ enum AdwaitaNodeBuilder {
         case .datePicker(let label, let value, _, _, _, _):
             let prefix = label.isEmpty ? "Date" : label
             return "\(prefix): \(value)"
+        case .colorPicker(let label, let value, _, _):
+            let prefix = label.isEmpty ? "Color" : label
+            return "\(prefix): \(value)"
+        case .labeledContent(let label, let value):
+            return value.isEmpty ? label : "\(label): \(value)"
+        case .disclosureGroup(let label, let isExpanded, _):
+            return "\(label.isEmpty ? "Details" : label) \(isExpanded ? "expanded" : "collapsed")"
+        case .groupBox(let label):
+            return label.isEmpty ? "Group" : label
+        case .contentUnavailable(let title, let description):
+            return description.map { "\(title): \($0)" } ?? title
+        case .section(let header, let footer):
+            if !header.isEmpty { return header }
+            if !footer.isEmpty { return footer }
+            return "Section"
         case .drawingIsland(let kind):
             return "OmniUI \(kind)"
         case .container(let role):

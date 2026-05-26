@@ -604,6 +604,7 @@ enum _OmniRepresentableFallback {
         #endif
     }
 
+    @MainActor
     private static func payloadProvider(in object: AnyObject) -> _OmniWebViewPayloadProviding? {
         if let provider = object as? _OmniWebViewPayloadProviding {
             return provider

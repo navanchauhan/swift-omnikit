@@ -52,6 +52,12 @@ public struct SemanticNode: Sendable, Identifiable {
         case stepper(label: String, value: Double?, decrementActionID: Int?, incrementActionID: Int?)
         case datePicker(label: String, value: String, timestamp: Double, setActionID: Int?, decrementActionID: Int?, incrementActionID: Int?)
         case segmentedControl(title: String, selectedIndex: Int)
+        case colorPicker(label: String, value: String, supportsOpacity: Bool, setActionID: Int?)
+        case labeledContent(label: String, value: String)
+        case disclosureGroup(label: String, isExpanded: Bool, toggleActionID: Int?)
+        case groupBox(label: String)
+        case contentUnavailable(title: String, description: String?)
+        case section(header: String, footer: String)
         case divider
         case drawingIsland(SemanticDrawingKind)
         case container(SemanticContainerRole)
@@ -376,6 +382,61 @@ enum SemanticLowerer {
                     children: [lowered]
                 )
             }
+            if let colorPicker = value.base as? _ColorPickerRole {
+                return SemanticNode(
+                    id: path,
+                    kind: .colorPicker(
+                        label: colorPicker.label,
+                        value: colorPicker.value,
+                        supportsOpacity: colorPicker.supportsOpacity,
+                        setActionID: colorPicker.setActionID
+                    ),
+                    children: [lower(child, path: path + ".content")]
+                )
+            }
+            if let labeled = value.base as? _LabeledContentRole {
+                return SemanticNode(
+                    id: path,
+                    kind: .labeledContent(label: labeled.label, value: labeled.value),
+                    children: [lower(child, path: path + ".content")]
+                )
+            }
+            if let disclosure = value.base as? _DisclosureGroupRole {
+                let lowered = lower(child, path: path + ".content")
+                return SemanticNode(
+                    id: path,
+                    kind: .disclosureGroup(
+                        label: disclosure.label,
+                        isExpanded: disclosure.isExpanded,
+                        toggleActionID: disclosure.toggleActionID
+                    ),
+                    children: disclosureContentChildren(from: lowered, isExpanded: disclosure.isExpanded)
+                )
+            }
+            if let groupBox = value.base as? _GroupBoxRole {
+                let lowered = lower(child, path: path + ".content")
+                return SemanticNode(
+                    id: path,
+                    kind: .groupBox(label: groupBox.label),
+                    children: groupBoxContentChildren(from: lowered, label: groupBox.label)
+                )
+            }
+            if let unavailable = value.base as? _ContentUnavailableRole {
+                let lowered = lower(child, path: path + ".content")
+                return SemanticNode(
+                    id: path,
+                    kind: .contentUnavailable(title: unavailable.title, description: unavailable.description),
+                    children: contentUnavailableActionChildren(from: lowered)
+                )
+            }
+            if let section = value.base as? _SectionRole {
+                let lowered = lower(child, path: path + ".content")
+                return SemanticNode(
+                    id: path,
+                    kind: .section(header: section.header, footer: section.footer),
+                    children: sectionContentChildren(from: lowered, header: section.header, footer: section.footer)
+                )
+            }
             return lower(child, path: path + ".content")
         case .divider:
             return SemanticNode(id: path, kind: .divider)
@@ -498,7 +559,7 @@ enum SemanticLowerer {
         func visit(_ current: SemanticNode) {
             guard ids.count < limit else { return }
             switch current.kind {
-            case .button(let actionID, _), .toggle(let actionID, _, _):
+            case .button(let actionID, _), .tapTarget(let actionID, _), .toggle(let actionID, _, _):
                 ids.append(actionID)
             case .menu(let actionID, _, _, _):
                 ids.append(actionID)
@@ -511,6 +572,51 @@ enum SemanticLowerer {
         }
         visit(node)
         return ids
+    }
+
+    private static func flattenedContentChildren(from node: SemanticNode) -> [SemanticNode] {
+        switch node.kind {
+        case .stack(axis: .vertical, _), .group:
+            return node.children
+        case .modifier:
+            guard node.children.count == 1, let child = node.children.first else { return node.children }
+            return flattenedContentChildren(from: child)
+        default:
+            return [node]
+        }
+    }
+
+    private static func groupBoxContentChildren(from node: SemanticNode, label: String) -> [SemanticNode] {
+        var children = flattenedContentChildren(from: node)
+        if !label.isEmpty, !children.isEmpty {
+            children.removeFirst()
+        }
+        return children
+    }
+
+    private static func contentUnavailableActionChildren(from node: SemanticNode) -> [SemanticNode] {
+        var children = flattenedContentChildren(from: node)
+        if !children.isEmpty { children.removeFirst() }
+        if !children.isEmpty { children.removeFirst() }
+        return children
+    }
+
+    private static func disclosureContentChildren(from node: SemanticNode, isExpanded: Bool) -> [SemanticNode] {
+        guard isExpanded else { return [] }
+        var children = flattenedContentChildren(from: node)
+        if !children.isEmpty { children.removeFirst() }
+        return children
+    }
+
+    private static func sectionContentChildren(from node: SemanticNode, header: String, footer: String) -> [SemanticNode] {
+        var children = flattenedContentChildren(from: node)
+        if !header.isEmpty, !children.isEmpty {
+            children.removeFirst()
+        }
+        if !footer.isEmpty, !children.isEmpty {
+            children.removeLast()
+        }
+        return children
     }
 
     private static func lower(_ children: [_VNode], path: String) -> [SemanticNode] {

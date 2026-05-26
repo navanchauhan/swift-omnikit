@@ -185,6 +185,7 @@ public final class IMAPServer: @unchecked Sendable {
         MailboxSelection()
     }
 
+    @available(macOS 10.15, *)
     public func fetchMessages(using set: MessageIdentifierSet<UID>) -> AsyncThrowingStream<Message, Error> {
         AsyncThrowingStream { continuation in
             continuation.finish()

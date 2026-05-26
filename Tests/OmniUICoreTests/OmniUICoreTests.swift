@@ -3426,6 +3426,66 @@ private final class _CursorNameCapture: @unchecked Sendable {
     #expect(store.integer(forKey: "count") == 1)
 }
 
+@Test func appStorage_write_invalidates_sibling_readers_for_same_key() async throws {
+    let suiteName = "OmniUICoreTests.appStorage.siblings.\(UUID().uuidString)"
+    let store = UserDefaults(suiteName: suiteName)!
+    defer { store.removePersistentDomain(forName: suiteName) }
+
+    struct Reader: View {
+        let store: UserDefaults
+        @AppStorage("enabled", store: UserDefaults.standard) private var enabled = false
+
+        init(store: UserDefaults) {
+            self.store = store
+            self._enabled = AppStorage(wrappedValue: false, "enabled", store: store)
+        }
+
+        var body: some View {
+            Text("Reader: \(enabled ? "on" : "off")")
+        }
+    }
+
+    struct Writer: View {
+        let store: UserDefaults
+        @AppStorage("enabled", store: UserDefaults.standard) private var enabled = false
+
+        init(store: UserDefaults) {
+            self.store = store
+            self._enabled = AppStorage(wrappedValue: false, "enabled", store: store)
+        }
+
+        var body: some View {
+            Button("Toggle storage") { enabled.toggle() }
+        }
+    }
+
+    struct V: View {
+        let store: UserDefaults
+
+        var body: some View {
+            VStack(spacing: 1) {
+                Reader(store: store)
+                Writer(store: store)
+            }
+        }
+    }
+
+    let runtime = _UIRuntime()
+    let size = _Size(width: 40, height: 6)
+    let initial = runtime.debugRender(V(store: store), size: size)
+    #expect(initial.text.contains("Reader: off"))
+
+    guard let button = _findButton(initial, title: "Toggle storage") else {
+        #expect(Bool(false), "Could not find AppStorage toggle button")
+        return
+    }
+    initial.click(x: button.x, y: button.y)
+
+    let next = runtime.debugRender(V(store: store), size: size)
+    #expect(next.text.contains("Reader: on"))
+    #expect(store.bool(forKey: "enabled"))
+}
+
 @Test func appStorage_reads_external_user_defaults_changes_after_runtime_invalidation() async throws {
     let suiteName = "OmniUICoreTests.appStorage.external.\(UUID().uuidString)"
     let store = UserDefaults(suiteName: suiteName)!
@@ -3461,6 +3521,45 @@ private final class _CursorNameCapture: @unchecked Sendable {
     runtime._markDirtyFromExternalResource()
 
     #expect(runtime.debugRender(V(store: store), size: size).text.contains("dark:Remote"))
+}
+
+@Test func appStorage_rereads_store_for_stable_view_instances_after_invalidation() async throws {
+    let suiteName = "OmniUICoreTests.appStorage.stableView.\(UUID().uuidString)"
+    let store = UserDefaults(suiteName: suiteName)!
+    defer { store.removePersistentDomain(forName: suiteName) }
+
+    struct V: View {
+        let store: UserDefaults
+        @AppStorage("enabled", store: UserDefaults.standard) private var enabled = true
+        @AppStorage("link", store: UserDefaults.standard) private var link = Color.red
+
+        init(store: UserDefaults) {
+            self.store = store
+            self._enabled = AppStorage(wrappedValue: true, "enabled", store: store)
+            self._link = AppStorage(wrappedValue: .red, "link", store: store)
+        }
+
+        var body: some View {
+            VStack(spacing: 0) {
+                Text("enabled=\(enabled ? "yes" : "no")")
+                Text("link=\(link.rawValue)")
+            }
+        }
+    }
+
+    let runtime = _UIRuntime()
+    let size = _Size(width: 60, height: 4)
+    let view = V(store: store)
+    #expect(runtime.debugRender(view, size: size).text.contains("enabled=yes"))
+    #expect(runtime.debugRender(view, size: size).text.contains("link=red|1.0"))
+
+    store.set(false, forKey: "enabled")
+    store.set("rgb(0.25,0.5,0.75)|0.6", forKey: "link")
+    runtime._markDirtyFromExternalResource()
+
+    let updated = runtime.debugRender(view, size: size)
+    #expect(updated.text.contains("enabled=no"))
+    #expect(updated.text.contains("link=rgb(0.25,0.5,0.75)|0.6"))
 }
 
 @Test func appStorage_uses_distinct_state_slots_for_multiple_keys_in_same_view() async throws {
@@ -6740,6 +6839,7 @@ struct _TabViewSelectionFallbackProbe: View {
     #expect(snap.text.contains("]"))
 }
 
+@MainActor
 @Test func semantic_snapshot_preserves_segmented_picker_role() async throws {
     struct SegView: View {
         @State var choice = "B"
@@ -6766,6 +6866,71 @@ struct _TabViewSelectionFallbackProbe: View {
     let role = segmentedRole(in: snapshot.root)
     #expect(role?.0 == "Pick")
     #expect(role?.1 == 1)
+}
+
+@MainActor
+@Test func semantic_snapshot_preserves_adwaita_settings_roles() async throws {
+    struct SettingsProbe: View {
+        @State var color = Color.blue
+        @State var expanded = true
+        @State var enabled = true
+
+        var body: some View {
+            Form {
+                Section {
+                    LabeledContent("Renderer", value: "Adwaita")
+                    ColorPicker("Accent", selection: $color)
+                    DisclosureGroup("Advanced", isExpanded: $expanded) {
+                        Toggle("Diagnostics", isOn: $enabled)
+                    }
+                } header: {
+                    Text("Appearance")
+                } footer: {
+                    Text("Native settings")
+                }
+                GroupBox {
+                    Text("Grouped")
+                } label: {
+                    Text("Group")
+                }
+                ContentUnavailableView("No Accounts", systemImage: "person", description: Text("Connect one."))
+            }
+        }
+    }
+
+    func contains(_ node: SemanticNode, matching predicate: (SemanticNode.Kind) -> Bool) -> Bool {
+        if predicate(node.kind) { return true }
+        return node.children.contains { contains($0, matching: predicate) }
+    }
+
+    let runtime = _UIRuntime()
+    let snapshot = runtime.semanticSnapshot(SettingsProbe(), size: _Size(width: 80, height: 24))
+    #expect(contains(snapshot.root) {
+        if case .section(header: "Appearance", footer: "Native settings") = $0 { return true }
+        return false
+    })
+    #expect(contains(snapshot.root) {
+        if case .labeledContent(label: "Renderer", value: "Adwaita") = $0 { return true }
+        return false
+    })
+    #expect(contains(snapshot.root) {
+        if case .colorPicker(label: "Accent", value: _, supportsOpacity: true, setActionID: .some) = $0 { return true }
+        return false
+    })
+    #expect(contains(snapshot.root) {
+        if case .disclosureGroup(label: "Advanced", isExpanded: true, toggleActionID: .some) = $0 { return true }
+        return false
+    })
+    #expect(contains(snapshot.root) {
+        if case .groupBox(label: "Group") = $0 { return true }
+        return false
+    })
+    #expect(contains(snapshot.root) {
+        if case .contentUnavailable(let title, let description) = $0 {
+            return title.contains("No Accounts") && description == "Connect one."
+        }
+        return false
+    })
 }
 
 // Feature #7: controlSize(.large) adds bold
@@ -6902,6 +7067,42 @@ struct _TabViewSelectionFallbackProbe: View {
     let snap = runtime.debugRender(EmptyTitleColorPickerView(), size: _Size(width: 42, height: 6))
     #expect(!snap.text.contains(": #FF0000"))
     #expect(snap.text.contains("#FF0000"))
+}
+
+@MainActor
+@Test func colorPicker_stringSetterAcceptsArbitraryRGBColor() async throws {
+    struct ArbitraryColorPickerView: View {
+        @State var color: Color = .red
+
+        var body: some View {
+            VStack(spacing: 0) {
+                Text("Color: \(color.rawValue)")
+                ColorPicker("Tint", selection: $color)
+            }
+        }
+    }
+
+    func colorPickerActionID(in node: SemanticNode) -> Int? {
+        if case .colorPicker(_, _, _, let setActionID) = node.kind {
+            return setActionID
+        }
+        for child in node.children {
+            if let id = colorPickerActionID(in: child) {
+                return id
+            }
+        }
+        return nil
+    }
+
+    let runtime = _UIRuntime()
+    let snapshot = runtime.semanticSnapshot(ArbitraryColorPickerView(), size: _Size(width: 48, height: 8))
+    let actionID = try #require(colorPickerActionID(in: snapshot.root))
+
+    #expect(runtime.setStringForRawActionID(actionID, value: "rgb(0.25,0.5,0.75)|0.6"))
+
+    let updated = runtime.debugRender(ArbitraryColorPickerView(), size: _Size(width: 48, height: 8))
+    #expect(updated.text.contains("Color: rgb(0.25,0.5,0.75)|0.6"))
+    #expect(updated.text.contains("#4080BF"))
 }
 
 // Feature #13: ContentUnavailableView.search factory

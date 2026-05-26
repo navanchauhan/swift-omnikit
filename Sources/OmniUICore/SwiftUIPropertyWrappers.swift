@@ -71,6 +71,7 @@ extension Data: _AppStorageValue {
 public struct AppStorage<Value> {
     private let key: String
     private let store: UserDefaults
+    private let read: () -> Value?
     private let write: (Value) -> Void
 
     @State private var value: Value
@@ -78,6 +79,9 @@ public struct AppStorage<Value> {
     public init(wrappedValue: Value, _ key: String, store: UserDefaults = .standard) where Value: _AppStorageValue {
         self.key = key
         self.store = store
+        self.read = {
+            Value._read(from: store, key: key)
+        }
 
         let initial = Value._read(from: store, key: key) ?? wrappedValue
         self.write = { v in
@@ -93,6 +97,9 @@ public struct AppStorage<Value> {
     public init(wrappedValue: Value, _ key: String, store: UserDefaults = .standard) where Value: RawRepresentable, Value.RawValue: _AppStorageValue {
         self.key = key
         self.store = store
+        self.read = {
+            Value.RawValue._read(from: store, key: key).flatMap(Value.init(rawValue:))
+        }
 
         let raw = Value.RawValue._read(from: store, key: key)
         let initial = raw.flatMap(Value.init(rawValue:)) ?? wrappedValue
@@ -107,11 +114,12 @@ public struct AppStorage<Value> {
     }
 
     public var wrappedValue: Value {
-        get { value }
+        get { read() ?? value }
         nonmutating set {
             value = newValue
             write(newValue)
             store.synchronize()
+            _UIRuntime._current?._markDirtyFromExternalResource()
         }
     }
 

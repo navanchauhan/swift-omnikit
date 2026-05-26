@@ -9,7 +9,7 @@ final class DemoRecord {
     init(title: String) { self.title = title }
 }
 
-@SwiftUI.Observable
+@OmniUIAdwaita.Observable
 final class BindableDemoModel {
     var title: String = "Bindable model"
     var isPinned: Bool = true
@@ -416,10 +416,46 @@ struct KitchenSinkAdwaitaDemoApp: App {
         }
 
         Settings {
-            Form {
-                Text("Adwaita renderer settings")
-                Text("Settings scene is available through OmniUI Scene metadata.")
+            AdwaitaSettingsProbe()
+        }
+    }
+}
+
+struct AdwaitaSettingsProbe: View {
+    @State private var settingsColor = Color.blue
+    @State private var advancedExpanded = true
+    @State private var syncEnabled = true
+    @State private var displayName = "OmniUI"
+    @State private var theme = "System"
+
+    var body: some View {
+        Form {
+            Section {
+                LabeledContent("Renderer", value: "Adwaita")
+                Toggle("Sync enabled", isOn: $syncEnabled)
+                TextField("Display name", text: $displayName)
+                Picker("Theme", selection: $theme, options: [
+                    ("System", "System"),
+                    ("Light", "Light"),
+                    ("Dark", "Dark"),
+                ])
+                ColorPicker("Accent color", selection: $settingsColor)
+            } header: {
+                Text("Appearance")
+            } footer: {
+                Text("Rows should use native Adwaita preference widgets.")
             }
+
+            DisclosureGroup("Advanced", isExpanded: $advancedExpanded) {
+                GroupBox {
+                    LabeledContent("Cache", value: "Warm")
+                    Toggle("Diagnostics", isOn: $syncEnabled)
+                } label: {
+                    Text("Renderer state")
+                }
+            }
+
+            ContentUnavailableView("No Accounts", systemImage: "person.crop.circle.badge.questionmark", description: Text("Connect an account to enable account-specific settings."))
         }
     }
 }

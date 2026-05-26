@@ -19,16 +19,27 @@ public struct ColorPicker: View, _PrimitiveView {
         _ = supportsOpacity
 
         let currentColor = selection.wrappedValue
+        let rawValue = currentColor.rawValue
         let hex = _colorToHex(currentColor)
         let showsTitle = !_UIRuntime._labelsHidden && !title.isEmpty
         let labelText = showsTitle ? "\(title): \(hex)" : hex
 
         guard _UIRuntime._hitTestingEnabled else {
-            return .text(labelText)
+            return .tagged(
+                value: AnyHashable(_ColorPickerRole(label: showsTitle ? title : "", value: rawValue, supportsOpacity: supportsOpacity, setActionID: nil)),
+                label: .text(labelText)
+            )
         }
 
         let runtime = ctx.runtime
         let controlPath = ctx.path
+        let setID = runtime._registerStringSetter({ raw in
+            if let color = Color(rawValue: raw) {
+                selection.wrappedValue = color
+            } else {
+                selection.wrappedValue = Color(raw)
+            }
+        }, path: actionScopePath)
 
         // Three HSL bar controls: H, S, L
         let hsl = _colorToHSL(currentColor)
@@ -84,7 +95,10 @@ public struct ColorPicker: View, _PrimitiveView {
             ]),
             swatchNode,
         ])
-        return .stack(axis: .vertical, spacing: 0, children: children)
+        return .tagged(
+            value: AnyHashable(_ColorPickerRole(label: showsTitle ? title : "", value: rawValue, supportsOpacity: supportsOpacity, setActionID: setID.raw)),
+            label: .stack(axis: .vertical, spacing: 0, children: children)
+        )
     }
 
     private func _presetSwatches(

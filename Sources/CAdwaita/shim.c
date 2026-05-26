@@ -19,6 +19,12 @@ typedef void WebKitWebView;
 #include <stdlib.h>
 #include <string.h>
 
+#define OMNI_ADW_INTERNAL_PRESENT_SETTINGS_ACTION_ID -1001
+
+static void omni_set_rgba(GdkRGBA *color, double red, double green, double blue, double alpha);
+static double omni_unit_clamp(double value);
+static gboolean omni_parse_semantic_color(const char *raw, GdkRGBA *color);
+
 #if defined(__APPLE__)
 GtkWidget *omni_macos_web_view_new(const char *url, void *native_view);
 GtkWidget *omni_macos_web_view_new_ex(
@@ -216,6 +222,10 @@ static gboolean omni_widget_or_parent_is_native_interactive(GtkWidget *widget) {
       GTK_IS_ENTRY(current) ||
       GTK_IS_TEXT_VIEW(current) ||
       GTK_IS_DROP_DOWN(current) ||
+      GTK_IS_COLOR_BUTTON(current) ||
+      ADW_IS_ACTION_ROW(current) ||
+      ADW_IS_EXPANDER_ROW(current) ||
+      ADW_IS_SWITCH_ROW(current) ||
 	      GTK_IS_SCALE(current) ||
 	      GTK_IS_SPIN_BUTTON(current) ||
 	      GTK_IS_CALENDAR(current)
@@ -275,6 +285,7 @@ typedef struct {
   double *font_sizes;
   char **font_weights;
   int32_t *font_italics;
+  char **css_classes;
   gboolean *collapsed;
   int32_t *visible_indices;
   int32_t visible_count;
@@ -2309,12 +2320,18 @@ static void free_string_list_data(gpointer data) {
       free(list->font_weights[i]);
     }
   }
+  if (list->css_classes) {
+    for (int32_t i = 0; i < list->count; i++) {
+      free(list->css_classes[i]);
+    }
+  }
   free(list->labels);
   free(list->action_ids);
   free(list->depths);
   free(list->font_sizes);
   free(list->font_weights);
   free(list->font_italics);
+  free(list->css_classes);
   free(list->collapsed);
   free(list->visible_indices);
   free(list->rows);
@@ -2775,6 +2792,7 @@ static void omni_flush_pending_ui(OmniAdwApp *app) {
 }
 
 static void present_settings_window(OmniAdwApp *app);
+static void request_settings_refresh_and_present(OmniAdwApp *app);
 static void present_about_dialog(OmniAdwApp *app);
 static void install_application_actions(OmniAdwApp *app);
 static void on_settings_clicked(GtkButton *button, gpointer data);
@@ -2784,6 +2802,7 @@ static gboolean on_key_pressed(GtkEventControllerKey *controller, guint keyval, 
 static void on_key_released(GtkEventControllerKey *controller, guint keyval, guint keycode, GdkModifierType state, gpointer data);
 static void on_window_click_pressed(GtkGestureClick *gesture, int n_press, double x, double y, gpointer data);
 static void on_window_click_released(GtkGestureClick *gesture, int n_press, double x, double y, gpointer data);
+static void on_expander_expanded_notify(GObject *object, GParamSpec *pspec, gpointer data);
 static void on_required_click_released(GtkGestureClick *gesture, int n_press, double x, double y, gpointer data);
 static void on_window_motion(GtkEventControllerMotion *controller, double x, double y, gpointer data);
 static gboolean on_window_scroll(GtkEventControllerScroll *controller, double dx, double dy, gpointer data);
@@ -2797,6 +2816,8 @@ static GtkWidget *find_first_entry_widget(GtkWidget *widget);
 static GtkWidget *find_focused_entry_widget(GtkWidget *widget);
 static const char *omni_symbolic_icon_name_for_label(const char *label);
 static const char *omni_accessible_label_for_symbolic_label(const char *label);
+static void omni_widget_add_css_classes(GtkWidget *widget, const char *css_classes);
+static void omni_widget_replace_css_classes(GtkWidget *widget, const char *storage_key, const char *css_classes);
 static void wire_actions(GtkWidget *widget, OmniAdwApp *app);
 static GtkWidget *find_widget_for_action(GtkWidget *widget, int32_t action_id);
 static int32_t first_action_id_with_accessible_label(GtkWidget *widget, const char *wanted);
@@ -2914,6 +2935,46 @@ static void omni_install_log_filter_once(void) {
 }
 
 static GtkCssProvider *omni_semantic_color_provider = NULL;
+static GtkCssProvider *omni_dynamic_css_provider = NULL;
+static GHashTable *omni_dynamic_css_rule_set = NULL;
+static GString *omni_dynamic_css_rules = NULL;
+static gboolean omni_dynamic_css_provider_installed = FALSE;
+
+static void omni_install_dynamic_css_provider(void) {
+  GdkDisplay *display = gdk_display_get_default();
+  if (!display) return;
+  if (!omni_dynamic_css_provider) {
+    omni_dynamic_css_provider = gtk_css_provider_new();
+  }
+  if (!omni_dynamic_css_provider_installed) {
+    gtk_style_context_add_provider_for_display(
+        display,
+        GTK_STYLE_PROVIDER(omni_dynamic_css_provider),
+        GTK_STYLE_PROVIDER_PRIORITY_APPLICATION + 20);
+    omni_dynamic_css_provider_installed = TRUE;
+  }
+  if (omni_dynamic_css_rules && omni_dynamic_css_rules->len > 0) {
+    gtk_css_provider_load_from_string(omni_dynamic_css_provider, omni_dynamic_css_rules->str);
+  }
+}
+
+void omni_adw_register_dynamic_css(const char *css_rule) {
+  if (!css_rule || !css_rule[0]) return;
+  if (!omni_dynamic_css_rule_set) {
+    omni_dynamic_css_rule_set = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, NULL);
+  }
+  if (!omni_dynamic_css_rules) {
+    omni_dynamic_css_rules = g_string_new("");
+  }
+  if (g_hash_table_contains(omni_dynamic_css_rule_set, css_rule)) {
+    omni_install_dynamic_css_provider();
+    return;
+  }
+  g_hash_table_add(omni_dynamic_css_rule_set, g_strdup(css_rule));
+  g_string_append(omni_dynamic_css_rules, css_rule);
+  g_string_append_c(omni_dynamic_css_rules, '\n');
+  omni_install_dynamic_css_provider();
+}
 
 static void omni_install_semantic_color_css(gboolean dark) {
   GdkDisplay *display = gdk_display_get_default();
@@ -3100,6 +3161,10 @@ static void omni_install_css_once(void) {
     ".omni-segmented-control button:last-child { border-radius: 0 8px 8px 0; }"
     ".omni-segmented-control button.omni-selected-segment { background: @accent_bg_color; background-color: @accent_bg_color; color: @accent_fg_color; }"
     ".omni-segmented-control button.omni-selected-segment image, .omni-segmented-control button.omni-selected-segment label { color: @accent_fg_color; }"
+    "preferencesgroup { margin-bottom: 12px; }"
+    "actionrow entry, actionrow dropdown { min-width: 220px; }"
+    ".omni-color-menu-button { min-width: 42px; min-height: 30px; padding: 3px; }"
+    ".omni-color-swatch-button { min-width: 30px; min-height: 24px; padding: 3px; }"
     ".omni-static-text-frame { background: @view_bg_color; background-color: @view_bg_color; }"
     ".omni-static-text, .omni-static-text text { font-family: 'DejaVu Sans Mono', 'Liberation Mono', Consolas, Menlo, Monaco, 'SF Mono', 'SFMono-Regular', monospace; font-size: 13px; color: @view_fg_color; background: @view_bg_color; background-color: @view_bg_color; }"
     ".omni-static-text { padding: 12px; }"
@@ -3114,6 +3179,7 @@ static void omni_install_css_once(void) {
     gtk_style_context_add_provider_for_display(display, GTK_STYLE_PROVIDER(provider), GTK_STYLE_PROVIDER_PRIORITY_APPLICATION);
   }
   g_object_unref(provider);
+  omni_install_dynamic_css_provider();
 }
 
 static void omni_apply_color_scheme_from_environment(void) {
@@ -3304,7 +3370,7 @@ static void ensure_header_title_widget(OmniAdwApp *app) {
 static void on_app_preferences_action(GSimpleAction *action, GVariant *parameter, gpointer data) {
   (void)action;
   (void)parameter;
-  present_settings_window((OmniAdwApp *)data);
+  request_settings_refresh_and_present((OmniAdwApp *)data);
 }
 
 static void on_app_about_action(GSimpleAction *action, GVariant *parameter, gpointer data) {
@@ -3456,6 +3522,22 @@ static void present_settings_window(OmniAdwApp *app) {
   gtk_window_present(GTK_WINDOW(app->settings_window));
 }
 
+static gboolean present_settings_window_deferred(gpointer data) {
+  present_settings_window((OmniAdwApp *)data);
+  return G_SOURCE_REMOVE;
+}
+
+static void request_settings_refresh_and_present(OmniAdwApp *app) {
+  if (!app) return;
+  if (app->callback) {
+    app->callback(OMNI_ADW_INTERNAL_PRESENT_SETTINGS_ACTION_ID, app->context);
+    omni_flush_pending_ui(app);
+    g_timeout_add(30, present_settings_window_deferred, app);
+    return;
+  }
+  present_settings_window(app);
+}
+
 static void present_about_dialog(OmniAdwApp *app) {
   if (!app || !app->window) return;
   AdwDialog *dialog = adw_about_dialog_new();
@@ -3473,7 +3555,7 @@ static void present_about_dialog(OmniAdwApp *app) {
 
 static void on_settings_clicked(GtkButton *button, gpointer data) {
   OmniAdwApp *app = (OmniAdwApp *)g_object_get_data(G_OBJECT(button), "omni-settings-button");
-  present_settings_window(app);
+  request_settings_refresh_and_present(app);
 }
 
 static gboolean on_settings_close_request(GtkWindow *window, gpointer data) {
@@ -3504,6 +3586,26 @@ static void on_clicked(GtkButton *button, gpointer data) {
   }
 }
 
+static void on_expander_expanded_notify(GObject *object, GParamSpec *pspec, gpointer data) {
+  (void)pspec;
+  (void)data;
+  if (!ADW_IS_EXPANDER_ROW(object)) return;
+  GtkWidget *widget = GTK_WIDGET(object);
+  omni_accessible_set_expanded(widget, adw_expander_row_get_expanded(ADW_EXPANDER_ROW(object)));
+  OmniAdwApp *app = (OmniAdwApp *)g_object_get_data(object, "omni-app");
+  int action_id = GPOINTER_TO_INT(g_object_get_data(object, "omni-action-id"));
+  if (app && app->callback && action_id > 0) {
+    app->callback(action_id, app->context);
+    omni_flush_pending_ui(app);
+  }
+}
+
+static void omni_grab_focus_if_ready(GtkWidget *widget) {
+  if (!widget || !gtk_widget_get_focusable(widget)) return;
+  if (GTK_IS_LIST_BOX_ROW(widget) && !GTK_IS_LIST_BOX(gtk_widget_get_parent(widget))) return;
+  gtk_widget_grab_focus(widget);
+}
+
 static void on_required_click_released(GtkGestureClick *gesture, int n_press, double x, double y, gpointer data) {
   (void)x;
   (void)y;
@@ -3531,6 +3633,25 @@ static void on_toggled(GtkCheckButton *button, gpointer data) {
   );
   if (app && app->callback) {
     omni_dispatch_action_callback(app, action_id);
+    omni_flush_pending_ui(app);
+  }
+}
+
+static void on_switch_row_active_notify(GObject *object, GParamSpec *pspec, gpointer data) {
+  (void)pspec;
+  (void)data;
+  if (!ADW_IS_SWITCH_ROW(object)) return;
+  if (g_object_get_data(object, "omni-updating") != NULL) return;
+  OmniAdwApp *app = (OmniAdwApp *)g_object_get_data(object, "omni-app");
+  int action_id = GPOINTER_TO_INT(g_object_get_data(object, "omni-action-id"));
+  gtk_accessible_update_state(
+    GTK_ACCESSIBLE(object),
+    GTK_ACCESSIBLE_STATE_CHECKED,
+    adw_switch_row_get_active(ADW_SWITCH_ROW(object)) ? GTK_ACCESSIBLE_TRISTATE_TRUE : GTK_ACCESSIBLE_TRISTATE_FALSE,
+    -1
+  );
+  if (app && app->callback && action_id > 0) {
+    app->callback(action_id, app->context);
     omni_flush_pending_ui(app);
   }
 }
@@ -3677,11 +3798,14 @@ static void on_string_list_bind(GtkSignalListItemFactory *factory, GtkListItem *
   double font_size = list && list->font_sizes && original >= 0 && original < list->count ? list->font_sizes[original] : 0.0;
   const char *font_weight = list && list->font_weights && original >= 0 && original < list->count ? list->font_weights[original] : "";
   int32_t font_italic = list && list->font_italics && original >= 0 && original < list->count ? list->font_italics[original] : 0;
+  const char *css_classes = list && list->css_classes && original >= 0 && original < list->count ? list->css_classes[original] : "";
   int32_t count = list && list->visible_indices ? list->visible_count : (list ? list->count : 0);
   gboolean native_accessible = count <= OMNI_NATIVE_ACCESSIBILITY_ROW_UPDATE_LIMIT;
 
   gtk_label_set_text(GTK_LABEL(label), text ? text : "");
   omni_label_apply_font(GTK_LABEL(label), font_size, font_weight, font_italic != 0);
+  omni_widget_replace_css_classes(label, "omni-row-css-classes", css_classes);
+  omni_widget_replace_css_classes(button, "omni-row-css-classes", css_classes);
   if (native_accessible) {
     gtk_list_item_set_accessible_label(list_item, text ? text : "");
     gtk_list_item_set_accessible_description(list_item, action_id > 0 ? "Activates this list row" : "Static list row");
@@ -3760,11 +3884,13 @@ static void on_sidebar_disclosure_clicked(GtkButton *button, gpointer data) {
   omni_macos_accessibility_schedule(app);
 }
 
-static void omni_sidebar_content_set_text(GtkWidget *button, const char *text, double font_size, const char *font_weight, gboolean font_italic) {
+static void omni_sidebar_content_set_text(GtkWidget *button, const char *text, double font_size, const char *font_weight, gboolean font_italic, const char *css_classes) {
   GtkWidget *label = GTK_IS_BUTTON(button) ? gtk_button_get_child(GTK_BUTTON(button)) : NULL;
   if (GTK_IS_LABEL(label)) {
     gtk_label_set_text(GTK_LABEL(label), text ? text : "");
     omni_label_apply_font(GTK_LABEL(label), font_size, font_weight, font_italic);
+    omni_widget_replace_css_classes(label, "omni-row-css-classes", css_classes);
+    omni_widget_replace_css_classes(button, "omni-row-css-classes", css_classes);
   }
 }
 
@@ -3833,6 +3959,7 @@ static void on_sidebar_list_bind(GtkSignalListItemFactory *factory, GtkListItem 
   double font_size = list && list->font_sizes && original >= 0 && original < list->count ? list->font_sizes[original] : 0.0;
   const char *font_weight = list && list->font_weights && original >= 0 && original < list->count ? list->font_weights[original] : "";
   int32_t font_italic = list && list->font_italics && original >= 0 && original < list->count ? list->font_italics[original] : 0;
+  const char *css_classes = list && list->css_classes && original >= 0 && original < list->count ? list->css_classes[original] : "";
   int32_t count = list && list->visible_indices ? list->visible_count : (list ? list->count : 0);
   gboolean native_accessible = count <= OMNI_NATIVE_ACCESSIBILITY_ROW_UPDATE_LIMIT;
   gboolean has_children = sidebar_row_has_children(list, original);
@@ -3842,7 +3969,7 @@ static void on_sidebar_list_bind(GtkSignalListItemFactory *factory, GtkListItem 
   gtk_widget_set_margin_start(box, depth * 16);
   gtk_widget_set_visible(disclosure_button, has_children);
   gtk_label_set_text(GTK_LABEL(disclosure), has_children ? (list->collapsed && list->collapsed[original] ? "▸" : "▾") : "");
-  omni_sidebar_content_set_text(button, text ? text : "", font_size, font_weight, font_italic != 0);
+  omni_sidebar_content_set_text(button, text ? text : "", font_size, font_weight, font_italic != 0, css_classes);
   if (native_accessible) {
     gtk_list_item_set_accessible_label(list_item, text ? text : "");
     gtk_list_item_set_accessible_description(list_item, has_children ? "Collapsible sidebar item" : (action_id > 0 ? "Sidebar item" : "Static sidebar item"));
@@ -4384,6 +4511,191 @@ static void handle_calendar_date_changed(GtkCalendar *calendar) {
 static void on_calendar_date_notify(GObject *object, GParamSpec *pspec, gpointer data) {
   if (!GTK_IS_CALENDAR(object)) return;
   handle_calendar_date_changed(GTK_CALENDAR(object));
+}
+
+static GtkWidget *omni_first_descendant_matching(GtkWidget *widget, GType type) {
+  if (!widget) return NULL;
+  if (g_type_check_instance_is_a((GTypeInstance *)widget, type)) return widget;
+  GtkWidget *child = gtk_widget_get_first_child(widget);
+  while (child) {
+    GtkWidget *found = omni_first_descendant_matching(child, type);
+    if (found) return found;
+    child = gtk_widget_get_next_sibling(child);
+  }
+  return NULL;
+}
+
+typedef struct {
+  GdkRGBA color;
+} OmniColorSwatchData;
+
+typedef struct {
+  GtkWidget *button;
+  GtkWidget *popover;
+  GtkWidget *red_scale;
+  GtkWidget *green_scale;
+  GtkWidget *blue_scale;
+  GtkWidget *alpha_scale;
+  int32_t set_action_id;
+  gboolean supports_opacity;
+  gboolean updating;
+} OmniColorControlData;
+
+static void omni_color_swatch_draw(GtkDrawingArea *area, cairo_t *cr, int width, int height, gpointer user_data) {
+  (void)area;
+  OmniColorSwatchData *data = (OmniColorSwatchData *)user_data;
+  if (!data) return;
+  double inset = 1.0;
+  double w = width > 2 ? width - 2.0 : width;
+  double h = height > 2 ? height - 2.0 : height;
+  cairo_rectangle(cr, inset, inset, w, h);
+  cairo_set_source_rgba(cr, data->color.red, data->color.green, data->color.blue, data->color.alpha);
+  cairo_fill_preserve(cr);
+  cairo_set_source_rgba(cr, 0.0, 0.0, 0.0, 0.35);
+  cairo_set_line_width(cr, 1.0);
+  cairo_stroke(cr);
+}
+
+static GtkWidget *omni_color_swatch_widget_new(const GdkRGBA *color, int width, int height) {
+  GtkWidget *swatch = gtk_drawing_area_new();
+  gtk_widget_set_size_request(swatch, width, height);
+  gtk_drawing_area_set_content_width(GTK_DRAWING_AREA(swatch), width);
+  gtk_drawing_area_set_content_height(GTK_DRAWING_AREA(swatch), height);
+  OmniColorSwatchData *data = g_new0(OmniColorSwatchData, 1);
+  if (data && color) data->color = *color;
+  g_object_set_data(G_OBJECT(swatch), "omni-color-swatch-data", data);
+  gtk_drawing_area_set_draw_func(GTK_DRAWING_AREA(swatch), omni_color_swatch_draw, data, g_free);
+  return swatch;
+}
+
+static GtkWidget *omni_color_swatch_from_widget(GtkWidget *widget) {
+  if (!widget) return NULL;
+  if (g_object_get_data(G_OBJECT(widget), "omni-color-swatch-data") != NULL) return widget;
+  GtkWidget *child = gtk_widget_get_first_child(widget);
+  while (child) {
+    GtkWidget *found = omni_color_swatch_from_widget(child);
+    if (found) return found;
+    child = gtk_widget_get_next_sibling(child);
+  }
+  return NULL;
+}
+
+static void omni_color_swatch_set_rgba(GtkWidget *widget, const GdkRGBA *color) {
+  GtkWidget *swatch = omni_color_swatch_from_widget(widget);
+  if (!swatch || !color) return;
+  OmniColorSwatchData *data = (OmniColorSwatchData *)g_object_get_data(G_OBJECT(swatch), "omni-color-swatch-data");
+  if (!data) return;
+  data->color = *color;
+  gtk_widget_queue_draw(swatch);
+}
+
+static OmniColorControlData *omni_color_control_data_from_widget(GtkWidget *widget) {
+  if (!widget) return NULL;
+  OmniColorControlData *data = (OmniColorControlData *)g_object_get_data(G_OBJECT(widget), "omni-color-control-data");
+  if (data) return data;
+  GtkWidget *child = gtk_widget_get_first_child(widget);
+  while (child) {
+    data = omni_color_control_data_from_widget(child);
+    if (data) return data;
+    child = gtk_widget_get_next_sibling(child);
+  }
+  return NULL;
+}
+
+static char *omni_color_raw_value_for_rgba(const GdkRGBA *color, gboolean supports_opacity) {
+  if (!color) return g_strdup("black|1");
+  char red[G_ASCII_DTOSTR_BUF_SIZE];
+  char green[G_ASCII_DTOSTR_BUF_SIZE];
+  char blue[G_ASCII_DTOSTR_BUF_SIZE];
+  char alpha[G_ASCII_DTOSTR_BUF_SIZE];
+  g_ascii_dtostr(red, sizeof(red), omni_unit_clamp(color->red));
+  g_ascii_dtostr(green, sizeof(green), omni_unit_clamp(color->green));
+  g_ascii_dtostr(blue, sizeof(blue), omni_unit_clamp(color->blue));
+  g_ascii_dtostr(alpha, sizeof(alpha), supports_opacity ? omni_unit_clamp(color->alpha) : 1.0);
+  return g_strdup_printf("rgb(%s,%s,%s)|%s", red, green, blue, alpha);
+}
+
+static void omni_color_scale_set_value(GtkWidget *scale, double value) {
+  if (!GTK_IS_RANGE(scale)) return;
+  g_object_set_data(G_OBJECT(scale), "omni-updating", GINT_TO_POINTER(1));
+  gtk_range_set_value(GTK_RANGE(scale), omni_unit_clamp(value));
+  gtk_accessible_update_property(GTK_ACCESSIBLE(scale), GTK_ACCESSIBLE_PROPERTY_VALUE_NOW, omni_unit_clamp(value), -1);
+  g_object_set_data(G_OBJECT(scale), "omni-updating", NULL);
+}
+
+static void omni_color_control_read_rgba(OmniColorControlData *data, GdkRGBA *color) {
+  if (!data || !color) return;
+  omni_set_rgba(
+    color,
+    GTK_IS_RANGE(data->red_scale) ? gtk_range_get_value(GTK_RANGE(data->red_scale)) : 0.0,
+    GTK_IS_RANGE(data->green_scale) ? gtk_range_get_value(GTK_RANGE(data->green_scale)) : 0.0,
+    GTK_IS_RANGE(data->blue_scale) ? gtk_range_get_value(GTK_RANGE(data->blue_scale)) : 0.0,
+    data->supports_opacity && GTK_IS_RANGE(data->alpha_scale) ? gtk_range_get_value(GTK_RANGE(data->alpha_scale)) : 1.0
+  );
+}
+
+static void omni_color_control_set_rgba(OmniColorControlData *data, const GdkRGBA *color, gboolean update_scales) {
+  if (!data || !color) return;
+  data->updating = TRUE;
+  omni_color_swatch_set_rgba(data->button, color);
+  if (update_scales) {
+    omni_color_scale_set_value(data->red_scale, color->red);
+    omni_color_scale_set_value(data->green_scale, color->green);
+    omni_color_scale_set_value(data->blue_scale, color->blue);
+    omni_color_scale_set_value(data->alpha_scale, color->alpha);
+  }
+  char *raw = omni_color_raw_value_for_rgba(color, data->supports_opacity);
+  omni_accessible_value_text(data->button, raw);
+  g_free(raw);
+  data->updating = FALSE;
+}
+
+static void omni_color_control_emit(OmniColorControlData *data, OmniAdwApp *app) {
+  if (!data || !app || !app->text_callback || data->set_action_id <= 0) return;
+  GdkRGBA color;
+  omni_color_control_read_rgba(data, &color);
+  char *raw = omni_color_raw_value_for_rgba(&color, data->supports_opacity);
+  app->text_callback(data->set_action_id, raw, app->context);
+  g_free(raw);
+  omni_flush_pending_ui(app);
+}
+
+static void omni_color_button_set_rgba(GtkWidget *widget, const char *value) {
+  GdkRGBA color;
+  if (!omni_parse_semantic_color(value, &color)) {
+    omni_set_rgba(&color, 53.0 / 255.0, 132.0 / 255.0, 228.0 / 255.0, 1.0);
+  }
+  OmniColorControlData *data = omni_color_control_data_from_widget(widget);
+  if (data) {
+    omni_color_control_set_rgba(data, &color, TRUE);
+  } else {
+    omni_color_swatch_set_rgba(widget, &color);
+  }
+  omni_accessible_value_text(widget, value);
+}
+
+static void on_color_channel_value_changed(GtkRange *range, gpointer user_data) {
+  OmniColorControlData *data = (OmniColorControlData *)user_data;
+  if (!data || data->updating || g_object_get_data(G_OBJECT(range), "omni-updating") != NULL) return;
+  GdkRGBA color;
+  omni_color_control_read_rgba(data, &color);
+  omni_color_control_set_rgba(data, &color, FALSE);
+  OmniAdwApp *app = (OmniAdwApp *)g_object_get_data(G_OBJECT(range), "omni-app");
+  if (!app && data->button) {
+    app = (OmniAdwApp *)g_object_get_data(G_OBJECT(data->button), "omni-app");
+  }
+  omni_color_control_emit(data, app);
+}
+
+static void on_color_swatch_clicked(GtkButton *button, gpointer data) {
+  OmniColorControlData *control = (OmniColorControlData *)data;
+  OmniAdwApp *app = (OmniAdwApp *)g_object_get_data(G_OBJECT(button), "omni-app");
+  const char *value = (const char *)g_object_get_data(G_OBJECT(button), "omni-color-value");
+  GdkRGBA color;
+  if (!control || !value || !value[0] || !omni_parse_semantic_color(value, &color)) return;
+  omni_color_control_set_rgba(control, &color, TRUE);
+  if (GTK_IS_POPOVER(control->popover)) gtk_popover_popdown(GTK_POPOVER(control->popover));
+  omni_color_control_emit(control, app);
 }
 
 static void on_calendar_pressed(GtkGestureClick *gesture, int n_press, double x, double y, gpointer data) {
@@ -4995,7 +5307,7 @@ static gboolean on_window_scroll(GtkEventControllerScroll *controller, double dx
 
 static void wire_actions(GtkWidget *widget, OmniAdwApp *app) {
   if (!widget) return;
-  if (GPOINTER_TO_INT(g_object_get_data(G_OBJECT(widget), "omni-action-id")) > 0 || g_object_get_data(G_OBJECT(widget), "omni-context-menu-popover") != NULL || GTK_IS_BUTTON(widget) || GTK_IS_CHECK_BUTTON(widget) || GTK_IS_ENTRY(widget) || GTK_IS_TEXT_VIEW(widget) || GTK_IS_DROP_DOWN(widget) || GTK_IS_MENU_BUTTON(widget) || GTK_IS_SCALE(widget) || GTK_IS_SPIN_BUTTON(widget) || GTK_IS_CALENDAR(widget) || GTK_IS_LIST_VIEW(widget) || GTK_IS_LIST_BOX(widget)) {
+  if (GPOINTER_TO_INT(g_object_get_data(G_OBJECT(widget), "omni-action-id")) > 0 || g_object_get_data(G_OBJECT(widget), "omni-context-menu-popover") != NULL || GTK_IS_BUTTON(widget) || GTK_IS_CHECK_BUTTON(widget) || GTK_IS_ENTRY(widget) || GTK_IS_TEXT_VIEW(widget) || GTK_IS_DROP_DOWN(widget) || GTK_IS_COLOR_BUTTON(widget) || GTK_IS_MENU_BUTTON(widget) || GTK_IS_SCALE(widget) || GTK_IS_SPIN_BUTTON(widget) || GTK_IS_CALENDAR(widget) || GTK_IS_LIST_VIEW(widget) || GTK_IS_LIST_BOX(widget) || ADW_IS_ACTION_ROW(widget) || ADW_IS_EXPANDER_ROW(widget) || ADW_IS_SWITCH_ROW(widget)) {
     g_object_set_data(G_OBJECT(widget), "omni-app", app);
   }
   if (GTK_IS_LIST_VIEW(widget) || GTK_IS_LIST_BOX(widget)) {
@@ -5230,14 +5542,34 @@ static GtkWidget *omni_macos_accessibility_associated_widget(id self) {
   return (GtkWidget *)objc_getAssociatedObject(self, &omni_macos_accessibility_widget_key);
 }
 
+static gboolean omni_widget_tree_contains_pointer(GtkWidget *root, GtkWidget *needle) {
+  if (!root || !needle) return FALSE;
+  if (root == needle) return TRUE;
+  GtkWidget *child = gtk_widget_get_first_child(root);
+  while (child) {
+    if (omni_widget_tree_contains_pointer(child, needle)) return TRUE;
+    child = gtk_widget_get_next_sibling(child);
+  }
+  return FALSE;
+}
+
 static GtkWidget *omni_macos_accessibility_resolve_widget(id self) {
   OmniAdwApp *app = omni_macos_accessibility_app(self);
   if (!app) return NULL;
   GtkWidget *associated = omni_macos_accessibility_associated_widget(self);
-  if (associated && GTK_IS_WIDGET(associated)) return associated;
+  if (associated) {
+    if (app->settings_window && omni_widget_tree_contains_pointer(app->settings_window, associated)) return associated;
+    if (app->window && omni_widget_tree_contains_pointer(app->window, associated)) return associated;
+    if (app->modal_accessibility_root && omni_widget_tree_contains_pointer(app->modal_accessibility_root, associated)) return associated;
+    if (app->modal_dialog && omni_widget_tree_contains_pointer(GTK_WIDGET(app->modal_dialog), associated)) return associated;
+  }
   int actionID = omni_macos_accessibility_action_id(self);
 
   if (actionID > 0) {
+    if (app->settings_window && GTK_IS_WIDGET(app->settings_window)) {
+      GtkWidget *found = find_widget_for_action(app->settings_window, actionID);
+      if (found) return found;
+    }
     if (app->modal_accessibility_root && GTK_IS_WIDGET(app->modal_accessibility_root)) {
       GtkWidget *found = find_widget_for_action(app->modal_accessibility_root, actionID);
       if (found) return found;
@@ -5255,6 +5587,10 @@ static GtkWidget *omni_macos_accessibility_resolve_widget(id self) {
   id nameObject = objc_getAssociatedObject(self, &omni_macos_accessibility_name_key);
   const char *name = nameObject ? ((const char *(*)(id, SEL))objc_msgSend)(nameObject, sel_registerName("UTF8String")) : NULL;
   if (name && name[0]) {
+    if (app->settings_window && GTK_IS_WIDGET(app->settings_window)) {
+      GtkWidget *found = find_widget_for_name(app->settings_window, name);
+      if (found) return found;
+    }
     if (app->modal_accessibility_root && GTK_IS_WIDGET(app->modal_accessibility_root)) {
       GtkWidget *found = find_widget_for_name(app->modal_accessibility_root, name);
       if (found) return found;
@@ -6319,9 +6655,13 @@ void omni_adw_app_set_header_actions(OmniAdwApp *app, const char **labels, const
 
 void omni_adw_app_set_settings(OmniAdwApp *app, OmniAdwNode *settings) {
   if (!app || !settings) return;
+  gboolean settings_was_visible = FALSE;
   if (app->settings_window) {
-    gtk_window_destroy(GTK_WINDOW(app->settings_window));
-    app->settings_window = NULL;
+    settings_was_visible = gtk_widget_get_visible(app->settings_window);
+    if (settings_was_visible) {
+      gtk_widget_set_visible(app->settings_window, FALSE);
+    }
+    gtk_window_set_child(GTK_WINDOW(app->settings_window), NULL);
   }
   app->settings_content = settings->widget;
   omni_widget_expand(app->settings_content, TRUE);
@@ -6330,6 +6670,12 @@ void omni_adw_app_set_settings(OmniAdwApp *app, OmniAdwNode *settings) {
   gtk_widget_set_margin_start(app->settings_content, 18);
   gtk_widget_set_margin_end(app->settings_content, 18);
   wire_actions(app->settings_content, app);
+  if (app->settings_window) {
+    gtk_window_set_child(GTK_WINDOW(app->settings_window), app->settings_content);
+    if (settings_was_visible) {
+      gtk_window_present(GTK_WINDOW(app->settings_window));
+    }
+  }
   settings->widget = NULL;
   omni_adw_node_free(settings);
 }
@@ -6394,9 +6740,7 @@ void omni_adw_app_set_root_focused(OmniAdwApp *app, OmniAdwNode *root, int32_t f
     }
   }
   GtkWidget *focused = find_widget_for_action(app->content, focused_action_id);
-  if (focused && gtk_widget_get_focusable(focused)) {
-    gtk_widget_grab_focus(focused);
-  }
+  omni_grab_focus_if_ready(focused);
   omni_queue_widget_and_ancestors_redraw(app->content);
   if (app->window) omni_queue_widget_redraw(app->window);
   omni_macos_accessibility_schedule(app);
@@ -6847,6 +7191,15 @@ int32_t omni_adw_app_update_node(OmniAdwApp *app, const char *semantic_id, int32
       }
       break;
     case 2:
+      if (ADW_IS_SWITCH_ROW(widget)) {
+        g_object_set_data(G_OBJECT(widget), "omni-updating", GINT_TO_POINTER(1));
+        adw_switch_row_set_active(ADW_SWITCH_ROW(widget), active != 0);
+        g_object_set_data(G_OBJECT(widget), "omni-updating", NULL);
+        adw_preferences_row_set_title(ADW_PREFERENCES_ROW(widget), value);
+        omni_accessible_label(widget, value);
+        gtk_accessible_update_state(GTK_ACCESSIBLE(widget), GTK_ACCESSIBLE_STATE_CHECKED, active ? GTK_ACCESSIBLE_TRISTATE_TRUE : GTK_ACCESSIBLE_TRISTATE_FALSE, -1);
+        break;
+      }
       if (!GTK_IS_CHECK_BUTTON(widget)) return 0;
       gtk_check_button_set_label(GTK_CHECK_BUTTON(widget), value);
       gtk_check_button_set_active(GTK_CHECK_BUTTON(widget), active != 0);
@@ -6854,11 +7207,14 @@ int32_t omni_adw_app_update_node(OmniAdwApp *app, const char *semantic_id, int32
       gtk_accessible_update_state(GTK_ACCESSIBLE(widget), GTK_ACCESSIBLE_STATE_CHECKED, active ? GTK_ACCESSIBLE_TRISTATE_TRUE : GTK_ACCESSIBLE_TRISTATE_FALSE, -1);
       break;
     case 3:
-      if (!GTK_IS_ENTRY(widget)) return 0;
-      if (strcmp(gtk_editable_get_text(GTK_EDITABLE(widget)), value) != 0) {
-        gtk_editable_set_text(GTK_EDITABLE(widget), value);
+      {
+        GtkWidget *entry = GTK_IS_ENTRY(widget) ? widget : omni_first_descendant_matching(widget, GTK_TYPE_ENTRY);
+        if (!GTK_IS_ENTRY(entry)) return 0;
+        if (strcmp(gtk_editable_get_text(GTK_EDITABLE(entry)), value) != 0) {
+          gtk_editable_set_text(GTK_EDITABLE(entry), value);
+        }
+        omni_accessible_value_text(entry, value);
       }
-      omni_accessible_value_text(widget, value);
       break;
     case 4:
       if (!GTK_IS_TEXT_VIEW(widget)) return 0;
@@ -6890,7 +7246,11 @@ int32_t omni_adw_app_update_node(OmniAdwApp *app, const char *semantic_id, int32
         }
         break;
       }
-      if (!GTK_IS_DROP_DOWN(widget)) return 0;
+      if (!GTK_IS_DROP_DOWN(widget)) {
+        GtkWidget *dropdown = omni_first_descendant_matching(widget, GTK_TYPE_DROP_DOWN);
+        if (!GTK_IS_DROP_DOWN(dropdown)) return 0;
+        widget = dropdown;
+      }
       {
         GListModel *model = gtk_drop_down_get_model(GTK_DROP_DOWN(widget));
         if (!GTK_IS_STRING_LIST(model)) return 0;
@@ -6907,6 +7267,25 @@ int32_t omni_adw_app_update_node(OmniAdwApp *app, const char *semantic_id, int32
             break;
           }
         }
+      }
+      break;
+    case 11:
+      {
+        const char *color_value = value;
+        const char *label_value = "";
+        char *copy = omni_strdup(value);
+        char *newline = copy ? strchr(copy, '\n') : NULL;
+        if (newline) {
+          *newline = '\0';
+          color_value = copy;
+          label_value = newline + 1;
+        }
+        omni_color_button_set_rgba(widget, color_value);
+        if (ADW_IS_ACTION_ROW(widget) && label_value && label_value[0]) {
+          adw_preferences_row_set_title(ADW_PREFERENCES_ROW(widget), label_value);
+          omni_accessible_label(widget, label_value);
+        }
+        if (copy) free(copy);
       }
       break;
     case 6:
@@ -7121,9 +7500,7 @@ int32_t omni_adw_app_replace_node(OmniAdwApp *app, const char *semantic_id, Omni
   sync_sidebar_toggle(app);
 
   GtkWidget *focused = find_widget_for_action(app->content, focused_action_id);
-  if (focused && gtk_widget_get_focusable(focused)) {
-    gtk_widget_grab_focus(focused);
-  }
+  omni_grab_focus_if_ready(focused);
   omni_queue_widget_and_ancestors_redraw(replacement_widget);
   if (app->content) omni_queue_widget_redraw(app->content);
   if (app->window) omni_queue_widget_redraw(app->window);
@@ -7180,7 +7557,7 @@ OmniAdwNode *omni_adw_list_new(void) {
   return node;
 }
 
-OmniAdwNode *omni_adw_string_list_new(const char **labels, const int32_t *action_ids, const double *font_sizes, const char **font_weights, const int32_t *font_italics, int32_t count) {
+OmniAdwNode *omni_adw_string_list_new(const char **labels, const int32_t *action_ids, const double *font_sizes, const char **font_weights, const int32_t *font_italics, const char **css_classes, int32_t count) {
   OmniAdwNode *node = calloc(1, sizeof(OmniAdwNode));
   OmniStringListData *data = calloc(1, sizeof(OmniStringListData));
   if (data && count > 0) {
@@ -7190,6 +7567,7 @@ OmniAdwNode *omni_adw_string_list_new(const char **labels, const int32_t *action
     data->font_sizes = calloc((size_t)count, sizeof(double));
     data->font_weights = calloc((size_t)count, sizeof(char *));
     data->font_italics = calloc((size_t)count, sizeof(int32_t));
+    data->css_classes = calloc((size_t)count, sizeof(char *));
   }
   for (int32_t i = 0; i < count; i++) {
     const char *label = labels && labels[i] ? labels[i] : "";
@@ -7198,6 +7576,7 @@ OmniAdwNode *omni_adw_string_list_new(const char **labels, const int32_t *action
     if (data && data->font_sizes) data->font_sizes[i] = font_sizes ? font_sizes[i] : 0.0;
     if (data && data->font_weights) data->font_weights[i] = omni_strdup(font_weights && font_weights[i] ? font_weights[i] : "");
     if (data && data->font_italics) data->font_italics[i] = font_italics ? font_italics[i] : 0;
+    if (data && data->css_classes) data->css_classes[i] = omni_strdup(css_classes && css_classes[i] ? css_classes[i] : "");
   }
 
   OmniListModel *model = omni_list_model_new(data);
@@ -7223,7 +7602,7 @@ OmniAdwNode *omni_adw_string_list_new(const char **labels, const int32_t *action
   return node;
 }
 
-OmniAdwNode *omni_adw_plain_list_new(const char **labels, const int32_t *action_ids, const double *font_sizes, const char **font_weights, const int32_t *font_italics, int32_t count) {
+OmniAdwNode *omni_adw_plain_list_new(const char **labels, const int32_t *action_ids, const double *font_sizes, const char **font_weights, const int32_t *font_italics, const char **css_classes, int32_t count) {
   OmniAdwNode *node = calloc(1, sizeof(OmniAdwNode));
   node->widget = gtk_list_box_new();
   gtk_list_box_set_selection_mode(GTK_LIST_BOX(node->widget), GTK_SELECTION_NONE);
@@ -7249,6 +7628,7 @@ OmniAdwNode *omni_adw_plain_list_new(const char **labels, const int32_t *action_
       font_weights && font_weights[i] ? font_weights[i] : "",
       font_italics && font_italics[i] != 0
     );
+    omni_widget_add_css_classes(label, css_classes && css_classes[i] ? css_classes[i] : "");
     gtk_label_set_xalign(GTK_LABEL(label), 0.0f);
     gtk_label_set_wrap(GTK_LABEL(label), FALSE);
     gtk_label_set_ellipsize(GTK_LABEL(label), PANGO_ELLIPSIZE_NONE);
@@ -7263,6 +7643,7 @@ OmniAdwNode *omni_adw_plain_list_new(const char **labels, const int32_t *action_
       gtk_widget_set_halign(button, GTK_ALIGN_FILL);
       gtk_widget_set_focus_on_click(button, TRUE);
       gtk_button_set_child(GTK_BUTTON(button), label);
+      omni_widget_add_css_classes(button, css_classes && css_classes[i] ? css_classes[i] : "");
       g_object_set_data(G_OBJECT(button), "omni-action-id", GINT_TO_POINTER(action_id));
       g_signal_connect(button, "clicked", G_CALLBACK(on_virtual_list_button_clicked), NULL);
       omni_accessible_label(button, text);
@@ -7289,7 +7670,7 @@ OmniAdwNode *omni_adw_plain_list_new(const char **labels, const int32_t *action_
   return node;
 }
 
-OmniAdwNode *omni_adw_sidebar_list_new(const char **labels, const int32_t *action_ids, const int32_t *depths, const double *font_sizes, const char **font_weights, const int32_t *font_italics, int32_t count) {
+OmniAdwNode *omni_adw_sidebar_list_new(const char **labels, const int32_t *action_ids, const int32_t *depths, const double *font_sizes, const char **font_weights, const int32_t *font_italics, const char **css_classes, int32_t count) {
   OmniAdwNode *node = calloc(1, sizeof(OmniAdwNode));
   OmniStringListData *data = calloc(1, sizeof(OmniStringListData));
   if (data && count > 0) {
@@ -7300,6 +7681,7 @@ OmniAdwNode *omni_adw_sidebar_list_new(const char **labels, const int32_t *actio
     data->font_sizes = calloc((size_t)count, sizeof(double));
     data->font_weights = calloc((size_t)count, sizeof(char *));
     data->font_italics = calloc((size_t)count, sizeof(int32_t));
+    data->css_classes = calloc((size_t)count, sizeof(char *));
     data->collapsed = calloc((size_t)count, sizeof(gboolean));
     for (int32_t i = 0; i < count; i++) {
       data->labels[i] = omni_strdup(labels && labels[i] ? labels[i] : "");
@@ -7308,6 +7690,7 @@ OmniAdwNode *omni_adw_sidebar_list_new(const char **labels, const int32_t *actio
       if (data->font_sizes) data->font_sizes[i] = font_sizes ? font_sizes[i] : 0.0;
       if (data->font_weights) data->font_weights[i] = omni_strdup(font_weights && font_weights[i] ? font_weights[i] : "");
       if (data->font_italics) data->font_italics[i] = font_italics ? font_italics[i] : 0;
+      if (data->css_classes) data->css_classes[i] = omni_strdup(css_classes && css_classes[i] ? css_classes[i] : "");
     }
     for (int32_t i = 0; i < count; i++) {
       if (sidebar_row_has_children(data, i) && data->depths && data->depths[i] > 0) {
@@ -7397,7 +7780,8 @@ OmniAdwNode *omni_adw_sidebar_list_new(const char **labels, const int32_t *actio
       text,
       font_sizes ? font_sizes[i] : 0.0,
       font_weights && font_weights[i] ? font_weights[i] : "",
-      font_italics && font_italics[i] != 0
+      font_italics && font_italics[i] != 0,
+      css_classes && css_classes[i] ? css_classes[i] : ""
     );
     gtk_box_append(GTK_BOX(box), button);
 
@@ -7720,6 +8104,31 @@ static void omni_widget_add_css_classes(GtkWidget *widget, const char *css_class
     token = strtok(NULL, " ");
   }
   free(copy);
+}
+
+static void omni_widget_remove_css_classes(GtkWidget *widget, const char *css_classes) {
+  if (!widget || !css_classes || !css_classes[0]) return;
+  char *copy = omni_strdup(css_classes);
+  char *token = strtok(copy, " ");
+  while (token) {
+    gtk_widget_remove_css_class(widget, token);
+    token = strtok(NULL, " ");
+  }
+  free(copy);
+}
+
+static void omni_widget_replace_css_classes(GtkWidget *widget, const char *storage_key, const char *css_classes) {
+  if (!widget || !storage_key) return;
+  const char *previous = (const char *)g_object_get_data(G_OBJECT(widget), storage_key);
+  if (previous && previous[0]) {
+    omni_widget_remove_css_classes(widget, previous);
+  }
+  if (css_classes && css_classes[0]) {
+    omni_widget_add_css_classes(widget, css_classes);
+    g_object_set_data_full(G_OBJECT(widget), storage_key, omni_strdup(css_classes), free);
+  } else {
+    g_object_set_data(G_OBJECT(widget), storage_key, NULL);
+  }
 }
 
 OmniAdwNode *omni_adw_click_container_new(const char *label, int32_t action_id) {
@@ -8128,6 +8537,186 @@ OmniAdwNode *omni_adw_date_new(const char *label, const char *value, double time
   return node;
 }
 
+OmniAdwNode *omni_adw_action_row_new(const char *title, const char *subtitle) {
+  OmniAdwNode *node = calloc(1, sizeof(OmniAdwNode));
+  if (!node) return NULL;
+  node->widget = adw_action_row_new();
+  adw_preferences_row_set_title(ADW_PREFERENCES_ROW(node->widget), title && title[0] ? title : "Setting");
+  if (subtitle && subtitle[0]) {
+    adw_action_row_set_subtitle(ADW_ACTION_ROW(node->widget), subtitle);
+  }
+  gtk_widget_set_hexpand(node->widget, TRUE);
+  gtk_widget_set_halign(node->widget, GTK_ALIGN_FILL);
+  omni_accessible_label(node->widget, title && title[0] ? title : "Setting");
+  omni_accessible_value_text(node->widget, subtitle);
+  return node;
+}
+
+OmniAdwNode *omni_adw_switch_row_new(const char *title, int32_t active, int32_t action_id) {
+  OmniAdwNode *node = calloc(1, sizeof(OmniAdwNode));
+  if (!node) return NULL;
+  node->widget = adw_switch_row_new();
+  adw_preferences_row_set_title(ADW_PREFERENCES_ROW(node->widget), title && title[0] ? title : "Setting");
+  adw_switch_row_set_active(ADW_SWITCH_ROW(node->widget), active != 0);
+  gtk_widget_set_hexpand(node->widget, TRUE);
+  gtk_widget_set_halign(node->widget, GTK_ALIGN_FILL);
+  omni_accessible_label(node->widget, title && title[0] ? title : "Setting");
+  gtk_accessible_update_state(GTK_ACCESSIBLE(node->widget), GTK_ACCESSIBLE_STATE_CHECKED, active ? GTK_ACCESSIBLE_TRISTATE_TRUE : GTK_ACCESSIBLE_TRISTATE_FALSE, -1);
+  g_object_set_data(G_OBJECT(node->widget), "omni-action-id", GINT_TO_POINTER(action_id));
+  g_signal_connect(node->widget, "notify::active", G_CALLBACK(on_switch_row_active_notify), NULL);
+  return node;
+}
+
+OmniAdwNode *omni_adw_color_button_new(const char *label, const char *value, int32_t supports_opacity, int32_t set_action_id) {
+  OmniAdwNode *node = omni_adw_action_row_new(label && label[0] ? label : "Color", "");
+  if (!node || !node->widget) return node;
+
+  GdkRGBA color;
+  if (!omni_parse_semantic_color(value, &color)) {
+    omni_set_rgba(&color, 53.0 / 255.0, 132.0 / 255.0, 228.0 / 255.0, 1.0);
+  }
+
+  GtkWidget *button = gtk_menu_button_new();
+  gtk_widget_add_css_class(button, "omni-color-menu-button");
+  gtk_widget_set_valign(button, GTK_ALIGN_CENTER);
+  gtk_widget_set_halign(button, GTK_ALIGN_END);
+  gtk_menu_button_set_child(GTK_MENU_BUTTON(button), omni_color_swatch_widget_new(&color, 28, 18));
+  omni_accessible_label(button, label && label[0] ? label : "Color");
+  omni_accessible_value_text(button, value);
+
+  GtkWidget *popover = gtk_popover_new();
+  OmniColorControlData *control = g_new0(OmniColorControlData, 1);
+  if (control) {
+    control->button = button;
+    control->popover = popover;
+    control->set_action_id = set_action_id;
+    control->supports_opacity = supports_opacity != 0;
+    g_object_set_data_full(G_OBJECT(button), "omni-color-control-data", control, g_free);
+    g_object_set_data(G_OBJECT(node->widget), "omni-color-control-data", control);
+  }
+
+  GtkWidget *content = gtk_box_new(GTK_ORIENTATION_VERTICAL, 10);
+  gtk_widget_set_margin_top(content, 10);
+  gtk_widget_set_margin_bottom(content, 10);
+  gtk_widget_set_margin_start(content, 10);
+  gtk_widget_set_margin_end(content, 10);
+
+  GtkWidget *sliders = gtk_box_new(GTK_ORIENTATION_VERTICAL, 6);
+  const char *channel_names[] = {"Red", "Green", "Blue", "Opacity"};
+  double channel_values[] = {color.red, color.green, color.blue, color.alpha};
+  GtkWidget **channel_scales[] = {
+    control ? &control->red_scale : NULL,
+    control ? &control->green_scale : NULL,
+    control ? &control->blue_scale : NULL,
+    control ? &control->alpha_scale : NULL,
+  };
+  int channel_count = supports_opacity ? 4 : 3;
+  for (int i = 0; i < channel_count; i++) {
+    GtkWidget *row = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 8);
+    GtkWidget *caption = gtk_label_new(channel_names[i]);
+    gtk_widget_set_size_request(caption, 58, -1);
+    gtk_label_set_xalign(GTK_LABEL(caption), 0.0f);
+    GtkWidget *scale = gtk_scale_new_with_range(GTK_ORIENTATION_HORIZONTAL, 0.0, 1.0, 0.01);
+    gtk_scale_set_draw_value(GTK_SCALE(scale), TRUE);
+    gtk_scale_set_digits(GTK_SCALE(scale), 2);
+    gtk_range_set_value(GTK_RANGE(scale), omni_unit_clamp(channel_values[i]));
+    gtk_widget_set_hexpand(scale, TRUE);
+    gtk_widget_set_halign(scale, GTK_ALIGN_FILL);
+    omni_accessible_label(scale, channel_names[i]);
+    gtk_accessible_update_property(GTK_ACCESSIBLE(scale), GTK_ACCESSIBLE_PROPERTY_VALUE_NOW, omni_unit_clamp(channel_values[i]), -1);
+    if (channel_scales[i]) *channel_scales[i] = scale;
+    if (control) g_signal_connect(scale, "value-changed", G_CALLBACK(on_color_channel_value_changed), control);
+    gtk_box_append(GTK_BOX(row), caption);
+    gtk_box_append(GTK_BOX(row), scale);
+    gtk_box_append(GTK_BOX(sliders), row);
+  }
+  gtk_box_append(GTK_BOX(content), sliders);
+
+  GtkWidget *separator = gtk_separator_new(GTK_ORIENTATION_HORIZONTAL);
+  gtk_box_append(GTK_BOX(content), separator);
+
+  GtkWidget *grid = gtk_grid_new();
+  gtk_grid_set_row_spacing(GTK_GRID(grid), 6);
+  gtk_grid_set_column_spacing(GTK_GRID(grid), 6);
+
+  const char *names[] = {"Black", "White", "Gray", "Red", "Orange", "Yellow", "Green", "Blue", "Purple"};
+  const char *values[] = {"black|1", "white|1", "gray|1", "red|1", "orange|1", "yellow|1", "green|1", "blue|1", "purple|1"};
+  int count = (int)(sizeof(values) / sizeof(values[0]));
+  for (int i = 0; i < count; i++) {
+    GdkRGBA swatch_color;
+    if (!omni_parse_semantic_color(values[i], &swatch_color)) {
+      omni_set_rgba(&swatch_color, 53.0 / 255.0, 132.0 / 255.0, 228.0 / 255.0, 1.0);
+    }
+    GtkWidget *swatch_button = gtk_button_new();
+    gtk_widget_add_css_class(swatch_button, "flat");
+    gtk_widget_add_css_class(swatch_button, "omni-color-swatch-button");
+    gtk_button_set_child(GTK_BUTTON(swatch_button), omni_color_swatch_widget_new(&swatch_color, 22, 16));
+    omni_accessible_label(swatch_button, names[i]);
+    omni_accessible_value_text(swatch_button, values[i]);
+    g_object_set_data_full(G_OBJECT(swatch_button), "omni-color-value", g_strdup(values[i]), g_free);
+    g_signal_connect(swatch_button, "clicked", G_CALLBACK(on_color_swatch_clicked), control);
+    gtk_grid_attach(GTK_GRID(grid), swatch_button, i % 3, i / 3, 1, 1);
+  }
+
+  gtk_box_append(GTK_BOX(content), grid);
+  gtk_popover_set_child(GTK_POPOVER(popover), content);
+  gtk_menu_button_set_popover(GTK_MENU_BUTTON(button), popover);
+  adw_action_row_add_suffix(ADW_ACTION_ROW(node->widget), button);
+  adw_action_row_set_activatable_widget(ADW_ACTION_ROW(node->widget), button);
+  return node;
+}
+
+OmniAdwNode *omni_adw_expander_new(const char *title, int32_t expanded, int32_t action_id) {
+  OmniAdwNode *node = calloc(1, sizeof(OmniAdwNode));
+  if (!node) return NULL;
+  node->widget = adw_expander_row_new();
+  adw_preferences_row_set_title(ADW_PREFERENCES_ROW(node->widget), title && title[0] ? title : "Details");
+  adw_expander_row_set_enable_expansion(ADW_EXPANDER_ROW(node->widget), TRUE);
+  adw_expander_row_set_expanded(ADW_EXPANDER_ROW(node->widget), expanded != 0);
+  gtk_widget_set_hexpand(node->widget, TRUE);
+  gtk_widget_set_halign(node->widget, GTK_ALIGN_FILL);
+  omni_accessible_label(node->widget, title && title[0] ? title : "Details");
+  omni_accessible_set_expanded(node->widget, expanded != 0);
+  g_object_set_data(G_OBJECT(node->widget), "omni-action-id", GINT_TO_POINTER(action_id));
+  g_signal_connect(node->widget, "notify::expanded", G_CALLBACK(on_expander_expanded_notify), NULL);
+  return node;
+}
+
+OmniAdwNode *omni_adw_preferences_group_new(const char *title, const char *description) {
+  OmniAdwNode *node = calloc(1, sizeof(OmniAdwNode));
+  if (!node) return NULL;
+  node->widget = adw_preferences_group_new();
+  if (title && title[0]) {
+    adw_preferences_group_set_title(ADW_PREFERENCES_GROUP(node->widget), title);
+    omni_accessible_label(node->widget, title);
+  }
+  if (description && description[0]) {
+    adw_preferences_group_set_description(ADW_PREFERENCES_GROUP(node->widget), description);
+    omni_accessible_description(node->widget, description);
+  }
+  gtk_widget_set_hexpand(node->widget, TRUE);
+  gtk_widget_set_halign(node->widget, GTK_ALIGN_FILL);
+  return node;
+}
+
+OmniAdwNode *omni_adw_status_page_new(const char *title, const char *description) {
+  OmniAdwNode *node = calloc(1, sizeof(OmniAdwNode));
+  if (!node) return NULL;
+  node->widget = adw_status_page_new();
+  adw_status_page_set_icon_name(ADW_STATUS_PAGE(node->widget), "dialog-information-symbolic");
+  adw_status_page_set_title(ADW_STATUS_PAGE(node->widget), title && title[0] ? title : "No Content");
+  if (description && description[0]) {
+    adw_status_page_set_description(ADW_STATUS_PAGE(node->widget), description);
+  }
+  gtk_widget_set_hexpand(node->widget, TRUE);
+  gtk_widget_set_halign(node->widget, GTK_ALIGN_FILL);
+  gtk_widget_set_vexpand(node->widget, TRUE);
+  gtk_widget_set_valign(node->widget, GTK_ALIGN_FILL);
+  omni_accessible_label(node->widget, title && title[0] ? title : "No Content");
+  omni_accessible_description(node->widget, description);
+  return node;
+}
+
 OmniAdwNode *omni_adw_scroll_new(int32_t vertical, double offset) {
   OmniAdwNode *node = calloc(1, sizeof(OmniAdwNode));
   node->widget = gtk_scrolled_window_new();
@@ -8228,9 +8817,17 @@ static gboolean omni_named_semantic_color(const char *name, GdkRGBA *color) {
 
 static gboolean omni_parse_rgb_function(const char *base, GdkRGBA *color) {
   if (!base || !color) return FALSE;
-  const char *rgb = strstr(base, "rgb(");
+  gboolean has_inline_alpha = FALSE;
+  const char *rgb = strstr(base, "rgba(");
+  if (rgb) {
+    rgb += 5;
+    has_inline_alpha = TRUE;
+  } else {
+    rgb = strstr(base, "rgb(");
+    if (!rgb) return FALSE;
+    rgb += 4;
+  }
   if (!rgb) return FALSE;
-  rgb += 4;
 
   char *end = NULL;
   double red = g_ascii_strtod(rgb, &end);
@@ -8238,13 +8835,56 @@ static gboolean omni_parse_rgb_function(const char *base, GdkRGBA *color) {
   double green = g_ascii_strtod(end + 1, &end);
   if (!end || *end != ',') return FALSE;
   double blue = g_ascii_strtod(end + 1, &end);
+  double alpha = 1.0;
+  if (has_inline_alpha && end && *end == ',') {
+    alpha = g_ascii_strtod(end + 1, &end);
+    if (alpha > 1.0) alpha /= 255.0;
+  }
 
   if (red > 1.0 || green > 1.0 || blue > 1.0) {
     red /= 255.0;
     green /= 255.0;
     blue /= 255.0;
   }
-  omni_set_rgba(color, red, green, blue, 1.0);
+  omni_set_rgba(color, red, green, blue, alpha);
+  return TRUE;
+}
+
+static gboolean omni_parse_hsb_function(const char *base, GdkRGBA *color) {
+  if (!base || !color) return FALSE;
+  const char *hsb = strstr(base, "hsb(");
+  if (!hsb) return FALSE;
+  hsb += 4;
+
+  char *end = NULL;
+  double hue = g_ascii_strtod(hsb, &end);
+  if (!end || *end != ',') return FALSE;
+  double saturation = omni_unit_clamp(g_ascii_strtod(end + 1, &end));
+  if (!end || *end != ',') return FALSE;
+  double brightness = omni_unit_clamp(g_ascii_strtod(end + 1, &end));
+
+  while (hue < 0.0) hue += 1.0;
+  while (hue >= 1.0) hue -= 1.0;
+  if (saturation <= 0.0) {
+    omni_set_rgba(color, brightness, brightness, brightness, 1.0);
+    return TRUE;
+  }
+
+  double sector = hue * 6.0;
+  int index = (int)sector;
+  double fraction = sector - (double)index;
+  double p = brightness * (1.0 - saturation);
+  double q = brightness * (1.0 - saturation * fraction);
+  double t = brightness * (1.0 - saturation * (1.0 - fraction));
+
+  switch (index % 6) {
+    case 0: omni_set_rgba(color, brightness, t, p, 1.0); break;
+    case 1: omni_set_rgba(color, q, brightness, p, 1.0); break;
+    case 2: omni_set_rgba(color, p, brightness, t, 1.0); break;
+    case 3: omni_set_rgba(color, p, q, brightness, 1.0); break;
+    case 4: omni_set_rgba(color, t, p, brightness, 1.0); break;
+    default: omni_set_rgba(color, brightness, p, q, 1.0); break;
+  }
   return TRUE;
 }
 
@@ -8263,6 +8903,7 @@ static gboolean omni_parse_semantic_color(const char *raw, GdkRGBA *color) {
   }
 
   gboolean parsed = omni_parse_rgb_function(base, color) ||
+    omni_parse_hsb_function(base, color) ||
     omni_named_semantic_color(base, color) ||
     gdk_rgba_parse(color, base);
   free(base);
@@ -8318,15 +8959,20 @@ OmniAdwNode *omni_adw_drawing_new(const char *label, const char *fill_color) {
   node->widget = gtk_drawing_area_new();
   gtk_widget_set_size_request(node->widget, 1, 1);
   gtk_widget_add_css_class(node->widget, "omni-drawing-island");
-  if (fill_color && fill_color[0] && !g_str_has_prefix(fill_color, "clear|")) {
-    if (g_str_has_prefix(fill_color, "orange|0.")) {
-      gtk_widget_add_css_class(node->widget, "omni-fill-orange-subtle");
-    } else if (g_str_has_prefix(fill_color, "orange|") || strcmp(fill_color, "orange") == 0) {
-      gtk_widget_add_css_class(node->widget, "omni-fill-orange");
-    } else if (g_str_has_prefix(fill_color, "gray|") || strcmp(fill_color, "gray") == 0) {
-      gtk_widget_add_css_class(node->widget, "omni-fill-gray");
-    } else {
-      gtk_widget_add_css_class(node->widget, "omni-fill-accent");
+  GdkRGBA parsed = {0};
+  if (fill_color && fill_color[0] && omni_parse_semantic_color(fill_color, &parsed) && parsed.alpha > 0.0) {
+    OmniAdwGradientData *data = calloc(1, sizeof(OmniAdwGradientData));
+    if (data) {
+      data->stops = g_new0(GdkRGBA, 1);
+      if (data->stops) {
+        data->stops[0] = parsed;
+        data->count = 1;
+        gtk_drawing_area_set_content_width(GTK_DRAWING_AREA(node->widget), 1);
+        gtk_drawing_area_set_content_height(GTK_DRAWING_AREA(node->widget), 1);
+        gtk_drawing_area_set_draw_func(GTK_DRAWING_AREA(node->widget), omni_adw_gradient_draw, data, omni_adw_gradient_data_free);
+      } else {
+        g_free(data);
+      }
     }
   }
   omni_accessible_label(node->widget, label ? label : "OmniUI drawing island");
@@ -8552,6 +9198,26 @@ void omni_adw_node_append_overlay(OmniAdwNode *parent, OmniAdwNode *child, const
       install_row_click_controller(child->widget);
     }
     gtk_list_box_append(GTK_LIST_BOX(parent->widget), row);
+  } else if (ADW_IS_PREFERENCES_GROUP(parent->widget)) {
+    gtk_widget_set_hexpand(child->widget, TRUE);
+    gtk_widget_set_halign(child->widget, GTK_ALIGN_FILL);
+    adw_preferences_group_add(ADW_PREFERENCES_GROUP(parent->widget), child->widget);
+  } else if (ADW_IS_EXPANDER_ROW(parent->widget)) {
+    gtk_widget_set_hexpand(child->widget, TRUE);
+    gtk_widget_set_halign(child->widget, GTK_ALIGN_FILL);
+    adw_expander_row_add_row(ADW_EXPANDER_ROW(parent->widget), child->widget);
+  } else if (ADW_IS_ACTION_ROW(parent->widget)) {
+    gtk_widget_set_valign(child->widget, GTK_ALIGN_CENTER);
+    gtk_widget_set_halign(child->widget, GTK_ALIGN_END);
+    if (GTK_IS_ENTRY(child->widget) || GTK_IS_DROP_DOWN(child->widget)) {
+      gtk_widget_set_size_request(child->widget, 220, -1);
+    }
+    adw_action_row_add_suffix(ADW_ACTION_ROW(parent->widget), child->widget);
+    if (GTK_IS_BUTTON(child->widget) || GTK_IS_ENTRY(child->widget) || GTK_IS_DROP_DOWN(child->widget) || GTK_IS_COLOR_BUTTON(child->widget)) {
+      adw_action_row_set_activatable_widget(ADW_ACTION_ROW(parent->widget), child->widget);
+    }
+  } else if (ADW_IS_STATUS_PAGE(parent->widget)) {
+    adw_status_page_set_child(ADW_STATUS_PAGE(parent->widget), child->widget);
   } else if (GTK_IS_PANED(parent->widget)) {
     if (!gtk_paned_get_start_child(GTK_PANED(parent->widget))) {
       gtk_paned_set_start_child(GTK_PANED(parent->widget), child->widget);

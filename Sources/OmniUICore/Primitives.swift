@@ -1842,12 +1842,18 @@ public struct GroupBox<Label: View, Content: View>: View, _PrimitiveView {
     }
 
     func _makeNode(_ ctx: inout _BuildContext) -> _VNode {
-        ctx.buildChild(
-            VStack(alignment: .leading, spacing: 1) {
-                label
-                content
-            }
-            .padding(1)
+        let labelNode = ctx.buildChild(label)
+        let contentNode = ctx.buildChild(content)
+        let fallback = _VNode.edgePadding(
+            top: 1,
+            leading: 1,
+            bottom: 1,
+            trailing: 1,
+            child: .stack(axis: .vertical, spacing: 1, children: [labelNode, contentNode])
+        )
+        return .tagged(
+            value: AnyHashable(_GroupBoxRole(label: _menuLabelText(from: labelNode))),
+            label: fallback
         )
     }
 }
@@ -1869,12 +1875,15 @@ public struct LabeledContent<Label: View, Content: View>: View, _PrimitiveView {
     }
 
     func _makeNode(_ ctx: inout _BuildContext) -> _VNode {
-        ctx.buildChild(
-            HStack(spacing: 1) {
-                label
-                Spacer()
-                content
-            }
+        let labelNode = ctx.buildChild(label)
+        let contentNode = ctx.buildChild(content)
+        return .tagged(
+            value: AnyHashable(_LabeledContentRole(label: _menuLabelText(from: labelNode), value: _menuLabelText(from: contentNode))),
+            label: .stack(axis: .horizontal, spacing: 1, children: [
+                labelNode,
+                .spacer,
+                contentNode,
+            ])
         )
     }
 }
@@ -1893,13 +1902,22 @@ public struct ContentUnavailableView<Label: View, Description: View, Actions: Vi
     }
 
     func _makeNode(_ ctx: inout _BuildContext) -> _VNode {
-        ctx.buildChild(
-            VStack(spacing: 1) {
-                label
-                description
-                actions
-            }
-            .padding(1)
+        let labelNode = ctx.buildChild(label)
+        let descriptionNode = ctx.buildChild(description)
+        let actionsNode = ctx.buildChild(actions)
+        return .tagged(
+            value: AnyHashable(_ContentUnavailableRole(title: _menuLabelText(from: labelNode), description: _menuLabelText(from: descriptionNode))),
+            label: .edgePadding(
+                top: 1,
+                leading: 1,
+                bottom: 1,
+                trailing: 1,
+                child: .stack(axis: .vertical, spacing: 1, children: [
+                    labelNode,
+                    descriptionNode,
+                    actionsNode,
+                ])
+            )
         )
     }
 }
@@ -1988,12 +2006,16 @@ public struct Section<Parent: View, Content: View, Footer: View>: View, _Primiti
                 }
             )
         }
-        return ctx.buildChild(
-            VStack(spacing: 0) {
-                header
-                content
-                footer
-            }
+        let headerNode = ctx.buildChild(header)
+        let contentNode = ctx.buildChild(content)
+        let footerNode = ctx.buildChild(footer)
+        return .tagged(
+            value: AnyHashable(_SectionRole(header: _menuLabelText(from: headerNode), footer: _menuLabelText(from: footerNode))),
+            label: .stack(axis: .vertical, spacing: 0, children: [
+                headerNode,
+                contentNode,
+                footerNode,
+            ])
         )
     }
 }
@@ -3155,15 +3177,22 @@ public struct DisclosureGroup<Label: View, Content: View>: View, _PrimitiveView 
         }
 
         let labelNode = ctx.buildChild(label)
+        let labelText = _menuLabelText(from: labelNode)
 
         guard env.isEnabled, _UIRuntime._hitTestingEnabled else {
             let chevron = expanded ? "v" : ">"
             let header = _VNode.style(fg: .secondary, bg: nil, child: .stack(axis: .horizontal, spacing: 1, children: [.text(chevron), labelNode]))
             if expanded {
                 let contentNode = ctx.buildChild(content)
-                return .stack(axis: .vertical, spacing: 0, children: [header, .edgePadding(top: 0, leading: 2, bottom: 0, trailing: 0, child: contentNode)])
+                return .tagged(
+                    value: AnyHashable(_DisclosureGroupRole(label: labelText, isExpanded: expanded, toggleActionID: nil)),
+                    label: .stack(axis: .vertical, spacing: 0, children: [header, .edgePadding(top: 0, leading: 2, bottom: 0, trailing: 0, child: contentNode)])
+                )
             }
-            return header
+            return .tagged(
+                value: AnyHashable(_DisclosureGroupRole(label: labelText, isExpanded: expanded, toggleActionID: nil)),
+                label: header
+            )
         }
 
         let isFocused = runtime._isFocused(path: controlPath)
@@ -3184,9 +3213,15 @@ public struct DisclosureGroup<Label: View, Content: View>: View, _PrimitiveView 
 
         if expanded {
             let contentNode = ctx.buildChild(content)
-            return .stack(axis: .vertical, spacing: 0, children: [header, .edgePadding(top: 0, leading: 2, bottom: 0, trailing: 0, child: contentNode)])
+            return .tagged(
+                value: AnyHashable(_DisclosureGroupRole(label: labelText, isExpanded: expanded, toggleActionID: id.raw)),
+                label: .stack(axis: .vertical, spacing: 0, children: [header, .edgePadding(top: 0, leading: 2, bottom: 0, trailing: 0, child: contentNode)])
+            )
         }
-        return header
+        return .tagged(
+            value: AnyHashable(_DisclosureGroupRole(label: labelText, isExpanded: expanded, toggleActionID: id.raw)),
+            label: header
+        )
     }
 }
 

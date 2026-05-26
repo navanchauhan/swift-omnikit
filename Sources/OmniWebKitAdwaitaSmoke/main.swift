@@ -1,5 +1,9 @@
 import Foundation
+#if canImport(Glibc)
 import Glibc
+#elseif canImport(Darwin)
+import Darwin
+#endif
 import OmniUIAdwaita
 import OmniWebKit
 
@@ -7,6 +11,7 @@ import OmniWebKit
 import FoundationNetworking
 #endif
 
+@MainActor
 private final class WebKitSmokeProbe: NSObject, WKNavigationDelegate, WKScriptMessageHandler, WKUIDelegate, @unchecked Sendable {
     static let shared = WebKitSmokeProbe()
 
@@ -26,10 +31,12 @@ private final class WebKitSmokeProbe: NSObject, WKNavigationDelegate, WKScriptMe
 
     func installLaunchWatchdog() {
         DispatchQueue.global().asyncAfter(deadline: .now() + .seconds(20)) { [weak self] in
-            guard let self else { return }
-            let snapshot = self.stateSnapshot()
-            if snapshot.evaluationDescription == nil {
-                self.fail("watchdog timeout webView=\(snapshot.webView != nil) start=\(snapshot.didStart) commit=\(snapshot.didCommit) finish=\(snapshot.didFinish) message=\(snapshot.hasMessage) error=\(String(describing: snapshot.loadError))")
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                let snapshot = self.stateSnapshot()
+                if snapshot.evaluationDescription == nil {
+                    self.fail("watchdog timeout webView=\(snapshot.webView != nil) start=\(snapshot.didStart) commit=\(snapshot.didCommit) finish=\(snapshot.didFinish) message=\(snapshot.hasMessage) error=\(String(describing: snapshot.loadError))")
+                }
             }
         }
     }

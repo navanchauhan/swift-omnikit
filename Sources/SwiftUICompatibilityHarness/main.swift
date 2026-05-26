@@ -1,4 +1,5 @@
 import Foundation
+import OmniUICore
 import SwiftData
 import SwiftUI
 
@@ -9,8 +10,8 @@ final class HarnessModel {
 }
 
 @MainActor
-@SwiftUI.Observable
-final class HarnessObservableModel {
+final class HarnessObservableModel: OmniUICore.ObservableObject {
+    let _$observationRegistrar = OmniUICore._ObservationRegistrar()
     var counter: Int = 0
     var flag: Bool = false
 }

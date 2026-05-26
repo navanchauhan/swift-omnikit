@@ -3,6 +3,13 @@
 // NOTE: This intentionally does not use Combine (portable to Linux).
 // Updates are reflected because the renderer rebuilds the view hierarchy every frame.
 
+@attached(member, names: named(_$observationRegistrar))
+@attached(extension, conformances: ObservableObject, names: arbitrary)
+public macro Observable() = #externalMacro(module: "SwiftUIMacros", type: "ObservableMacro")
+
+@attached(peer)
+public macro ObservationIgnored() = #externalMacro(module: "SwiftUIMacros", type: "ObservationIgnoredMacro")
+
 /// Observation registrar that tracks interested runtimes and notifies them when
 /// an `@Observable` object's properties change.
 ///

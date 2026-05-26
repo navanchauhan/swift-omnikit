@@ -75,10 +75,17 @@ import Testing
     #expect(header.contains("omni_adw_app_share_url"))
     #expect(header.contains("omni_adw_app_present_main_window"))
     #expect(header.contains("omni_adw_app_set_cursor"))
+    #expect(header.contains("omni_adw_register_dynamic_css"))
     #expect(shim.contains("adw_application_new"))
     #expect(shim.contains("adw_application_window_new"))
     #expect(shim.contains("void omni_adw_app_present_main_window"))
     #expect(shim.contains("void omni_adw_app_set_cursor"))
+    #expect(shim.contains("void omni_adw_register_dynamic_css"))
+    #expect(shim.contains("omni_parse_rgb_function"))
+    #expect(shim.contains("omni_parse_hsb_function"))
+    #expect(shim.contains("strstr(base, \"rgba(\")"))
+    #expect(shim.contains("omni_color_raw_value_for_rgba"))
+    #expect(shim.contains("on_color_channel_value_changed"))
     #expect(shim.contains("gtk_widget_set_cursor_from_name"))
     #expect(shim.contains("gtk_button_new_with_label"))
     #expect(shim.contains("gtk_flow_box_new"))
@@ -91,6 +98,13 @@ import Testing
     #expect(renderer.contains("_omniSetCursorHandler"))
     #expect(renderer.contains("omni_adw_app_present_main_window(appHandle)"))
     #expect(renderer.contains("omni_adw_app_set_cursor"))
+    #expect(renderer.contains("dynamicColorCSSClass"))
+    #expect(renderer.contains("concreteCSSColor"))
+    #expect(renderer.contains("raw.range(of: \"rgba(\")"))
+    #expect(renderer.contains("hexComponents(from:"))
+    #expect(renderer.contains("hsbComponents(from:"))
+    #expect(renderer.contains("rgba(\\(redByte), \\(greenByte), \\(blueByte), \\(String(format: \"%.3f\", clampedAlpha)))"))
+    #expect(!renderer.contains("base.contains(\"rgb(1.0,0.4,0.0)"))
     #expect(renderer.contains("omni_adw_app_set_root_focused"))
 }
 
@@ -1426,8 +1440,8 @@ import Testing
 }
 
 @Test func adwaitaReconciliationPlansSliderLeafUpdates() {
-    let previous = SemanticNode(id: "slider", kind: .slider(label: "Level", value: 0.4, lowerBound: 0, upperBound: 1, step: 0.1, decrementActionID: 1, incrementActionID: 2))
-    let next = SemanticNode(id: "slider", kind: .slider(label: "Level", value: 0.6, lowerBound: 0, upperBound: 1, step: 0.1, decrementActionID: 1, incrementActionID: 2))
+    let previous = SemanticNode(id: "slider", kind: .slider(label: "Level", value: 0.4, lowerBound: 0, upperBound: 1, step: 0.1, setActionID: nil, decrementActionID: 1, incrementActionID: 2))
+    let next = SemanticNode(id: "slider", kind: .slider(label: "Level", value: 0.6, lowerBound: 0, upperBound: 1, step: 0.1, setActionID: nil, decrementActionID: 1, incrementActionID: 2))
 
     let updates = AdwaitaReconciliation.leafUpdates(
         changes: SemanticDiff.changes(from: previous, to: next),
@@ -1464,6 +1478,58 @@ import Testing
 
     #expect(updates == [
         AdwaitaNativeLeafUpdate(id: "date", kind: .datePicker, text: "1704153600.0\nJan 1, 2024\nDue")
+    ])
+}
+
+@Test func adwaitaRendererCoversNativeSettingsWidgets() throws {
+    let renderer = try readRepositoryFile("Sources/OmniUIAdwaitaRenderer/AdwaitaRenderer.swift")
+    let header = try readRepositoryFile("Sources/CAdwaita/include/CAdwaita.h")
+    let shim = try readRepositoryFile("Sources/CAdwaita/shim.c")
+    let nodes = try readRepositoryFile("Sources/OmniUICore/Nodes.swift")
+    let primitives = try readRepositoryFile("Sources/OmniUICore/Primitives.swift")
+
+    #expect(nodes.contains("_ColorPickerRole"))
+    #expect(primitives.contains("_LabeledContentRole"))
+    #expect(primitives.contains("_DisclosureGroupRole"))
+    #expect(primitives.contains("_GroupBoxRole"))
+    #expect(primitives.contains("_ContentUnavailableRole"))
+    #expect(primitives.contains("_SectionRole"))
+
+    #expect(renderer.contains("case .colorPicker"))
+    #expect(renderer.contains("case .labeledContent"))
+    #expect(renderer.contains("case .disclosureGroup"))
+    #expect(renderer.contains("case .groupBox"))
+    #expect(renderer.contains("case .contentUnavailable"))
+    #expect(renderer.contains("case .section"))
+    #expect(renderer.contains("buildSettingsRow"))
+
+    #expect(header.contains("omni_adw_color_button_new"))
+    #expect(header.contains("omni_adw_action_row_new"))
+    #expect(header.contains("omni_adw_switch_row_new"))
+    #expect(header.contains("omni_adw_expander_new"))
+    #expect(header.contains("omni_adw_preferences_group_new"))
+    #expect(header.contains("omni_adw_status_page_new"))
+
+    #expect(shim.contains("gtk_menu_button_new"))
+    #expect(shim.contains("on_color_swatch_clicked"))
+    #expect(shim.contains("adw_action_row_new"))
+    #expect(shim.contains("adw_switch_row_new"))
+    #expect(shim.contains("adw_expander_row_new"))
+    #expect(shim.contains("adw_preferences_group_new"))
+    #expect(shim.contains("adw_status_page_new"))
+}
+
+@Test func adwaitaReconciliationPlansColorPickerLeafUpdates() {
+    let previous = SemanticNode(id: "color", kind: .colorPicker(label: "Accent", value: "blue|1.0", supportsOpacity: true, setActionID: 1))
+    let next = SemanticNode(id: "color", kind: .colorPicker(label: "Accent", value: "red|1.0", supportsOpacity: true, setActionID: 1))
+
+    let updates = AdwaitaReconciliation.leafUpdates(
+        changes: SemanticDiff.changes(from: previous, to: next),
+        root: next
+    )
+
+    #expect(updates == [
+        AdwaitaNativeLeafUpdate(id: "color", kind: .colorPicker, text: "red|1.0\nAccent")
     ])
 }
 

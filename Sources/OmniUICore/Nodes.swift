@@ -221,6 +221,38 @@ struct _SegmentedPickerRole: Hashable, Sendable {
     let selectedIndex: Int
 }
 
+struct _ColorPickerRole: Hashable, Sendable {
+    let label: String
+    let value: String
+    let supportsOpacity: Bool
+    let setActionID: Int?
+}
+
+struct _LabeledContentRole: Hashable, Sendable {
+    let label: String
+    let value: String
+}
+
+struct _DisclosureGroupRole: Hashable, Sendable {
+    let label: String
+    let isExpanded: Bool
+    let toggleActionID: Int?
+}
+
+struct _GroupBoxRole: Hashable, Sendable {
+    let label: String
+}
+
+struct _ContentUnavailableRole: Hashable, Sendable {
+    let title: String
+    let description: String?
+}
+
+struct _SectionRole: Hashable, Sendable {
+    let header: String
+    let footer: String
+}
+
 public struct _StyledTextSegment {
     let content: String
     let fg: Color?

@@ -279,9 +279,9 @@ let package = Package(
         .package(url: "https://github.com/vapor/websocket-kit.git", from: "2.15.0"),
         .package(path: "External/swift-photon"),
         // For Swift macro stubs (SwiftData compatibility).
-        .package(url: "https://github.com/swiftlang/swift-syntax.git", "602.0.0"..<"604.0.0"),
+        .package(url: "https://github.com/swiftlang/swift-syntax.git", "601.0.0"..<"602.0.0"),
         // Swift-native testing DSL (`import Testing`, `@Test`, `#expect`).
-        .package(url: "https://github.com/swiftlang/swift-testing.git", from: "6.2.0"),
+        .package(url: "https://github.com/swiftlang/swift-testing.git", "6.1.0"..<"6.2.0"),
         // Agent-only optional dependencies are stubbed locally so UI consumers can resolve on Swift 6.1.
         .package(path: "External/SwiftBashStub"),
         .package(path: "External/SwiftMailStub"),
@@ -351,6 +351,8 @@ let package = Package(
             name: "SwiftUIMacros",
             dependencies: [
                 .product(name: "SwiftCompilerPlugin", package: "swift-syntax"),
+                .product(name: "SwiftSyntax", package: "swift-syntax"),
+                .product(name: "SwiftSyntaxBuilder", package: "swift-syntax"),
                 .product(name: "SwiftSyntaxMacros", package: "swift-syntax"),
             ]
         ),
@@ -358,6 +360,8 @@ let package = Package(
             name: "SwiftDataMacros",
             dependencies: [
                 .product(name: "SwiftCompilerPlugin", package: "swift-syntax"),
+                .product(name: "SwiftSyntax", package: "swift-syntax"),
+                .product(name: "SwiftSyntaxBuilder", package: "swift-syntax"),
                 .product(name: "SwiftSyntaxMacros", package: "swift-syntax"),
             ]
         ),
@@ -369,7 +373,7 @@ let package = Package(
         ),
         .executableTarget(
             name: "SwiftUICompatibilityHarness",
-            dependencies: ["OmniSwiftUI", "OmniSwiftData", "OmniSwiftUISymbolExtras"],
+            dependencies: ["OmniSwiftUI", "OmniSwiftData", "OmniSwiftUISymbolExtras", "OmniUICore"],
             swiftSettings: commonSwiftSettings + [
                 // Keep source compatibility with `import SwiftUI` / `import SwiftData`.
                 .unsafeFlags(["-module-alias", "SwiftUI=OmniSwiftUI"]),
@@ -484,7 +488,7 @@ let package = Package(
         ),
         .target(
             name: "OmniUICore",
-            dependencies: ["UniformTypeIdentifiers"],
+            dependencies: ["UniformTypeIdentifiers", "SwiftUIMacros"],
             swiftSettings: commonSwiftSettings
         ),
         .target(

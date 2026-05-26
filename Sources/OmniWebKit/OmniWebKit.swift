@@ -314,6 +314,7 @@ public extension WKUIDelegate {
     }
 }
 
+@MainActor
 public final class WKPreferences: NSObject, @unchecked Sendable {
     private struct WebViewBox {
         weak var webView: WKWebView?
@@ -421,6 +422,7 @@ public final class WKContentRuleListStore: NSObject, @unchecked Sendable {
     }
 }
 
+@MainActor
 public final class WKUserContentController: NSObject, @unchecked Sendable {
     private struct HandlerBox {
         var handler: WKScriptMessageHandler
@@ -644,6 +646,7 @@ public final class WKWebsiteDataStore: NSObject, @unchecked Sendable {
     }
 }
 
+@MainActor
 public final class WKWebViewConfiguration: NSObject, @unchecked Sendable {
     public var processPool = WKProcessPool()
     public var preferences = WKPreferences()
@@ -754,12 +757,14 @@ public final class WKWebView: NSView, @preconcurrency _OmniWebViewPayloadProvidi
     }
 
     deinit {
-        _omniBeginNativeRepresentableDismantle()
-        #if os(Linux)
-        appearanceObservation?.invalidate()
-        #endif
-        configuration.userContentController.detach(self)
-        configuration.preferences.detach(self)
+        MainActor.assumeIsolated {
+            _omniBeginNativeRepresentableDismantle()
+            #if os(Linux)
+            appearanceObservation?.invalidate()
+            #endif
+            configuration.userContentController.detach(self)
+            configuration.preferences.detach(self)
+        }
     }
 
     public func _omniBeginNativeRepresentableDismantle() {
