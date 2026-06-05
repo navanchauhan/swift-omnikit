@@ -1,6 +1,10 @@
 @_exported import Foundation
 @_exported import OmniUICore
 @_exported import OmniUIAdwaitaRenderer
+@_exported import OmniFoundationExtras
+#if canImport(Combine)
+@_exported import Combine
+#endif
 #if canImport(FoundationNetworking)
 @_exported import FoundationNetworking
 #endif
@@ -41,66 +45,8 @@ private func _omniAdwaitaEntryTrace(_ message: String) {
 
 public struct AnimationTimelineSchedule: Hashable, Sendable { public init() {} }
 
-public struct Animation: Hashable, Sendable {
-    public let rawValue: String
-    public let duration: Double
-    public let curve: AnimationCurve
-
-    public init(_ rawValue: String) {
-        self.rawValue = rawValue
-        self.duration = Animation.parseDuration(rawValue)
-        self.curve = Animation.parseCurve(rawValue)
-    }
-
-    public static let `default` = Animation("default")
-
-    public static func spring() -> Animation { Animation("spring") }
-    public static func easeInOut(duration: Double = 0.35) -> Animation { Animation("easeInOut(\(duration))") }
-    public static func easeIn(duration: Double = 0.35) -> Animation { Animation("easeIn(\(duration))") }
-    public static func easeOut(duration: Double = 0.35) -> Animation { Animation("easeOut(\(duration))") }
-    public static func linear(duration: Double = 0.35) -> Animation { Animation("linear(\(duration))") }
-
-    public func delay(_ delay: Double) -> Animation {
-        Animation("\(rawValue).delay(\(delay))")
-    }
-
-    public func repeatForever(autoreverses: Bool = true) -> Animation {
-        Animation("\(rawValue).repeatForever(\(autoreverses))")
-    }
-
-    private static func parseDuration(_ raw: String) -> Double {
-        guard let open = raw.firstIndex(of: "("),
-              let close = raw.firstIndex(of: ")")
-        else { return 0.35 }
-        return Double(raw[raw.index(after: open)..<close]) ?? 0.35
-    }
-
-    private static func parseCurve(_ raw: String) -> AnimationCurve {
-        let lower = raw.lowercased()
-        if lower.hasPrefix("easeinout") || lower == "default" { return .easeInOut }
-        if lower.hasPrefix("easein") { return .easeIn }
-        if lower.hasPrefix("easeout") { return .easeOut }
-        if lower.hasPrefix("linear") { return .linear }
-        if lower.hasPrefix("spring") { return .spring }
-        return .easeInOut
-    }
-}
-
-@discardableResult
-public func withAnimation<T>(_ animation: Animation? = nil, _ body: () -> T) -> T {
-    body()
-}
-
 @MainActor
 public extension View {
-    func animation<Value: Equatable>(_ animation: Animation?, value: Value) -> some View {
-        _AnimationModifier(
-            content: AnyView(self),
-            animation: animation.map { _AnyAnimation(curve: $0.curve, duration: $0.duration) },
-            value: value
-        )
-    }
-
     func phaseAnimator<Phase: Hashable, Content: View>(
         _ phases: [Phase],
         @ViewBuilder content: @escaping @MainActor @Sendable (Self, Phase) -> Content,

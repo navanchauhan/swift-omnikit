@@ -13,6 +13,10 @@ let swift6CommonSwiftSettings: [SwiftSetting] = [
     .swiftLanguageMode(.v6),
 ] + commonSwiftSettings
 
+let uiCompatibilitySwiftSettings: [SwiftSetting] = [
+    .swiftLanguageMode(.v5),
+]
+
 let imessageTargetDependencies: [Target.Dependency] = [
     "TheAgentIngress",
     "OmniAgentMesh",
@@ -24,6 +28,8 @@ let appKitTargetName = "OmniAppKit"
 let combineTargetName = "OmniCombine"
 let securityTargetName = "OmniSecurity"
 let omniUIAdwaitaProductTargets = ["OmniUIAdwaita", "OmniWebKit", "OmniFoundationExtras"]
+let appleCompatibilityProducts: [Product] = []
+let appleCompatibilityTargets: [Target] = []
 let zlibPkgConfig: String? = nil
 let zlibProviders: [SystemPackageProvider]? = nil
 let sqlitePkgConfig: String? = nil
@@ -37,6 +43,53 @@ let appKitTargetName = "AppKit"
 let combineTargetName = "Combine"
 let securityTargetName = "Security"
 let omniUIAdwaitaProductTargets = ["OmniUIAdwaita", "OmniWebKit", "Security", "AppKit", "Combine", "OmniFoundationExtras"]
+let appleCompatibilityProducts: [Product] = [
+    .library(
+        name: "CoreGraphics",
+        targets: ["CoreGraphics"]
+    ),
+    .library(
+        name: "QuartzCore",
+        targets: ["QuartzCore"]
+    ),
+    .library(
+        name: "OSLog",
+        targets: ["OSLog"]
+    ),
+    .library(
+        name: "CoreFoundation",
+        targets: ["CoreFoundation"]
+    ),
+    .library(
+        name: "ImageIO",
+        targets: ["ImageIO"]
+    ),
+]
+let appleCompatibilityTargets: [Target] = [
+    .target(
+        name: "CoreGraphics",
+        dependencies: ["OmniUICore"],
+        swiftSettings: commonSwiftSettings
+    ),
+    .target(
+        name: "QuartzCore",
+        dependencies: ["AppKit", "CoreGraphics"],
+        swiftSettings: commonSwiftSettings
+    ),
+    .target(
+        name: "OSLog",
+        swiftSettings: commonSwiftSettings
+    ),
+    .target(
+        name: "CoreFoundation",
+        swiftSettings: commonSwiftSettings
+    ),
+    .target(
+        name: "ImageIO",
+        dependencies: ["CoreGraphics", "CoreFoundation"],
+        swiftSettings: commonSwiftSettings
+    ),
+]
 let zlibPkgConfig: String? = "zlib"
 let zlibProviders: [SystemPackageProvider]? = [
     .apt(["zlib1g-dev"]),
@@ -59,6 +112,16 @@ let webKitGTKProviders: [SystemPackageProvider]? = [
 ]
 #endif
 
+@MainActor
+func _omniPackageProducts(_ products: [Product]) -> [Product] {
+    products + appleCompatibilityProducts
+}
+
+@MainActor
+func _omniPackageTargets(_ targets: [Target]) -> [Target] {
+    targets + appleCompatibilityTargets
+}
+
 let package = Package(
     name: "OmniKit",
     platforms: [
@@ -68,7 +131,7 @@ let package = Package(
         .watchOS(.v10),
         .visionOS(.v1),
     ],
-    products: [
+    products: _omniPackageProducts([
         // Products define the executables and libraries a package produces, making them visible to other packages.
         .library(
             name: "SwiftUI",
@@ -270,7 +333,7 @@ let package = Package(
             name: "OmniAgentDeployCLI",
             targets: ["OmniAgentDeployCLI"]
         ),
-    ],
+    ]),
     dependencies: [
         // Cross-platform networking + streaming.
         .package(url: "https://github.com/swift-server/async-http-client.git", from: "1.0.0"),
@@ -286,7 +349,7 @@ let package = Package(
         .package(path: "External/SwiftBashStub"),
         .package(path: "External/SwiftMailStub"),
     ],
-    targets: [
+    targets: _omniPackageTargets([
         // Targets are the basic building blocks of a package, defining a module or a test suite.
         // Targets can depend on other targets in this package and products from dependencies.
         .systemLibrary(
@@ -489,12 +552,12 @@ let package = Package(
         .target(
             name: "OmniUICore",
             dependencies: ["UniformTypeIdentifiers", "SwiftUIMacros"],
-            swiftSettings: commonSwiftSettings
+            swiftSettings: uiCompatibilitySwiftSettings
         ),
         .target(
             name: "OmniWebKit",
             dependencies: ["OmniUICore", "CAdwaita"],
-            swiftSettings: commonSwiftSettings
+            swiftSettings: uiCompatibilitySwiftSettings
         ),
         .target(
             name: securityTargetName,
@@ -578,7 +641,7 @@ let package = Package(
         .target(
             name: "OmniUIAdwaitaRenderer",
             dependencies: ["OmniUICore", "CAdwaita"],
-            swiftSettings: commonSwiftSettings
+            swiftSettings: uiCompatibilitySwiftSettings
         ),
         .target(
             name: "OmniUIAdwaita",
@@ -592,7 +655,7 @@ let package = Package(
                 "OmniFoundationExtras",
                 "SwiftUIMacros",
             ],
-            swiftSettings: commonSwiftSettings
+            swiftSettings: uiCompatibilitySwiftSettings
         ),
         .target(
             name: "Sparkle",
@@ -1014,6 +1077,6 @@ let package = Package(
             ],
             swiftSettings: commonSwiftSettings
         ),
-    ],
+    ]),
     swiftLanguageModes: [.v6]
 )

@@ -341,9 +341,8 @@ public enum CheckboxToggleStyle {
 #endif
 
 
-public enum CircularProgressViewStyle {
-    public enum Body {
-    }
+public struct CircularProgressViewStyle: Hashable, Sendable {
+    public init() {}
 }
 
 
@@ -700,6 +699,24 @@ public struct DragGesture: Sendable {
         var copy = self
         copy._onEnded = action
         return copy
+    }
+
+    public func updating<State>(
+        _ state: GestureState<State>,
+        body: @escaping @MainActor @Sendable (Value, inout State, inout Transaction) -> Void
+    ) -> DragGesture {
+        _ = state
+        _ = body
+        return self
+    }
+
+    public func updating<State>(
+        _ state: Binding<State>,
+        body: @escaping @MainActor @Sendable (Value, inout State, inout Transaction) -> Void
+    ) -> DragGesture {
+        _ = state
+        _ = body
+        return self
     }
 
     @MainActor
@@ -1059,7 +1076,26 @@ public enum GaugeStyleConfiguration {
 }
 
 
-public enum GestureState {
+@propertyWrapper
+public struct GestureState<Value> {
+    private var value: Value
+
+    public init(wrappedValue: Value) {
+        self.value = wrappedValue
+    }
+
+    public init(initialValue: Value) {
+        self.value = initialValue
+    }
+
+    public var wrappedValue: Value {
+        get { value }
+        nonmutating set { _ = newValue }
+    }
+
+    public var projectedValue: Binding<Value> {
+        Binding(get: { value }, set: { _ in })
+    }
 }
 
 
@@ -1268,9 +1304,9 @@ public struct LinearProgressViewStyle: Hashable, Sendable {
 }
 
 
-public enum LinkButtonStyle {
-    public enum Body {
-    }
+public struct LinkButtonStyle: ButtonStyle, Hashable, Sendable {
+    public init() {}
+    public func makeBody(configuration: Configuration) -> some View { configuration.label }
 }
 
 
@@ -1449,19 +1485,32 @@ public enum NSHostingSceneRepresentation {
 }
 
 
-public enum NSHostingSizingOptions {
-    public enum ArrayLiteralElement {
+public struct NSHostingSizingOptions: OptionSet, Sendable {
+    public let rawValue: Int
+
+    public init(rawValue: Int) {
+        self.rawValue = rawValue
     }
 
-    public enum Element {
-    }
-
-    public enum RawValue {
-    }
+    public static let minSize = NSHostingSizingOptions(rawValue: 1 << 0)
+    public static let intrinsicContentSize = NSHostingSizingOptions(rawValue: 1 << 1)
+    public static let preferredContentSize = NSHostingSizingOptions(rawValue: 1 << 2)
 }
 
 
-public enum NSHostingView {
+open class NSHostingView<Content: View>: NSView {
+    public var rootView: Content
+    public var sizingOptions: NSHostingSizingOptions = []
+
+    @MainActor
+    public init(rootView: Content) {
+        self.rootView = rootView
+        super.init(frame: .zero)
+    }
+
+    public required init?(coder: NSCoder) {
+        return nil
+    }
 }
 
 
@@ -1509,7 +1558,10 @@ public enum NavigationControlGroupStyle {
 }
 
 
-public enum NavigationSplitViewColumn {
+public enum NavigationSplitViewColumn: Hashable, Sendable {
+    case sidebar
+    case content
+    case detail
 }
 
 
@@ -1558,8 +1610,18 @@ public enum OpenSettingsAction {
 #endif
 
 
-public enum OpenWindowAction {
+public struct OpenWindowAction: Sendable {
     public enum SharingBehavior {
+    }
+
+    private let open: @Sendable (String) -> Void
+
+    public init(_ open: @escaping @Sendable (String) -> Void = { _ in }) {
+        self.open = open
+    }
+
+    public func callAsFunction(id: String) {
+        open(id)
     }
 }
 
@@ -1656,6 +1718,7 @@ public enum PopUpButtonPickerStyle {
 
 
 public enum PopoverAttachmentAnchor {
+    case rect(_AnchorSource)
 }
 
 
@@ -1893,7 +1956,13 @@ public enum ScrollEdgeEffectStyle {
 }
 
 
-public enum ScrollIndicatorVisibility {
+public struct ScrollIndicatorVisibility: Hashable, Sendable {
+    public init() {}
+
+    public static let automatic = ScrollIndicatorVisibility()
+    public static let visible = ScrollIndicatorVisibility()
+    public static let hidden = ScrollIndicatorVisibility()
+    public static let never = ScrollIndicatorVisibility()
 }
 
 
@@ -1902,10 +1971,6 @@ public enum ScrollInputBehavior {
 
 
 public enum ScrollInputKind {
-}
-
-
-public enum ScrollPhaseChangeContext {
 }
 
 
@@ -2494,9 +2559,18 @@ public enum TimelineViewDefaultContext {
 }
 
 
-public enum TitleAndIconLabelStyle {
-    public enum Body {
+public struct TitleAndIconLabelStyle: LabelStyle, Hashable, Sendable {
+    public init() {}
+    public func makeBody(configuration: Configuration) -> some View {
+        HStack(spacing: 6) {
+            configuration.icon
+            configuration.title
+        }
     }
+}
+
+public extension LabelStyle where Self == TitleAndIconLabelStyle {
+    static var titleAndIcon: TitleAndIconLabelStyle { TitleAndIconLabelStyle() }
 }
 
 
@@ -2548,7 +2622,11 @@ public enum ToolbarLabelStyle {
 }
 
 
-public enum ToolbarRole {
+public struct ToolbarRole: Hashable, Sendable {
+    public let rawValue: String
+    public init(_ rawValue: String) { self.rawValue = rawValue }
+    public static let automatic = ToolbarRole("automatic")
+    public static let editor = ToolbarRole("editor")
 }
 
 
@@ -2711,7 +2789,11 @@ public enum WindowResizability {
 }
 
 
-public enum WindowStyle {
+public struct WindowStyle: Hashable, Sendable {
+    public let rawValue: String
+    public init(_ rawValue: String) { self.rawValue = rawValue }
+    public static let automatic = WindowStyle("automatic")
+    public static let hiddenTitleBar = WindowStyle("hiddenTitleBar")
 }
 
 
@@ -2719,7 +2801,11 @@ public enum WindowToolbarFullScreenVisibility {
 }
 
 
-public enum WindowToolbarStyle {
+public struct WindowToolbarStyle: Hashable, Sendable {
+    public let rawValue: String
+    public init(_ rawValue: String) { self.rawValue = rawValue }
+    public static let automatic = WindowToolbarStyle("automatic")
+    public static let unified = WindowToolbarStyle("unified")
 }
 
 

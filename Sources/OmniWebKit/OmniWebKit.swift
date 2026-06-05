@@ -346,7 +346,11 @@ public final class WKPreferences: NSObject, @unchecked Sendable {
     }
 
     func detach(_ webView: WKWebView) {
-        webViews.removeValue(forKey: ObjectIdentifier(webView))
+        detach(ObjectIdentifier(webView))
+    }
+
+    func detach(_ id: ObjectIdentifier) {
+        webViews.removeValue(forKey: id)
     }
 
     private func forAttachedWebViews(_ body: @Sendable @escaping @MainActor (WKWebView) -> Void) {
@@ -491,7 +495,11 @@ public final class WKUserContentController: NSObject, @unchecked Sendable {
     }
 
     func detach(_ webView: WKWebView) {
-        webViews.removeValue(forKey: ObjectIdentifier(webView))
+        detach(ObjectIdentifier(webView))
+    }
+
+    func detach(_ id: ObjectIdentifier) {
+        webViews.removeValue(forKey: id)
     }
 
     private func forAttachedWebViews(_ body: @Sendable @escaping @MainActor (WKWebView) -> Void) {
@@ -760,13 +768,23 @@ public final class WKWebView: NSView, @preconcurrency _OmniWebViewPayloadProvidi
     }
 
     deinit {
-        MainActor.assumeIsolated {
-            _omniBeginNativeRepresentableDismantle()
+        let webViewID = ObjectIdentifier(self)
+        let identity = webViewID.debugDescription
+        let userContentController = configuration.userContentController
+        let preferences = configuration.preferences
+        #if os(Linux)
+        let appearanceObservation = appearanceObservation
+        #endif
+        Task { @MainActor in
+            _OmniWebViewRegistry.remove(stableIdentity: identity)
+            #if os(Linux) || os(macOS)
+            identity.withCString { _ = omni_adw_web_view_unregister($0) }
+            #endif
             #if os(Linux)
             appearanceObservation?.invalidate()
             #endif
-            configuration.userContentController.detach(self)
-            configuration.preferences.detach(self)
+            userContentController.detach(webViewID)
+            preferences.detach(webViewID)
         }
     }
 
@@ -784,8 +802,10 @@ public final class WKWebView: NSView, @preconcurrency _OmniWebViewPayloadProvidi
         #if os(Linux)
         appearanceObservation = _omniAddAppearanceChangeHandler { [weak self] _ in
             guard let self else { return }
-            self.syncNativeAppearance()
-            self.invalidatePayload()
+            Task { @MainActor in
+                self.syncNativeAppearance()
+                self.invalidatePayload()
+            }
         }
         #endif
     }

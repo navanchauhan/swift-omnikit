@@ -1,8 +1,26 @@
 @MainActor
 public protocol ToolbarContent {
+    associatedtype _ToolbarBody: ToolbarContent = Never
+    @preconcurrency @MainActor @ToolbarContentBuilder var body: _ToolbarBody { get }
     func _toolbarView() -> AnyView
 }
 
+extension Never: ToolbarContent {
+    public typealias _ToolbarBody = Never
+
+    public func _toolbarView() -> AnyView {
+        AnyView(EmptyView())
+    }
+}
+
+@MainActor
+public extension ToolbarContent where _ToolbarBody: ToolbarContent {
+    func _toolbarView() -> AnyView {
+        body._toolbarView()
+    }
+}
+
+@MainActor
 public extension ToolbarContent where Self: View {
     func _toolbarView() -> AnyView {
         AnyView(self)
@@ -60,5 +78,9 @@ public enum ToolbarContentBuilder {
 
     public static func buildArray(_ components: [AnyToolbarContent]) -> AnyToolbarContent {
         AnyToolbarContent(view: TupleView(components.map { AnyView($0) }))
+    }
+
+    public static func buildLimitedAvailability(_ component: AnyToolbarContent) -> AnyToolbarContent {
+        component
     }
 }

@@ -3,11 +3,43 @@ import Foundation
 #if canImport(AppKit) && !os(Linux)
 import AppKit
 #else
-open class NSView: NSObject {
+public final class NSToolbar: NSObject, @unchecked Sendable {
+    public var showsBaselineSeparator: Bool = true
+
+    public override init() {
+        super.init()
+    }
+}
+
+public protocol NSWindowDelegate: AnyObject {}
+
+public extension NSWindowDelegate {
+    var windowShouldClose: ((NSWindow) -> Bool)? { nil }
+    var windowWillClose: ((Notification) -> Void)? { nil }
+    var windowDidBecomeKey: ((Notification) -> Void)? { nil }
+}
+
+@MainActor
+open class NSView: NSResponder {
+    public struct AutoresizingMask: OptionSet, Sendable {
+        public let rawValue: Int
+        public init(rawValue: Int) { self.rawValue = rawValue }
+        public static let minXMargin = AutoresizingMask(rawValue: 1 << 0)
+        public static let width = AutoresizingMask(rawValue: 1 << 1)
+        public static let maxXMargin = AutoresizingMask(rawValue: 1 << 2)
+        public static let minYMargin = AutoresizingMask(rawValue: 1 << 3)
+        public static let height = AutoresizingMask(rawValue: 1 << 4)
+        public static let maxYMargin = AutoresizingMask(rawValue: 1 << 5)
+    }
+
     public static let noIntrinsicMetric: CGFloat = -1
+    public static let boundsDidChangeNotification = Notification.Name("NSViewBoundsDidChangeNotification")
 
     public var frame: CGRect
-    public var bounds: CGRect { CGRect(origin: .zero, size: frame.size) }
+    public var bounds: CGRect {
+        get { CGRect(origin: .zero, size: frame.size) }
+        set { frame.size = newValue.size }
+    }
     public weak var superview: NSView?
     public private(set) var subviews: [NSView] = []
     public private(set) weak var window: NSWindow?
@@ -16,8 +48,10 @@ open class NSView: NSObject {
     public var needsDisplay: Bool = false
     public var needsLayout: Bool = false
     public var translatesAutoresizingMaskIntoConstraints: Bool = true
+    public var autoresizingMask: AutoresizingMask = []
     public var constraints: [NSLayoutConstraint] = []
     public private(set) var registeredDraggedTypes: [NSPasteboard.PasteboardType] = []
+    public private(set) var trackingAreas: [NSTrackingArea] = []
     open var appearance: NSAppearance? {
         didSet {
             _notifyEffectiveAppearanceChangedRecursively()
@@ -58,10 +92,12 @@ open class NSView: NSObject {
     open var intrinsicContentSize: CGSize {
         CGSize(width: Self.noIntrinsicMetric, height: Self.noIntrinsicMetric)
     }
+    open var acceptsFirstResponder: Bool { false }
 
-    open func addSubview(_ view: NSView) {
+    @MainActor open func addSubview(_ view: NSView) {
         if view.superview !== self {
             view.removeFromSuperview()
+            view.viewWillMove(toSuperview: self)
             if view.frame.size == .zero, bounds.size != .zero {
                 view.frame = bounds
             }
@@ -73,8 +109,9 @@ open class NSView: NSObject {
         }
     }
 
-    open func removeFromSuperview() {
+    @MainActor open func removeFromSuperview() {
         guard let superview else { return }
+        viewWillMove(toSuperview: nil)
         _setWindowRecursively(nil)
         superview.subviews.removeAll { $0 === self }
         self.superview = nil
@@ -100,9 +137,12 @@ open class NSView: NSObject {
             subview.layoutSubtreeIfNeeded()
         }
     }
-    open func viewDidMoveToSuperview() {}
-    open func viewDidMoveToWindow() {}
+    @MainActor open func viewDidMoveToSuperview() {}
+    @MainActor open func viewWillMove(toSuperview newSuperview: NSView?) { _ = newSuperview }
+    @MainActor open func viewDidMoveToWindow() {}
     open func viewEffectiveAppearanceDidChange() {}
+    open func viewDidChangeBackingProperties() {}
+    open func updateTrackingAreas() {}
     open func setFrameSize(_ newSize: CGSize) {
         frame.size = newSize
         layoutSubtreeIfNeeded()
@@ -119,11 +159,25 @@ open class NSView: NSObject {
     }
     open func draw(_ dirtyRect: CGRect) { _ = dirtyRect }
     open func setNeedsDisplay(_ rect: CGRect) { _ = rect; needsDisplay = true }
-    open func scrollWheel(with event: NSEvent) { _ = event }
-    open func viewWillMove(toWindow newWindow: NSWindow?) { _ = newWindow }
+    @MainActor open func mouseEntered(with event: NSEvent) { _ = event }
+    @MainActor open func mouseExited(with event: NSEvent) { _ = event }
+    @MainActor open func mouseMoved(with event: NSEvent) { _ = event }
+    @MainActor open override func mouseDown(with event: NSEvent) { _ = event }
+    @MainActor open func mouseUp(with event: NSEvent) { _ = event }
+    @MainActor open func mouseDragged(with event: NSEvent) { _ = event }
+    @MainActor open func rightMouseDown(with event: NSEvent) { _ = event }
+    @MainActor open func rightMouseUp(with event: NSEvent) { _ = event }
+    @MainActor open func otherMouseDown(with event: NSEvent) { _ = event }
+    @MainActor open override func keyDown(with event: NSEvent) { _ = event }
+    @MainActor open func doCommand(by selector: Selector) { _ = selector }
+    @MainActor open func deleteBackward(_ sender: Any?) { _ = sender }
+    @MainActor open func deleteForward(_ sender: Any?) { _ = sender }
+    @MainActor open override func scrollWheel(with event: NSEvent) { _ = event }
+    @MainActor open func viewWillMove(toWindow newWindow: NSWindow?) { _ = newWindow }
     open func draggingEntered(_ sender: NSDraggingInfo) -> NSDragOperation { _ = sender; return [] }
     open func draggingUpdated(_ sender: NSDraggingInfo) -> NSDragOperation { _ = sender; return [] }
     open func draggingExited(_ sender: NSDraggingInfo?) { _ = sender }
+    open func prepareForDragOperation(_ sender: NSDraggingInfo) -> Bool { _ = sender; return true }
     open func performDragOperation(_ sender: NSDraggingInfo) -> Bool { _ = sender; return false }
     open func convert(_ point: NSPoint, from view: NSView?) -> NSPoint {
         let windowPoint = view?._omniWindowPoint(fromLocal: point) ?? point
@@ -141,8 +195,8 @@ open class NSView: NSObject {
     }
     open func menu(for event: NSEvent) -> NSMenu? { _ = event; return nil }
     open func validateUserInterfaceItem(_ item: NSValidatedUserInterfaceItem) -> Bool { _ = item; return true }
-    open func becomeFirstResponder() -> Bool { true }
-    open func resignFirstResponder() -> Bool { true }
+    @MainActor open func becomeFirstResponder() -> Bool { true }
+    @MainActor open func resignFirstResponder() -> Bool { true }
     open func copy(_ sender: Any?) { _ = sender }
     open func paste(_ sender: Any?) { _ = sender }
     open func selectAll(_ sender: Any?) { _ = sender }
@@ -151,6 +205,12 @@ open class NSView: NSObject {
     }
     open func unregisterDraggedTypes() {
         registeredDraggedTypes = []
+    }
+    open func addTrackingArea(_ trackingArea: NSTrackingArea) {
+        trackingAreas.append(trackingArea)
+    }
+    open func removeTrackingArea(_ trackingArea: NSTrackingArea) {
+        trackingAreas.removeAll { $0 === trackingArea }
     }
     open var enclosingScrollView: NSScrollView? { superview as? NSScrollView ?? superview?.enclosingScrollView }
     open func removeConstraint(_ constraint: NSLayoutConstraint) {
@@ -224,7 +284,7 @@ open class NSView: NSObject {
         }
     }
 
-    fileprivate func _setWindowRecursively(_ newWindow: NSWindow?) {
+    @MainActor fileprivate func _setWindowRecursively(_ newWindow: NSWindow?) {
         guard window !== newWindow else { return }
         viewWillMove(toWindow: newWindow)
         window = newWindow
@@ -264,8 +324,29 @@ open class NSView: NSObject {
     }
 }
 
+@MainActor
 open class _OmniNSWindow: NSObject, @unchecked Sendable {
     public typealias SendEventInterceptor = @Sendable (NSWindow, NSEvent) -> Bool
+
+    public enum BackingStoreType: Hashable, Sendable {
+        case buffered
+        case retained
+        case nonretained
+    }
+
+    public struct Level: Hashable, Sendable, RawRepresentable, Comparable {
+        public let rawValue: Int
+        public init(rawValue: Int) { self.rawValue = rawValue }
+        public static let normal = Level(rawValue: 0)
+        public static let floating = Level(rawValue: 3)
+        public static func < (lhs: Level, rhs: Level) -> Bool { lhs.rawValue < rhs.rawValue }
+    }
+
+    public enum OrderingMode: Hashable, Sendable {
+        case above
+        case below
+        case out
+    }
 
     public enum ButtonType: Hashable, Sendable {
         case closeButton
@@ -273,10 +354,29 @@ open class _OmniNSWindow: NSObject, @unchecked Sendable {
         case zoomButton
     }
 
+    public enum TabbingMode: Hashable, Sendable {
+        case automatic
+        case preferred
+        case disallowed
+    }
+
+    public struct CollectionBehavior: OptionSet, Sendable {
+        public let rawValue: Int
+        public init(rawValue: Int) { self.rawValue = rawValue }
+        public static let fullScreenNone = CollectionBehavior(rawValue: 1 << 0)
+    }
+
+    public enum AnimationBehavior: Hashable, Sendable {
+        case `default`
+        case none
+        case documentWindow
+    }
+
     public static let didResignKeyNotification = Notification.Name("NSWindowDidResignKeyNotification")
     public static let didResignMainNotification = Notification.Name("NSWindowDidResignMainNotification")
     public static let didBecomeKeyNotification = Notification.Name("NSWindowDidBecomeKeyNotification")
     public static let didBecomeMainNotification = Notification.Name("NSWindowDidBecomeMainNotification")
+    public static let didResizeNotification = Notification.Name("NSWindowDidResizeNotification")
     public static let didEnterFullScreenNotification = Notification.Name("NSWindowDidEnterFullScreenNotification")
     public static let didExitFullScreenNotification = Notification.Name("NSWindowDidExitFullScreenNotification")
     public static let willCloseNotification = Notification.Name("NSWindowWillCloseNotification")
@@ -295,13 +395,43 @@ open class _OmniNSWindow: NSObject, @unchecked Sendable {
     public var backgroundColor: NSColor?
     public var parent: NSWindow?
     public var styleMask: NSWindowStyleMask = []
+    public var contentViewController: NSViewController? {
+        didSet {
+            contentView = contentViewController?.view
+        }
+    }
     public weak var firstResponder: NSView?
+    public weak var delegate: NSWindowDelegate?
+    public var toolbar: NSToolbar?
+    public weak var sheetParent: NSWindow?
+    public var title: String = ""
     public var titlebarAppearsTransparent: Bool = false
+    public var acceptsMouseMovedEvents: Bool = false
+    public var isOpaque: Bool = true
+    public var hasShadow: Bool = false
+    public var ignoresMouseEvents: Bool = false
+    public var alphaValue: CGFloat = 1
+    public var level: Level = .normal
+    public var frame: NSRect = .zero
+    public var currentEvent: NSEvent?
+    public private(set) var childWindows: [NSWindow]? = []
+    public private(set) var titlebarAccessoryViewControllers: [NSTitlebarAccessoryViewController] = []
+    public var isReleasedWhenClosed: Bool = true
+    public var tabbingMode: TabbingMode = .automatic
+    public var collectionBehavior: CollectionBehavior = []
+    public var animationBehavior: AnimationBehavior = .default
+    public var contentMinSize: NSSize = .zero
+    public var isKeyWindow: Bool {
+        guard let window = self as? NSWindow else { return false }
+        return NSApp.keyWindow === window
+    }
+    public var isMainWindow: Bool { isKeyWindow }
     public var contentLayoutRect: NSRect {
         guard let contentView else { return .zero }
         return NSRect(origin: .zero, size: contentView.frame.size)
     }
     public var screen: NSScreen? = .main
+    public var backingScaleFactor: CGFloat { screen?.backingScaleFactor ?? 1 }
     private var lastMouseLocation: NSPoint = .zero
     private var standardWindowButtons: [ButtonType: NSButton] = [:]
     private lazy var titlebarContainerView: NSView = {
@@ -316,6 +446,28 @@ open class _OmniNSWindow: NSObject, @unchecked Sendable {
         if let window = self as? NSWindow, !NSApp.windows.contains(where: { $0 === window }) {
             NSApp.windows.append(window)
         }
+    }
+
+    public init(
+        contentRect: NSRect,
+        styleMask: NSWindowStyleMask,
+        backing: BackingStoreType,
+        defer flag: Bool
+    ) {
+        self.frame = contentRect
+        self.styleMask = styleMask
+        _ = backing
+        _ = flag
+        super.init()
+        if let window = self as? NSWindow, !NSApp.windows.contains(where: { $0 === window }) {
+            NSApp.windows.append(window)
+        }
+    }
+
+    public convenience init(contentViewController: NSViewController) {
+        self.init()
+        self.contentViewController = contentViewController
+        self.contentView = contentViewController.view
     }
 
     deinit {
@@ -344,6 +496,37 @@ open class _OmniNSWindow: NSObject, @unchecked Sendable {
         makeKey()
         NSApp.activate(ignoringOtherApps: true)
     }
+    open func orderOut(_ sender: Any?) {
+        _ = sender
+        guard let window = self as? NSWindow else { return }
+        if NSApp.keyWindow === window {
+            NSApp.keyWindow = nil
+        }
+    }
+
+    open func orderFront(_ sender: Any?) {
+        _ = sender
+        makeKey()
+    }
+    open func performClose(_ sender: Any?) {
+        _ = sender
+        guard let window = self as? NSWindow else { return }
+        guard delegate?.windowShouldClose?(window) ?? true else { return }
+        let notification = Notification(name: Self.willCloseNotification, object: window)
+        NotificationCenter.default.post(notification)
+        delegate?.windowWillClose?(notification)
+        NSApp.windows.removeAll { $0 === window }
+        if NSApp.keyWindow === window {
+            NSApp.keyWindow = nil
+        }
+    }
+
+    open func endSheet(_ sheetWindow: NSWindow, returnCode: NSApplication.ModalResponse = .cancel) {
+        _ = returnCode
+        if sheetWindow.sheetParent === self {
+            sheetWindow.sheetParent = nil
+        }
+    }
     open func toggleFullScreen(_ sender: Any?) {
         _ = sender
         if styleMask.contains(.fullScreen) {
@@ -358,6 +541,7 @@ open class _OmniNSWindow: NSObject, @unchecked Sendable {
         lastMouseLocation = location
     }
     open func sendEvent(_ event: NSEvent) {
+        currentEvent = event
         _recordMouseLocation(event.locationInWindow)
         if let window = self as? NSWindow, Self._omniDispatchSendEventInterceptors(window: window, event: event) {
             return
@@ -384,7 +568,7 @@ open class _OmniNSWindow: NSObject, @unchecked Sendable {
     }
 
     open var mouseLocationOutsideOfEventStream: NSPoint { lastMouseLocation }
-    open func makeFirstResponder(_ responder: NSView?) -> Bool {
+    @MainActor open func makeFirstResponder(_ responder: NSView?) -> Bool {
         guard firstResponder !== responder else { return true }
         guard responder?.becomeFirstResponder() ?? true else { return false }
         if firstResponder?.resignFirstResponder() == false { return false }
@@ -402,6 +586,81 @@ open class _OmniNSWindow: NSObject, @unchecked Sendable {
         titlebarContainerView.subviews.first?.addSubview(control)
         standardWindowButtons[button] = control
         return control
+    }
+
+    open func addTitlebarAccessoryViewController(_ childViewController: NSTitlebarAccessoryViewController) {
+        guard !titlebarAccessoryViewControllers.contains(where: { $0 === childViewController }) else { return }
+        titlebarAccessoryViewControllers.append(childViewController)
+    }
+
+    open func removeTitlebarAccessoryViewController(at index: Int) {
+        guard titlebarAccessoryViewControllers.indices.contains(index) else { return }
+        titlebarAccessoryViewControllers.remove(at: index)
+    }
+
+    open func addChildWindow(_ childWindow: NSWindow, ordered orderingMode: OrderingMode) {
+        _ = orderingMode
+        if childWindows == nil {
+            childWindows = []
+        }
+        guard childWindows?.contains(where: { $0 === childWindow }) != true else { return }
+        childWindows?.append(childWindow)
+        childWindow.parent = self as? NSWindow
+    }
+
+    open func removeChildWindow(_ childWindow: NSWindow) {
+        childWindows?.removeAll { $0 === childWindow }
+        if childWindow.parent === self {
+            childWindow.parent = nil
+        }
+    }
+
+    open func setFrame(_ frameRect: NSRect, display flag: Bool) {
+        _ = flag
+        frame = frameRect
+        contentView?.frame = NSRect(origin: .zero, size: frameRect.size)
+        NotificationCenter.default.post(name: Self.didResizeNotification, object: self)
+    }
+
+    open func setFrameOrigin(_ point: NSPoint) {
+        frame.origin = point
+    }
+
+    open func setFrameTopLeftPoint(_ point: NSPoint) {
+        frame.origin = NSPoint(x: point.x, y: point.y - frame.height)
+    }
+
+    open func setContentSize(_ size: NSSize) {
+        var newFrame = frame
+        newFrame.size = size
+        setFrame(newFrame, display: true)
+    }
+
+    @discardableResult
+    open func setFrameAutosaveName(_ name: String) -> Bool {
+        _ = name
+        return true
+    }
+
+    open func center() {
+        guard let screenFrame = screen?.frame else { return }
+        frame.origin = NSPoint(
+            x: screenFrame.midX - frame.width / 2,
+            y: screenFrame.midY - frame.height / 2
+        )
+    }
+
+    open func convertToScreen(_ rect: NSRect) -> NSRect {
+        NSRect(
+            x: frame.origin.x + rect.origin.x,
+            y: frame.origin.y + rect.origin.y,
+            width: rect.width,
+            height: rect.height
+        )
+    }
+
+    open var isVisible: Bool {
+        NSApp.windows.contains { $0 === self }
     }
 }
 
@@ -446,8 +705,46 @@ open class _OmniNSWindowTab: NSObject {
     public var title: String = ""
 }
 
-public final class CALayer: NSObject {
+open class CALayer: NSObject {
     public var backgroundColor: CGColor?
+    public var borderColor: CGColor?
+    public var borderWidth: CGFloat = 0
+    public var cornerRadius: CGFloat = 0
+    public var masksToBounds: Bool = false
+    public var frame: CGRect = .zero
+    public var bounds: CGRect {
+        get { CGRect(origin: .zero, size: frame.size) }
+        set { frame.size = newValue.size }
+    }
+    public var actions: [String: Any]?
+    public private(set) weak var superlayer: CALayer?
+    public private(set) var sublayers: [CALayer] = []
+    private var animations: [String: Any] = [:]
+
+    public func addSublayer(_ layer: CALayer) {
+        if layer.superlayer === self { return }
+        layer.removeFromSuperlayer()
+        sublayers.append(layer)
+        layer.superlayer = self
+    }
+
+    public func removeFromSuperlayer() {
+        guard let superlayer else { return }
+        superlayer.sublayers.removeAll { $0 === self }
+        self.superlayer = nil
+    }
+
+    public func add(_ animation: Any, forKey key: String?) {
+        animations[key ?? UUID().uuidString] = animation
+    }
+
+    public func animation(forKey key: String) -> Any? {
+        animations[key]
+    }
+
+    public func removeAnimation(forKey key: String) {
+        animations.removeValue(forKey: key)
+    }
 }
 
 public class NSLayoutAnchor<AnchorType>: NSObject {
@@ -523,6 +820,7 @@ public final class NSLayoutConstraint: NSObject {
         super.init()
     }
 
+    @MainActor
     public static func activate(_ constraints: [NSLayoutConstraint]) {
         for constraint in constraints {
             constraint.isActive = true
@@ -552,23 +850,23 @@ public protocol NSViewRepresentable: View where Body == Never {
     associatedtype NSViewType: NSView
     associatedtype Coordinator = Void
 
-    func makeNSView(context: NSViewRepresentableContext<Self>) -> NSViewType
-    func updateNSView(_ nsView: NSViewType, context: NSViewRepresentableContext<Self>)
-    static func dismantleNSView(_ nsView: NSViewType, coordinator: Coordinator)
-    func makeCoordinator() -> Coordinator
+    @MainActor func makeNSView(context: NSViewRepresentableContext<Self>) -> NSViewType
+    @MainActor func updateNSView(_ nsView: NSViewType, context: NSViewRepresentableContext<Self>)
+    @MainActor static func dismantleNSView(_ nsView: NSViewType, coordinator: Coordinator)
+    @MainActor func makeCoordinator() -> Coordinator
 }
 
 public extension NSViewRepresentable {
     typealias Context = NSViewRepresentableContext<Self>
 
-    static func dismantleNSView(_ nsView: NSViewType, coordinator: Coordinator) {
+    @MainActor static func dismantleNSView(_ nsView: NSViewType, coordinator: Coordinator) {
         _ = nsView
         _ = coordinator
     }
 }
 
 public extension NSViewRepresentable where Coordinator == Void {
-    func makeCoordinator() -> Void {}
+    @MainActor func makeCoordinator() -> Void {}
 }
 
 @inline(__always)

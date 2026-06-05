@@ -248,29 +248,106 @@ public final class NSAppearance: NSObject, @unchecked Sendable {
     public func performAsCurrentDrawingAppearance(_ body: () -> Void) {
         body()
     }
+
+    public func bestMatch(from appearances: [Name]) -> Name? {
+        if appearances.contains(name) { return name }
+        let scheme = _omniCurrentAppearanceColorScheme()
+        if scheme == .dark, appearances.contains(.darkAqua) { return .darkAqua }
+        if scheme == .light, appearances.contains(.aqua) { return .aqua }
+        return appearances.first
+    }
 }
 
 public final class NSApplication: NSObject, @unchecked Sendable {
-    public static let shared = NSApp
+    public enum ActivationPolicy: Hashable, Sendable {
+        case regular
+        case accessory
+        case prohibited
+    }
+
+    public enum TerminateReply: Hashable, Sendable {
+        case terminateCancel
+        case terminateNow
+        case terminateLater
+    }
+
+    public static var shared: NSApplication { NSApp }
+    public static let didBecomeActiveNotification = Notification.Name("NSApplicationDidBecomeActiveNotification")
+    public static let didResignActiveNotification = Notification.Name("NSApplicationDidResignActiveNotification")
     public static let willTerminateNotification = Notification.Name("NSApplicationWillTerminateNotification")
     public var windows: [NSWindow] = []
     public weak var delegate: NSApplicationDelegate?
     public weak var keyWindow: NSWindow?
+    public var mainWindow: NSWindow? { keyWindow ?? windows.last }
     public var applicationIconImage: NSImage?
+    public private(set) var activationPolicy: ActivationPolicy = .regular
+    public private(set) var isActive: Bool = false
     fileprivate var activationHandler: (@Sendable () -> Void)?
     public var appearance: NSAppearance? {
         didSet {
             _OmniAppearanceState.shared.setAppearanceName(appearance?.name)
         }
     }
+    public var effectiveAppearance: NSAppearance {
+        if let appearance {
+            return appearance
+        }
+        return NSAppearance(named: _omniEffectiveAppearanceColorScheme() == .light ? .aqua : .darkAqua)!
+    }
+
+    public enum RequestUserAttentionType: Hashable, Sendable {
+        case criticalRequest
+        case informationalRequest
+    }
+
+    @discardableResult
+    public func requestUserAttention(_ requestType: RequestUserAttentionType) -> Int {
+        _ = requestType
+        return 0
+    }
+
+    public func setActivationPolicy(_ activationPolicy: ActivationPolicy) {
+        self.activationPolicy = activationPolicy
+    }
 
     public func activate(ignoringOtherApps flag: Bool = true) {
         _ = flag
+        if !isActive {
+            isActive = true
+            NotificationCenter.default.post(name: Self.didBecomeActiveNotification, object: self)
+        }
         activationHandler?()
     }
 
-    public func terminate(_ sender: Any?) {
+    public func orderFrontCharacterPalette(_ sender: Any?) {
         _ = sender
+    }
+
+    public func deactivate() {
+        guard isActive else { return }
+        isActive = false
+        NotificationCenter.default.post(name: Self.didResignActiveNotification, object: self)
+    }
+
+    public func terminate(_ sender: Any?) {
+        if let reply = delegate?.applicationShouldTerminate(self) {
+            switch reply {
+            case .terminateCancel:
+                return
+            case .terminateLater:
+                return
+            case .terminateNow:
+                break
+            }
+        }
+        _ = sender
+        NotificationCenter.default.post(name: Self.willTerminateNotification, object: self)
+        guard ProcessInfo.processInfo.environment["OMNIKIT_SUPPRESS_TERMINATE"] != "1" else { return }
+        Glibc.exit(0)
+    }
+
+    public func reply(toApplicationShouldTerminate shouldTerminate: Bool) {
+        guard shouldTerminate else { return }
         NotificationCenter.default.post(name: Self.willTerminateNotification, object: self)
         guard ProcessInfo.processInfo.environment["OMNIKIT_SUPPRESS_TERMINATE"] != "1" else { return }
         Glibc.exit(0)
@@ -280,6 +357,7 @@ public final class NSApplication: NSObject, @unchecked Sendable {
         delegate?.applicationShouldTerminateAfterLastWindowClosed(self) ?? false
     }
 
+    @MainActor
     public func sendEvent(_ event: NSEvent) {
         if let keyWindow {
             keyWindow.sendEvent(event)
@@ -289,6 +367,7 @@ public final class NSApplication: NSObject, @unchecked Sendable {
     }
 
     @discardableResult
+    @MainActor
     public func sendAction(_ action: Selector, to target: AnyObject?, from sender: Any?) -> Bool {
         _omniDispatchSelector(action, to: target, from: sender)
     }
@@ -301,6 +380,19 @@ public func _omniSetApplicationActivationHandler(_ handler: (@Sendable () -> Voi
 public protocol NSApplicationDelegate: AnyObject {
     init()
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply
+}
+
+public extension NSApplicationDelegate {
+    func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
+        _ = sender
+        return false
+    }
+
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        _ = sender
+        return .terminateNow
+    }
 }
 
 @propertyWrapper
@@ -314,7 +406,7 @@ public struct NSApplicationDelegateAdaptor<Delegate: NSApplicationDelegate> {
     }
 }
 
-public let NSApp = NSApplication()
+public let NSApp: NSApplication! = NSApplication()
 
 private enum _OmniDesktopProcess {
     private static var pathDirectories: [String] {
@@ -457,6 +549,8 @@ public final class NSWorkspace: NSObject, @unchecked Sendable {
     }
 
     public static let shared = NSWorkspace()
+    public static let didWakeNotification = Notification.Name("NSWorkspaceDidWakeNotification")
+    public let notificationCenter = NotificationCenter()
 
     @discardableResult
     public func open(_ url: URL) -> Bool {
@@ -648,6 +742,7 @@ private final class _OmniCursorState: @unchecked Sendable {
 }
 
 public final class NSCursor: NSObject, @unchecked Sendable {
+    public static let arrow = NSCursor(name: "default")
     public static let pointingHand = NSCursor(name: "pointer")
     public static let resizeLeftRight = NSCursor(name: "ew-resize")
     public static let resizeUpDown = NSCursor(name: "ns-resize")
@@ -669,6 +764,15 @@ public final class NSCursor: NSObject, @unchecked Sendable {
         let handler: (@Sendable (String?) -> Void)?
         Self.cursorState.lock.lock()
         Self.cursorState.stack.append(name)
+        handler = Self.cursorState.handler
+        Self.cursorState.lock.unlock()
+        handler?(name)
+    }
+
+    public func set() {
+        let handler: (@Sendable (String?) -> Void)?
+        Self.cursorState.lock.lock()
+        Self.cursorState.stack = [name]
         handler = Self.cursorState.handler
         Self.cursorState.lock.unlock()
         handler?(name)
@@ -704,6 +808,18 @@ public func _omniSetCursorHandler(_ handler: (@Sendable (String?) -> Void)?) {
 }
 
 public final class NSColor: NSObject, @unchecked Sendable {
+    public struct Name: Hashable, Sendable, RawRepresentable, ExpressibleByStringLiteral {
+        public var rawValue: String
+
+        public init(rawValue: String) {
+            self.rawValue = rawValue
+        }
+
+        public init(stringLiteral value: StringLiteralType) {
+            self.rawValue = value
+        }
+    }
+
     public let name: String
     public let redComponent: CGFloat
     public let greenComponent: CGFloat
@@ -721,6 +837,10 @@ public final class NSColor: NSObject, @unchecked Sendable {
 
     public convenience init(red: CGFloat, green: CGFloat, blue: CGFloat, alpha: CGFloat) {
         self.init("rgb(\(red),\(green),\(blue))", red: red, green: green, blue: blue, alpha: alpha)
+    }
+
+    public convenience init(white: CGFloat, alpha: CGFloat) {
+        self.init(red: white, green: white, blue: white, alpha: alpha)
     }
 
     public convenience init(calibratedRed red: CGFloat, green: CGFloat, blue: CGFloat, alpha: CGFloat) {
@@ -746,6 +866,18 @@ public final class NSColor: NSObject, @unchecked Sendable {
         default: rgb = (v, p, q)
         }
         self.init(red: rgb.0, green: rgb.1, blue: rgb.2, alpha: alpha)
+    }
+
+    public convenience init(name: Name? = nil, dynamicProvider: (NSAppearance) -> NSColor) {
+        _ = name
+        let color = dynamicProvider(NSApp.effectiveAppearance)
+        self.init(
+            color.name,
+            red: color.redComponent,
+            green: color.greenComponent,
+            blue: color.blueComponent,
+            alpha: color.alphaComponent
+        )
     }
 
     public convenience init(_ color: Color) {
@@ -783,13 +915,59 @@ public final class NSColor: NSObject, @unchecked Sendable {
         _dynamicSystemColor("controlBackgroundColor", light: (0.93, 0.93, 0.93), dark: (0.12, 0.12, 0.12))
     }
 
+    public static var separatorColor: NSColor {
+        _dynamicSystemColor("separatorColor", light: (0.78, 0.78, 0.78), dark: (0.28, 0.28, 0.28))
+    }
+
     public static var linkColor: NSColor {
         _dynamicSystemColor("linkColor", light: (0.0, 0.25, 0.75), dark: (0.2, 0.5, 1))
+    }
+
+    public static var secondaryLabelColor: NSColor {
+        _dynamicSystemColor("secondaryLabelColor", light: (0.35, 0.35, 0.35), dark: (0.65, 0.65, 0.65))
+    }
+
+    public static var tertiaryLabelColor: NSColor {
+        _dynamicSystemColor("tertiaryLabelColor", light: (0.48, 0.48, 0.48), dark: (0.50, 0.50, 0.50))
+    }
+
+    public static var quaternaryLabelColor: NSColor {
+        _dynamicSystemColor("quaternaryLabelColor", light: (0.68, 0.68, 0.68), dark: (0.38, 0.38, 0.38))
+    }
+
+    public static var controlColor: NSColor {
+        _dynamicSystemColor("controlColor", light: (0.86, 0.86, 0.86), dark: (0.22, 0.22, 0.22))
+    }
+
+    public static var controlAccentColor: NSColor {
+        _dynamicSystemColor("controlAccentColor", light: (0.0, 0.32, 0.8), dark: (0.25, 0.55, 1.0))
+    }
+
+    public static var systemGray: NSColor {
+        _dynamicSystemColor("systemGray", light: (0.5, 0.5, 0.5), dark: (0.55, 0.55, 0.55))
+    }
+
+    public static var systemOrange: NSColor {
+        _dynamicSystemColor("systemOrange", light: (1.0, 0.45, 0.0), dark: (1.0, 0.58, 0.2))
+    }
+
+    public static var systemRed: NSColor {
+        _dynamicSystemColor("systemRed", light: (0.85, 0.08, 0.08), dark: (1.0, 0.35, 0.32))
+    }
+
+    public static var systemYellow: NSColor {
+        _dynamicSystemColor("systemYellow", light: (0.92, 0.62, 0.0), dark: (1.0, 0.82, 0.18))
     }
 
     public static var systemGreen: NSColor {
         _dynamicSystemColor("systemGreen", light: (0.0, 0.55, 0.18), dark: (0.2, 0.8, 0.35))
     }
+
+    public static let black = NSColor("black", red: 0, green: 0, blue: 0)
+    public static let white = NSColor("white", red: 1, green: 1, blue: 1)
+    public static let red = NSColor("red", red: 1, green: 0, blue: 0)
+    public static let yellow = NSColor("yellow", red: 1, green: 0.85, blue: 0)
+    public static let clear = NSColor("clear", red: 0, green: 0, blue: 0, alpha: 0)
 
     private static func _dynamicSystemColor(
         _ name: String,
@@ -812,6 +990,10 @@ public final class NSColor: NSObject, @unchecked Sendable {
 
     public func setStroke() {
         _OmniImageDrawingRecorder.shared.setStroke(self)
+    }
+
+    public func set() {
+        setFill()
     }
 
     public func usingColorSpace(_ colorSpace: NSColorSpace) -> NSColor? { self }
@@ -847,6 +1029,50 @@ public final class NSColorSpace: NSObject, @unchecked Sendable {
     public static let sRGB = NSColorSpace()
 }
 
+public final class NSFontDescriptor: NSObject, @unchecked Sendable {
+    public struct SymbolicTraits: OptionSet, Sendable {
+        public let rawValue: Int
+        public init(rawValue: Int) { self.rawValue = rawValue }
+
+        public static let bold = SymbolicTraits(rawValue: 1 << 0)
+        public static let italic = SymbolicTraits(rawValue: 1 << 1)
+    }
+
+    public enum SystemDesign: Hashable, Sendable {
+        case `default`
+        case rounded
+        case monospaced
+        case serif
+    }
+
+    public let fontName: String
+    public let pointSize: CGFloat
+    public let symbolicTraits: SymbolicTraits
+    public let systemDesign: SystemDesign
+
+    public init(
+        fontName: String,
+        pointSize: CGFloat,
+        symbolicTraits: SymbolicTraits = [],
+        systemDesign: SystemDesign = .default
+    ) {
+        self.fontName = fontName
+        self.pointSize = pointSize
+        self.symbolicTraits = symbolicTraits
+        self.systemDesign = systemDesign
+        super.init()
+    }
+
+    public func withDesign(_ design: SystemDesign) -> NSFontDescriptor? {
+        NSFontDescriptor(
+            fontName: fontName,
+            pointSize: pointSize,
+            symbolicTraits: symbolicTraits,
+            systemDesign: design
+        )
+    }
+}
+
 public final class NSFont: NSObject, @unchecked Sendable {
     public struct Weight: Hashable, Sendable {
         public let rawValue: CGFloat
@@ -857,6 +1083,7 @@ public final class NSFont: NSObject, @unchecked Sendable {
 
         public static let regular = Weight(0)
         public static let medium = Weight(0.23)
+        public static let semibold = Weight(0.3)
         public static let bold = Weight(0.4)
     }
 
@@ -864,10 +1091,15 @@ public final class NSFont: NSObject, @unchecked Sendable {
 
     public let fontName: String
     public let pointSize: CGFloat
+    public let fontDescriptor: NSFontDescriptor
+    public var ascender: CGFloat { pointSize * 0.8 }
+    public var descender: CGFloat { -pointSize * 0.2 }
+    public var leading: CGFloat { pointSize * 0.2 }
 
-    public init(_ name: String, size: CGFloat) {
+    public init(_ name: String, size: CGFloat, traits: NSFontDescriptor.SymbolicTraits = [], design: NSFontDescriptor.SystemDesign = .default) {
         self.fontName = name
         self.pointSize = size
+        self.fontDescriptor = NSFontDescriptor(fontName: name, pointSize: size, symbolicTraits: traits, systemDesign: design)
         super.init()
     }
 
@@ -875,13 +1107,26 @@ public final class NSFont: NSObject, @unchecked Sendable {
         self.init(name, size: size)
     }
 
+    public convenience init?(descriptor: NSFontDescriptor, size: CGFloat) {
+        self.init(descriptor.fontName, size: size == 0 ? descriptor.pointSize : size, traits: descriptor.symbolicTraits, design: descriptor.systemDesign)
+    }
+
     public static func systemFont(ofSize size: CGFloat) -> NSFont {
         NSFont("System", size: size)
     }
 
+    public static func systemFont(ofSize size: CGFloat, weight: Weight) -> NSFont {
+        let traits: NSFontDescriptor.SymbolicTraits = weight.rawValue >= Weight.semibold.rawValue ? [.bold] : []
+        return NSFont("System", size: size, traits: traits)
+    }
+
     public static func monospacedSystemFont(ofSize size: CGFloat, weight: Weight) -> NSFont {
-        _ = weight
-        return NSFont("Monospace", size: size)
+        let traits: NSFontDescriptor.SymbolicTraits = weight.rawValue >= Weight.semibold.rawValue ? [.bold] : []
+        return NSFont("Monospace", size: size, traits: traits, design: .monospaced)
+    }
+
+    public static func monospacedDigitSystemFont(ofSize size: CGFloat, weight: Weight) -> NSFont {
+        monospacedSystemFont(ofSize: size, weight: weight)
     }
 }
 
@@ -994,7 +1239,19 @@ private final class _OmniImageDrawingRecorder: @unchecked Sendable {
     }
 }
 
+public protocol _OmniCGImageLike: Sendable {
+    var _omniImageData: Data? { get }
+}
+
 public final class NSImage: NSObject, @unchecked Sendable {
+    public struct SymbolConfiguration: Sendable {
+        public var paletteColors: [NSColor]
+
+        public init(paletteColors: [NSColor]) {
+            self.paletteColors = paletteColors
+        }
+    }
+
     private let storage: Data?
     private let sourceURL: URL?
     private let imageName: String?
@@ -1032,6 +1289,18 @@ public final class NSImage: NSObject, @unchecked Sendable {
         if storage == nil { return nil }
     }
 
+    public convenience init?(contentsOfFile path: String) {
+        self.init(contentsOf: URL(fileURLWithPath: path))
+    }
+
+    public init(cgImage: _OmniCGImageLike, size: NSSize) {
+        self.storage = cgImage._omniImageData
+        self.sourceURL = nil
+        self.imageName = nil
+        self.size = size
+        super.init()
+    }
+
     public init(named name: String) {
         self.storage = nil
         self.sourceURL = nil
@@ -1040,7 +1309,21 @@ public final class NSImage: NSObject, @unchecked Sendable {
         super.init()
     }
 
+    public convenience init?(systemSymbolName name: String, accessibilityDescription: String?) {
+        _ = accessibilityDescription
+        self.init(named: name)
+    }
+
+    public func withSymbolConfiguration(_ configuration: SymbolConfiguration) -> NSImage? {
+        _ = configuration
+        return self
+    }
+
     func _omniPNGRepresentation() -> Data? {
+        storage
+    }
+
+    public var tiffRepresentation: Data? {
         storage
     }
 
@@ -1087,6 +1370,7 @@ public final class NSImage: NSObject, @unchecked Sendable {
 
 public class NSPanel: NSWindow, @unchecked Sendable {}
 
+@MainActor
 open class NSViewController: NSObject {
     public var view: NSView
 
@@ -1094,11 +1378,52 @@ open class NSViewController: NSObject {
         self.view = NSView()
         super.init()
     }
+
+    public init(nibName nibNameOrNil: String?, bundle nibBundleOrNil: Bundle?) {
+        _ = nibNameOrNil
+        _ = nibBundleOrNil
+        self.view = NSView()
+        super.init()
+    }
+
+    open func loadView() {}
+}
+
+open class NSTitlebarAccessoryViewController: NSViewController {
+    public enum LayoutAttribute: Hashable, Sendable {
+        case left
+        case right
+        case leading
+        case trailing
+        case bottom
+    }
+
+    public var layoutAttribute: LayoutAttribute = .right
+    public var fullScreenMinHeight: CGFloat = 0
+
+    public override init() {
+        super.init()
+    }
+
+    public override init(nibName nibNameOrNil: String?, bundle nibBundleOrNil: Bundle?) {
+        super.init(nibName: nibNameOrNil, bundle: nibBundleOrNil)
+    }
+}
+
+@MainActor
+public extension NSHostingView {
+    var fittingSize: NSSize {
+        frame.size == .zero ? NSSize(width: 160, height: 32) : frame.size
+    }
 }
 
 public final class NSHostingController<Content: View>: NSViewController {
-    public let rootView: Content
-    public let anyRootView: AnyView
+    public var rootView: Content {
+        didSet {
+            anyRootView = AnyView(rootView)
+        }
+    }
+    public private(set) var anyRootView: AnyView
 
     @MainActor
     public init(rootView: Content) {
@@ -1123,16 +1448,22 @@ public final class NSButton: NSView {
         didSet { statusItemChangeHandler?() }
     }
 
+    @MainActor
     public func performClick(_ sender: Any?) {
         guard let action else { return }
         _ = _omniDispatchSelector(action, to: target, from: sender ?? self)
     }
 }
 
+@MainActor
 public final class NSStatusItem: NSObject {
     public static let variableLength: CGFloat = -1
+    public static let squareLength: CGFloat = 22
     public let length: CGFloat
     public let button: NSButton? = NSButton()
+    public var menu: NSMenu? {
+        didSet { NSStatusBar.system._notifyStatusItemsChanged() }
+    }
 
     fileprivate init(length: CGFloat) {
         self.length = length
@@ -1143,6 +1474,7 @@ public final class NSStatusItem: NSObject {
     }
 }
 
+@MainActor
 public final class NSStatusBar: NSObject, @unchecked Sendable {
     public static let didChangeStatusItemsNotification = Notification.Name("NSStatusBarDidChangeStatusItemsNotification")
     public static let system = NSStatusBar()
@@ -1202,6 +1534,7 @@ public final class NSStatusBar: NSObject, @unchecked Sendable {
     }
 }
 
+@MainActor
 public final class NSPopover: NSObject {
     public enum Behavior: Sendable {
         case transient
@@ -1272,13 +1605,6 @@ extension NSHostingController: _OmniAnyHostingControllerContent {
     fileprivate var _omniAnyRootView: AnyView { anyRootView }
 }
 
-public enum NSRectEdge: Sendable {
-    case minY
-    case maxY
-    case minX
-    case maxX
-}
-
 public final class NSBezierPath: NSObject {
     private enum PathKind {
         case empty
@@ -1302,6 +1628,13 @@ public final class NSBezierPath: NSObject {
     }
 
     public init(rect: NSRect) {
+        self.kind = .rect(rect)
+        super.init()
+    }
+
+    public init(roundedRect rect: NSRect, xRadius: CGFloat, yRadius: CGFloat) {
+        _ = xRadius
+        _ = yRadius
         self.kind = .rect(rect)
         super.init()
     }
@@ -1360,6 +1693,8 @@ public final class NSPasteboard: NSObject, @unchecked Sendable {
         public static let string = PasteboardType("public.utf8-plain-text")
         public static let fileURL = PasteboardType("public.file-url")
         public static let URL = PasteboardType("public.url")
+        public static let png = PasteboardType("public.png")
+        public static let tiff = PasteboardType("public.tiff")
     }
 
     public struct ReadingOptionKey: Hashable, Sendable, ExpressibleByStringLiteral {
@@ -1384,7 +1719,7 @@ public final class NSPasteboard: NSObject, @unchecked Sendable {
         self.syncSystemClipboard = syncSystemClipboard
         super.init()
     }
-    public var types: [PasteboardType] {
+    public var types: [PasteboardType]? {
         lock.lock()
         var current = Array(Set(strings.keys).union(dataValues.keys).union(propertyLists.keys))
         if !objectURLs.isEmpty {
@@ -1396,7 +1731,21 @@ public final class NSPasteboard: NSObject, @unchecked Sendable {
             }
         }
         lock.unlock()
-        return current
+        return current.isEmpty ? nil : current
+    }
+
+    public var pasteboardItems: [NSPasteboardItem]? {
+        guard let types else { return nil }
+        let item = NSPasteboardItem()
+        for type in types {
+            if let data = data(forType: type) {
+                item.setData(data, forType: type)
+            }
+            if let string = string(forType: type) {
+                item.setString(string, forType: type)
+            }
+        }
+        return [item]
     }
 
     public func clearContents() {
@@ -1501,7 +1850,7 @@ public final class NSPasteboard: NSObject, @unchecked Sendable {
     }
 
     public func availableType(from types: [PasteboardType]) -> PasteboardType? {
-        let current = Set(self.types)
+        let current = Set(self.types ?? [])
         return types.first { current.contains($0) }
     }
 
@@ -1602,6 +1951,53 @@ public final class NSPasteboard: NSObject, @unchecked Sendable {
     }
 }
 
+public final class NSPasteboardItem: NSObject, @unchecked Sendable {
+    private let lock = NSLock()
+    private var strings: [NSPasteboard.PasteboardType: String] = [:]
+    private var dataValues: [NSPasteboard.PasteboardType: Data] = [:]
+
+    public var types: [NSPasteboard.PasteboardType] {
+        lock.lock()
+        let current = Array(Set(strings.keys).union(dataValues.keys))
+        lock.unlock()
+        return current
+    }
+
+    @discardableResult
+    public func setString(_ string: String, forType type: NSPasteboard.PasteboardType) -> Bool {
+        lock.lock()
+        strings[type] = string
+        dataValues[type] = string.data(using: .utf8)
+        lock.unlock()
+        return true
+    }
+
+    public func string(forType type: NSPasteboard.PasteboardType) -> String? {
+        lock.lock()
+        let value = strings[type] ?? dataValues[type].flatMap { String(data: $0, encoding: .utf8) }
+        lock.unlock()
+        return value
+    }
+
+    @discardableResult
+    public func setData(_ data: Data, forType type: NSPasteboard.PasteboardType) -> Bool {
+        lock.lock()
+        dataValues[type] = data
+        if let string = String(data: data, encoding: .utf8) {
+            strings[type] = string
+        }
+        lock.unlock()
+        return true
+    }
+
+    public func data(forType type: NSPasteboard.PasteboardType) -> Data? {
+        lock.lock()
+        let value = dataValues[type] ?? strings[type]?.data(using: .utf8)
+        lock.unlock()
+        return value
+    }
+}
+
 public protocol NSTextFieldDelegate: AnyObject {
     func controlTextDidChange(_ obj: Notification)
     func controlTextDidBeginEditing(_ obj: Notification)
@@ -1639,7 +2035,448 @@ public final class NSTextFieldCell: NSObject {
 }
 
 open class NSTextView: NSView {
+    public static let didChangeNotification = Notification.Name("NSTextDidChangeNotification")
+    public static let didBeginEditingNotification = Notification.Name("NSTextDidBeginEditingNotification")
+    public static let didEndEditingNotification = Notification.Name("NSTextDidEndEditingNotification")
     public var alignment: NSTextAlignment = .natural
+    public weak var delegate: NSTextViewDelegate?
+    public var textStorage: NSTextStorage? = NSTextStorage()
+    private var selectedTextRange: NSRange = NSRange(location: 0, length: 0)
+    public var string: String = ""
+    public var allowsUndo: Bool = true
+    public var undoManager: UndoManager? = UndoManager()
+    public var backgroundColor: NSColor = .textBackgroundColor
+    public var drawsBackground: Bool = true
+    public var displaysLinkToolTips: Bool = true
+    public var font: NSFont?
+    public var textColor: NSColor?
+    public var isAutomaticSpellingCorrectionEnabled: Bool = false
+    public var isContinuousSpellCheckingEnabled: Bool = false
+    public var isAutomaticDashSubstitutionEnabled: Bool = false
+    public var isAutomaticQuoteSubstitutionEnabled: Bool = false
+    public var isAutomaticTextReplacementEnabled: Bool = false
+    public var isGrammarCheckingEnabled: Bool = false
+    public var smartInsertDeleteEnabled: Bool = true
+    public var isAutomaticDataDetectionEnabled: Bool = false
+    public var isAutomaticLinkDetectionEnabled: Bool = false
+    public var usesFontPanel: Bool = false
+    public var usesRuler: Bool = false
+    public var isEditable: Bool = true
+    public var isSelectable: Bool = true
+    public var isRichText: Bool = true
+    public var isHorizontallyResizable: Bool = false
+    public var isVerticallyResizable: Bool = true
+    public var maxSize: NSSize = .zero
+    public var minSize: NSSize = .zero
+    public var textContainer: NSTextContainer? = NSTextContainer() {
+        didSet {
+            oldValue?.textView = nil
+            textContainer?.textView = self
+            textContainer?.layoutManager = layoutManager
+        }
+    }
+    public var textContainerInset: NSSize = .zero
+    public var layoutManager: NSLayoutManager? = NSLayoutManager()
+    public func attributedString() -> NSAttributedString {
+        textStorage ?? NSAttributedString(string: string)
+    }
+    public var textContainerOrigin: NSPoint { .zero }
+    public var typingAttributes: [NSAttributedString.Key: Any] = [:]
+
+    open var readablePasteboardTypes: [NSPasteboard.PasteboardType] { [] }
+
+    public override init() {
+        super.init()
+        textContainer?.textView = self
+        textContainer?.layoutManager = layoutManager
+    }
+
+    public override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        textContainer?.textView = self
+        textContainer?.layoutManager = layoutManager
+    }
+
+    public init(frame frameRect: NSRect, textContainer container: NSTextContainer?) {
+        self.textContainer = container
+        super.init(frame: frameRect)
+        container?.textView = self
+        container?.layoutManager = layoutManager
+    }
+
+    public required init?(coder: NSCoder) {
+        super.init(coder: coder)
+    }
+
+    public static func scrollableTextView() -> NSScrollView {
+        let scrollView = NSScrollView()
+        scrollView.documentView = NSTextView()
+        return scrollView
+    }
+
+    public func sizeToFit() {}
+    public func selectedRange() -> NSRange { selectedTextRange }
+    public func setSelectedRange(_ range: NSRange) { selectedTextRange = range }
+    public func scrollRangeToVisible(_ range: NSRange) { _ = range }
+    open func hasMarkedText() -> Bool { false }
+    open func insertText(_ string: Any, replacementRange: NSRange) {
+        let replacement = String(describing: string)
+        let nsString = self.string as NSString
+        let safeLocation = max(0, min(replacementRange.location, nsString.length))
+        let safeLength = max(0, min(replacementRange.length, nsString.length - safeLocation))
+        let safeRange = NSRange(location: safeLocation, length: safeLength)
+        self.string = nsString.replacingCharacters(in: safeRange, with: replacement)
+        textStorage?.setAttributedString(NSAttributedString(string: self.string, attributes: typingAttributes))
+        setSelectedRange(NSRange(location: safeLocation + replacement.count, length: 0))
+    }
+    open func didChangeText() {
+        let notification = Notification(name: NSText.didChangeNotification, object: self)
+        NotificationCenter.default.post(notification)
+        delegate?.textDidChange(notification)
+    }
+    open func insertNewline(_ sender: Any?) {
+        _ = sender
+        insertText("\n", replacementRange: selectedRange())
+        didChangeText()
+    }
+    public func firstRect(forCharacterRange range: NSRange, actualRange: NSRangePointer?) -> NSRect {
+        actualRange?.pointee = range
+        return NSRect(origin: .zero, size: NSSize(width: 1, height: font?.pointSize ?? NSFont.systemFontSize))
+    }
+    open func readSelection(from pboard: NSPasteboard, type: NSPasteboard.PasteboardType) -> Bool {
+        _ = pboard
+        _ = type
+        return false
+    }
+}
+
+public protocol NSTextViewDelegate: AnyObject {
+    @MainActor func textDidChange(_ notification: Notification)
+}
+
+public extension NSTextViewDelegate {
+    @MainActor func textDidChange(_ notification: Notification) { _ = notification }
+}
+
+@MainActor
+open class NSLayoutManager: NSObject {
+    public var textContainers: [NSTextContainer] = []
+    public weak var textStorage: NSTextStorage?
+    public var allowsNonContiguousLayout: Bool = true
+    public var usesFontLeading: Bool = true
+    public weak var extraLineFragmentTextContainer: NSTextContainer?
+    public var extraLineFragmentRect: NSRect = .zero
+    public var firstTextView: NSTextView? { textContainers.first?.textView }
+
+    public override init() { super.init() }
+    public func addTextContainer(_ container: NSTextContainer) {
+        guard !textContainers.contains(where: { $0 === container }) else { return }
+        textContainers.append(container)
+        container.layoutManager = self
+    }
+
+    open func removeTextContainer(at index: Int) {
+        guard textContainers.indices.contains(index) else { return }
+        let container = textContainers.remove(at: index)
+        if container.layoutManager === self {
+            container.layoutManager = nil
+        }
+    }
+
+    open func textContainer(forGlyphAt glyphIndex: Int, effectiveRange: NSRangePointer?) -> NSTextContainer? {
+        _ = glyphIndex
+        effectiveRange?.pointee = NSRange(location: 0, length: textStorage?.length ?? 0)
+        return textContainers.first
+    }
+
+    open func defaultLineHeight(for font: NSFont) -> CGFloat {
+        max(font.pointSize * 1.2, font.pointSize + 2)
+    }
+    open func glyphRange(for textContainer: NSTextContainer) -> NSRange {
+        _ = textContainer
+        return NSRange(location: 0, length: 0)
+    }
+    open func glyphRange(forCharacterRange charRange: NSRange, actualCharacterRange actualCharRange: NSRangePointer?) -> NSRange {
+        actualCharRange?.pointee = charRange
+        return charRange
+    }
+    open func characterRange(forGlyphRange glyphRange: NSRange, actualGlyphRange: NSRangePointer?) -> NSRange {
+        actualGlyphRange?.pointee = glyphRange
+        return glyphRange
+    }
+    open func usedRect(for textContainer: NSTextContainer) -> NSRect {
+        NSRect(origin: .zero, size: textContainer.containerSize)
+    }
+    open func boundingRect(forGlyphRange glyphRange: NSRange, in textContainer: NSTextContainer) -> NSRect {
+        _ = glyphRange
+        return usedRect(for: textContainer)
+    }
+    open func enumerateLineFragments(
+        forGlyphRange glyphRange: NSRange,
+        using block: (NSRect, NSRect, NSTextContainer, NSRange, UnsafeMutablePointer<ObjCBool>) -> Void
+    ) {
+        let container = textContainers.first ?? NSTextContainer()
+        var stop = ObjCBool(false)
+        block(usedRect(for: container), usedRect(for: container), container, glyphRange, &stop)
+    }
+    open func enumerateEnclosingRects(
+        forGlyphRange glyphRange: NSRange,
+        withinSelectedGlyphRange selectedRange: NSRange,
+        in textContainer: NSTextContainer,
+        using block: (NSRect, UnsafeMutablePointer<ObjCBool>) -> Void
+    ) {
+        _ = glyphRange
+        _ = selectedRange
+        var stop = ObjCBool(false)
+        block(usedRect(for: textContainer), &stop)
+    }
+    open func drawBackground(forGlyphRange glyphsToShow: NSRange, at origin: NSPoint) {
+        _ = glyphsToShow
+        _ = origin
+    }
+    open func drawGlyphs(forGlyphRange glyphsToShow: NSRange, at origin: NSPoint) {
+        _ = glyphsToShow
+        _ = origin
+    }
+    open func ensureLayout(for textContainer: NSTextContainer) {
+        if !textContainers.contains(where: { $0 === textContainer }) {
+            addTextContainer(textContainer)
+        }
+    }
+    open func invalidateLayout(forCharacterRange charRange: NSRange, actualCharacterRange actualCharRange: NSRangePointer?) {
+        actualCharRange?.pointee = charRange
+    }
+    open func invalidateDisplay(forCharacterRange charRange: NSRange) {
+        _ = charRange
+    }
+}
+
+open class NSTextContainer: NSObject {
+    public var containerSize: NSSize
+    public var size: NSSize {
+        get { containerSize }
+        set { containerSize = newValue }
+    }
+    public var widthTracksTextView: Bool = false
+    public var heightTracksTextView: Bool = false
+    public var lineFragmentPadding: CGFloat = 0
+    public weak var layoutManager: NSLayoutManager?
+    public weak var textView: NSTextView?
+    public init(size: NSSize = .zero) {
+        self.containerSize = size
+        super.init()
+    }
+}
+
+@MainActor
+open class NSTextStorage: NSMutableAttributedString {
+    public private(set) var layoutManagers: [NSLayoutManager] = []
+
+    public override init(string: String = "") {
+        super.init(string: string)
+    }
+
+    public required init?(coder: NSCoder) {
+        super.init(coder: coder)
+    }
+
+    public func addLayoutManager(_ layoutManager: NSLayoutManager) {
+        guard !layoutManagers.contains(where: { $0 === layoutManager }) else { return }
+        layoutManagers.append(layoutManager)
+        layoutManager.textStorage = self
+    }
+}
+
+public class UndoManager: NSObject {
+    public var groupsByEvent: Bool = true
+    public var levelsOfUndo: Int = 0
+    public func removeAllActions() {}
+}
+
+public struct NSUnderlineStyle: OptionSet, Sendable {
+    public let rawValue: Int
+    public init(rawValue: Int) { self.rawValue = rawValue }
+    public static let single = NSUnderlineStyle(rawValue: 1)
+}
+
+open class NSTextBlock: NSObject {
+    public enum ValueType: Sendable {
+        case absoluteValueType
+        case percentageValueType
+    }
+
+    public enum Dimension: Sendable {
+        case width
+        case minimumWidth
+        case maximumWidth
+        case height
+        case minimumHeight
+        case maximumHeight
+        case padding
+        case border
+        case margin
+    }
+}
+
+open class NSParagraphStyle: NSObject, NSCopying, NSMutableCopying {
+    public enum LineBreakMode: Sendable {
+        case byWordWrapping
+        case byCharWrapping
+        case byClipping
+        case byTruncatingHead
+        case byTruncatingTail
+        case byTruncatingMiddle
+    }
+
+    public var alignment: NSTextAlignment = .natural
+    public var lineBreakMode: LineBreakMode = .byWordWrapping
+    public var paragraphSpacing: CGFloat = 0
+    public var paragraphSpacingBefore: CGFloat = 0
+    public var firstLineHeadIndent: CGFloat = 0
+    public var headIndent: CGFloat = 0
+    public var tailIndent: CGFloat = 0
+    public var lineSpacing: CGFloat = 0
+    public var minimumLineHeight: CGFloat = 0
+    public var maximumLineHeight: CGFloat = 0
+    public var tabStops: [NSTextTab] = []
+    public var textBlocks: [NSTextBlock] = []
+
+    public override init() {
+        super.init()
+    }
+
+    public func copy(with zone: NSZone? = nil) -> Any { self }
+
+    public func mutableCopy(with zone: NSZone? = nil) -> Any {
+        let copy = NSMutableParagraphStyle()
+        copy.alignment = alignment
+        copy.lineBreakMode = lineBreakMode
+        copy.paragraphSpacing = paragraphSpacing
+        copy.paragraphSpacingBefore = paragraphSpacingBefore
+        copy.firstLineHeadIndent = firstLineHeadIndent
+        copy.headIndent = headIndent
+        copy.tailIndent = tailIndent
+        copy.lineSpacing = lineSpacing
+        copy.minimumLineHeight = minimumLineHeight
+        copy.maximumLineHeight = maximumLineHeight
+        copy.tabStops = tabStops
+        copy.textBlocks = textBlocks
+        return copy
+    }
+}
+
+open class NSMutableParagraphStyle: NSParagraphStyle {}
+
+public final class NSTextTab: NSObject {
+    public var textAlignment: NSTextAlignment
+    public var location: CGFloat
+
+    public init(textAlignment: NSTextAlignment, location: CGFloat, options: [AnyHashable: Any] = [:]) {
+        self.textAlignment = textAlignment
+        self.location = location
+        super.init()
+        _ = options
+    }
+}
+
+public final class NSTextTable: NSObject {
+    public enum LayoutAlgorithm: Sendable {
+        case automaticLayoutAlgorithm
+        case fixedLayoutAlgorithm
+    }
+
+    public var numberOfColumns: Int
+    public var collapsesBorders: Bool = false
+    public var hidesEmptyCells: Bool = false
+    public var layoutAlgorithm: LayoutAlgorithm = .automaticLayoutAlgorithm
+
+    public init(numberOfColumns: Int = 0) {
+        self.numberOfColumns = numberOfColumns
+        super.init()
+    }
+
+    public func setValue(_ value: CGFloat, type: NSTextBlock.ValueType, for dimension: NSTextBlock.Dimension) {
+        _ = value
+        _ = type
+        _ = dimension
+    }
+}
+
+public final class NSTextTableBlock: NSTextBlock {
+    public var backgroundColor: NSColor?
+
+    public init(table: NSTextTable, startingRow row: Int, rowSpan: Int, startingColumn column: Int, columnSpan: Int) {
+        super.init()
+        _ = table
+        _ = row
+        _ = rowSpan
+        _ = column
+        _ = columnSpan
+    }
+
+    public func setValue(_ value: CGFloat, type: NSTextBlock.ValueType, for dimension: NSTextBlock.Dimension) {
+        _ = value
+        _ = type
+        _ = dimension
+    }
+
+    public func setWidth(_ value: CGFloat, type: NSTextBlock.ValueType, for dimension: NSTextBlock.Dimension, edge: NSRectEdge) {
+        _ = value
+        _ = type
+        _ = dimension
+        _ = edge
+    }
+
+    public func setBorderColor(_ color: NSColor, for edge: NSRectEdge) {
+        _ = color
+        _ = edge
+    }
+}
+
+open class NSVisualEffectView: NSView {
+    public enum Material: Sendable {
+        case sidebar
+        case menu
+        case popover
+        case windowBackground
+        case headerView
+        case contentBackground
+        case underWindowBackground
+        case hudWindow
+    }
+
+    public enum BlendingMode: Sendable {
+        case behindWindow
+        case withinWindow
+    }
+
+    public enum State: Sendable {
+        case followsWindowActiveState
+        case active
+        case inactive
+    }
+
+    public var material: Material = .sidebar
+    public var blendingMode: BlendingMode = .withinWindow
+    public var state: State = .followsWindowActiveState
+}
+
+@MainActor
+open class NSWindowController: NSObject {
+    public var window: NSWindow?
+
+    public init(window: NSWindow? = nil) {
+        self.window = window
+        super.init()
+    }
+
+    open func showWindow(_ sender: Any?) {
+        window?.makeKeyAndOrderFront(sender)
+    }
+
+    open func close() {
+        window?.performClose(nil)
+    }
 }
 
 open class NSControl: NSView {
@@ -1697,8 +2534,32 @@ open class NSTextField: NSControl {
 }
 
 public final class NSFontManager: NSObject, @unchecked Sendable {
+    public struct FontTraitMask: OptionSet, Sendable {
+        public let rawValue: Int
+        public init(rawValue: Int) { self.rawValue = rawValue }
+
+        public static let boldFontMask = FontTraitMask(rawValue: 1 << 0)
+        public static let italicFontMask = FontTraitMask(rawValue: 1 << 1)
+    }
+
     public static let shared = NSFontManager()
     public lazy var availableFontFamilies: [String] = Self.discoverAvailableFontFamilies()
+
+    public func convert(_ fontObj: NSFont, toHaveTrait trait: FontTraitMask) -> NSFont {
+        var traits = fontObj.fontDescriptor.symbolicTraits
+        if trait.contains(.boldFontMask) {
+            traits.insert(.bold)
+        }
+        if trait.contains(.italicFontMask) {
+            traits.insert(.italic)
+        }
+        return NSFont(
+            fontObj.fontName,
+            size: fontObj.pointSize,
+            traits: traits,
+            design: fontObj.fontDescriptor.systemDesign
+        )
+    }
 
     private static func discoverAvailableFontFamilies() -> [String] {
         var families: [String] = []
@@ -1745,18 +2606,40 @@ public final class NSFontManager: NSObject, @unchecked Sendable {
     }
 }
 
-open class NSScrollView: NSView {
-    public enum ScrollerStyle: Sendable { case overlay }
-    public enum ScrollElasticity: Sendable { case none }
+public final class NSScroller: NSObject, @unchecked Sendable {
+    public enum Style: Sendable {
+        case legacy
+        case overlay
+    }
+}
 
+open class NSScrollView: NSView {
+    public typealias ScrollerStyle = NSScroller.Style
+    public enum BorderType: Sendable {
+        case noBorder
+        case lineBorder
+        case bezelBorder
+        case grooveBorder
+    }
+
+    public enum ScrollElasticity: Sendable {
+        case none
+        case automatic
+    }
+
+    public var borderType: BorderType = .noBorder
     public var hasHorizontalScroller: Bool = false
     public var hasVerticalScroller: Bool = false
     public var scrollerStyle: ScrollerStyle = .overlay
     public var autohidesScrollers: Bool = true
     public var drawsBackground: Bool = false
+    public var backgroundColor: NSColor = .clear
+    public var scrollsDynamically: Bool = true
+    public var usesPredominantAxisScrolling: Bool = false
     public var horizontalScrollElasticity: ScrollElasticity = .none
     public var verticalScrollElasticity: ScrollElasticity = .none
     public let contentView = NSClipView()
+    public var contentSize: NSSize { contentView.bounds.size }
     public var documentView: NSView? {
         willSet {
             if documentView !== newValue {
@@ -1799,6 +2682,7 @@ open class NSScrollView: NSView {
 open class NSClipView: NSView {
     public var documentView: NSView? { subviews.first }
     public var documentVisibleRect: NSRect { bounds }
+    public var postsBoundsChangedNotifications: Bool = false
 
     public func scroll(to newOrigin: NSPoint) {
         frame.origin = newOrigin
@@ -1809,8 +2693,11 @@ public final class NSEvent: NSObject {
     public enum EventType: Hashable, Sendable {
         case leftMouseDown
         case leftMouseUp
+        case leftMouseDragged
         case rightMouseDown
         case rightMouseUp
+        case otherMouseDown
+        case otherMouseUp
         case mouseMoved
         case flagsChanged
         case keyDown
@@ -1830,9 +2717,12 @@ public final class NSEvent: NSObject {
     public var scrollingDeltaY: CGFloat = 0
     public var modifierFlags: ModifierFlags = []
     public var charactersIgnoringModifiers: String?
+    public var characters: String?
+    public var keyCode: UInt16 = 0
     public var locationInWindow: NSPoint = .zero
     public var type: EventType = .mouseMoved
     public var clickCount: Int = 0
+    public weak var window: NSWindow?
 
     public static func _omniMacCompatibleModifierFlags(rawValue: Int, eventType: EventType) -> ModifierFlags {
         var flags = ModifierFlags(rawValue: rawValue)
@@ -1856,6 +2746,9 @@ public final class NSEvent: NSObject {
         public static let leftMouseUp = EventTypeMask(rawValue: 1 << 5)
         public static let rightMouseUp = EventTypeMask(rawValue: 1 << 6)
         public static let scrollWheel = EventTypeMask(rawValue: 1 << 7)
+        public static let otherMouseDown = EventTypeMask(rawValue: 1 << 8)
+        public static let otherMouseUp = EventTypeMask(rawValue: 1 << 9)
+        public static let leftMouseDragged = EventTypeMask(rawValue: 1 << 10)
     }
 
     public static func addLocalMonitorForEvents(matching mask: EventTypeMask, handler: @escaping (NSEvent) -> NSEvent?) -> Any? {
@@ -1880,8 +2773,11 @@ public final class NSEvent: NSObject {
         case .keyDown: return .keyDown
         case .leftMouseDown: return .leftMouseDown
         case .leftMouseUp: return .leftMouseUp
+        case .leftMouseDragged: return .leftMouseDragged
         case .rightMouseDown: return .rightMouseDown
         case .rightMouseUp: return .rightMouseUp
+        case .otherMouseDown: return .otherMouseDown
+        case .otherMouseUp: return .otherMouseUp
         case .mouseMoved: return .mouseMoved
         case .flagsChanged: return .flagsChanged
         case .scrollWheel: return .scrollWheel
@@ -1968,6 +2864,31 @@ public protocol NSDraggingInfo {
     var draggingLocation: NSPoint { get }
 }
 
+open class NSTrackingArea: NSObject {
+    public struct Options: OptionSet, Sendable {
+        public let rawValue: Int
+        public init(rawValue: Int) { self.rawValue = rawValue }
+        public static let mouseEnteredAndExited = Options(rawValue: 1 << 0)
+        public static let mouseMoved = Options(rawValue: 1 << 1)
+        public static let activeInKeyWindow = Options(rawValue: 1 << 2)
+        public static let activeAlways = Options(rawValue: 1 << 3)
+        public static let inVisibleRect = Options(rawValue: 1 << 4)
+    }
+
+    public let rect: NSRect
+    public let options: Options
+    public weak var owner: AnyObject?
+    public let userInfo: [AnyHashable: Any]?
+
+    public init(rect: NSRect, options: Options, owner: AnyObject?, userInfo: [AnyHashable: Any]? = nil) {
+        self.rect = rect
+        self.options = options
+        self.owner = owner
+        self.userInfo = userInfo
+        super.init()
+    }
+}
+
 public final class NSDraggingInfoSnapshot: NSObject, NSDraggingInfo {
     public let draggingPasteboard: NSPasteboard
     public let draggingLocation: NSPoint
@@ -1979,6 +2900,7 @@ public final class NSDraggingInfoSnapshot: NSObject, NSDraggingInfo {
     }
 }
 
+@MainActor
 public final class NSAlert: NSObject, @unchecked Sendable {
     public enum Style: Sendable {
         case warning
@@ -1993,6 +2915,7 @@ public final class NSAlert: NSObject, @unchecked Sendable {
     public var showsSuppressionButton: Bool = false
     public private(set) var buttons: [NSButton] = []
     public let suppressionButton: NSButton = NSButton()
+    public let window: NSWindow = NSWindow()
 
     @discardableResult
     public func addButton(withTitle title: String) -> NSButton {
@@ -2010,6 +2933,16 @@ public final class NSAlert: NSObject, @unchecked Sendable {
             return response
         }
         return _runDesktopAlert() ?? .OK
+    }
+
+    public func beginSheetModal(
+        for sheetWindow: NSWindow,
+        completionHandler handler: ((NSApplication.ModalResponse) -> Void)? = nil
+    ) {
+        window.sheetParent = sheetWindow
+        let response = runModal()
+        sheetWindow.endSheet(window, returnCode: response)
+        handler?(response)
     }
 
     private func _runDesktopAlert() -> NSApplication.ModalResponse? {
@@ -2060,7 +2993,19 @@ public final class NSAlert: NSObject, @unchecked Sendable {
     }
 }
 
+public final class NSAppleEventDescriptor: NSObject, @unchecked Sendable {
+    public let stringValue: String?
+
+    public init(string: String? = nil) {
+        self.stringValue = string
+        super.init()
+    }
+}
+
 public final class NSAppleScript: NSObject, @unchecked Sendable {
+    public static let errorMessage = "NSAppleScriptErrorMessage"
+    public static let errorNumber = "NSAppleScriptErrorNumber"
+
     public let source: String
 
     public init?(source: String) {
@@ -2068,10 +3013,10 @@ public final class NSAppleScript: NSObject, @unchecked Sendable {
         super.init()
     }
 
-    public func executeAndReturnError(_ errorInfo: UnsafeMutablePointer<NSDictionary?>?) {
+    public func executeAndReturnError(_ errorInfo: UnsafeMutablePointer<NSDictionary?>?) -> NSAppleEventDescriptor? {
         guard let command = Self.shellCommand(from: source) else {
             errorInfo?.pointee = ["NSAppleScriptErrorMessage": "Unsupported AppleScript source"]
-            return
+            return nil
         }
         let requiresAdministrator = source.localizedCaseInsensitiveContains("with administrator privileges")
         let status: Int32?
@@ -2083,11 +3028,13 @@ public final class NSAppleScript: NSObject, @unchecked Sendable {
         }
         if status == 0 {
             errorInfo?.pointee = nil
+            return NSAppleEventDescriptor()
         } else {
             errorInfo?.pointee = [
                 "NSAppleScriptErrorMessage": "Shell command failed",
                 "NSAppleScriptErrorNumber": status ?? -1,
             ]
+            return nil
         }
     }
 
@@ -2152,6 +3099,7 @@ open class NSMenuItem: NSObject, NSValidatedUserInterfaceItem {
     public var image: NSImage?
     public var toolTip: String?
     public var tag: Int = 0
+    public var attributedTitle: NSAttributedString?
     private var explicitIsEnabled: Bool?
     private var separatorItem: Bool = false
 
@@ -2178,11 +3126,13 @@ open class NSMenuItem: NSObject, NSValidatedUserInterfaceItem {
         separatorItem
     }
 
+    @MainActor
     public var isEnabled: Bool {
         get { explicitIsEnabled ?? validate() }
         set { explicitIsEnabled = newValue }
     }
 
+    @MainActor
     public func validate() -> Bool {
         guard !isHidden, !isSeparatorItem else { return false }
         guard let action else { return false }
@@ -2199,6 +3149,7 @@ open class NSMenuItem: NSObject, NSValidatedUserInterfaceItem {
     }
 
     @discardableResult
+    @MainActor
     public func performAction(_ sender: Any? = nil) -> Bool {
         guard isEnabled, !isHidden, !isSeparatorItem, let action else { return false }
         return _omniDispatchSelector(action, to: target, from: sender ?? self)
@@ -2212,6 +3163,8 @@ open class NSMenu: NSObject {
     public var title: String
     public private(set) var items: [NSMenuItem] = []
     public weak var supermenu: NSMenu?
+    public weak var delegate: NSMenuDelegate?
+    public var autoenablesItems: Bool = true
 
     public init(title: String) {
         self.title = title
@@ -2278,6 +3231,7 @@ open class NSMenu: NSObject {
         return AnyView(_OmniMenuPresentationView(menu: menu))
     }
 
+    @MainActor
     public func popUp(positioning item: NSMenuItem?, at location: NSPoint, in view: NSView?) -> Bool {
         _ = item
         _ = location
@@ -2289,17 +3243,38 @@ open class NSMenu: NSObject {
     }
 
     public static func dismissActiveMenu() {
+        let previous = activeState.activeMenu
         activeState.activeMenu = nil
         NotificationCenter.default.post(name: Self.didChangeActiveMenuNotification, object: nil)
+        if let previous {
+            previous.delegate?.menuDidClose(previous)
+        }
+    }
+
+    public func cancelTracking() {
+        if Self.activeMenu === self {
+            Self.dismissActiveMenu()
+        } else {
+            delegate?.menuDidClose(self)
+        }
     }
 
     @discardableResult
+    @MainActor
     public func performActionForItem(at index: Int) -> Bool {
         guard items.indices.contains(index) else { return false }
         let item = items[index]
         guard !item.isHidden, !item.isSeparatorItem else { return false }
         return item.performAction(self)
     }
+}
+
+public protocol NSMenuDelegate: AnyObject {
+    func menuDidClose(_ menu: NSMenu)
+}
+
+public extension NSMenuDelegate {
+    func menuDidClose(_ menu: NSMenu) { _ = menu }
 }
 
 private final class _OmniMenuState: @unchecked Sendable {
@@ -2342,6 +3317,7 @@ private struct _OmniMenuPresentationView: View {
     }
 }
 
+@MainActor
 public func _omniPresentContextMenu(for event: NSEvent) -> Bool {
     guard event.type == .rightMouseDown || event.type == .rightMouseUp else { return false }
     guard let window = NSApp.keyWindow else { return false }
@@ -2372,7 +3348,7 @@ public func _omniPresentContextMenu(for event: NSEvent) -> Bool {
 }
 
 @discardableResult
-public func _omniDispatchScrollWheel(for event: NSEvent) -> Bool {
+@MainActor public func _omniDispatchScrollWheel(for event: NSEvent) -> Bool {
     guard event.type == .scrollWheel, let window = NSApp.keyWindow else { return false }
     var candidates: [NSView] = []
     if let contentView = window.contentView {
@@ -2397,6 +3373,7 @@ public func _omniDispatchScrollWheel(for event: NSEvent) -> Bool {
     return true
 }
 
+@MainActor
 private func _omniCanDispatchSelector(_ selector: Selector, to target: AnyObject?) -> Bool {
     if _OmniSelectorActionRegistry.shared.canPerform(target: target, selector: selector) {
         return true
@@ -2410,6 +3387,7 @@ private func _omniCanDispatchSelector(_ selector: Selector, to target: AnyObject
 }
 
 @discardableResult
+@MainActor
 private func _omniDispatchSelector(_ selector: Selector, to target: AnyObject?, from sender: Any?) -> Bool {
     if _OmniSelectorActionRegistry.shared.perform(target: target, selector: selector, sender: sender) {
         return true
@@ -2442,11 +3420,48 @@ private func _omniDispatchSelector(_ selector: Selector, to target: AnyObject?, 
     }
 }
 
+@MainActor
 open class NSResponder: NSObject {
+    public weak var nextResponder: NSResponder?
+
+    open func scrollWheel(with event: NSEvent) {
+        nextResponder?.scrollWheel(with: event)
+    }
+
+    open func mouseDown(with event: NSEvent) {
+        _ = event
+    }
+
+    open func keyDown(with event: NSEvent) {
+        _ = event
+    }
+
     public static func insertNewline(_ sender: Any?) {
         _ = sender
     }
+
+    public static func insertLineBreak(_ sender: Any?) {
+        _ = sender
+    }
+
+    public static func insertTab(_ sender: Any?) {
+        _ = sender
+    }
+
+    public static func moveUp(_ sender: Any?) {
+        _ = sender
+    }
+
+    public static func moveDown(_ sender: Any?) {
+        _ = sender
+    }
+
+    public static func cancelOperation(_ sender: Any?) {
+        _ = sender
+    }
 }
+
+public typealias NSText = NSTextView
 
 public final class DistributedNotificationCenter: NSObject {
     public static func `default`() -> DistributedNotificationCenter {
@@ -2938,6 +3953,11 @@ public struct NSWindowStyleMask: OptionSet, Sendable {
     public let rawValue: Int
     public init(rawValue: Int) { self.rawValue = rawValue }
     public static let fullScreen = NSWindowStyleMask(rawValue: 1 << 0)
+    public static let borderless = NSWindowStyleMask(rawValue: 1 << 1)
+    public static let titled = NSWindowStyleMask(rawValue: 1 << 2)
+    public static let closable = NSWindowStyleMask(rawValue: 1 << 3)
+    public static let miniaturizable = NSWindowStyleMask(rawValue: 1 << 4)
+    public static let resizable = NSWindowStyleMask(rawValue: 1 << 5)
 }
 
 public extension Image {
@@ -2967,24 +3987,48 @@ public extension Color {
 
 public final class NSScreen: NSObject, @unchecked Sendable {
     public static let main: NSScreen? = NSScreen()
+    public var backingScaleFactor: CGFloat = 1
     public var frame: NSRect = NSRect(x: 0, y: 0, width: 1200, height: 800)
+}
+
+public final class NSBitmapImageRep: NSObject, @unchecked Sendable {
+    public enum FileType: Sendable {
+        case png
+        case jpeg
+        case tiff
+    }
+
+    private let data: Data
+
+    public init?(data: Data) {
+        guard !data.isEmpty else { return nil }
+        self.data = data
+        super.init()
+    }
+
+    public func representation(using storageType: FileType, properties: [AnyHashable: Any] = [:]) -> Data? {
+        _ = storageType
+        _ = properties
+        return data
+    }
 }
 
 public final class NSColorPanel: NSWindow, @unchecked Sendable {
     public static let shared = NSColorPanel()
     public static let colorDidChangeNotification = Notification.Name("NSColorPanelColorDidChangeNotification")
+    private var panelVisible: Bool = false
     public var color: NSColor = .windowBackgroundColor {
         didSet {
             NotificationCenter.default.post(name: Self.colorDidChangeNotification, object: self)
         }
     }
-    public var isVisible: Bool = false
+    public override var isVisible: Bool { panelVisible }
     public var showsAlpha: Bool = true
     public var isContinuous: Bool = false
 
-    public func orderFront(_ sender: Any?) {
+    public override func orderFront(_ sender: Any?) {
         _ = sender
-        isVisible = true
+        panelVisible = true
         if let selected = Self.selectedColorOverride() ?? Self.runColorChooser(initialColor: color),
            let parsed = Self.parseColor(selected, includeAlpha: showsAlpha) {
             color = parsed
@@ -2992,10 +4036,10 @@ public final class NSColorPanel: NSWindow, @unchecked Sendable {
         }
     }
 
-    public func orderOut(_ sender: Any?) {
+    public override func orderOut(_ sender: Any?) {
         _ = sender
         NotificationCenter.default.post(name: NSWindow.willCloseNotification, object: self)
-        isVisible = false
+        panelVisible = false
     }
 
     private static func selectedColorOverride() -> String? {
@@ -3072,6 +4116,20 @@ public final class NSColorPanel: NSWindow, @unchecked Sendable {
 
 public extension NSAttributedString.Key {
     static let font = NSAttributedString.Key("NSFont")
+    static let foregroundColor = NSAttributedString.Key("NSColor")
+    static let backgroundColor = NSAttributedString.Key("NSBackgroundColor")
+    static let paragraphStyle = NSAttributedString.Key("NSParagraphStyle")
+    static let link = NSAttributedString.Key("NSLink")
+    static let underlineStyle = NSAttributedString.Key("NSUnderline")
+    static let strikethroughStyle = NSAttributedString.Key("NSStrikethrough")
+}
+
+public struct NSStringDrawingOptions: OptionSet, Sendable {
+    public let rawValue: Int
+    public init(rawValue: Int) { self.rawValue = rawValue }
+    public static let usesLineFragmentOrigin = NSStringDrawingOptions(rawValue: 1 << 0)
+    public static let usesFontLeading = NSStringDrawingOptions(rawValue: 1 << 1)
+    public static let usesDeviceMetrics = NSStringDrawingOptions(rawValue: 1 << 2)
 }
 
 public extension NSString {
@@ -3079,6 +4137,60 @@ public extension NSString {
         let font = attrs?[.font] as? NSFont
         let charWidth = (font?.pointSize ?? NSFont.systemFontSize) * 0.58
         return NSSize(width: CGFloat(length) * charWidth, height: font?.pointSize ?? NSFont.systemFontSize)
+    }
+
+    func boundingRect(
+        with size: NSSize,
+        options: NSStringDrawingOptions = [],
+        attributes attrs: [NSAttributedString.Key: Any]? = nil,
+        context: Any? = nil
+    ) -> NSRect {
+        _ = options
+        _ = context
+        let measured = self.size(withAttributes: attrs)
+        let maxWidth = max(1, size.width)
+        let lines = max(1, ceil(measured.width / maxWidth))
+        return NSRect(
+            x: 0,
+            y: 0,
+            width: min(size.width, measured.width),
+            height: min(size.height, measured.height * lines)
+        )
+    }
+}
+
+public extension NSAttributedString {
+    enum DocumentType: Sendable {
+        case html
+    }
+
+    struct DocumentReadingOptionKey: Hashable, Sendable, RawRepresentable, ExpressibleByStringLiteral {
+        public var rawValue: String
+
+        public init(rawValue: String) {
+            self.rawValue = rawValue
+        }
+
+        public init(stringLiteral value: StringLiteralType) {
+            self.rawValue = value
+        }
+
+        public static let documentType = DocumentReadingOptionKey(rawValue: "DocumentType")
+        public static let characterEncoding = DocumentReadingOptionKey(rawValue: "CharacterEncoding")
+    }
+
+    convenience init(
+        data: Data,
+        options: [DocumentReadingOptionKey: Any] = [:],
+        documentAttributes: UnsafeMutablePointer<[DocumentReadingOptionKey: Any]>? = nil
+    ) throws {
+        _ = options
+        documentAttributes?.pointee = [:]
+        self.init(string: String(data: data, encoding: .utf8) ?? "")
+    }
+
+    func size() -> NSSize {
+        (string as NSString).size(withAttributes: nil)
     }
 }
 
@@ -3113,10 +4225,22 @@ public final class NSItemProvider: NSObject, @unchecked Sendable {
     public func loadItem(
         forTypeIdentifier typeIdentifier: String,
         options: [AnyHashable: Any]? = nil,
-        completionHandler: ((Any?, Error?) -> Void)? = nil
+        completionHandler: ((NSSecureCoding?, Error?) -> Void)? = nil
     ) -> Progress? {
         _ = options
-        let value = hasItemConformingToTypeIdentifier(typeIdentifier) ? itemValue(for: typeIdentifier) : nil
+        let value = hasItemConformingToTypeIdentifier(typeIdentifier) ? secureCodingValue(for: typeIdentifier) : nil
+        completionHandler?(value, nil)
+        let progress = Progress(totalUnitCount: 1)
+        progress.completedUnitCount = 1
+        return progress
+    }
+
+    @discardableResult
+    public func loadDataRepresentation(
+        forTypeIdentifier typeIdentifier: String,
+        completionHandler: ((Data?, Error?) -> Void)? = nil
+    ) -> Progress? {
+        let value = hasItemConformingToTypeIdentifier(typeIdentifier) ? dataValue(for: typeIdentifier) : nil
         completionHandler?(value, nil)
         let progress = Progress(totalUnitCount: 1)
         progress.completedUnitCount = 1
@@ -3144,6 +4268,24 @@ public final class NSItemProvider: NSObject, @unchecked Sendable {
         return progress
     }
 
+    private func secureCodingValue(for typeIdentifier: String) -> NSSecureCoding? {
+        if typeIdentifier == UTType.fileURL.identifier || typeIdentifier == NSPasteboard.PasteboardType.fileURL.rawValue,
+           let url = urlValue() {
+            return url as NSURL
+        }
+        if typeIdentifier == UTType.url.identifier || typeIdentifier == NSPasteboard.PasteboardType.URL.rawValue,
+           let url = urlValue() {
+            return url as NSURL
+        }
+        if let data = dataValue(for: typeIdentifier) {
+            return data as NSData
+        }
+        if let string = itemValue(for: typeIdentifier) as? String {
+            return string as NSString
+        }
+        return object as? NSSecureCoding
+    }
+
     private func itemValue(for typeIdentifier: String) -> Any? {
         if Self.textTypeIdentifiers.contains(typeIdentifier) {
             return stringValue()
@@ -3155,6 +4297,15 @@ public final class NSItemProvider: NSObject, @unchecked Sendable {
             return urlValue()?.absoluteString
         }
         return object
+    }
+
+    private func dataValue(for typeIdentifier: String) -> Data? {
+        if let data = object as? Data { return data }
+        if let data = object as? NSData { return data as Data }
+        if let image = object as? NSImage { return image.tiffRepresentation }
+        if let url = urlValue(), url.isFileURL { return try? Data(contentsOf: url) }
+        if let string = itemValue(for: typeIdentifier) as? String { return string.data(using: .utf8) }
+        return nil
     }
 
     private func stringValue() -> String? {
@@ -3200,6 +4351,10 @@ public final class NSItemProvider: NSObject, @unchecked Sendable {
             return swiftURL.isFileURL
                 ? [UTType.fileURL.identifier, NSPasteboard.PasteboardType.fileURL.rawValue, UTType.url.identifier, NSPasteboard.PasteboardType.URL.rawValue, UTType.item.identifier]
                 : [UTType.url.identifier, NSPasteboard.PasteboardType.URL.rawValue, UTType.item.identifier]
+        case is NSImage:
+            return [UTType.image.identifier, UTType.tiff.identifier, UTType.data.identifier, UTType.item.identifier]
+        case is Data, is NSData:
+            return [UTType.data.identifier, UTType.item.identifier]
         default:
             return [UTType.data.identifier, UTType.item.identifier]
         }
@@ -3213,6 +4368,9 @@ public final class NSItemProvider: NSObject, @unchecked Sendable {
         }
         if requested == UTType.text.identifier {
             return textTypeIdentifiers.contains(candidate)
+        }
+        if requested == UTType.image.identifier {
+            return UTType(candidate)?.conforms(to: .image) == true
         }
         if requested == UTType.plainText.identifier || requested == "public.utf8-plain-text" {
             return textTypeIdentifiers.contains(candidate)

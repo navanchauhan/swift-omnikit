@@ -1,6 +1,8 @@
 import Foundation
 
-public struct Color: Hashable, Sendable {
+public protocol ShapeStyle: Sendable {}
+
+public struct Color: Hashable, Sendable, ShapeStyle {
     public enum RGBColorSpace: Hashable, Sendable {
         case sRGB
         case sRGBLinear
@@ -28,6 +30,11 @@ public struct Color: Hashable, Sendable {
 
     public init(red: CGFloat, green: CGFloat, blue: CGFloat, opacity: CGFloat = 1.0) {
         self.name = "rgb(\(red),\(green),\(blue))"
+        self.alpha = opacity
+    }
+
+    public init(white: CGFloat, opacity: CGFloat = 1.0) {
+        self.name = "rgb(\(white),\(white),\(white))"
         self.alpha = opacity
     }
 
@@ -63,6 +70,22 @@ public struct Color: Hashable, Sendable {
     public static let purple = Color("purple")
     public static let pink = Color("pink")
     public static let brown = Color("brown")
+}
+
+public struct AnyShapeStyle: ShapeStyle {
+    public let storage: any ShapeStyle
+
+    public init(_ style: Color) {
+        self.storage = style
+    }
+
+    public init(_ style: Material) {
+        self.storage = style
+    }
+
+    public init<S: ShapeStyle>(_ style: S) {
+        self.storage = style
+    }
 }
 
 extension Color: RawRepresentable {
@@ -126,6 +149,7 @@ public struct Font: Hashable, Sendable {
     public static let caption = Font(name: "caption")
     public static let caption2 = Font(name: "caption2")
     public static let callout = Font(name: "callout")
+    public static let footnote = Font(name: "footnote")
 
     public static func system(size: CGFloat, design: Design = .default) -> Font {
         Font(name: "system(\(size),\(design))")
@@ -158,6 +182,10 @@ public struct Font: Hashable, Sendable {
 
     public func italic() -> Font {
         Font(name: "\(name).italic")
+    }
+
+    public func monospaced() -> Font {
+        Font(name: "\(name).monospaced")
     }
 }
 
@@ -330,6 +358,13 @@ public enum Edge: Hashable, Sendable {
     }
 }
 
+public enum SymbolRenderingMode: Hashable, Sendable {
+    case monochrome
+    case hierarchical
+    case palette
+    case multicolor
+}
+
 public struct EdgeInsets: Hashable, Sendable {
     public var top: CGFloat
     public var leading: CGFloat
@@ -368,6 +403,22 @@ public enum ContentMode: Sendable {
     case fill
 }
 
+public struct Transaction: @unchecked Sendable {
+    public var animation: Any?
+    public var disablesAnimations: Bool
+
+    public init(animation: Any? = nil, disablesAnimations: Bool = false) {
+        self.animation = animation
+        self.disablesAnimations = disablesAnimations
+    }
+}
+
+@discardableResult
+public func withTransaction<T>(_ transaction: Transaction, _ body: () throws -> T) rethrows -> T {
+    _ = transaction
+    return try body()
+}
+
 public struct Angle: Hashable, Sendable {
     public var radians: Double
     public var degrees: Double { radians * 180.0 / .pi }
@@ -387,6 +438,34 @@ public enum Axis: Sendable {
 
         public static let vertical = Set(rawValue: 1 << 0)
         public static let horizontal = Set(rawValue: 1 << 1)
+    }
+}
+
+public struct ScrollGeometry: Equatable, Sendable {
+    public var contentOffset: CGPoint
+    public var contentSize: CGSize
+    public var visibleRect: CGRect
+
+    public init(contentOffset: CGPoint = .zero, contentSize: CGSize = .zero, visibleRect: CGRect = .zero) {
+        self.contentOffset = contentOffset
+        self.contentSize = contentSize
+        self.visibleRect = visibleRect
+    }
+}
+
+public enum ScrollPhase: Hashable, Sendable {
+    case idle
+    case tracking
+    case interacting
+    case decelerating
+    case animating
+}
+
+public struct ScrollPhaseChangeContext: Sendable {
+    public var geometry: ScrollGeometry
+
+    public init(geometry: ScrollGeometry = ScrollGeometry()) {
+        self.geometry = geometry
     }
 }
 
@@ -413,13 +492,14 @@ public struct UITextContentType: Hashable, Sendable, ExpressibleByStringLiteral 
 }
 
 // SwiftUI materials (placeholder).
-public struct Material: Hashable, Sendable {
+public struct Material: Hashable, Sendable, ShapeStyle {
     public let raw: String
     public init(_ raw: String) { self.raw = raw }
     public static let bar = Material("bar")
     public static let background = Material("background")
     public static let regularMaterial = Material("regularMaterial")
     public static let ultraThinMaterial = Material("ultraThinMaterial")
+    public static let thinMaterial = Material("thinMaterial")
 }
 
 public enum Visibility: Hashable, Sendable {
@@ -439,6 +519,37 @@ public struct NavigationTransition: Hashable, Sendable {
 
 public struct ContentTransition: Hashable, Sendable {
     public init() {}
+
+    public static func symbolEffect(_ effect: SymbolEffect) -> ContentTransition {
+        _ = effect
+        return ContentTransition()
+    }
+}
+
+public struct SymbolEffect: Hashable, Sendable {
+    public let rawValue: String
+    public init(_ rawValue: String) { self.rawValue = rawValue }
+
+    public static let bounce = SymbolEffect("bounce")
+    public static let replace = SymbolEffect("replace")
+
+    public var down: SymbolEffect { SymbolEffect("\(rawValue).down") }
+    public var downUp: SymbolEffect { SymbolEffect("\(rawValue).downUp") }
+}
+
+public struct SymbolEffectOptions: OptionSet, Sendable {
+    public let rawValue: Int
+    public init(rawValue: Int) { self.rawValue = rawValue }
+
+    public static let `default` = SymbolEffectOptions([])
+}
+
+public struct AccessibilityTraits: OptionSet, Sendable {
+    public let rawValue: Int
+    public init(rawValue: Int) { self.rawValue = rawValue }
+
+    public static let isButton = AccessibilityTraits(rawValue: 1 << 0)
+    public static let isHeader = AccessibilityTraits(rawValue: 1 << 1)
 }
 
 public struct AnyTransition: Hashable, Sendable {
@@ -450,6 +561,8 @@ public struct AnyTransition: Hashable, Sendable {
     public static var scale: AnyTransition { AnyTransition("scale") }
     public static var identity: AnyTransition { AnyTransition("identity") }
     public static func move(edge: Edge) -> AnyTransition { AnyTransition("move(\(edge))") }
+    public static func push(from edge: Edge) -> AnyTransition { AnyTransition("push(\(edge))") }
+    public static func scale(scale: CGFloat) -> AnyTransition { AnyTransition("scale(\(scale))") }
 
     public static func asymmetric(insertion: AnyTransition, removal: AnyTransition) -> AnyTransition {
         AnyTransition("asymmetric(insertion:\(insertion.rawValue),removal:\(removal.rawValue))")
@@ -458,6 +571,75 @@ public struct AnyTransition: Hashable, Sendable {
     public func combined(with other: AnyTransition) -> AnyTransition {
         AnyTransition("\(rawValue)+\(other.rawValue)")
     }
+
+    public func animation(_ animation: Animation?) -> AnyTransition {
+        _ = animation
+        return self
+    }
+}
+
+public struct Animation: Hashable, Sendable {
+    public let rawValue: String
+    public let duration: Double
+    public let curve: AnimationCurve
+
+    public init(_ rawValue: String) {
+        self.rawValue = rawValue
+        self.duration = Animation.parseDuration(rawValue)
+        self.curve = Animation.parseCurve(rawValue)
+    }
+
+    public static let `default` = Animation("default")
+    public static let easeInOut = Animation("easeInOut")
+    public static let easeIn = Animation("easeIn")
+    public static let easeOut = Animation("easeOut")
+    public static let linear = Animation("linear")
+
+    public static func spring() -> Animation { Animation("spring") }
+    public static func spring(
+        response: Double,
+        dampingFraction: Double,
+        blendDuration: Double = 0
+    ) -> Animation {
+        Animation("spring(response:\(response),damping:\(dampingFraction),blend:\(blendDuration))")
+    }
+    public static func easeInOut(duration: Double = 0.35) -> Animation {
+        Animation("easeInOut(\(duration))")
+    }
+    public static func easeIn(duration: Double = 0.35) -> Animation { Animation("easeIn(\(duration))") }
+    public static func easeOut(duration: Double = 0.35) -> Animation { Animation("easeOut(\(duration))") }
+    public static func linear(duration: Double = 0.35) -> Animation { Animation("linear(\(duration))") }
+
+    public func delay(_ delay: Double) -> Animation {
+        Animation("\(rawValue).delay(\(delay))")
+    }
+
+    public func repeatForever(autoreverses: Bool = true) -> Animation {
+        Animation("\(rawValue).repeatForever(\(autoreverses))")
+    }
+
+    private static func parseDuration(_ raw: String) -> Double {
+        guard let open = raw.firstIndex(of: "("),
+              let close = raw.firstIndex(of: ")")
+        else { return 0.35 }
+        return Double(raw[raw.index(after: open)..<close]) ?? 0.35
+    }
+
+    private static func parseCurve(_ raw: String) -> AnimationCurve {
+        let lower = raw.lowercased()
+        if lower.hasPrefix("easeinout") || lower == "default" { return .easeInOut }
+        if lower.hasPrefix("easein") { return .easeIn }
+        if lower.hasPrefix("easeout") { return .easeOut }
+        if lower.hasPrefix("linear") { return .linear }
+        if lower.hasPrefix("spring") { return .spring }
+        return .easeInOut
+    }
+}
+
+@discardableResult
+public func withAnimation<T>(_ animation: Animation? = nil, _ body: () -> T) -> T {
+    _ = animation
+    return body()
 }
 
 /// Easing curves for terminal tick-driven animations.

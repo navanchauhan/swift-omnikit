@@ -113,6 +113,7 @@ void omni_macos_text_input_install(void *app);
 struct OmniAdwApp {
   AdwApplication *application;
   GtkWidget *window;
+  GtkWidget *root_overlay;
   GtkWidget *shell;
   GtkWidget *body_slot;
   GtkWidget *header;
@@ -139,6 +140,7 @@ struct OmniAdwApp {
   GtkWidget *command_popover;
   GtkWidget *command_content;
   GtkWidget *app_menu_button;
+  GtkWidget *app_menu_surface;
   AdwDialog *modal_dialog;
   GtkWidget *modal_accessibility_root;
   int32_t modal_close_action_id;
@@ -3030,6 +3032,8 @@ static void omni_install_css_once(void) {
     ".omni-overlay { padding: 0; background: transparent; }"
     ".omni-shell { background: @window_bg_color; }"
     ".omni-header { min-height: 44px; padding: 8px 12px; border-bottom: 1px solid @borders; background: @headerbar_bg_color; }"
+    ".omni-app-menu-surface { min-width: 228px; padding: 6px; border: 1px solid @borders; border-radius: 8px; background: @popover_bg_color; background-color: @popover_bg_color; color: @popover_fg_color; box-shadow: 0 8px 24px alpha(black,0.28); }"
+    ".omni-app-menu-surface button { min-height: 38px; padding: 0 12px; border-radius: 6px; }"
     ".omni-title { font-weight: 700; }"
     ".omni-tab-strip { margin-top: 2px; margin-bottom: 4px; }"
     ".omni-selected-tab { min-height: 24px; padding: 2px 12px; border-radius: 7px 7px 0 0; font-weight: 600; background: @card_bg_color; border: 1px solid @borders; }"
@@ -3393,6 +3397,108 @@ static void on_app_quit_action(GSimpleAction *action, GVariant *parameter, gpoin
   g_application_quit(G_APPLICATION(app->application));
 }
 
+static gboolean omni_widget_is_or_descendant(GtkWidget *widget, GtkWidget *ancestor) {
+  GtkWidget *current = widget;
+  while (current) {
+    if (current == ancestor) return TRUE;
+    current = gtk_widget_get_parent(current);
+  }
+  return FALSE;
+}
+
+static gboolean omni_point_in_widget_bounds(GtkWidget *widget, GtkWidget *root, double x, double y) {
+  if (!widget || !root || !gtk_widget_get_visible(widget)) return FALSE;
+  graphene_rect_t bounds;
+  if (!gtk_widget_compute_bounds(widget, root, &bounds)) return FALSE;
+  return x >= bounds.origin.x &&
+      y >= bounds.origin.y &&
+      x <= bounds.origin.x + bounds.size.width &&
+      y <= bounds.origin.y + bounds.size.height;
+}
+
+static void omni_app_menu_hide(OmniAdwApp *app) {
+  if (!app || !app->app_menu_surface) return;
+  gtk_widget_set_visible(app->app_menu_surface, FALSE);
+  if (app->app_menu_button) {
+    gtk_accessible_update_state(GTK_ACCESSIBLE(app->app_menu_button), GTK_ACCESSIBLE_STATE_EXPANDED, FALSE, -1);
+  }
+}
+
+static void omni_app_menu_update_position(OmniAdwApp *app) {
+  if (!app || !app->app_menu_button || !app->app_menu_surface || !app->root_overlay) return;
+  int x = 12;
+  int y = 58;
+  graphene_rect_t bounds;
+  if (gtk_widget_compute_bounds(app->app_menu_button, app->root_overlay, &bounds)) {
+    x = (int)bounds.origin.x;
+    y = (int)(bounds.origin.y + bounds.size.height + 6.0f);
+  }
+  int overlay_width = gtk_widget_get_width(app->root_overlay);
+  const int menu_width = 240;
+  if (overlay_width > 0 && x + menu_width > overlay_width - 8) {
+    x = overlay_width - menu_width - 8;
+  }
+  if (x < 8) x = 8;
+  if (y < 8) y = 8;
+  gtk_widget_set_margin_start(app->app_menu_surface, x);
+  gtk_widget_set_margin_top(app->app_menu_surface, y);
+}
+
+static void omni_app_menu_show(OmniAdwApp *app) {
+  if (!app || !app->app_menu_surface) return;
+  omni_app_menu_update_position(app);
+  gtk_widget_set_visible(app->app_menu_surface, TRUE);
+  gtk_widget_set_child_visible(app->app_menu_surface, TRUE);
+  if (app->app_menu_button) {
+    gtk_accessible_update_state(GTK_ACCESSIBLE(app->app_menu_button), GTK_ACCESSIBLE_STATE_EXPANDED, TRUE, -1);
+  }
+}
+
+static void omni_app_menu_toggle(OmniAdwApp *app) {
+  if (!app || !app->app_menu_surface) return;
+  if (gtk_widget_get_visible(app->app_menu_surface)) {
+    omni_app_menu_hide(app);
+  } else {
+    omni_app_menu_show(app);
+  }
+}
+
+static void on_app_menu_button_clicked(GtkButton *button, gpointer data) {
+  (void)button;
+  omni_app_menu_toggle((OmniAdwApp *)data);
+}
+
+static gboolean omni_app_menu_request_settings_deferred(gpointer data) {
+  request_settings_refresh_and_present((OmniAdwApp *)data);
+  return G_SOURCE_REMOVE;
+}
+
+static void on_app_menu_preferences_clicked(GtkButton *button, gpointer data) {
+  (void)button;
+  OmniAdwApp *app = (OmniAdwApp *)data;
+  omni_app_menu_hide(app);
+  g_timeout_add(OMNI_MODAL_DISMISS_DELAY_MS, omni_app_menu_request_settings_deferred, app);
+}
+
+static void on_app_menu_about_clicked(GtkButton *button, gpointer data) {
+  (void)button;
+  OmniAdwApp *app = (OmniAdwApp *)data;
+  omni_app_menu_hide(app);
+  present_about_dialog(app);
+}
+
+static void on_app_menu_quit_clicked(GtkButton *button, gpointer data) {
+  (void)button;
+  OmniAdwApp *app = (OmniAdwApp *)data;
+  omni_app_menu_hide(app);
+  if (!app || !app->application) return;
+  if (app->lifecycle_callback) {
+    int32_t should_quit = app->lifecycle_callback(OMNI_ADW_LIFECYCLE_APP_QUIT_REQUEST, app->context);
+    if (!should_quit) return;
+  }
+  g_application_quit(G_APPLICATION(app->application));
+}
+
 static GMenu *create_app_menu_model(OmniAdwApp *app) {
   GMenu *app_menu = g_menu_new();
   char about_label[160];
@@ -3427,6 +3533,45 @@ static void install_application_actions(OmniAdwApp *app) {
   g_object_unref(menubar);
 }
 
+static GtkWidget *create_app_menu_surface(OmniAdwApp *app) {
+  GtkWidget *menu_box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 2);
+  gtk_widget_add_css_class(menu_box, "omni-app-menu-surface");
+  gtk_widget_set_halign(menu_box, GTK_ALIGN_START);
+  gtk_widget_set_valign(menu_box, GTK_ALIGN_START);
+  gtk_widget_set_size_request(menu_box, 240, -1);
+  gtk_widget_set_visible(menu_box, FALSE);
+  omni_accessible_label(menu_box, "Application Menu");
+
+  char about_label[160];
+  snprintf(about_label, sizeof(about_label), "About %s", app && app->title ? app->title : "OmniUI Adwaita");
+
+  GtkWidget *about_button = gtk_button_new_with_label(about_label);
+  gtk_widget_add_css_class(about_button, "flat");
+  gtk_widget_set_halign(about_button, GTK_ALIGN_FILL);
+  gtk_widget_set_hexpand(about_button, TRUE);
+  omni_accessible_description(about_button, "Shows app information");
+  g_signal_connect(about_button, "clicked", G_CALLBACK(on_app_menu_about_clicked), app);
+  gtk_box_append(GTK_BOX(menu_box), about_button);
+
+  GtkWidget *settings_button = gtk_button_new_with_label("Settings...");
+  gtk_widget_add_css_class(settings_button, "flat");
+  gtk_widget_set_halign(settings_button, GTK_ALIGN_FILL);
+  gtk_widget_set_hexpand(settings_button, TRUE);
+  omni_accessible_description(settings_button, "Opens app settings");
+  g_signal_connect(settings_button, "clicked", G_CALLBACK(on_app_menu_preferences_clicked), app);
+  gtk_box_append(GTK_BOX(menu_box), settings_button);
+
+  GtkWidget *quit_button = gtk_button_new_with_label("Quit");
+  gtk_widget_add_css_class(quit_button, "flat");
+  gtk_widget_set_halign(quit_button, GTK_ALIGN_FILL);
+  gtk_widget_set_hexpand(quit_button, TRUE);
+  omni_accessible_description(quit_button, "Quits the app");
+  g_signal_connect(quit_button, "clicked", G_CALLBACK(on_app_menu_quit_clicked), app);
+  gtk_box_append(GTK_BOX(menu_box), quit_button);
+
+  return menu_box;
+}
+
 static void on_app_activate(GApplication *application, gpointer data) {
   OmniAdwApp *app = (OmniAdwApp *)data;
   install_application_actions(app);
@@ -3437,6 +3582,9 @@ static void on_app_activate(GApplication *application, gpointer data) {
     gtk_window_set_default_size(GTK_WINDOW(app->window), app->default_width, app->default_height);
     g_signal_connect(app->window, "close-request", G_CALLBACK(on_main_window_close_request), app);
     omni_accessible_label(app->window, app->title ? app->title : "OmniUI Adwaita");
+    app->root_overlay = gtk_overlay_new();
+    gtk_widget_add_css_class(app->root_overlay, "omni-root-overlay");
+    omni_widget_expand(app->root_overlay, TRUE);
     app->shell = adw_toolbar_view_new();
     gtk_widget_add_css_class(app->shell, "omni-shell");
     omni_widget_expand(app->shell, TRUE);
@@ -5251,6 +5399,18 @@ static void on_window_click_pressed(GtkGestureClick *gesture, int n_press, doubl
   guint action_payload = 0;
   GtkWidget *window = gtk_event_controller_get_widget(GTK_EVENT_CONTROLLER(gesture));
   GtkWidget *picked = window ? gtk_widget_pick(window, x, y, GTK_PICK_DEFAULT) : NULL;
+  if (app && app->app_menu_surface && gtk_widget_get_visible(app->app_menu_surface)) {
+    gboolean menu_hit = omni_point_in_widget_bounds(app->app_menu_surface, window, x, y);
+    gboolean button_hit = omni_point_in_widget_bounds(app->app_menu_button, window, x, y);
+    if (menu_hit) {
+      omni_record_click_start(gesture, x, y);
+      return;
+    }
+    if (!button_hit && !omni_widget_is_or_descendant(picked, app->app_menu_surface) &&
+        !omni_widget_is_or_descendant(picked, app->app_menu_button)) {
+      omni_app_menu_hide(app);
+    }
+  }
   gboolean native_interactive = omni_widget_or_parent_is_native_interactive(picked);
   if (native_interactive) {
     omni_record_click_start(gesture, x, y);
@@ -5286,17 +5446,15 @@ static void on_window_click_released(GtkGestureClick *gesture, int n_press, doub
   if (!omni_click_is_stationary(gesture, x, y)) return;
   OmniAdwApp *app = (OmniAdwApp *)data;
   guint button = gtk_gesture_single_get_current_button(GTK_GESTURE_SINGLE(gesture));
-  int32_t event_type = button == GDK_BUTTON_SECONDARY ? OMNI_ADW_EVENT_RIGHT_MOUSE_UP : OMNI_ADW_EVENT_LEFT_MOUSE_UP;
-  GdkModifierType state = omni_adw_current_controller_state(GTK_EVENT_CONTROLLER(gesture));
   GtkWidget *window = gtk_event_controller_get_widget(GTK_EVENT_CONTROLLER(gesture));
   GtkWidget *picked = window ? gtk_widget_pick(window, x, y, GTK_PICK_DEFAULT) : NULL;
+  if (app && app->app_menu_surface &&
+      omni_point_in_widget_bounds(app->app_menu_surface, window, x, y)) {
+    return;
+  }
   gboolean native_interactive = omni_widget_or_parent_is_native_interactive(picked);
   if (native_interactive) return;
   if (button != GDK_BUTTON_PRIMARY) return;
-  if (omni_adw_dispatch_native_event(app, event_type, x, y, n_press, state, 0)) {
-    if (!native_interactive) gtk_gesture_set_state(GTK_GESTURE(gesture), GTK_EVENT_SEQUENCE_CLAIMED);
-    return;
-  }
   GtkWidget *action_widget = picked;
   while (action_widget) {
     int action_id = GPOINTER_TO_INT(g_object_get_data(G_OBJECT(action_widget), "omni-action-id"));

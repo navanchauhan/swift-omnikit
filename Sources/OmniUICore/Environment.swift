@@ -11,6 +11,10 @@ public protocol EnvironmentKey {
     static var defaultValue: Value { get }
 }
 
+@attached(accessor)
+@attached(peer, names: prefixed(_OmniEntryKey_))
+public macro Entry() = #externalMacro(module: "SwiftUIMacros", type: "EntryMacro")
+
 public struct EnvironmentValues: @unchecked Sendable {
     private final class GlobalObjects: @unchecked Sendable {
         private let lock = NSLock()
@@ -172,6 +176,10 @@ private enum _OpenURLKey: EnvironmentKey {
 
 private enum _OpenSettingsKey: EnvironmentKey {
     static let defaultValue: OpenSettingsAction = OpenSettingsAction()
+}
+
+private enum _OpenWindowKey: EnvironmentKey {
+    static let defaultValue: OpenWindowAction = OpenWindowAction()
 }
 
 private enum _EditModeKey: EnvironmentKey {
@@ -489,6 +497,11 @@ public extension EnvironmentValues {
         set { self[_OpenSettingsKey.self] = newValue }
     }
 
+    var openWindow: OpenWindowAction {
+        get { self[_OpenWindowKey.self] }
+        set { self[_OpenWindowKey.self] = newValue }
+    }
+
     var editMode: Binding<EditMode>? {
         get { self[_EditModeKey.self] }
         set { self[_EditModeKey.self] = newValue }
@@ -750,7 +763,6 @@ struct _EnvironmentValueProvider<V>: View, _PrimitiveView {
 
 public struct _AnyButtonStyle: @unchecked Sendable {
     let _makeBody: @MainActor (ButtonStyleConfiguration) -> AnyView
-    @MainActor
     public init<S: ButtonStyle>(_ style: S) {
         _makeBody = { config in AnyView(style.makeBody(configuration: config)) }
     }

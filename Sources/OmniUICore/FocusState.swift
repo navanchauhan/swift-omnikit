@@ -19,6 +19,12 @@ public struct FocusState<Value: Hashable> {
         self.init(wrappedValue: false, fileID: fileID, line: line)
     }
 
+    // SwiftUI also allows optional focus state values, e.g.
+    // `@FocusState private var focusedField: Field?`.
+    public init<Wrapped>(fileID: StaticString = #fileID, line: UInt = #line) where Value == Wrapped? {
+        self.init(wrappedValue: nil, fileID: fileID, line: line)
+    }
+
     public var wrappedValue: Value {
         get {
             if let resolved = location.resolved {

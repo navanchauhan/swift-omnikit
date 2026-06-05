@@ -482,6 +482,7 @@ public final class _UIRuntime: @unchecked Sendable {
         menuCaptureResults[captureID, default: []].append(item)
     }
 
+    @MainActor
     func _invokeCapturedMenuItem(_ item: _MenuCaptureItem) {
         _UIRuntime.$_currentEnvironment.withValue(item.env) {
             _BuildContext.withRuntime(self, path: item.actionScopePath) {
@@ -629,6 +630,7 @@ public final class _UIRuntime: @unchecked Sendable {
         _isBuildingFrame = true
     }
 
+    @MainActor
     private func _finishFrameBuild(size: _Size) {
         _isBuildingFrame = false
 
@@ -1063,6 +1065,7 @@ public final class _UIRuntime: @unchecked Sendable {
         _pathKey(prefix: "nav", path: stackPath)
     }
 
+    @MainActor
     func _registerNavDestinationResolver<Value: Hashable>(stackPath: [Int], valueType: Value.Type, destination: @escaping @MainActor (Value) -> AnyView) {
         _noteBuildSideEffect()
         let key = _navKey(stackPath: stackPath)
@@ -1216,6 +1219,7 @@ public final class _UIRuntime: @unchecked Sendable {
     }
 
     @discardableResult
+    @MainActor
     func _performDropFallback(at point: CGPoint) -> Bool {
         guard !activeDragItemProviders.isEmpty else { return false }
         let hitPoint = _Point(x: Int(point.x), y: Int(point.y))
@@ -1228,12 +1232,14 @@ public final class _UIRuntime: @unchecked Sendable {
         return true
     }
 
+    @MainActor
     func _performNativeDragFallback(on view: NSView) -> Bool {
 #if os(Linux)
         guard !activeDragItemProviders.isEmpty, !view.registeredDraggedTypes.isEmpty else { return false }
         let pasteboard = NSPasteboard()
         guard pasteboard.writeObjects(activeDragItemProviders.map(\.object)) else { return false }
-        guard view.registeredDraggedTypes.contains(where: { pasteboard.types.contains($0) }) else { return false }
+        let pasteboardTypes = pasteboard.types ?? []
+        guard view.registeredDraggedTypes.contains(where: { pasteboardTypes.contains($0) }) else { return false }
 
         let windowPoint: NSPoint
         if let currentInvokedActionID,
@@ -1267,6 +1273,7 @@ public final class _UIRuntime: @unchecked Sendable {
         _markDirty()
     }
 
+    @MainActor
     func _registerOnAppear(path: [Int], action: @escaping () -> Void) {
         _noteBuildSideEffect()
         let key = _viewPathKey(path: path)
@@ -1290,6 +1297,7 @@ public final class _UIRuntime: @unchecked Sendable {
         onDisappearSeenThisFrame.insert(key)
     }
 
+    @MainActor
     func _invokeAction(_ id: _ActionID) {
         guard let entry = actions[id] else { return }
         let previousInvokedActionID = currentInvokedActionID
@@ -1310,6 +1318,7 @@ public final class _UIRuntime: @unchecked Sendable {
 
     /// Public entry point for invoking an action by its raw integer ID.
     /// Used by renderers that need to fire actions from native widgets.
+    @MainActor
     public func invokeActionByRawID(_ rawID: Int) {
         _invokeAction(_ActionID(raw: rawID))
     }
@@ -1342,6 +1351,7 @@ public final class _UIRuntime: @unchecked Sendable {
     }
 
     @discardableResult
+    @MainActor
     public func setDateForRawActionID(_ rawID: Int, timestamp: TimeInterval) -> Bool {
         let id = _ActionID(raw: rawID)
         guard let entry = dateSetters[id] else { return false }
@@ -1355,6 +1365,7 @@ public final class _UIRuntime: @unchecked Sendable {
     }
 
     @discardableResult
+    @MainActor
     public func setDoubleForRawActionID(_ rawID: Int, value: Double) -> Bool {
         let id = _ActionID(raw: rawID)
         guard let entry = doubleSetters[id] else { return false }
@@ -1368,6 +1379,7 @@ public final class _UIRuntime: @unchecked Sendable {
     }
 
     @discardableResult
+    @MainActor
     public func setStringForRawActionID(_ rawID: Int, value: String) -> Bool {
         let id = _ActionID(raw: rawID)
         guard let entry = stringSetters[id] else { return false }
@@ -1707,6 +1719,7 @@ public final class _UIRuntime: @unchecked Sendable {
         _setFocus(path: next)
     }
 
+    @MainActor
     public func activateFocused() {
         guard let f = focusedPath, let id = focusActivation[f] else { return }
         _invokeAction(id)
@@ -1747,18 +1760,21 @@ public final class _UIRuntime: @unchecked Sendable {
     }
 
     @discardableResult
+    @MainActor
     private func _dispatchKeyPress(kind: Int, codepoint: UInt32) -> Bool {
         guard let key = _keyEquivalent(kind: kind, codepoint: codepoint) else { return false }
         return _dispatchKeyPress(key)
     }
 
     @discardableResult
+    @MainActor
     private func _dispatchKeyPress(event: _KeyEvent) -> Bool {
         guard let key = _keyEquivalent(event: event) else { return false }
         return _dispatchKeyPress(key)
     }
 
     @discardableResult
+    @MainActor
     private func _dispatchKeyPress(_ key: KeyEquivalent) -> Bool {
         guard let focusedPath else { return false }
         var candidate = focusedPath
@@ -1825,6 +1841,7 @@ public final class _UIRuntime: @unchecked Sendable {
     }
 
     @discardableResult
+    @MainActor
     public func invokeKeyboardShortcut(_ key: KeyEquivalent, modifiers: EventModifiers = []) -> Bool {
         func lookup(_ mods: EventModifiers) -> _ActionID? {
             let entries = keyboardShortcuts[KeyboardShortcut(key, modifiers: mods)] ?? []
@@ -2268,6 +2285,7 @@ extension _UIRuntime {
         return id
     }
 
+    @MainActor
     func updateHover(_ id: _HoverID?) {
         guard activeHoverID != id else { return }
         if let previous = activeHoverID, let entry = hoverHandlers[previous] {
@@ -2288,6 +2306,7 @@ extension _UIRuntime {
         _markDirty()
     }
 
+    @MainActor
     public func clearHover() {
         updateHover(nil)
     }
@@ -2299,6 +2318,7 @@ extension _UIRuntime {
     }
 
     @discardableResult
+    @MainActor
     public func invokeExitCommand() -> Bool {
         guard let entry = exitCommand else { return false }
         _UIRuntime.$_currentEnvironment.withValue(entry.env) {
@@ -2309,6 +2329,7 @@ extension _UIRuntime {
         return true
     }
 
+    @MainActor
     public func submitFocusedTextEditor() {
         guard let p = focusedPath, let entry = submitHandlers[p] else { return }
         _UIRuntime.$_currentEnvironment.withValue(entry.env) {
@@ -2501,7 +2522,7 @@ extension _UIRuntime {
 }
 
 struct _TextEditor {
-    let handle: @MainActor (_KeyEvent) -> Void
+    let handle: (_KeyEvent) -> Void
 }
 
 public enum _KeyEvent: Sendable {
@@ -2680,12 +2701,13 @@ private func _isPrefix(_ prefix: [Int], of path: [Int]) -> Bool {
     return zip(prefix, path).allSatisfy { $0 == $1 }
 }
 
+@MainActor
 struct _BuildContext {
     let runtime: _UIRuntime
     var path: [Int]
     var nextChildIndex: Int
 
-    static func withRuntime<T>(_ runtime: _UIRuntime, path: [Int], _ body: () -> T) -> T {
+    static func withRuntime<T>(_ runtime: _UIRuntime, path: [Int], _ body: @MainActor () -> T) -> T {
         let env = _UIRuntime._currentEnvironment ?? runtime._baseEnvironment
         return _UIRuntime.$_current.withValue(runtime, operation: {
             _UIRuntime.$_currentPath.withValue(path, operation: {
@@ -2694,17 +2716,14 @@ struct _BuildContext {
         })
     }
 
-    @MainActor
     mutating func buildChild<V: View>(_ view: V) -> _VNode {
         buildChild(view, pathComponent: nil)
     }
 
-    @MainActor
     mutating func buildIdentifiedChild<V: View, ID: Hashable>(_ view: V, id: ID) -> _VNode {
         buildChild(view, pathComponent: Self.stablePathComponent(for: AnyHashable(id)))
     }
 
-    @MainActor
     private mutating func buildChild<V: View>(_ view: V, pathComponent: Int?) -> _VNode {
         let index = nextChildIndex
         nextChildIndex += 1

@@ -16,10 +16,10 @@ public struct ButtonStyleConfiguration {
     }
 }
 
+@MainActor
 public protocol ButtonStyle {
     associatedtype Body: View
     typealias Configuration = ButtonStyleConfiguration
-    @MainActor
     @ViewBuilder func makeBody(configuration: Configuration) -> Body
 }
 
@@ -56,6 +56,10 @@ public extension ButtonStyle where Self == BorderlessButtonStyle {
     static var borderless: BorderlessButtonStyle { BorderlessButtonStyle() }
 }
 
+public extension ButtonStyle where Self == LinkButtonStyle {
+    static var link: LinkButtonStyle { LinkButtonStyle() }
+}
+
 public extension ButtonStyle where Self == BorderedProminentButtonStyle {
     static var borderedProminent: BorderedProminentButtonStyle { BorderedProminentButtonStyle() }
 }
@@ -64,7 +68,11 @@ public extension ButtonStyle where Self == BorderedProminentButtonStyle {
 
 public protocol ToggleStyle {}
 
-public struct SwitchToggleStyle: ToggleStyle, Hashable, Sendable { public init() {} }
+public struct SwitchToggleStyle: ToggleStyle, Hashable, Sendable {
+    public var tint: Color?
+    public init() { self.tint = nil }
+    public init(tint: Color) { self.tint = tint }
+}
 public struct CheckboxToggleStyle: ToggleStyle, Hashable, Sendable { public init() {} }
 
 public extension ToggleStyle where Self == SwitchToggleStyle {
@@ -184,10 +192,10 @@ public struct LabelStyleConfiguration {
     }
 }
 
+@MainActor
 public protocol LabelStyle {
     associatedtype Body: View
     typealias Configuration = LabelStyleConfiguration
-    @MainActor
     @ViewBuilder func makeBody(configuration: Configuration) -> Body
 }
 

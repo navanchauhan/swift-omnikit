@@ -9,6 +9,29 @@ public typealias LocalizedStringKey = String
 import FoundationNetworking
 #endif
 
+public extension String.StringInterpolation {
+    mutating func appendInterpolation(_ date: Date, style: Text.DateStyle) {
+        switch style {
+        case .date:
+            appendLiteral(DateFormatter.localizedString(from: date, dateStyle: .short, timeStyle: .none))
+        case .time:
+            appendLiteral(DateFormatter.localizedString(from: date, dateStyle: .none, timeStyle: .short))
+        case .relative:
+            let seconds = Int(Date().timeIntervalSince(date))
+            switch abs(seconds) {
+            case 0..<60:
+                appendLiteral("now")
+            case 60..<3600:
+                appendLiteral("\(abs(seconds) / 60)m")
+            case 3600..<86_400:
+                appendLiteral("\(abs(seconds) / 3600)h")
+            default:
+                appendLiteral("\(abs(seconds) / 86_400)d")
+            }
+        }
+    }
+}
+
 struct _LazyViewport {
     let axis: _Axis
     let offset: Int
@@ -44,6 +67,7 @@ public struct Text: View, _PrimitiveView {
     public enum DateStyle: Sendable {
         case date
         case time
+        case relative
     }
 
     public init(_ content: String) {
@@ -57,6 +81,18 @@ public struct Text: View, _PrimitiveView {
             self.content = DateFormatter.localizedString(from: date, dateStyle: .short, timeStyle: .none)
         case .time:
             self.content = DateFormatter.localizedString(from: date, dateStyle: .none, timeStyle: .short)
+        case .relative:
+            let seconds = Int(Date().timeIntervalSince(date))
+            switch abs(seconds) {
+            case 0..<60:
+                self.content = "now"
+            case 60..<3600:
+                self.content = "\(abs(seconds) / 60)m"
+            case 3600..<86_400:
+                self.content = "\(abs(seconds) / 3600)h"
+            default:
+                self.content = "\(abs(seconds) / 86_400)d"
+            }
         }
         self._segments = nil
     }
@@ -106,6 +142,38 @@ public struct Text: View, _PrimitiveView {
             return .truncatedText(transformedContent, mode: truncMode)
         }
         return node
+    }
+
+    private func applyingForeground(_ color: Color) -> Text {
+        let segments = (_segments ?? [_TextSegment(content)]).map {
+            _TextSegment($0.content, fg: color, bold: $0.isBold, italic: $0.isItalic)
+        }
+        return Text(_content: segments.map(\.content).joined(), segments: segments)
+    }
+
+    public func foregroundColor(_ color: Color) -> Text {
+        applyingForeground(color)
+    }
+
+    public func foregroundStyle(_ color: Color) -> Text {
+        applyingForeground(color)
+    }
+
+    public func foregroundStyle<S: ShapeStyle>(_ style: S) -> Text {
+        if let color = style as? Color {
+            return applyingForeground(color)
+        }
+        return self
+    }
+
+    public func font(_ font: Font?) -> Text {
+        _ = font
+        return self
+    }
+
+    public func lineSpacing(_ spacing: CGFloat) -> Text {
+        _ = spacing
+        return self
     }
 }
 
@@ -294,8 +362,9 @@ public struct ScrollView<Content: View>: View, _PrimitiveView {
 public struct ScrollViewProxy {
     let _scrollTo: (AnyHashable, Alignment?) -> Void
 
-    public func scrollTo<ID: Hashable>(_ id: ID, anchor: Alignment? = nil) {
-        _scrollTo(AnyHashable(id), anchor)
+    public func scrollTo<ID: Hashable>(_ id: ID, anchor: UnitPoint? = nil) {
+        _ = anchor
+        _scrollTo(AnyHashable(id), nil)
     }
 }
 
@@ -322,6 +391,11 @@ public struct ScrollViewReader<Content: View>: View, _PrimitiveView {
 
 public struct GeometryProxy: Sendable {
     public let size: CGSize
+
+    public func frame(in coordinateSpace: CoordinateSpace) -> CGRect {
+        _ = coordinateSpace
+        return CGRect(origin: .zero, size: size)
+    }
 }
 
 public struct Anchor<Value> {
@@ -673,6 +747,12 @@ public struct TimelineView<Content: View>: View, _PrimitiveView {
         }
     }
 
+    public init<V: View>(_ schedule: PeriodicTimelineSchedule, @ViewBuilder content: @escaping (Context) -> V) where Content == AnyView {
+        self.content = { AnyView(content($0)) }
+        self.tickInterval = UInt64(max(0.001, schedule.interval) * 1_000_000_000)
+        self.cadence = .seconds
+    }
+
     func _makeNode(_ ctx: inout _BuildContext) -> _VNode {
         let path = ctx.path
         let interval = tickInterval
@@ -685,6 +765,20 @@ public struct TimelineView<Content: View>: View, _PrimitiveView {
         }
         let renderDate = Swift.max(now, Date())
         return ctx.buildChild(content(Context(date: renderDate, cadence: cadence)))
+    }
+}
+
+public struct PeriodicTimelineSchedule: Sendable {
+    public let startDate: Date
+    public let interval: TimeInterval
+
+    public init(from startDate: Date, by interval: TimeInterval) {
+        self.startDate = startDate
+        self.interval = interval
+    }
+
+    public static func periodic(from startDate: Date, by interval: TimeInterval) -> PeriodicTimelineSchedule {
+        PeriodicTimelineSchedule(from: startDate, by: interval)
     }
 }
 
@@ -836,7 +930,7 @@ public struct List<Content: View>: View, _PrimitiveView {
     private let content: Content
     private let selection: _AnySelectionAdapter?
     private let actionScopePath: [Int]
-    private let customRowBuilder: (@MainActor (inout _BuildContext) -> [_VNode])?
+    private let customRowBuilder: ((inout _BuildContext) -> [_VNode])?
 
     public init(@ViewBuilder content: () -> Content) {
         self.content = content()
@@ -884,7 +978,7 @@ public struct List<Content: View>: View, _PrimitiveView {
     public init<Data: RandomAccessCollection, ID: Hashable, RowContent: View>(
         _ data: Data,
         id: KeyPath<Data.Element, ID>,
-        @ViewBuilder rowContent: @escaping @MainActor @Sendable (Data.Element) -> RowContent
+        @ViewBuilder rowContent: @escaping (Data.Element) -> RowContent
     ) where Content == ForEach<Data, ID, RowContent> {
         self.content = ForEach(data, id: id, content: rowContent)
         self.selection = nil
@@ -892,10 +986,9 @@ public struct List<Content: View>: View, _PrimitiveView {
         self.customRowBuilder = nil
     }
 
-    @MainActor
     public init<Data: RandomAccessCollection, RowContent: View>(
         _ data: Data,
-        @ViewBuilder rowContent: @escaping @MainActor @Sendable (Data.Element) -> RowContent
+        @ViewBuilder rowContent: @escaping (Data.Element) -> RowContent
     ) where Data.Element: Identifiable, Content == ForEach<Data, Data.Element.ID, RowContent> {
         self.content = ForEach(data, content: rowContent)
         self.selection = nil
@@ -903,11 +996,10 @@ public struct List<Content: View>: View, _PrimitiveView {
         self.customRowBuilder = nil
     }
 
-    @MainActor
     public init<Data: RandomAccessCollection, RowContent: View>(
         _ data: Data,
         children: KeyPath<Data.Element, Data?>,
-        @ViewBuilder rowContent: @escaping @MainActor @Sendable (Data.Element) -> RowContent
+        @ViewBuilder rowContent: @escaping (Data.Element) -> RowContent
     ) where Data.Element: Identifiable, Content == ForEach<Data, Data.Element.ID, RowContent> {
         self.content = ForEach(data, content: rowContent)
         self.selection = nil
@@ -1055,10 +1147,12 @@ public struct GridItem: Hashable, Sendable {
 
     public var size: Size
     public var spacing: CGFloat?
+    public var alignment: Alignment?
 
-    public init(_ size: Size, spacing: CGFloat? = nil) {
+    public init(_ size: Size, spacing: CGFloat? = nil, alignment: Alignment? = nil) {
         self.size = size
         self.spacing = spacing
+        self.alignment = alignment
     }
 }
 
@@ -1140,7 +1234,6 @@ private func _gridColumnCount(_ columns: [GridItem], availableWidth: Int, spacin
     }
 }
 
-@MainActor
 private func _lazyRealizationForGrid(columns: Int) -> _LazyRealization? {
     guard let viewport = _UIRuntime._currentScrollViewport, viewport.axis == .vertical else {
         return nil
@@ -1154,7 +1247,6 @@ private func _lazyRealizationForGrid(columns: Int) -> _LazyRealization? {
     return _LazyRealization(range: lower..<upper, placeholderMode: .individual)
 }
 
-@MainActor
 private func _lazyRealizationForStack() -> _LazyRealization? {
     guard let viewport = _UIRuntime._currentScrollViewport, viewport.axis == .vertical else {
         return nil
@@ -1166,7 +1258,6 @@ private func _lazyRealizationForStack() -> _LazyRealization? {
     return _LazyRealization(range: lower..<(lower + visible), placeholderMode: .compressed)
 }
 
-@MainActor
 private func _withLazyRealizationCleared<T>(_ body: () -> T) -> T {
     _UIRuntime.$_currentLazyRealization.withValue(nil, operation: body)
 }
@@ -1176,11 +1267,11 @@ public struct ForEach<Data: RandomAccessCollection, ID: Hashable, Content: View>
 
     let data: Data
     let id: KeyPath<Data.Element, ID>
-    let content: @MainActor (Data.Element) -> Content
+    let content: (Data.Element) -> Content
     let moveAction: ((IndexSet, Int) -> Void)?
     let deleteAction: ((IndexSet) -> Void)?
 
-    public init(_ data: Data, id: KeyPath<Data.Element, ID>, @ViewBuilder content: @escaping @MainActor @Sendable (Data.Element) -> Content) {
+    public init(_ data: Data, id: KeyPath<Data.Element, ID>, @ViewBuilder content: @escaping (Data.Element) -> Content) {
         self.data = data
         self.id = id
         self.content = content
@@ -1188,7 +1279,7 @@ public struct ForEach<Data: RandomAccessCollection, ID: Hashable, Content: View>
         self.deleteAction = nil
     }
 
-    public init(_ data: Data, @ViewBuilder content: @escaping @MainActor @Sendable (Data.Element) -> Content) where Data.Element: Identifiable, ID == Data.Element.ID {
+    public init(_ data: Data, @ViewBuilder content: @escaping (Data.Element) -> Content) where Data.Element: Identifiable, ID == Data.Element.ID {
         self.data = data
         self.id = \.id
         self.content = content
@@ -1215,7 +1306,6 @@ public struct ForEach<Data: RandomAccessCollection, ID: Hashable, Content: View>
         return .group(nodes)
     }
 
-    @MainActor
     private func _makeLazyNode(_ ctx: inout _BuildContext, realization: _LazyRealization) -> _VNode {
         let count = data.count
         let lower = Swift.min(Swift.max(0, realization.range.lowerBound), count)
@@ -1315,6 +1405,10 @@ public struct ForEach<Data: RandomAccessCollection, ID: Hashable, Content: View>
 }
 
 public extension ForEach {
+    init(_ data: Range<Int>, @ViewBuilder content: @escaping (Int) -> Content) where Data == Range<Int>, ID == Int {
+        self.init(data, id: \.self, content: content)
+    }
+
     func onMove(perform action: ((IndexSet, Int) -> Void)?) -> ForEach {
         ForEach(data, id: id, content: content, moveAction: action, deleteAction: deleteAction)
     }
@@ -1326,7 +1420,7 @@ public extension ForEach {
     private init(
         _ data: Data,
         id: KeyPath<Data.Element, ID>,
-        content: @escaping @MainActor @Sendable (Data.Element) -> Content,
+        content: @escaping (Data.Element) -> Content,
         moveAction: ((IndexSet, Int) -> Void)?,
         deleteAction: ((IndexSet) -> Void)?
     ) {
@@ -1341,7 +1435,7 @@ public extension ForEach {
 public extension ForEach {
     init<BoundData>(
         _ data: Binding<BoundData>,
-        @ViewBuilder content: @escaping @MainActor @Sendable (Binding<BoundData.Element>) -> Content
+        @ViewBuilder content: @escaping (Binding<BoundData.Element>) -> Content
     ) where Data == [Binding<BoundData.Element>],
             ID == BoundData.Element.ID,
             BoundData: MutableCollection & RandomAccessCollection,
@@ -1490,12 +1584,11 @@ public struct NavigationStack<Content: View>: View, _PrimitiveView {
 public struct NavigationLink<Label: View, Destination: View>: View, _PrimitiveView {
     public typealias Body = Never
 
-    let makeDestination: (@MainActor () -> AnyView)?
+    let makeDestination: (() -> AnyView)?
     let navValue: AnyHashable?
     let label: Label
     let actionScopePath: [Int]
 
-    @MainActor
     public init(destination: @escaping () -> Destination, @ViewBuilder label: () -> Label) {
         self.makeDestination = { AnyView(destination()) }
         self.navValue = nil
@@ -1503,7 +1596,6 @@ public struct NavigationLink<Label: View, Destination: View>: View, _PrimitiveVi
         self.actionScopePath = _UIRuntime._currentPath ?? []
     }
 
-    @MainActor
     public init(destination: Destination, @ViewBuilder label: () -> Label) {
         self.makeDestination = { AnyView(destination) }
         self.navValue = nil
@@ -1511,7 +1603,6 @@ public struct NavigationLink<Label: View, Destination: View>: View, _PrimitiveVi
         self.actionScopePath = _UIRuntime._currentPath ?? []
     }
 
-    @MainActor
     public init(_ title: String, destination: @escaping () -> Destination) where Label == Text {
         self.makeDestination = { AnyView(destination()) }
         self.navValue = nil
@@ -1519,7 +1610,6 @@ public struct NavigationLink<Label: View, Destination: View>: View, _PrimitiveVi
         self.actionScopePath = _UIRuntime._currentPath ?? []
     }
 
-    @MainActor
     public init(_ title: String, destination: Destination) where Label == Text {
         self.makeDestination = { AnyView(destination) }
         self.navValue = nil
@@ -1582,8 +1672,8 @@ public struct NavigationSplitView<Sidebar: View, Detail: View>: View, _Primitive
     public typealias Body = Never
 
     let columnVisibility: Binding<NavigationSplitViewVisibility>
-    let sidebar: Sidebar
-    let detail: Detail
+    let sidebar: AnyView
+    let detail: AnyView
 
     public init(
         columnVisibility: Binding<NavigationSplitViewVisibility> = Binding(get: { .automatic }, set: { _ in }),
@@ -1591,8 +1681,38 @@ public struct NavigationSplitView<Sidebar: View, Detail: View>: View, _Primitive
         @ViewBuilder detail: () -> Detail
     ) {
         self.columnVisibility = columnVisibility
-        self.sidebar = sidebar()
-        self.detail = detail()
+        self.sidebar = AnyView(sidebar())
+        self.detail = AnyView(detail())
+    }
+
+    public init(
+        columnVisibility: Binding<NavigationSplitViewVisibility> = Binding(get: { .automatic }, set: { _ in }),
+        preferredCompactColumn: Binding<NavigationSplitViewColumn>,
+        @ViewBuilder sidebar: () -> Sidebar,
+        @ViewBuilder detail: () -> Detail
+    ) {
+        _ = preferredCompactColumn
+        self.columnVisibility = columnVisibility
+        self.sidebar = AnyView(sidebar())
+        self.detail = AnyView(detail())
+    }
+
+    public init<Content: View>(
+        columnVisibility: Binding<NavigationSplitViewVisibility> = Binding(get: { .automatic }, set: { _ in }),
+        preferredCompactColumn: Binding<NavigationSplitViewColumn>,
+        @ViewBuilder sidebar: () -> Sidebar,
+        @ViewBuilder content: () -> Content,
+        @ViewBuilder detail: () -> Detail
+    ) {
+        _ = preferredCompactColumn
+        self.columnVisibility = columnVisibility
+        self.sidebar = AnyView(sidebar())
+        self.detail = AnyView(
+            HStack(spacing: 0) {
+                content()
+                detail()
+            }
+        )
     }
 
     func _makeNode(_ ctx: inout _BuildContext) -> _VNode {
@@ -1923,7 +2043,6 @@ public struct ContentUnavailableView<Label: View, Description: View, Actions: Vi
 }
 
 extension ContentUnavailableView where Label == AnyView, Description == AnyView, Actions == EmptyView {
-    @MainActor
     public init(_ title: String, systemImage: String, description: Text) {
         self.label = AnyView(VStack(spacing: 0) {
             Image(systemName: systemImage)
@@ -1933,7 +2052,6 @@ extension ContentUnavailableView where Label == AnyView, Description == AnyView,
         self.actions = EmptyView()
     }
 
-    @MainActor
     public init(_ title: String, systemImage: String) {
         self.label = AnyView(VStack(spacing: 0) {
             Image(systemName: systemImage)
@@ -1943,7 +2061,6 @@ extension ContentUnavailableView where Label == AnyView, Description == AnyView,
         self.actions = EmptyView()
     }
 
-    @MainActor
     public static var search: ContentUnavailableView {
         ContentUnavailableView(
             "No Results",
@@ -2025,15 +2142,15 @@ public struct Table<Data: RandomAccessCollection, ID: Hashable, RowContent: View
 
     let data: Data
     let id: KeyPath<Data.Element, ID>
-    let rowContent: @MainActor @Sendable (Data.Element) -> RowContent
+    let rowContent: (Data.Element) -> RowContent
 
-    public init(_ data: Data, id: KeyPath<Data.Element, ID>, @ViewBuilder rowContent: @escaping @MainActor @Sendable (Data.Element) -> RowContent) {
+    public init(_ data: Data, id: KeyPath<Data.Element, ID>, @ViewBuilder rowContent: @escaping (Data.Element) -> RowContent) {
         self.data = data
         self.id = id
         self.rowContent = rowContent
     }
 
-    public init(_ data: Data, @ViewBuilder rowContent: @escaping @MainActor @Sendable (Data.Element) -> RowContent) where Data.Element: Identifiable, ID == Data.Element.ID {
+    public init(_ data: Data, @ViewBuilder rowContent: @escaping (Data.Element) -> RowContent) where Data.Element: Identifiable, ID == Data.Element.ID {
         self.data = data
         self.id = \.id
         self.rowContent = rowContent
@@ -2387,6 +2504,24 @@ public struct TextField: View, _PrimitiveView {
         self.actionScopePath = _UIRuntime._currentPath ?? []
     }
 
+    public init<Value: LosslessStringConvertible>(
+        _ placeholder: String,
+        value: Binding<Value>,
+        formatter: NumberFormatter
+    ) {
+        _ = formatter
+        self.placeholder = placeholder
+        self.text = Binding<String>(
+            get: { String(value.wrappedValue) },
+            set: { newValue in
+                if let parsed = Value(newValue.trimmingCharacters(in: .whitespacesAndNewlines)) {
+                    value.wrappedValue = parsed
+                }
+            }
+        )
+        self.actionScopePath = _UIRuntime._currentPath ?? []
+    }
+
     func _makeNode(_ ctx: inout _BuildContext) -> _VNode {
         let runtime = ctx.runtime
         let env = _currentEnvironmentValues(for: ctx)
@@ -2412,18 +2547,15 @@ public struct TextField: View, _PrimitiveView {
             var scalars = Array(text.wrappedValue.unicodeScalars)
             cursor = min(max(0, cursor), scalars.count)
 
-            @MainActor
             func save() {
                 text.wrappedValue = String(String.UnicodeScalarView(scalars))
                 runtime._setTextCursor(path: controlPath, cursor)
             }
 
-            @MainActor
             func isURLField() -> Bool {
                 keyboardType == .URL || contentType == .URL
             }
 
-            @MainActor
             func shouldUppercase(_ scalar: UnicodeScalar) -> Bool {
                 guard !isURLField() else { return false }
                 guard let capitalization else { return false }
@@ -2559,9 +2691,21 @@ public struct Picker<SelectionValue: Hashable>: View, _PrimitiveView {
         self.actionScopePath = _UIRuntime._currentPath ?? []
     }
 
-    @MainActor
     public init<Content: View>(_ title: String, selection: Binding<SelectionValue>, @ViewBuilder content: () -> Content) {
         self.title = title
+        self.selection = selection
+        self.options = nil
+        self.content = AnyView(content())
+        self.actionScopePath = _UIRuntime._currentPath ?? []
+    }
+
+    public init<Content: View, Label: View>(
+        selection: Binding<SelectionValue>,
+        @ViewBuilder content: () -> Content,
+        @ViewBuilder label: () -> Label
+    ) {
+        _ = label
+        self.title = ""
         self.selection = selection
         self.options = nil
         self.content = AnyView(content())
@@ -2900,7 +3044,6 @@ private func _formattedDatePickerDate(_ date: Date, style: _DatePickerStyleKind)
 }
 
 
-@MainActor
 private func _currentEnvironmentValues(for ctx: _BuildContext) -> EnvironmentValues {
     _UIRuntime._currentEnvironment ?? ctx.runtime._baseEnvironment
 }
@@ -3428,7 +3571,6 @@ public struct ViewThatFits: View, _PrimitiveView {
     let axes: Axis.Set
     let content: AnyView
 
-    @MainActor
     public init(in axes: Axis.Set = [.horizontal, .vertical], @ViewBuilder content: () -> some View) {
         self.axes = axes
         self.content = AnyView(content())
@@ -3472,7 +3614,6 @@ public struct TextEditor: View, _PrimitiveView {
             var scalars = Array(text.wrappedValue.unicodeScalars)
             var cursor = min(max(0, runtime._getTextCursor(path: controlPath)), scalars.count)
 
-            @MainActor
             func save() {
                 text.wrappedValue = String(String.UnicodeScalarView(scalars))
                 runtime._setTextCursor(path: controlPath, cursor)

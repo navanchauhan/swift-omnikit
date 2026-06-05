@@ -460,10 +460,11 @@ enum _OmniRepresentableFallback {
         #if os(Linux)
         let hostWindow: NSWindow?
         #endif
-        let update: (Any) -> Void
-        let dismantle: () -> Void
+        let update: @MainActor (Any) -> Void
+        let dismantle: @MainActor () -> Void
 
-        init(nsView: AnyObject, update: @escaping (Any) -> Void, dismantle: @escaping () -> Void) {
+        @MainActor
+        init(nsView: AnyObject, update: @escaping @MainActor (Any) -> Void, dismantle: @escaping @MainActor () -> Void) {
             self.nsView = nsView
             #if os(Linux)
             if let view = nsView as? NSView {
@@ -486,10 +487,17 @@ enum _OmniRepresentableFallback {
 
         deinit {
             #if os(Linux)
-            hostWindow?.contentView = nil
+            let hostWindow = hostWindow
+            Task { @MainActor in
+                hostWindow?.contentView = nil
+            }
             #endif
-            (nsView as? _OmniNativeRepresentableDismantleAware)?._omniBeginNativeRepresentableDismantle()
-            dismantle()
+            let nsView = nsView
+            let dismantle = dismantle
+            Task { @MainActor in
+                (nsView as? _OmniNativeRepresentableDismantleAware)?._omniBeginNativeRepresentableDismantle()
+                dismantle()
+            }
         }
     }
 
@@ -551,11 +559,11 @@ enum _OmniRepresentableFallback {
             let nsView = view.makeNSView(context: context)
             entry = NativeEntry(
                 nsView: nsView,
-                update: { next in
+                update: { @MainActor next in
                     guard let typed = next as? R else { return }
                     typed.updateNSView(nsView, context: context)
                 },
-                dismantle: {
+                dismantle: { @MainActor in
                     R.dismantleNSView(nsView, coordinator: coordinator)
                 }
             )
@@ -594,9 +602,9 @@ enum _OmniRepresentableFallback {
            !view.registeredDraggedTypes.isEmpty,
            let runtime = _UIRuntime._current,
            runtime._hasActiveDragFallback() {
-            let id = runtime._registerAction({
-                _ = runtime._performNativeDragFallback(on: view)
-            }, path: path)
+                let id = runtime._registerAction({ @MainActor in
+                    _ = runtime._performNativeDragFallback(on: view)
+                }, path: path)
             runtime._registerFocusable(path: path, activate: id)
             return .tapTarget(id: id, count: 1, child: node)
         }
@@ -618,12 +626,12 @@ enum _OmniRepresentableFallback {
         return nil
     }
 
-    #if os(Linux)
+#if os(Linux)
     @MainActor
     private static func nativeTextFieldNode(for textField: NSTextField, path: [Int]) -> _VNode? {
         guard let runtime = _UIRuntime._current else { return nil }
         let controlPath = path
-        let id = runtime._registerAction({
+        let id = runtime._registerAction({ @MainActor in
             runtime._ensureTextCursorAtEndIfUnset(path: controlPath, text: textField.stringValue)
             runtime._setFocus(path: controlPath)
             if !textField.becomeFirstResponder() {
@@ -632,7 +640,7 @@ enum _OmniRepresentableFallback {
         }, path: controlPath)
         runtime._registerFocusable(path: controlPath, activate: id)
 
-        runtime._registerTextEditor(path: controlPath, _TextEditor(handle: { event in
+        runtime._registerTextEditor(path: controlPath, _TextEditor(handle: { @MainActor event in
             var scalars = Array(textField.stringValue.unicodeScalars)
             var cursor = min(max(0, runtime._getTextCursor(path: controlPath)), scalars.count)
 
@@ -678,7 +686,7 @@ enum _OmniRepresentableFallback {
                 save()
             }
         }))
-        runtime._registerSubmitHandler(controlPath: controlPath, actionScopePath: controlPath) {
+        runtime._registerSubmitHandler(controlPath: controlPath, actionScopePath: controlPath) { @MainActor in
             let editor = textField.currentEditor() ?? NSTextView()
             if textField.delegate?.control(textField, textView: editor, doCommandBy: Selector("insertNewline:")) == true {
                 return
@@ -700,7 +708,6 @@ enum _OmniRepresentableFallback {
     }
     #endif
 
-    @MainActor
     private static func nativeRepresentableKey(typeName: String, path: [Int]) -> String {
         let runtimeID = _UIRuntime._current.map { "runtime:\(ObjectIdentifier($0)):" } ?? "runtime:detached:"
         let pathKey = path.map(String.init).joined(separator: ".")

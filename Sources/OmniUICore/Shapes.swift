@@ -6,7 +6,7 @@ import Foundation
 
 // On Linux, CGPoint/CGSize/CGRect from swift-corelibs-foundation don't
 // conform to Hashable. Provide conformance so Path.Element can derive it.
-#if !canImport(CoreGraphics)
+#if os(Linux)
 extension CGPoint: @retroactive Hashable {
     public func hash(into hasher: inout Hasher) {
         hasher.combine(x)
@@ -66,6 +66,15 @@ public struct Path: Hashable, Sendable, Shape, _PrimitiveView {
     public mutating func addCurve(to p: CGPoint, control1: CGPoint, control2: CGPoint) { elements.append(.curve(to: p, control1: control1, control2: control2)) }
     public mutating func addRect(_ rect: CGRect) { elements.append(.rect(rect)) }
     public mutating func addEllipse(in rect: CGRect) { elements.append(.ellipse(rect)) }
+    public mutating func addArc(center: CGPoint, radius: CGFloat, startAngle: Angle, endAngle: Angle, clockwise: Bool) {
+        _ = startAngle
+        _ = clockwise
+        let point = CGPoint(
+            x: center.x + cos(endAngle.radians) * radius,
+            y: center.y + sin(endAngle.radians) * radius
+        )
+        elements.append(.line(to: point))
+    }
     public mutating func closeSubpath() { elements.append(.closeSubpath) }
 
     func _makeNode(_ ctx: inout _BuildContext) -> _VNode {
@@ -109,6 +118,11 @@ public struct RoundedRectangle: Shape, _PrimitiveView {
 public struct Circle: Shape, _PrimitiveView {
     public typealias Body = Never
     public init() {}
+    public func trim(from startFraction: CGFloat = 0, to endFraction: CGFloat = 1) -> Circle {
+        _ = startFraction
+        _ = endFraction
+        return self
+    }
     func _makeNode(_ ctx: inout _BuildContext) -> _VNode { .shape(_ShapeNode(kind: .circle)) }
 }
 
@@ -135,8 +149,28 @@ public struct FillStyle: Hashable, Sendable {
 }
 
 public struct StrokeStyle: Hashable, Sendable {
+    public enum LineCap: Hashable, Sendable {
+        case butt
+        case round
+        case square
+    }
+
     public var lineWidth: CGFloat
-    public init(lineWidth: CGFloat = 1) { self.lineWidth = lineWidth }
+    public var lineCap: LineCap
+    public var dash: [CGFloat]
+    public var dashPhase: CGFloat
+
+    public init(
+        lineWidth: CGFloat = 1,
+        lineCap: LineCap = .butt,
+        dash: [CGFloat] = [],
+        dashPhase: CGFloat = 0
+    ) {
+        self.lineWidth = lineWidth
+        self.lineCap = lineCap
+        self.dash = dash
+        self.dashPhase = dashPhase
+    }
 }
 
 public struct ShapeView<S: Shape>: View, _PrimitiveView {
@@ -156,19 +190,18 @@ public extension Shape {
         _ShapeStyle(content: AnyView(self), fill: style, stroke: nil, fillColor: Color(content.raw), strokeColor: nil)
     }
 
-    func fill<S>(_ content: S, style: FillStyle = FillStyle()) -> some View {
-        _ = content
-        // Stub: treat arbitrary ShapeStyle-ish values (e.g. gradients) as a simple fill.
-        return _ShapeStyle(content: AnyView(self), fill: style, stroke: nil, fillColor: .secondary, strokeColor: nil)
+    @_disfavoredOverload
+    func fill<S: ShapeStyle>(_ content: S, style: FillStyle = FillStyle()) -> some View {
+        _ShapeStyle(content: AnyView(self), fill: style, stroke: nil, fillColor: _omniShapeColor(from: content), strokeColor: nil)
     }
 
     func stroke(_ content: Color = .primary, style: StrokeStyle = StrokeStyle()) -> some View {
         _ShapeStyle(content: AnyView(self), fill: nil, stroke: style, fillColor: nil, strokeColor: content)
     }
 
-    func stroke<S>(_ content: S, lineWidth: CGFloat = 1) -> some View {
-        _ = content
-        return _ShapeStyle(content: AnyView(self), fill: nil, stroke: StrokeStyle(lineWidth: lineWidth), fillColor: nil, strokeColor: .primary)
+    @_disfavoredOverload
+    func stroke<S: ShapeStyle>(_ content: S, lineWidth: CGFloat = 1) -> some View {
+        _ShapeStyle(content: AnyView(self), fill: nil, stroke: StrokeStyle(lineWidth: lineWidth), fillColor: nil, strokeColor: _omniShapeColor(from: content))
     }
 
     func stroke(lineWidth: CGFloat = 1) -> some View {
@@ -178,6 +211,16 @@ public extension Shape {
     func strokeBorder(_ content: Color = .primary, lineWidth: CGFloat = 1, antialiased: Bool = true) -> some View {
         _ = antialiased
         return stroke(content, style: StrokeStyle(lineWidth: lineWidth))
+    }
+
+    func strokeBorder(_ content: Color = .primary, style: StrokeStyle, antialiased: Bool = true) -> some View {
+        _ = antialiased
+        return stroke(content, style: style)
+    }
+
+    func strokeBorder<S: ShapeStyle>(_ content: S, style: StrokeStyle, antialiased: Bool = true) -> some View {
+        _ = antialiased
+        return stroke(_omniShapeColor(from: content), style: style)
     }
 
     func strokeBorder<S>(_ content: S, lineWidth: CGFloat = 1, antialiased: Bool = true) -> some View {
@@ -190,6 +233,25 @@ public extension Shape {
         _ = antialiased
         return stroke(.primary, style: StrokeStyle(lineWidth: lineWidth))
     }
+}
+
+private func _omniShapeColor(from style: any ShapeStyle) -> Color {
+    if let color = style as? Color {
+        return color
+    }
+    if let material = style as? Material {
+        return Color(material.raw)
+    }
+    if let erased = style as? AnyShapeStyle {
+        return _omniShapeColor(from: erased.storage)
+    }
+    if let gradient = style as? LinearGradient {
+        return gradient.gradient.colors.first ?? .primary
+    }
+    if let gradient = style as? RadialGradient {
+        return gradient.gradient.colors.first ?? .primary
+    }
+    return .primary
 }
 
 private struct _ShapeStyle: View, _PrimitiveView {

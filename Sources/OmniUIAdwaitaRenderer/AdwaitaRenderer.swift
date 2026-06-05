@@ -761,6 +761,7 @@ private final class CallbackBox: @unchecked Sendable {
     }
 }
 
+@MainActor
 private func invokeAdwaitaRawAction(_ rawID: Int, box: CallbackBox) {
     if rawID >= adwaitaStatusItemActionOffset {
         #if os(Linux)
@@ -779,6 +780,7 @@ private func invokeAdwaitaRawAction(_ rawID: Int, box: CallbackBox) {
 }
 
 @discardableResult
+@MainActor
 private func invokeAdwaitaSettingsFallback(box: CallbackBox) -> Bool {
     for label in ["Settings", "Preferences"] {
         if invokeAdwaitaLabel(label, box: box) {
@@ -791,7 +793,8 @@ private func invokeAdwaitaSettingsFallback(box: CallbackBox) -> Bool {
 private func adwaitaActionID(matchingVisibleText label: String, in node: SemanticNode) -> Int? {
     switch node.kind {
     case .button(let actionID, _), .tapTarget(let actionID, _), .toggle(let actionID, _, _):
-        if adwaitaVisibleText(in: node).contains(label) {
+        let accessibleLabel = AdwaitaReconciliation.accessibleLabel(for: node).trimmingCharacters(in: .whitespacesAndNewlines)
+        if accessibleLabel == label || adwaitaVisibleText(in: node).contains(label) {
             return actionID
         }
     case .menu(let actionID, let title, let value, _):
@@ -1176,6 +1179,7 @@ private func runAdwaitaLabelAutomationIfRequested(box: CallbackBox, rerender: @M
 }
 
 @discardableResult
+@MainActor
 private func invokeAdwaitaLabel(_ label: String, box: CallbackBox) -> Bool {
     let toolbarActionID = box.previousToolbar?.actions.first { $0.label == label }?.actionID
     let settingsActionID = box.previousSettingsRoot.flatMap {
@@ -1781,6 +1785,7 @@ private func appKitTransientPresentation(runtime: _UIRuntime, size: _Size) -> Se
     #endif
 }
 
+@MainActor
 private func syncNativeHeaderActions(_ actions: [AdwaitaHeaderToolbar.Action], app: OpaquePointer?) {
     guard let app else { return }
     var allActions = actions
@@ -2168,6 +2173,7 @@ enum AdwaitaNodeBuilder {
         case sidebar
         case horizontal
         case inline
+        case settings
     }
 
     static func offsetActionIDs(in node: SemanticNode, by offset: Int) -> SemanticNode {
@@ -2313,25 +2319,33 @@ enum AdwaitaNodeBuilder {
                 omni_adw_node_append(built, childNode)
             }
         case .tapTarget(let actionID, let tapCount):
-            let label = accessibleLabel(for: node)
-            if rendersAsInlineButton(node, context: context) {
-                built = omni_adw_inline_button_new(label, Int32(actionID), foregroundCSSClass(in: node) ?? "")
-            } else if rendersComplexButtonContent(node) {
-                built = omni_adw_click_container_new(label, Int32(actionID))
+            if let switchRow = switchStyledRow(in: node) {
+                built = omni_adw_switch_row_new(switchRow.title, switchRow.isOn ? 1 : 0, Int32(switchRow.actionID))
             } else {
-                built = omni_adw_button_new(label, Int32(actionID))
-            }
-            if let built {
-                omni_adw_node_set_required_click_count(built, Int32(max(1, tapCount)))
-            }
-            if let built, rendersComplexButtonContent(node), let child = node.children.first, let childNode = build(child, context: .inline) {
-                if shouldExpandVertically(child) {
-                    omni_adw_node_set_expand(childNode, -1, 1)
+                let label = accessibleLabel(for: node)
+                if rendersAsInlineButton(node, context: context) {
+                    built = omni_adw_inline_button_new(label, Int32(actionID), foregroundCSSClass(in: node) ?? "")
+                } else if rendersComplexButtonContent(node) {
+                    built = omni_adw_click_container_new(label, Int32(actionID))
+                } else {
+                    built = omni_adw_button_new(label, Int32(actionID))
                 }
-                omni_adw_node_append(built, childNode)
+                if let built {
+                    omni_adw_node_set_required_click_count(built, Int32(max(1, tapCount)))
+                }
+                if let built, rendersComplexButtonContent(node), let child = node.children.first, let childNode = build(child, context: .inline) {
+                    if shouldExpandVertically(child) {
+                        omni_adw_node_set_expand(childNode, -1, 1)
+                    }
+                    omni_adw_node_append(built, childNode)
+                }
             }
         case .toggle(let actionID, _, let isOn):
-            built = omni_adw_toggle_new(accessibleLabel(for: node), isOn ? 1 : 0, Int32(actionID))
+            if context == .settings {
+                built = omni_adw_switch_row_new(accessibleLabel(for: node), isOn ? 1 : 0, Int32(actionID))
+            } else {
+                built = omni_adw_toggle_new(accessibleLabel(for: node), isOn ? 1 : 0, Int32(actionID))
+            }
         case .textField(let actionID, let placeholder, let text, _, _, let isSecure):
             built = isSecure
                 ? omni_adw_secure_entry_new(placeholder, text, Int32(actionID))
@@ -2357,7 +2371,9 @@ enum AdwaitaNodeBuilder {
                 omni_adw_node_set_sensitive(built, 0)
             }
         case .disabledToggle(let label, let isOn):
-            built = omni_adw_toggle_new(label, isOn ? 1 : 0, 0)
+            built = context == .settings
+                ? omni_adw_switch_row_new(label, isOn ? 1 : 0, 0)
+                : omni_adw_toggle_new(label, isOn ? 1 : 0, 0)
             if let built {
                 omni_adw_node_set_sensitive(built, 0)
             }
@@ -2426,7 +2442,7 @@ enum AdwaitaNodeBuilder {
         case .groupBox(let label):
             guard let group = omni_adw_preferences_group_new(label, "") else { return nil }
             for child in node.children {
-                if let builtChild = build(child, context: context) {
+                if let builtChild = buildSettingsRow(child, context: .settings) {
                     omni_adw_node_append(group, builtChild)
                 }
             }
@@ -2441,7 +2457,7 @@ enum AdwaitaNodeBuilder {
         case .section(let header, let footer):
             guard let group = omni_adw_preferences_group_new(header, footer) else { return nil }
             for child in node.children {
-                if let builtChild = buildSettingsRow(child, context: context) {
+                if let builtChild = buildSettingsRow(child, context: .settings) {
                     omni_adw_node_append(group, builtChild)
                 }
             }
@@ -2571,7 +2587,7 @@ enum AdwaitaNodeBuilder {
     }
 
     private static func childContext(forContainerVertical vertical: Bool, parent: BuildContext) -> BuildContext {
-        if parent == .inline { return .inline }
+        if parent == .inline || parent == .settings { return parent }
         if vertical { return parent == .horizontal ? .normal : parent }
         return .horizontal
     }
@@ -3561,7 +3577,7 @@ enum AdwaitaNodeBuilder {
         if role == .form {
             guard let parent = omni_adw_form_new() else { return nil }
             for child in formRows(from: children) {
-                if let built = buildSettingsRow(child, context: context) {
+                if let built = buildSettingsRow(child, context: .settings) {
                     omni_adw_node_append(parent, built)
                 }
             }
@@ -3650,6 +3666,9 @@ enum AdwaitaNodeBuilder {
     }
 
     private static func buildSettingsRow(_ node: SemanticNode, context: BuildContext) -> OpaquePointer? {
+        if let switchRow = switchStyledRow(in: node) {
+            return omni_adw_switch_row_new(switchRow.title, switchRow.isOn ? 1 : 0, Int32(switchRow.actionID))
+        }
         switch node.kind {
         case .toggle(let actionID, _, let isOn):
             return omni_adw_switch_row_new(accessibleLabel(for: node), isOn ? 1 : 0, Int32(actionID))
@@ -3677,6 +3696,71 @@ enum AdwaitaNodeBuilder {
         default:
             return build(node, context: context)
         }
+    }
+
+    private struct SwitchStyledSettingsRow {
+        var title: String
+        var isOn: Bool
+        var actionID: Int
+    }
+
+    private static func switchStyledRow(in node: SemanticNode) -> SwitchStyledSettingsRow? {
+        switch node.kind {
+        case .tapTarget(let actionID, _):
+            guard let isOn = switchGlyphState(in: node) else { return nil }
+            let title = strippedSwitchTitle(from: accessibleLabel(for: node))
+            return SwitchStyledSettingsRow(
+                title: title.isEmpty ? "Toggle" : title,
+                isOn: isOn,
+                actionID: actionID
+            )
+        case .modifier(let modifier):
+            guard settingsRowModifierAllowsControlDescent(modifier),
+                  node.children.count == 1,
+                  let child = node.children.first else { return nil }
+            return switchStyledRow(in: child)
+        default:
+            return nil
+        }
+    }
+
+    private static func settingsRowModifierAllowsControlDescent(_ modifier: SemanticModifier) -> Bool {
+        switch modifier {
+        case .foreground, .background, .font, .padding, .opacity, .frame,
+             .accessibilityLabel, .accessibilityIdentifier, .accessibilityValue,
+             .accessibilityHint, .help, .noOp:
+            return true
+        case .offset, .clip, .shadow, .badge, .glass, .crt, .contextMenu, .dragSource:
+            return false
+        }
+    }
+
+    private static func switchGlyphState(in node: SemanticNode) -> Bool? {
+        switch node.kind {
+        case .text(let text):
+            if text.contains("[━━●]") { return true }
+            if text.contains("[○━━]") { return false }
+            return nil
+        default:
+            for child in node.children {
+                if let state = switchGlyphState(in: child) {
+                    return state
+                }
+            }
+            return nil
+        }
+    }
+
+    private static func strippedSwitchTitle(from label: String) -> String {
+        let title = label
+            .replacingOccurrences(of: "[━━●]", with: "")
+            .replacingOccurrences(of: "[○━━]", with: "")
+            .replacingOccurrences(of: "  ", with: " ")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        if title.hasPrefix("> ") {
+            return String(title.dropFirst(2)).trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+        return title
     }
 
     private static func settingsRow(title: String, value: String, suffix: OpaquePointer?, enabled: Bool) -> OpaquePointer? {
@@ -4179,6 +4263,7 @@ private extension Array where Element == String {
 }
 
 @discardableResult
+@MainActor
 private func dispatchNativeEventToLocalMonitors(
     eventType: Int,
     x: Double,

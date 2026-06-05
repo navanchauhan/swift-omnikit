@@ -1,6 +1,21 @@
 @_exported import Dispatch
 @_exported import Foundation
 
+public let SUUpdaterAppcastItemNotificationKey = "SUUpdaterAppcastItem"
+
+public final class SUAppcastItem: NSObject {
+    public var displayVersionString: String
+    public var date: Date?
+    public var itemDescription: String?
+
+    public init(displayVersionString: String = "", date: Date? = nil, itemDescription: String? = nil) {
+        self.displayVersionString = displayVersionString
+        self.date = date
+        self.itemDescription = itemDescription
+        super.init()
+    }
+}
+
 #if canImport(ObjectiveC)
 public final class SPUUpdater: NSObject {
     @objc public dynamic var canCheckForUpdates: Bool = false
@@ -70,5 +85,12 @@ public final class SPUStandardUpdaterController {
         userDriverDelegate: AnyObject?
     ) {
         self.updater = SPUUpdater()
+    }
+
+    public func startUpdater() {}
+
+    public func checkForUpdates(_ sender: Any?) {
+        _ = sender
+        updater.checkForUpdates()
     }
 }

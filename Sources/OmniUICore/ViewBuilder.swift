@@ -10,6 +10,15 @@ public enum ViewBuilder {
         expression
     }
 
+    public static func buildExpression(_ expression: Void) -> EmptyView {
+        _ = expression
+        return EmptyView()
+    }
+
+    public static func buildExpression(_ expression: EmptyView) -> EmptyView {
+        expression
+    }
+
     public static func buildExpression<V: View>(_ expression: V) -> AnyView {
         AnyView(expression)
     }
@@ -25,12 +34,22 @@ public enum ViewBuilder {
     // Keep the builder's component type stable (`AnyView`) to avoid generic inference
     // failures in complex `if` / `switch` / availability blocks.
     public static func buildBlock() -> AnyView { AnyView(EmptyView()) }
+    public static func buildBlock(_ content: EmptyView) -> EmptyView { content }
     public static func buildBlock(_ c0: AnyView) -> AnyView { c0 }
 
+    public static func buildPartialBlock(first content: EmptyView) -> EmptyView { content }
     public static func buildPartialBlock(first: AnyView) -> AnyView { first }
 
     public static func buildPartialBlock(accumulated: AnyView, next: AnyView) -> AnyView {
         AnyView(TupleView([accumulated, next]))
+    }
+
+    public static func buildPartialBlock(accumulated: AnyView, next: EmptyView) -> AnyView {
+        accumulated
+    }
+
+    public static func buildPartialBlock(accumulated: EmptyView, next: AnyView) -> AnyView {
+        next
     }
 
     public static func buildBlock(_ c0: AnyView, _ c1: AnyView) -> AnyView {
@@ -95,6 +114,8 @@ public enum ViewBuilder {
 
     public static func buildEither(first: AnyView) -> AnyView { first }
     public static func buildEither(second: AnyView) -> AnyView { second }
+    public static func buildEither(first: EmptyView) -> AnyView { AnyView(first) }
+    public static func buildEither(second: EmptyView) -> AnyView { AnyView(second) }
 
     public static func buildArray(_ components: [AnyView]) -> AnyView {
         AnyView(TupleView(components))

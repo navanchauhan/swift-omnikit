@@ -93,6 +93,11 @@ public struct WindowGroup<Content: View>: Scene {
     public init(@ViewBuilder content: () -> Content) {
         self.content = content()
     }
+
+    public init(id: String, @ViewBuilder content: () -> Content) {
+        _ = id
+        self.content = content()
+    }
 }
 
 public struct Settings<Content: View>: Scene {
@@ -201,9 +206,11 @@ public struct EmptyCommands: Commands { public init() {} }
 
 public enum CommandGroupPlacement: Hashable, Sendable {
     case appInfo
+    case appSettings
     case appTermination
     case help
     case newItem
+    case saveItem
     case textEditing
     case sidebar
     case toolbar
@@ -596,8 +603,17 @@ public extension Scene {
     func defaultSize(width: CGFloat, height: CGFloat) -> some Scene {
         _SceneDefaultSizeProvider(content: self, preferredSize: CGSize(width: width, height: height))
     }
-}
 
+    func windowStyle(_ style: WindowStyle) -> some Scene {
+        _ = style
+        return self
+    }
+
+    func windowToolbarStyle(_ style: WindowToolbarStyle) -> some Scene {
+        _ = style
+        return self
+    }
+}
 
 @MainActor
 public func _sceneRootView<S: Scene>(_ scene: S) -> AnyView? {

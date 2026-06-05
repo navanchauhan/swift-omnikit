@@ -56,12 +56,43 @@ public extension NotificationCenter {
     }
 }
 
+private func _omniColor(from style: any ShapeStyle) -> Color {
+    if let color = style as? Color {
+        return color
+    }
+    if let material = style as? Material {
+        return Color(material.raw)
+    }
+    if let erased = style as? AnyShapeStyle {
+        return _omniColor(from: erased.storage)
+    }
+    if let gradient = style as? LinearGradient {
+        return gradient.gradient.colors.first ?? .secondary
+    }
+    if let gradient = style as? RadialGradient {
+        return gradient.gradient.colors.first ?? .secondary
+    }
+    return .secondary
+}
+
 @MainActor
 public extension View {
     func font(_ font: Font?) -> some View {
         environment(\.font, font)
     }
     func foregroundStyle(_ color: Color) -> some View { _Style(content: AnyView(self), fg: color, bg: nil) }
+    func foregroundStyle<S: ShapeStyle>(_ style: S) -> some View {
+        _Style(content: AnyView(self), fg: _omniColor(from: style), bg: nil)
+    }
+    func foregroundStyle<S0: ShapeStyle, S1: ShapeStyle>(_ primary: S0, _ secondary: S1) -> some View {
+        _ = secondary
+        return foregroundStyle(primary)
+    }
+    func foregroundStyle<S0: ShapeStyle, S1: ShapeStyle, S2: ShapeStyle>(_ primary: S0, _ secondary: S1, _ tertiary: S2) -> some View {
+        _ = secondary
+        _ = tertiary
+        return foregroundStyle(primary)
+    }
     func foregroundColor(_ color: Color) -> some View { _Style(content: AnyView(self), fg: color, bg: nil) }
     func fontWeight(_ weight: Font.Weight?) -> some View {
         switch weight {
@@ -76,6 +107,11 @@ public extension View {
     func bold() -> some View { _TextStyleModifier(content: AnyView(self), style: .bold) }
     func italic() -> some View { _TextStyleModifier(content: AnyView(self), style: .italic) }
     func underline() -> some View { _TextStyleModifier(content: AnyView(self), style: .underline) }
+    func underline(_ active: Bool, pattern: Any? = nil, color: Color? = nil) -> some View {
+        _ = pattern
+        _ = color
+        return active ? AnyView(_TextStyleModifier(content: AnyView(self), style: .underline)) : AnyView(self)
+    }
     func strikethrough() -> some View { _TextStyleModifier(content: AnyView(self), style: .struck) }
     func multilineTextAlignment(_ alignment: TextAlignment) -> some View {
         environment(\.multilineTextAlignment, alignment)
@@ -85,6 +121,10 @@ public extension View {
     }
     func lineLimit(_ limits: ClosedRange<Int>) -> some View {
         environment(\.lineLimit, limits.upperBound)
+    }
+    func lineSpacing(_ spacing: CGFloat) -> some View {
+        _ = spacing
+        return self
     }
     func monospacedDigit() -> some View {
         environment(\.monospacedDigits, true)
@@ -122,6 +162,30 @@ public extension View {
     }
     func transition(_ t: AnyTransition) -> some View {
         _TransitionModifier(content: AnyView(self), transition: t)
+    }
+    func animation<V: Equatable>(_ animation: Animation?, value: V) -> some View {
+        _AnimationModifier(
+            content: AnyView(self),
+            animation: animation.map { _AnyAnimation(curve: $0.curve, duration: $0.duration) },
+            value: value
+        )
+    }
+    func tracking(_ value: CGFloat) -> some View {
+        _ = value
+        return self
+    }
+    func toolbarRole(_ role: ToolbarRole) -> some View {
+        _ = role
+        return self
+    }
+    func handlesExternalEvents(matching conditions: Set<String>) -> some View {
+        _ = conditions
+        return self
+    }
+    func handlesExternalEvents(preferring preferred: Set<String>, allowing allowed: Set<String>) -> some View {
+        _ = preferred
+        _ = allowed
+        return self
     }
     func ignoresSafeArea() -> some View { _IgnoresSafeAreaModifier(content: AnyView(self)) }
     func clipShape<S: Shape>(_ shape: S, style: FillStyle = FillStyle()) -> some View {
@@ -221,14 +285,23 @@ public extension View {
         _CRTEffectModifier(content: AnyView(self), style: style)
     }
 
+    @_disfavoredOverload
     func background<B: View>(_ background: B) -> some View { _Background(content: AnyView(self), background: AnyView(background)) }
+    @_disfavoredOverload
     func background<B: View>(@ViewBuilder _ background: () -> B) -> some View {
         _Background(content: AnyView(self), background: AnyView(background()))
     }
     func background(_ color: Color) -> some View { _Style(content: AnyView(self), fg: nil, bg: color) }
+    func background<S: ShapeStyle>(_ style: S) -> some View {
+        _Style(content: AnyView(self), fg: nil, bg: _omniColor(from: style))
+    }
     func background(_ color: Color, ignoresSafeAreaEdges edges: Edge.Set) -> some View {
         _ = edges
         return background(color)
+    }
+    func background<S: ShapeStyle>(_ style: S, ignoresSafeAreaEdges edges: Edge.Set) -> some View {
+        _ = edges
+        return background(style)
     }
     func background<S: Shape>(_ color: Color, in shape: S, fillStyle: FillStyle = FillStyle()) -> some View {
         background {
@@ -256,12 +329,27 @@ public extension View {
         }
     }
     func overlay<O: View>(_ overlay: O) -> some View { _Overlay(content: AnyView(self), overlay: AnyView(overlay)) }
+    func overlay<O: View>(_ overlay: O, alignment: Alignment) -> some View {
+        _ = alignment
+        return _Overlay(content: AnyView(self), overlay: AnyView(overlay))
+    }
     func overlay<O: View>(@ViewBuilder _ overlay: () -> O) -> some View {
         _Overlay(content: AnyView(self), overlay: AnyView(overlay()))
     }
     func overlay<O: View>(alignment: Alignment = .center, @ViewBuilder content: () -> O) -> some View {
         _ = alignment
         return _Overlay(content: AnyView(self), overlay: AnyView(content()))
+    }
+    func border(_ color: Color, width: CGFloat = 1) -> some View {
+        overlay(Rectangle().stroke(color, lineWidth: width))
+    }
+    func accessibilityAddTraits(_ traits: AccessibilityTraits) -> some View {
+        _ = traits
+        return self
+    }
+    func accessibilityRemoveTraits(_ traits: AccessibilityTraits) -> some View {
+        _ = traits
+        return self
     }
 
     // MARK: SwiftUI API Surface (stubs/passthrough)
@@ -277,6 +365,17 @@ public extension View {
     }
     func contentTransition(_ transition: ContentTransition) -> some View {
         _ContentTransitionModifier(content: AnyView(self), transition: transition)
+    }
+    func symbolEffect(_ effect: SymbolEffect, options: SymbolEffectOptions = .default) -> some View {
+        _ = effect
+        _ = options
+        return self
+    }
+    func symbolEffect<Value: Equatable>(_ effect: SymbolEffect, options: SymbolEffectOptions = .default, value: Value) -> some View {
+        _ = effect
+        _ = options
+        _ = value
+        return self
     }
     func navigationTitle(_ title: Text) -> some View {
         environment(\.navigationTitle, title.content)
@@ -426,6 +525,33 @@ public extension View {
     func scrollContentBackground(_ visibility: Visibility) -> some View {
         environment(\.scrollContentBackgroundVisibility, visibility)
     }
+    func scrollIndicators(_ visibility: ScrollIndicatorVisibility, axes: Axis.Set = [.vertical, .horizontal]) -> some View {
+        _ = visibility
+        _ = axes
+        return self
+    }
+    func onScrollGeometryChange<T: Equatable>(
+        for type: T.Type = T.self,
+        of transform: @escaping (ScrollGeometry) -> T,
+        action: @escaping (T, T) -> Void
+    ) -> some View {
+        _ = type
+        _ = transform
+        _ = action
+        return self
+    }
+    func onScrollPhaseChange(_ action: @escaping (ScrollPhase, ScrollPhase) -> Void) -> some View {
+        _ = action
+        return self
+    }
+    func onScrollPhaseChange(_ action: @escaping (ScrollPhase, ScrollPhase, ScrollPhaseChangeContext) -> Void) -> some View {
+        _ = action
+        return self
+    }
+    func onScrollVisibilityChange(_ action: @escaping (Bool) -> Void) -> some View {
+        _ = action
+        return self
+    }
     func selectionDisabled(_ isDisabled: Bool = true) -> some View {
         _ = isDisabled
         return self
@@ -452,6 +578,16 @@ public extension View {
     }
     func onDrop<D: DropDelegate>(of supportedContentTypes: [UTType], delegate: D) -> some View {
         _DropTargetModifier(content: AnyView(self), supportedContentTypes: supportedContentTypes, delegate: delegate, actionScopePath: _UIRuntime._currentPath ?? [])
+    }
+    func onDrop(
+        of supportedContentTypes: [UTType],
+        isTargeted: Binding<Bool>? = nil,
+        perform action: @escaping ([NSItemProvider]) -> Bool
+    ) -> some View {
+        onDrop(
+            of: supportedContentTypes,
+            delegate: _ClosureDropDelegate(isTargeted: isTargeted, action: action)
+        )
     }
     func toolbar<Content: ToolbarContent>(@ToolbarContentBuilder content: () -> Content) -> some View {
         _ToolbarModifier(content: AnyView(self), toolbar: content()._toolbarView())
@@ -506,8 +642,20 @@ public extension View {
         _ = style
         return self
     }
+    func menuIndicator(_ visibility: Visibility) -> some View {
+        _ = visibility
+        return self
+    }
     func progressViewStyle(_ style: LinearProgressViewStyle) -> some View {
         _ = style
+        return self
+    }
+    func progressViewStyle(_ style: CircularProgressViewStyle) -> some View {
+        _ = style
+        return self
+    }
+    func focusEffectDisabled(_ disabled: Bool = true) -> some View {
+        _ = disabled
         return self
     }
     func modelContainer(_ any: Any) -> some View {
@@ -551,11 +699,11 @@ public extension View {
     func fullScreenCover<Content: View>(isPresented: Binding<Bool>, onDismiss: (() -> Void)? = nil, @ViewBuilder content: () -> Content) -> some View {
         _PresentationOverlay(content: AnyView(self), isPresented: isPresented, onDismiss: onDismiss, title: "Full Screen", showsScrim: true, presented: AnyView(content()))
     }
-    func popover<Content: View>(isPresented: Binding<Bool>, attachmentAnchor: Any = (), arrowEdge: Edge = .top, @ViewBuilder content: () -> Content) -> some View {
+    func popover<Content: View>(isPresented: Binding<Bool>, attachmentAnchor: PopoverAttachmentAnchor = .rect(.bounds), arrowEdge: Edge = .top, @ViewBuilder content: () -> Content) -> some View {
         _ = attachmentAnchor
         return _PresentationOverlay(content: AnyView(self), isPresented: isPresented, onDismiss: nil, title: "Popover", showsScrim: false, presented: AnyView(content()), arrowEdge: arrowEdge)
     }
-    func popover<Item: Identifiable, Content: View>(item: Binding<Item?>, attachmentAnchor: Any = (), arrowEdge: Edge = .top, @ViewBuilder content: @escaping (Item) -> Content) -> some View {
+    func popover<Item: Identifiable, Content: View>(item: Binding<Item?>, attachmentAnchor: PopoverAttachmentAnchor = .rect(.bounds), arrowEdge: Edge = .top, @ViewBuilder content: @escaping (Item) -> Content) -> some View {
         _ = attachmentAnchor
         return _ItemPresentationOverlay(content: AnyView(self), item: item, onDismiss: nil, title: "Popover", showsScrim: false, presented: { AnyView(content($0)) })
     }
@@ -571,7 +719,7 @@ public extension View {
     func confirmationDialog<Data, Actions: View, Message: View>(_ title: String, isPresented: Binding<Bool>, titleVisibility: Visibility = .automatic, presenting data: Data, @ViewBuilder actions: (Data) -> Actions, @ViewBuilder message: (Data) -> Message) -> some View {
         _ConfirmationDialog(content: AnyView(self), title: title, isPresented: isPresented, titleVisibility: titleVisibility, actions: AnyView(actions(data)), message: AnyView(message(data)))
     }
-    func navigationDestination<Value: Hashable, Destination: View>(for value: Value.Type, @ViewBuilder destination: @escaping @MainActor (Value) -> Destination) -> some View {
+    func navigationDestination<Value: Hashable, Destination: View>(for value: Value.Type, @ViewBuilder destination: @escaping (Value) -> Destination) -> some View {
         _NavigationDestinationResolver(content: AnyView(self), valueType: value, destination: { AnyView(destination($0)) })
     }
     func navigationDestination<Destination: View>(isPresented: Binding<Bool>, @ViewBuilder destination: () -> Destination) -> some View {
@@ -600,6 +748,24 @@ public extension View {
         )
     }
 
+    func alert<Data, Actions: View>(_ title: String, isPresented: Binding<Bool>, presenting data: Data?, @ViewBuilder actions: (Data) -> Actions) -> some View {
+        alert(title, isPresented: isPresented, presenting: data, actions: actions) { _ in EmptyView() }
+    }
+
+    func alert<Data, Actions: View, Message: View>(_ title: String, isPresented: Binding<Bool>, presenting data: Data?, @ViewBuilder actions: (Data) -> Actions, @ViewBuilder message: (Data) -> Message) -> some View {
+        let alertView: AnyView
+        if let data {
+            alertView = AnyView(VStack(alignment: .leading, spacing: 12) {
+                Text(title)
+                message(data)
+                actions(data)
+            })
+        } else {
+            alertView = AnyView(Text(title))
+        }
+        return _Alert(content: AnyView(self), isPresented: isPresented, alert: alertView)
+    }
+
     func focused(_ isFocused: Binding<Bool>) -> some View {
         _FocusBoolBinder(content: AnyView(self), get: { isFocused.wrappedValue }, set: { isFocused.wrappedValue = $0 })
     }
@@ -610,6 +776,14 @@ public extension View {
 
     func focused(_ isFocused: FocusState<Bool>.Binding) -> some View {
         _FocusBoolBinder(content: AnyView(self), get: { isFocused.wrappedValue }, set: { isFocused.wrappedValue = $0 })
+    }
+
+    func focused<Value: Hashable>(_ binding: FocusState<Value?>.Binding, equals value: Value) -> some View {
+        _FocusBoolBinder(
+            content: AnyView(self),
+            get: { binding.wrappedValue == value },
+            set: { isFocused in binding.wrappedValue = isFocused ? value : nil }
+        )
     }
 
     func focusedSceneValue<Value>(_ keyPath: WritableKeyPath<FocusedValues, Value?>, _ value: Value?) -> some View {
@@ -780,9 +954,34 @@ public extension View {
         padding(.all, length)
     }
 
+    func padding(_ insets: EdgeInsets) -> some View {
+        _EdgePadding(
+            content: AnyView(self),
+            top: max(0, Int(insets.top)),
+            leading: max(0, Int(insets.leading)),
+            bottom: max(0, Int(insets.bottom)),
+            trailing: max(0, Int(insets.trailing))
+        )
+    }
+
+    func symbolRenderingMode(_ mode: SymbolRenderingMode?) -> some View {
+        _ = mode
+        return self
+    }
+
     func clipped(antialiased: Bool = false) -> some View {
         _ = antialiased
         return clipShape(Rectangle())
+    }
+
+    func equatable() -> some View {
+        self
+    }
+
+    func transaction(_ transform: (inout Transaction) -> Void) -> some View {
+        var transaction = Transaction()
+        transform(&transaction)
+        return self
     }
 
     // MARK: Parity modifiers
@@ -802,6 +1001,14 @@ public extension View {
     func aspectRatio(_ ratio: CGFloat? = nil, contentMode: ContentMode) -> some View {
         let mode: _ContentMode = contentMode == .fit ? .fit : .fill
         return _AspectRatioModifier(content: AnyView(self), ratio: ratio, contentMode: mode)
+    }
+
+    func scaledToFit() -> some View {
+        aspectRatio(nil, contentMode: .fit)
+    }
+
+    func scaledToFill() -> some View {
+        aspectRatio(nil, contentMode: .fill)
     }
 
     func alignmentGuide(_ alignment: HorizontalAlignment, computeValue: @escaping (ViewDimensions) -> CGFloat) -> some View {
@@ -1297,7 +1504,7 @@ private struct _NavigationDestinationResolver<Value: Hashable>: View, _Primitive
 
     let content: AnyView
     let valueType: Value.Type
-    let destination: @MainActor (Value) -> AnyView
+    let destination: (Value) -> AnyView
 
     func _makeNode(_ ctx: inout _BuildContext) -> _VNode {
         if let stackPath = ctx.runtime._nearestNavStackRoot(from: ctx.path) {
@@ -1445,6 +1652,13 @@ public struct Alert {
         self.title = title
         self.message = message
         self.dismissButton = dismissButton
+    }
+
+    public init(title: Text, message: Text? = nil, primaryButton: Button, secondaryButton: Button) {
+        self.title = title
+        self.message = message
+        self.dismissButton = secondaryButton
+        _ = primaryButton
     }
 }
 
@@ -1647,6 +1861,24 @@ private final class _DragSourceFallbackHandler: @unchecked Sendable {
     func dragEnded(_ value: DragGesture.Value) {
         _ = value
         started = false
+    }
+}
+
+private struct _ClosureDropDelegate: DropDelegate {
+    var isTargeted: Binding<Bool>?
+    let action: ([NSItemProvider]) -> Bool
+
+    func dropEntered(info: DropInfo) {
+        isTargeted?.wrappedValue = true
+    }
+
+    func dropExited(info: DropInfo) {
+        isTargeted?.wrappedValue = false
+    }
+
+    func performDrop(info: DropInfo) -> Bool {
+        isTargeted?.wrappedValue = false
+        return action(info.itemProviders)
     }
 }
 
@@ -2211,15 +2443,28 @@ public struct KeyEquivalent: Hashable, Sendable, ExpressibleByStringLiteral {
     public var rawValue: String
     public init(_ rawValue: String) { self.rawValue = rawValue }
     public init(stringLiteral value: StringLiteralType) { self.rawValue = value }
+    public var character: Character { rawValue.first ?? "\0" }
 
     public static let escape: KeyEquivalent = "\u{001B}"
     public static let `return`: KeyEquivalent = "\n"
+    public static let space: KeyEquivalent = " "
     public static let upArrow: KeyEquivalent = "\u{F700}"
     public static let downArrow: KeyEquivalent = "\u{F701}"
     public static let leftArrow: KeyEquivalent = "\u{F702}"
     public static let rightArrow: KeyEquivalent = "\u{F703}"
     public static let home: KeyEquivalent = "\u{F729}"
     public static let end: KeyEquivalent = "\u{F72B}"
+    public static let delete: KeyEquivalent = "\u{7F}"
+
+    public static func character(_ character: Character) -> KeyEquivalent {
+        KeyEquivalent(String(character))
+    }
+}
+
+public enum ImageScale: Hashable, Sendable {
+    case small
+    case medium
+    case large
 }
 
 public enum KeyPress {
@@ -2247,6 +2492,27 @@ public struct EventModifiers: OptionSet, Hashable, Sendable {
 // MARK: Tagged options (Picker)
 @MainActor
 public extension View {
+    func focusable(_ isFocusable: Bool = true) -> some View {
+        _ = isFocusable
+        return self
+    }
+
+    func focusable(_ isFocusable: Bool = true, interactions: Any) -> some View {
+        _ = isFocusable
+        _ = interactions
+        return self
+    }
+
+    func minimumScaleFactor(_ factor: CGFloat) -> some View {
+        _ = factor
+        return self
+    }
+
+    func imageScale(_ scale: ImageScale) -> some View {
+        _ = scale
+        return self
+    }
+
     func tag<V: Hashable>(_ value: V) -> some View {
         _Tag(content: AnyView(self), value: AnyHashable(value))
     }
@@ -2825,10 +3091,10 @@ public struct _PhaseAnimatorPrimitive: View, _PrimitiveView {
     public typealias Body = Never
 
     let phases: [Any]
-    let content: @MainActor @Sendable (Any) -> AnyView
+    let content: (Any) -> AnyView
     let intervalSeconds: Double
 
-    public init(phases: [Any], content: @escaping @MainActor @Sendable (Any) -> AnyView, intervalSeconds: Double) {
+    public init(phases: [Any], content: @escaping (Any) -> AnyView, intervalSeconds: Double) {
         self.phases = phases
         self.content = content
         self.intervalSeconds = intervalSeconds
@@ -2860,7 +3126,6 @@ public struct _Passthrough: View, _PrimitiveView {
     // Type-erase immediately to avoid exponential generic growth in large `body` expressions.
     let content: AnyView
 
-    @MainActor
     public init<V: View>(_ content: V) { self.content = AnyView(content) }
 
     func _makeNode(_ ctx: inout _BuildContext) -> _VNode {
@@ -2902,9 +3167,9 @@ private final class _OmniReceiveActionBox<Output>: @unchecked Sendable {
 }
 
 private final class _OmniReceiveDeliveryBox: @unchecked Sendable {
-    let deliver: () -> Void
+    let deliver: @MainActor () -> Void
 
-    init(deliver: @escaping () -> Void) {
+    init(deliver: @escaping @MainActor () -> Void) {
         self.deliver = deliver
     }
 }
@@ -2924,7 +3189,7 @@ public struct _OnReceive<P: _OmniReceivePublisher>: View, _PrimitiveView {
         let identity = publisher._omniPublisherIdentity
         runtime._ensureReceiveSubscription(path: path, identity: publisher._omniPublisherIdentity) {
             publisher._omniSubscribe { output in
-                let delivery = _OmniReceiveDeliveryBox {
+                let delivery = _OmniReceiveDeliveryBox { @MainActor in
                     if _omniReceiveTraceEnabled() {
                         let line = "[OmniKit onReceive] identity=\(identity) path=\(path)\n"
                         FileHandle.standardError.write(Data(line.utf8))
@@ -2936,12 +3201,8 @@ public struct _OnReceive<P: _OmniReceivePublisher>: View, _PrimitiveView {
                     }
                     runtime._markDirtyFromExternalResource()
                 }
-                if Thread.isMainThread {
+                Task { @MainActor in
                     delivery.deliver()
-                } else {
-                    DispatchQueue.main.async {
-                        delivery.deliver()
-                    }
                 }
             }
         }
@@ -3014,7 +3275,7 @@ public struct _OnChangeWithInitial<V: Equatable>: View, _PrimitiveView {
 }
 
 @MainActor
-private func _runOnChangeAction(_ ctx: _BuildContext, _ action: () -> Void) {
+private func _runOnChangeAction(_ ctx: _BuildContext, _ action: @MainActor () -> Void) {
     let env = _UIRuntime._currentEnvironment ?? ctx.runtime._baseEnvironment
     _UIRuntime.$_currentEnvironment.withValue(env) {
         _BuildContext.withRuntime(ctx.runtime, path: ctx.path) {

@@ -5,7 +5,7 @@
 @MainActor
 public protocol View {
     associatedtype Body: View
-    @ViewBuilder var body: Body { get }
+    @preconcurrency @MainActor @ViewBuilder var body: Body { get }
 }
 
 public extension View where Body == Never {
@@ -38,7 +38,6 @@ public struct AnyView: View {
 
     let _makeNode: @MainActor (inout _BuildContext) -> _VNode
 
-    @MainActor
     public init<V: View>(_ view: V) {
         self._makeNode = { ctx in
             OmniUICore._makeNode(view, &ctx)
@@ -53,13 +52,14 @@ extension AnyView: _PrimitiveView {
 }
 
 /// Internal protocol for primitive views that directly lower to nodes (do not go through `body`).
+@MainActor
 protocol _PrimitiveView {
-    @MainActor
     func _makeNode(_ ctx: inout _BuildContext) -> _VNode
 }
 
 @MainActor
 private func _makeRepresentableNode(_ representable: any NSViewRepresentable, path: [Int]) -> _VNode {
+    @MainActor
     func open<R: NSViewRepresentable>(_ value: R) -> _VNode {
         _OmniRepresentableFallback.node(for: value, path: path) ?? .empty
     }

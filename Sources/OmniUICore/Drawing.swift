@@ -91,7 +91,7 @@ public struct UnitPoint: Hashable, Sendable {
     public static let bottomTrailing = UnitPoint(x: 1.0, y: 1.0)
 }
 
-public struct LinearGradient: View, _PrimitiveView {
+public struct LinearGradient: View, _PrimitiveView, ShapeStyle {
     public typealias Body = Never
 
     public let gradient: Gradient
@@ -119,7 +119,7 @@ public struct LinearGradient: View, _PrimitiveView {
     }
 }
 
-public struct RadialGradient: View, _PrimitiveView {
+public struct RadialGradient: View, _PrimitiveView, ShapeStyle {
     public typealias Body = Never
 
     public let gradient: Gradient
