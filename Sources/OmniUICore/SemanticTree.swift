@@ -536,7 +536,7 @@ enum SemanticLowerer {
                 parts.append(value)
             }
             if case .image(let value) = current.kind {
-                parts.append(SFSymbolMap.unicode(for: value) ?? value)
+                parts.append(_terminalSymbolString(value))
             }
             if case .webContent(_, _, _, let label, let description) = current.kind {
                 if let label, !label.isEmpty {

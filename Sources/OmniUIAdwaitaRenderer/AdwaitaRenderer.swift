@@ -1981,7 +1981,7 @@ public enum AdwaitaReconciliation {
             if _OmniWebViewRegistry.payload(for: text) != nil {
                 return nil
             }
-            return AdwaitaNativeLeafUpdate(id: node.id, kind: .text, text: text)
+            return AdwaitaNativeLeafUpdate(id: node.id, kind: .text, text: _terminalSymbolString(text))
         case .webContent:
             return nil
         case .button, .tapTarget:
@@ -2033,7 +2033,7 @@ public enum AdwaitaReconciliation {
             if let payload = _OmniWebViewRegistry.payload(for: text) {
                 return payload.url.absoluteString
             }
-            return SFSymbolMap.unicode(for: text) ?? text
+            return _terminalSymbolString(text)
         }
         if case .webContent(_, _, let url, let label, let description) = node.kind {
             return label ?? description ?? url
@@ -2065,7 +2065,7 @@ public enum AdwaitaReconciliation {
             if let payload = _OmniWebViewRegistry.payload(for: text) {
                 parts.append(payload.url.absoluteString)
             } else {
-                parts.append(SFSymbolMap.unicode(for: text) ?? text)
+                parts.append(_terminalSymbolString(text))
             }
         case .webContent(_, _, let url, let label, let description):
             parts.append(label ?? url)
@@ -2293,7 +2293,7 @@ enum AdwaitaNodeBuilder {
                     omni_adw_image_new(bytes.bindMemory(to: UInt8.self).baseAddress, Int32(data.count), "Story image")
                 }
             } else {
-                let fallback = SFSymbolMap.unicode(for: text) ?? text
+                let fallback = _terminalSymbolString(text)
                 built = omni_adw_symbol_image_new(text, fallback, fallback)
                 applyInlineTextLayout(to: built, context: context)
             }
@@ -2320,7 +2320,9 @@ enum AdwaitaNodeBuilder {
             }
         case .tapTarget(let actionID, let tapCount):
             if let switchRow = switchStyledRow(in: node) {
-                built = omni_adw_switch_row_new(switchRow.title, switchRow.isOn ? 1 : 0, Int32(switchRow.actionID))
+                built = context == .settings
+                    ? omni_adw_switch_row_new(switchRow.title, switchRow.isOn ? 1 : 0, Int32(switchRow.actionID))
+                    : omni_adw_toggle_new(switchRow.title, switchRow.isOn ? 1 : 0, Int32(switchRow.actionID))
             } else {
                 let label = accessibleLabel(for: node)
                 if rendersAsInlineButton(node, context: context) {
@@ -2617,6 +2619,9 @@ enum AdwaitaNodeBuilder {
             return build(child, context: context)
         }
         guard let parent = omni_adw_overlay_new() else { return nil }
+        if context == .horizontal || context == .inline {
+            omni_adw_node_set_expand(parent, renderChildren.contains(where: hasFlexibleHorizontalFrame) ? 1 : 0, 0)
+        }
         var index = 0
         while index < renderChildren.count {
             if let run = crtScanlineOverlayRun(in: renderChildren, startingAt: index),
@@ -2915,6 +2920,9 @@ enum AdwaitaNodeBuilder {
                 return primaryContent()
             }
             guard let parent = omni_adw_frame_new(css, 0) else { return nil }
+            if context == .horizontal || context == .inline {
+                omni_adw_node_set_expand(parent, 0, -1)
+            }
             for child in visibleChildren(forOverlayChildren: children) {
                 if let built = build(child, context: context) {
                     omni_adw_node_append(parent, built)
@@ -2946,11 +2954,31 @@ enum AdwaitaNodeBuilder {
             }
             return wrapper
         case .background("adw-dialog"):
-            css = "card adw-dialog"
+            guard let parent = omni_adw_frame_new("card adw-dialog", 0) else { return nil }
+            if context == .horizontal || context == .inline {
+                omni_adw_node_set_expand(parent, 0, -1)
+            }
+            applyLayoutModifier(modifier, to: parent)
+            for child in visibleChildren(forOverlayChildren: children) {
+                if let built = build(child, context: context) {
+                    omni_adw_node_append(parent, built)
+                }
+            }
+            return parent
         case .foreground(let color):
             css = colorCSSClass(prefix: "omni-fg", color: color)
         case .background(let color):
-            css = colorCSSClass(prefix: "omni-bg", color: color)
+            guard let parent = omni_adw_frame_new(colorCSSClass(prefix: "omni-bg", color: color), 0) else { return nil }
+            if context == .horizontal || context == .inline {
+                omni_adw_node_set_expand(parent, 0, -1)
+            }
+            applyLayoutModifier(modifier, to: parent)
+            for child in visibleChildren(forOverlayChildren: children) {
+                if let built = build(child, context: context) {
+                    omni_adw_node_append(parent, built)
+                }
+            }
+            return parent
         case .font(let size, let weight, _, let italic):
             if let node = primaryContent() {
                 omni_adw_node_apply_font(node, size ?? 0, weight ?? "", italic ? 1 : 0)
@@ -2997,7 +3025,21 @@ enum AdwaitaNodeBuilder {
                 return build(child, context: context)
             }
             return container(vertical: true, spacing: 0, children: children, context: context)
-        case .frame, .padding, .opacity, .offset:
+        case .frame(let width, let height, let minWidth, let maxWidth, let minHeight, let maxHeight):
+            if let node = primaryContent() {
+                let modifierToApply: SemanticModifier
+                if (context == .horizontal || context == .inline),
+                   maxWidth == Int.max,
+                   children.contains(where: { switchStyledRow(in: $0) != nil }) {
+                    modifierToApply = .frame(width: width, height: height, minWidth: minWidth, maxWidth: nil, minHeight: minHeight, maxHeight: maxHeight)
+                } else {
+                    modifierToApply = modifier
+                }
+                applyLayoutModifier(modifierToApply, to: node)
+                return node
+            }
+            css = ""
+        case .padding, .opacity, .offset:
             if let node = primaryContent() {
                 applyLayoutModifier(modifier, to: node)
                 return node
@@ -3141,6 +3183,9 @@ enum AdwaitaNodeBuilder {
         case "orange":
             return alpha < 0.5 ? "\(prefix)-orange-muted" : "\(prefix)-orange"
         case "accentcolor", "tint":
+            if alpha < 0.999, let cssColor = cssColorLiteral(color) {
+                return dynamicColorCSSClass(prefix: prefix, base: base, alpha: alpha, cssColor: cssColor)
+            }
             return "\(prefix)-accent"
         case "secondary":
             return "\(prefix)-secondary"
@@ -3154,6 +3199,16 @@ enum AdwaitaNodeBuilder {
             return alpha < 0.5 ? "\(prefix)-black-muted" : "\(prefix)-black"
         case "gray", "grey":
             return "\(prefix)-gray"
+        case "bar":
+            return prefix == "omni-bg" ? "\(prefix)-material-bar" : "\(prefix)-native"
+        case "background":
+            return prefix == "omni-bg" ? "\(prefix)-material-background" : "\(prefix)-native"
+        case "regularmaterial":
+            return prefix == "omni-bg" ? "\(prefix)-material-regular" : "\(prefix)-native"
+        case "thinmaterial":
+            return prefix == "omni-bg" ? "\(prefix)-material-thin" : "\(prefix)-native"
+        case "ultrathinmaterial":
+            return prefix == "omni-bg" ? "\(prefix)-material-ultra-thin" : "\(prefix)-native"
         case "red", "yellow", "green", "mint", "teal", "cyan", "blue", "indigo", "purple", "pink", "brown":
             return alpha < 0.5 ? "\(prefix)-\(base)-muted" : "\(prefix)-\(base)"
         default:
@@ -4151,8 +4206,10 @@ enum AdwaitaNodeBuilder {
 
     private static func metadataLabel(for node: SemanticNode) -> String {
         switch node.kind {
-        case .text(let text), .image(let text):
+        case .text(let text):
             return text
+        case .image(let text):
+            return _terminalSymbolString(text)
         case .webContent(_, _, let url, let label, let description):
             return label ?? description ?? url
         case .button, .tapTarget, .toggle:
@@ -4213,19 +4270,13 @@ enum AdwaitaNodeBuilder {
             if case .accessibilityIdentifier(let identifier) = modifier {
                 return identifier
             }
-            if case .font = modifier, let child = node.children.last {
-                return accessibleLabel(for: child)
+            if let child = node.children.last {
+                let childLabel = accessibleLabel(for: child).trimmingCharacters(in: .whitespacesAndNewlines)
+                if !childLabel.isEmpty && childLabel != "Action" {
+                    return childLabel
+                }
             }
-            if case .help = modifier, let child = node.children.last {
-                return accessibleLabel(for: child)
-            }
-            if case .accessibilityHint = modifier, let child = node.children.last {
-                return accessibleLabel(for: child)
-            }
-            if case .accessibilityValue = modifier, let child = node.children.last {
-                return accessibleLabel(for: child)
-            }
-            return String(describing: modifier)
+            return ""
         case .scroll(let axis, _, _):
             return axis == .vertical ? "vertical scroll view" : "horizontal scroll view"
         default:

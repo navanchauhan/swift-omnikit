@@ -309,19 +309,7 @@ public extension View {
         }
     }
     func background(_ material: Material) -> some View {
-        // Terminal-friendly approximation.
-        switch material.raw {
-        case Material.bar.raw:
-            return AnyView(background(Color.gray.opacity(0.2)))
-        case Material.background.raw:
-            return AnyView(background(Color.gray.opacity(0.1)))
-        case Material.ultraThinMaterial.raw:
-            return AnyView(background(Color.gray.opacity(0.15)))
-        case Material.regularMaterial.raw:
-            return AnyView(background(Color.gray.opacity(0.25)))
-        default:
-            return AnyView(background(Color.gray.opacity(0.2)))
-        }
+        AnyView(background(Color(material.raw)))
     }
     func background<S: Shape>(_ material: Material, in shape: S, fillStyle: FillStyle = FillStyle()) -> some View {
         background {

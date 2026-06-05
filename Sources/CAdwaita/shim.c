@@ -3118,7 +3118,12 @@ static void omni_install_css_once(void) {
     ".omni-bg-orange { background: rgba(255,149,0,0.18); background-color: rgba(255,149,0,0.18); }"
     ".omni-bg-orange-muted { background: rgba(255,149,0,0.12); background-color: rgba(255,149,0,0.12); }"
     ".omni-bg-card { background: alpha(@view_fg_color, 0.10); background-color: alpha(@view_fg_color, 0.10); border-radius: 10px; }"
-    ".omni-bg-accent { background: @accent_bg_color; background-color: @accent_bg_color; color: @accent_fg_color; border-radius: 6px; }"
+    ".omni-bg-material-bar { background: @headerbar_bg_color; background-color: @headerbar_bg_color; }"
+    ".omni-bg-material-background { background: @view_bg_color; background-color: @view_bg_color; }"
+    ".omni-bg-material-ultra-thin { background: alpha(@view_fg_color, 0.025); background-color: alpha(@view_fg_color, 0.025); border-radius: 10px; }"
+    ".omni-bg-material-thin { background: alpha(@view_fg_color, 0.035); background-color: alpha(@view_fg_color, 0.035); border-radius: 10px; }"
+    ".omni-bg-material-regular { background: alpha(@view_fg_color, 0.045); background-color: alpha(@view_fg_color, 0.045); border-radius: 10px; }"
+    ".omni-bg-accent { background: @accent_bg_color; background-color: @accent_bg_color; border-radius: 6px; }"
     ".omni-bg-primary { background: alpha(@view_fg_color, 0.14); background-color: alpha(@view_fg_color, 0.14); border-radius: 6px; }"
     ".omni-bg-secondary { background: alpha(@view_fg_color, 0.10); background-color: alpha(@view_fg_color, 0.10); border-radius: 6px; }"
     ".omni-bg-tertiary { background: alpha(@view_fg_color, 0.08); background-color: alpha(@view_fg_color, 0.08); border-radius: 6px; }"
@@ -3418,10 +3423,24 @@ static gboolean omni_point_in_widget_bounds(GtkWidget *widget, GtkWidget *root, 
 
 static void omni_app_menu_hide(OmniAdwApp *app) {
   if (!app || !app->app_menu_surface) return;
-  gtk_widget_set_visible(app->app_menu_surface, FALSE);
+  GtkWidget *popover = gtk_widget_get_ancestor(app->app_menu_surface, GTK_TYPE_POPOVER);
+  if (GTK_IS_POPOVER(popover)) {
+    gtk_popover_popdown(GTK_POPOVER(popover));
+  } else {
+    gtk_widget_set_visible(app->app_menu_surface, FALSE);
+  }
   if (app->app_menu_button) {
     gtk_accessible_update_state(GTK_ACCESSIBLE(app->app_menu_button), GTK_ACCESSIBLE_STATE_EXPANDED, FALSE, -1);
   }
+}
+
+static gboolean omni_app_menu_is_open(OmniAdwApp *app) {
+  if (!app || !app->app_menu_surface) return FALSE;
+  GtkWidget *popover = gtk_widget_get_ancestor(app->app_menu_surface, GTK_TYPE_POPOVER);
+  if (GTK_IS_POPOVER(popover)) {
+    return gtk_widget_get_mapped(popover);
+  }
+  return gtk_widget_get_visible(app->app_menu_surface);
 }
 
 static void omni_app_menu_update_position(OmniAdwApp *app) {
@@ -3446,6 +3465,11 @@ static void omni_app_menu_update_position(OmniAdwApp *app) {
 
 static void omni_app_menu_show(OmniAdwApp *app) {
   if (!app || !app->app_menu_surface) return;
+  if (app->app_menu_button && GTK_IS_MENU_BUTTON(app->app_menu_button)) {
+    gtk_menu_button_popup(GTK_MENU_BUTTON(app->app_menu_button));
+    gtk_accessible_update_state(GTK_ACCESSIBLE(app->app_menu_button), GTK_ACCESSIBLE_STATE_EXPANDED, TRUE, -1);
+    return;
+  }
   omni_app_menu_update_position(app);
   gtk_widget_set_visible(app->app_menu_surface, TRUE);
   gtk_widget_set_child_visible(app->app_menu_surface, TRUE);
@@ -3456,7 +3480,7 @@ static void omni_app_menu_show(OmniAdwApp *app) {
 
 static void omni_app_menu_toggle(OmniAdwApp *app) {
   if (!app || !app->app_menu_surface) return;
-  if (gtk_widget_get_visible(app->app_menu_surface)) {
+  if (omni_app_menu_is_open(app)) {
     omni_app_menu_hide(app);
   } else {
     omni_app_menu_show(app);
@@ -3617,8 +3641,8 @@ static void on_app_activate(GApplication *application, gpointer data) {
 
     app->app_menu_button = gtk_menu_button_new();
     g_object_ref(app->app_menu_button);
-    gtk_widget_set_visible(app->app_menu_button, TRUE);
     gtk_menu_button_set_icon_name(GTK_MENU_BUTTON(app->app_menu_button), "open-menu-symbolic");
+    gtk_widget_set_visible(app->app_menu_button, TRUE);
     gtk_widget_add_css_class(app->app_menu_button, "flat");
     gtk_widget_add_css_class(app->app_menu_button, "omni-icon-button");
     gtk_widget_set_size_request(app->app_menu_button, 38, 34);
@@ -4475,18 +4499,18 @@ static const char *omni_symbolic_icon_name_for_system_name(const char *system_na
   if (strcmp(system_name, "person") == 0 || strcmp(system_name, "person.fill") == 0) return omni_available_symbolic_icon("adw-avatar-default-symbolic", NULL, NULL);
   if (strcmp(system_name, "envelope") == 0 || strcmp(system_name, "envelope.fill") == 0) return omni_available_symbolic_icon("adw-mail-send-symbolic", NULL, NULL);
   if (strcmp(system_name, "terminal") == 0 || strcmp(system_name, "terminal.fill") == 0) return omni_available_symbolic_icon("application-x-executable-symbolic", "system-run-symbolic", NULL);
-  if (strcmp(system_name, "doc") == 0 || strcmp(system_name, "doc.fill") == 0 || strcmp(system_name, "doc.text") == 0 || strcmp(system_name, "doc.richtext") == 0 || strcmp(system_name, "doc.plaintext") == 0 || strcmp(system_name, "doc.plaintext.fill") == 0 || strcmp(system_name, "book") == 0 || strcmp(system_name, "book.closed") == 0) return omni_available_symbolic_icon("text-x-generic-symbolic", "document-open-symbolic", "emblem-documents-symbolic");
-  if (strcmp(system_name, "folder") == 0 || strcmp(system_name, "folder.fill") == 0) return omni_available_symbolic_icon("folder-symbolic", "folder-documents-symbolic", NULL);
+  if (strcmp(system_name, "doc") == 0 || strcmp(system_name, "doc.fill") == 0 || strcmp(system_name, "doc.text") == 0 || strcmp(system_name, "doc.richtext") == 0 || strcmp(system_name, "doc.plaintext") == 0 || strcmp(system_name, "doc.plaintext.fill") == 0 || strcmp(system_name, "book") == 0 || strcmp(system_name, "book.closed") == 0 || strcmp(system_name, "book.closed.fill") == 0 || strcmp(system_name, "text.book.closed") == 0 || strcmp(system_name, "text.book.closed.fill") == 0) return omni_available_symbolic_icon("text-x-generic-symbolic", "document-open-symbolic", "emblem-documents-symbolic");
+  if (strcmp(system_name, "folder") == 0 || strcmp(system_name, "folder.fill") == 0 || strcmp(system_name, "folder.badge.plus") == 0 || strcmp(system_name, "folder.badge.questionmark") == 0) return omni_available_symbolic_icon("folder-symbolic", "folder-documents-symbolic", NULL);
   if (strcmp(system_name, "clock") == 0 || strcmp(system_name, "clock.fill") == 0 || strcmp(system_name, "calendar") == 0) return omni_available_symbolic_icon("document-open-recent-symbolic", NULL, NULL);
   if (strcmp(system_name, "exclamationmark.triangle") == 0 || strcmp(system_name, "exclamationmark.triangle.fill") == 0) return omni_available_symbolic_icon("dialog-warning-symbolic", "emblem-important-symbolic", NULL);
   if (strcmp(system_name, "info.circle") == 0 || strcmp(system_name, "info.circle.fill") == 0 || strcmp(system_name, "questionmark.circle") == 0) return omni_available_symbolic_icon("dialog-information-symbolic", "dialog-question-symbolic", NULL);
   if (strcmp(system_name, "eye") == 0 || strcmp(system_name, "eye.fill") == 0) return omni_available_symbolic_icon("view-reveal-symbolic", NULL, NULL);
   if (strcmp(system_name, "eye.slash") == 0) return omni_available_symbolic_icon("view-conceal-symbolic", "changes-prevent-symbolic", NULL);
   if (strcmp(system_name, "sun.max") == 0 || strcmp(system_name, "sun.max.fill") == 0) return omni_available_symbolic_icon("display-brightness-symbolic", NULL, NULL);
-  if (strcmp(system_name, "paintbrush") == 0 || strcmp(system_name, "paintbrush.fill") == 0 || strcmp(system_name, "photo") == 0) return omni_available_symbolic_icon("insert-image-symbolic", NULL, NULL);
+  if (strcmp(system_name, "paintbrush") == 0 || strcmp(system_name, "paintbrush.fill") == 0 || strcmp(system_name, "photo") == 0 || strcmp(system_name, "photo.badge.plus") == 0) return omni_available_symbolic_icon("insert-image-symbolic", NULL, NULL);
   if (strcmp(system_name, "wrench") == 0 || strcmp(system_name, "wrench.fill") == 0 || strcmp(system_name, "hammer") == 0 || strcmp(system_name, "hammer.fill") == 0) return omni_available_symbolic_icon("system-run-symbolic", NULL, NULL);
   if (strcmp(system_name, "chart.bar") == 0 || strcmp(system_name, "chart.bar.fill") == 0) return omni_available_symbolic_icon("view-list-symbolic", NULL, NULL);
-  if (strcmp(system_name, "list.bullet") == 0 || strcmp(system_name, "sidebar.left") == 0 || strcmp(system_name, "sidebar.leading") == 0 || strcmp(system_name, "text.alignleft") == 0) return omni_available_symbolic_icon("open-menu-symbolic", "view-list-symbolic", NULL);
+  if (strcmp(system_name, "list.bullet") == 0 || strcmp(system_name, "list.bullet.rectangle") == 0 || strcmp(system_name, "sidebar.left") == 0 || strcmp(system_name, "sidebar.leading") == 0 || strcmp(system_name, "text.alignleft") == 0) return omni_available_symbolic_icon("open-menu-symbolic", "view-list-symbolic", NULL);
   if (strcmp(system_name, "play") == 0 || strcmp(system_name, "play.fill") == 0) return omni_available_symbolic_icon("media-playback-start-symbolic", NULL, NULL);
   if (strcmp(system_name, "pause") == 0 || strcmp(system_name, "pause.fill") == 0) return omni_available_symbolic_icon("media-playback-pause-symbolic", NULL, NULL);
   if (strcmp(system_name, "stop") == 0 || strcmp(system_name, "stop.fill") == 0) return omni_available_symbolic_icon("media-playback-stop-symbolic", NULL, NULL);
@@ -4497,6 +4521,10 @@ static const char *omni_symbolic_icon_name_for_system_name(const char *system_na
   if (strcmp(system_name, "link") == 0 || strcmp(system_name, "square.and.arrow.up") == 0) return omni_available_symbolic_icon("adw-external-link-symbolic", NULL, NULL);
   if (strcmp(system_name, "square.and.arrow.down") == 0) return omni_available_symbolic_icon("folder-download-symbolic", "document-save-symbolic", NULL);
   if (strcmp(system_name, "rectangle.split.2x1") == 0) return omni_available_symbolic_icon("widget-split-views-symbolic", "view-grid-symbolic", NULL);
+  if (strcmp(system_name, "rectangle.stack.badge.clock") == 0 || strcmp(system_name, "sparkles.rectangle.stack.fill") == 0) return omni_available_symbolic_icon("document-open-recent-symbolic", "view-grid-symbolic", NULL);
+  if (strcmp(system_name, "rectangle.portrait.and.arrow.right") == 0) return omni_available_symbolic_icon("go-jump-symbolic", "adw-external-link-symbolic", NULL);
+  if (strcmp(system_name, "arrow.triangle.branch") == 0) return omni_available_symbolic_icon("vcs-branch-symbolic", "view-branch-symbolic", NULL);
+  if (strcmp(system_name, "shield") == 0 || strcmp(system_name, "shield.fill") == 0 || strcmp(system_name, "shield.checkered") == 0 || strcmp(system_name, "lock.shield") == 0 || strcmp(system_name, "lock.shield.fill") == 0 || strcmp(system_name, "checkmark.shield") == 0 || strcmp(system_name, "checkmark.shield.fill") == 0 || strcmp(system_name, "exclamationmark.shield") == 0 || strcmp(system_name, "exclamationmark.shield.fill") == 0 || strcmp(system_name, "bolt.shield") == 0) return omni_available_symbolic_icon("security-high-symbolic", "changes-prevent-symbolic", "dialog-password-symbolic");
   if (strcmp(system_name, "ellipsis.circle") == 0 || strcmp(system_name, "ellipsis.circle.fill") == 0) return omni_available_symbolic_icon("view-more-symbolic", NULL, NULL);
   return NULL;
 }
@@ -5399,7 +5427,7 @@ static void on_window_click_pressed(GtkGestureClick *gesture, int n_press, doubl
   guint action_payload = 0;
   GtkWidget *window = gtk_event_controller_get_widget(GTK_EVENT_CONTROLLER(gesture));
   GtkWidget *picked = window ? gtk_widget_pick(window, x, y, GTK_PICK_DEFAULT) : NULL;
-  if (app && app->app_menu_surface && gtk_widget_get_visible(app->app_menu_surface)) {
+  if (app && omni_app_menu_is_open(app)) {
     gboolean menu_hit = omni_point_in_widget_bounds(app->app_menu_surface, window, x, y);
     gboolean button_hit = omni_point_in_widget_bounds(app->app_menu_button, window, x, y);
     if (menu_hit) {
