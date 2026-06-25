@@ -1661,7 +1661,10 @@ private enum AdwaitaPresentationExtractor {
             return node
         }
         let content = node.children.first(where: { $0.id.hasSuffix(".content") }) ?? node
-        return presentationChromeContent(from: content) ?? content
+        guard let stripped = presentationChromeContent(from: content) else {
+            return content
+        }
+        return containsDismissButton(stripped) ? stripped : content
     }
 
     private static func presentationChromeContent(from node: SemanticNode) -> SemanticNode? {
@@ -3680,10 +3683,55 @@ enum AdwaitaNodeBuilder {
                 return wrapInScroll(list, axis: .vertical, offset: 0)
             }
             guard let parent = omni_adw_list_new() else { return nil }
-            for child in children {
-                if let built = build(child, context: context) {
-                    omni_adw_node_append(parent, built)
+
+            func appendListNode(_ node: SemanticNode) {
+                func appendRenderableChildren(_ children: [SemanticNode]) {
+                    for child in children {
+                        switch child.kind {
+                        case .empty, .spacer, .drawingIsland:
+                            continue
+                        default:
+                            appendListNode(child)
+                        }
+                    }
                 }
+
+                switch node.kind {
+                case .scroll:
+                    appendRenderableChildren(node.children)
+                case .section(let header, let footer):
+                    if !header.isEmpty, let builtHeader = omni_adw_text_new(header) {
+                        omni_adw_node_append(parent, builtHeader)
+                    }
+                    appendRenderableChildren(node.children)
+                    if !footer.isEmpty, let builtFooter = omni_adw_text_new(footer) {
+                        omni_adw_node_append(parent, builtFooter)
+                    }
+                case .group, .stack(axis: .vertical, _), .container(.lazyVStack):
+                    appendRenderableChildren(node.children)
+                case .modifier(let modifier) where modifierAllowsLayoutDescent(modifier):
+                    let semanticChildren = node.children.filter { child in
+                        switch child.kind {
+                        case .empty, .spacer, .drawingIsland:
+                            return false
+                        default:
+                            return true
+                        }
+                    }
+                    if semanticChildren.count == 1 {
+                        appendListNode(semanticChildren[0])
+                    } else if let built = build(node, context: context) {
+                        omni_adw_node_append(parent, built)
+                    }
+                default:
+                    if let built = build(node, context: context) {
+                        omni_adw_node_append(parent, built)
+                    }
+                }
+            }
+
+            for child in children {
+                appendListNode(child)
             }
             return wrapInScroll(parent, axis: .vertical, offset: 0)
         }

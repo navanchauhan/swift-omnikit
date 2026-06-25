@@ -3043,7 +3043,9 @@ static void omni_install_css_once(void) {
     ".adw-dialog { padding: 0; margin: 0; background: transparent; }"
     ".omni-sheet-surface { padding: 18px; margin: 18px; border-radius: 12px; border: 1px solid @borders; background: @popover_bg_color; background-color: @popover_bg_color; color: @window_fg_color; box-shadow: 0 12px 36px alpha(black,0.35); }"
     ".boxed-list { border-radius: 0; padding: 0; margin: 0; background: @view_bg_color; background-color: @view_bg_color; }"
-    ".boxed-list row { min-height: 0; padding: 0; margin: 0; border-radius: 0; background: transparent; background-color: transparent; border-bottom: 1px solid @borders; }"
+    ".boxed-list row { min-height: 56px; padding: 0; margin: 0; border-radius: 0; background: transparent; background-color: transparent; border-bottom: 1px solid @borders; }"
+    ".boxed-list row.omni-multiline-list-row { min-height: 64px; }"
+    ".boxed-list row.omni-multiline-list-row > * { min-height: 64px; }"
     ".boxed-list row:hover { background: alpha(@view_fg_color,0.035); background-color: alpha(@view_fg_color,0.035); }"
     ".boxed-list row:selected { background: alpha(@accent_bg_color,0.18); background-color: alpha(@accent_bg_color,0.18); }"
     ".boxed-list button { min-height: 0; padding: 0; margin: 0; border-radius: 0; border: 0; background: transparent; background-color: transparent; box-shadow: none; }"
@@ -4336,6 +4338,20 @@ static void install_row_click_controller(GtkWidget *widget) {
   g_signal_connect(click_controller, "pressed", G_CALLBACK(on_plain_list_row_pressed), NULL);
   g_signal_connect(click_controller, "released", G_CALLBACK(on_plain_list_row_released), NULL);
   gtk_widget_add_controller(widget, GTK_EVENT_CONTROLLER(click_controller));
+}
+
+static gboolean omni_widget_contains_vertical_box(GtkWidget *widget) {
+  if (!widget) return FALSE;
+  if (GTK_IS_ORIENTABLE(widget) &&
+      gtk_orientable_get_orientation(GTK_ORIENTABLE(widget)) == GTK_ORIENTATION_VERTICAL) {
+    return TRUE;
+  }
+  GtkWidget *child = gtk_widget_get_first_child(widget);
+  while (child) {
+    if (omni_widget_contains_vertical_box(child)) return TRUE;
+    child = gtk_widget_get_next_sibling(child);
+  }
+  return FALSE;
 }
 
 static void install_click_container_controller(GtkWidget *widget) {
@@ -9445,6 +9461,10 @@ void omni_adw_node_append_overlay(OmniAdwNode *parent, OmniAdwNode *child, const
     GtkWidget *row = gtk_list_box_row_new();
     gtk_widget_set_hexpand(child->widget, TRUE);
     gtk_widget_set_halign(child->widget, GTK_ALIGN_FILL);
+    if (omni_widget_contains_vertical_box(child->widget)) {
+      gtk_widget_add_css_class(row, "omni-multiline-list-row");
+      gtk_widget_add_css_class(child->widget, "omni-multiline-list-row");
+    }
     gtk_list_box_row_set_child(GTK_LIST_BOX_ROW(row), child->widget);
     int action_id = first_widget_action_id(child->widget);
     if (action_id > 0) {
